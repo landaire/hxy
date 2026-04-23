@@ -249,6 +249,7 @@ impl eframe::App for HxyApp {
         paint_drop_overlay(ui.ctx());
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
+        drain_pending_vfs_opens(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
@@ -408,6 +409,37 @@ fn capture_window_on_drag_end(
         g.window = current;
     }
 }
+
+/// Key used to stash pending VFS-entry open requests between tab
+/// rendering (which only has `&mut PersistedState`) and the app-level
+/// drain loop (which can open new tabs).
+const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
+
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
+    let pending: Vec<(FileId, String)> = ctx
+        .data_mut(|d| d.remove_temp::<Vec<(FileId, String)>>(egui::Id::new(PENDING_VFS_OPEN_KEY)))
+        .unwrap_or_default();
+    for (parent_id, entry_path) in pending {
+        let Some(parent) = app.files.get(&parent_id) else { continue };
+        let parent_source = parent.source_kind.clone();
+        let Some(parent_source) = parent_source else { continue };
+        let Some(mount) = parent.mount.clone() else { continue };
+        let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
+                continue;
+            }
+        };
+        let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
+        let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
+        app.open(name, Some(source), bytes, None, None);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn drain_pending_vfs_opens(_ctx: &egui::Context, _app: &mut HxyApp) {}
 
 fn render_toolbar_and_apply(ui: &mut egui::Ui, app: &mut HxyApp) {
     use crate::commands::CommandEffect;
@@ -636,12 +668,10 @@ impl TabViewer for HxyTabViewer<'_> {
                     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
                     let pending_scroll = file.pending_scroll.take();
 
-                    // Explicit layout: split the tab into hex (top) and
-                    // status bar (bottom). Both share the same painted
-                    // background. The status bar rect is sized to fit
-                    // the text + symmetric padding with no leftover
-                    // vertical space, and uses a centered layout so the
-                    // text sits in the middle of its rect.
+                    // Explicit layout: split the tab into optional tree
+                    // panel (left), hex view (center), status bar
+                    // (bottom). Background is a uniform opaque fill so
+                    // the hex view and status bar share visuals cleanly.
                     let tab_rect = ui.available_rect_before_wrap();
                     let bg = ui.visuals().window_fill();
                     ui.painter().rect_filled(tab_rect, 0.0, bg);
@@ -649,8 +679,16 @@ impl TabViewer for HxyTabViewer<'_> {
                     let text_h = ui.text_style_height(&egui::TextStyle::Body);
                     let status_h = text_h + 2.0;
                     let status_top_y = tab_rect.bottom() - status_h;
-                    let hex_rect =
-                        egui::Rect::from_min_max(tab_rect.min, egui::Pos2::new(tab_rect.right(), status_top_y));
+
+                    let tree_panel_width = if file.mount.is_some() { 240.0 } else { 0.0 };
+                    let tree_rect = egui::Rect::from_min_max(
+                        tab_rect.min,
+                        egui::Pos2::new(tab_rect.left() + tree_panel_width, status_top_y),
+                    );
+                    let hex_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(tab_rect.left() + tree_panel_width, tab_rect.top()),
+                        egui::Pos2::new(tab_rect.right(), status_top_y),
+                    );
                     let status_rect =
                         egui::Rect::from_min_max(egui::Pos2::new(tab_rect.left(), status_top_y), tab_rect.max);
 
@@ -659,6 +697,30 @@ impl TabViewer for HxyTabViewer<'_> {
                         status_top_y,
                         egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
                     );
+
+                    if let Some(mount) = file.mount.clone() {
+                        ui.painter().vline(
+                            hex_rect.left(),
+                            tree_rect.y_range(),
+                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                        );
+                        let events = ui
+                            .scope_builder(
+                                egui::UiBuilder::new().max_rect(tree_rect.shrink2(egui::Vec2::new(6.0, 4.0))),
+                                |ui| crate::vfs_panel::show(ui, id.get(), &*mount.fs),
+                            )
+                            .inner;
+                        if !events.is_empty() {
+                            ui.ctx().data_mut(|d| {
+                                let queue: &mut Vec<(FileId, String)> =
+                                    d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+                                for e in events {
+                                    let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
+                                    queue.push((*id, path));
+                                }
+                            });
+                        }
+                    }
 
                     let mut view = HexView::new(&*file.source, &mut file.selection)
                         .columns(self.state.app.hex_columns)

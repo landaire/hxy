@@ -1090,6 +1090,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_ltreeview"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6afc56194563064faa79d5acc18f2a4d32bd6dfacc949e1d5b5c8058a46e82cf"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui_taffy"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1869,6 +1878,7 @@ dependencies = [
  "egui-phosphor",
  "egui_dock",
  "egui_inbox",
+ "egui_ltreeview",
  "egui_taffy",
  "hxy-core",
  "hxy-i18n",

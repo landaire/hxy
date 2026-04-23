@@ -8,6 +8,7 @@ pub mod file;
 pub mod settings;
 pub mod state;
 pub mod tabs;
+pub mod vfs_panel;
 pub mod window;
 
 #[cfg(not(target_arch = "wasm32"))]
