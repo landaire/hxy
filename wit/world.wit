@@ -60,3 +60,149 @@ world plugin {
     import source;
     export handler;
 }
+
+/// Template language runtimes (010 Editor .bt, ImHex .hexpat, etc.).
+/// A single runtime handles one language; each template source string
+/// is parsed once into a `parsed-template` resource and walked against
+/// the imported `source`. Large arrays are returned as `deferred-array`
+/// nodes and expanded lazily via `expand-array` to avoid building
+/// million-element trees up front.
+interface template {
+    /// Byte range this node occupies in the data source.
+    record span {
+        offset: u64,
+        length: u64,
+    }
+
+    /// Leaf node value. Integers chosen rather than a generic `bytes`
+    /// because the common case is a scalar field and we want to be
+    /// able to format it correctly downstream.
+    variant value {
+        u8-val(u8),
+        u16-val(u16),
+        u32-val(u32),
+        u64-val(u64),
+        s8-val(s8),
+        s16-val(s16),
+        s32-val(s32),
+        s64-val(s64),
+        f32-val(f32),
+        f64-val(f64),
+        bytes-val(list<u8>),
+        string-val(string),
+        /// Name + numeric value, e.g. `COMP_DEFLATE` / `8`.
+        enum-val(tuple<string, u64>),
+    }
+
+    /// UI rendering hint the runtime can attach to a node. The host
+    /// picks a concrete presentation (hex vs decimal view, ASCII
+    /// interpretation, etc.).
+    enum display-hint {
+        hex,
+        decimal,
+        binary,
+        ascii,
+        timestamp,
+        color,
+    }
+
+    /// Arguments the host can pass at execute-time, e.g. user-supplied
+    /// endianness or a "start offset" variable.
+    variant arg-value {
+        boolean-arg(bool),
+        integer-arg(s64),
+        unsigned-arg(u64),
+        float-arg(f64),
+        text-arg(string),
+    }
+
+    record arg {
+        name: string,
+        value: arg-value,
+    }
+
+    /// Lazy array reference. The runtime returns one of these in place
+    /// of a materialised child list when an array would be too large
+    /// to eagerly emit. The host calls `expand-array` with `id` to
+    /// materialise a sub-range when the user drills in.
+    record deferred-array {
+        id: u64,
+        element-type: string,
+        count: u64,
+        /// Bytes per element, if fixed. Zero means "not uniform" and
+        /// disables stride-based seeking in the UI.
+        stride: u64,
+        first-offset: u64,
+    }
+
+    /// One node in a flat, pre-order node list. Parent/child links
+    /// are encoded as indexes into the same list (WIT can't express
+    /// recursive record types directly). Element 0 of the list is the
+    /// root; its `parent` is `none`.
+    record node {
+        name: string,
+        type-name: string,
+        span: span,
+        value: option<value>,
+        /// Index of this node's parent within the same flat list.
+        /// `none` for the root (and for virtual "top-level" nodes
+        /// returned from `expand-array`, which the host splices in
+        /// under the deferred array).
+        parent: option<u32>,
+        array: option<deferred-array>,
+        display: option<display-hint>,
+    }
+
+    enum severity {
+        error,
+        warning,
+        info,
+    }
+
+    record diagnostic {
+        message: string,
+        severity: severity,
+        /// Byte offset in the data source the diagnostic refers to.
+        file-offset: option<u64>,
+        /// 1-based line in the template source.
+        template-line: option<u32>,
+    }
+
+    /// Result of a template run. `nodes[0]` is the root when a tree
+    /// was produced; the list may be empty only on catastrophic
+    /// failure where no tree could be built. Partial trees + error
+    /// diagnostics are the normal failure mode.
+    record result-tree {
+        nodes: list<node>,
+        diagnostics: list<diagnostic>,
+    }
+
+    /// Parsed template — holds the AST / bytecode / whatever internal
+    /// form the runtime uses so repeat executes and array expansions
+    /// don't re-parse.
+    resource parsed-template {
+        constructor(source: string);
+
+        /// Walk the template against the imported `source`. Safe to
+        /// call multiple times; each call produces a fresh tree.
+        execute: func(args: list<arg>) -> result-tree;
+
+        /// Materialise elements `[start, end)` of a deferred array.
+        expand-array: func(array-id: u64, start: u64, end: u64) -> result<list<node>, diagnostic>;
+    }
+
+    /// Short human-readable identifier for logs / UI.
+    name: func() -> string;
+
+    /// File extensions this runtime claims (without the dot:
+    /// `"bt"`, `"hexpat"`). The host uses this to route template
+    /// files to a runtime.
+    extensions: func() -> list<string>;
+}
+
+/// Template-runtime world. Reuses the same `source` import as the
+/// handler world so runtimes can stream bytes lazily.
+world template-runtime {
+    import source;
+    export template;
+}

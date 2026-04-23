@@ -9,7 +9,7 @@ use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
 
-use crate::bindings::hxy::vfs::source::Host as SourceHost;
+use crate::bindings::handler_world::hxy::vfs::source::Host as SourceHost;
 
 pub struct HostState {
     pub source: Arc<dyn HexSource>,

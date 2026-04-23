@@ -11,11 +11,11 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hxy_plugin_api::FileType;
-use hxy_plugin_api::Guest;
-use hxy_plugin_api::GuestMount;
-use hxy_plugin_api::Metadata;
-use hxy_plugin_api::source;
+use hxy_plugin_api::handler::FileType;
+use hxy_plugin_api::handler::Guest;
+use hxy_plugin_api::handler::GuestMount;
+use hxy_plugin_api::handler::Metadata;
+use hxy_plugin_api::handler::source;
 
 struct Plugin;
 
@@ -30,8 +30,8 @@ impl Guest for Plugin {
         "passthrough".to_string()
     }
 
-    fn mount_source() -> Result<hxy_plugin_api::exports::hxy::vfs::handler::Mount, String> {
-        Ok(hxy_plugin_api::exports::hxy::vfs::handler::Mount::new(Mount))
+    fn mount_source() -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
+        Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(Mount))
     }
 }
 
@@ -61,4 +61,4 @@ impl GuestMount for Mount {
     }
 }
 
-hxy_plugin_api::export_plugin!(Plugin with_types_in hxy_plugin_api);
+hxy_plugin_api::handler::export_handler!(Plugin with_types_in hxy_plugin_api::handler);

@@ -11,9 +11,11 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 
-use crate::bindings::Plugin;
+use crate::bindings::handler_world::Plugin;
+use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::handler::PluginHandler;
 use crate::host::HostState;
+use crate::template::TemplateRuntime;
 
 #[derive(Debug, Error)]
 pub enum PluginLoadError {
@@ -89,5 +91,51 @@ fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> 
     let component =
         Component::new(engine, &bytes).map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
     PluginHandler::new(engine.clone(), component, linker)
+        .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
+}
+
+/// Load every `*.wasm` component in `dir` that implements the
+/// `template-runtime` world. Components that don't match the world
+/// are reported as errors rather than silently skipped — the caller
+/// should split template and handler plugin directories.
+pub fn load_template_runtimes_from_dir(dir: &Path) -> Result<Vec<TemplateRuntime>, PluginLoadError> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
+
+    let mut linker: Linker<HostState> = Linker::new(&engine);
+    WitTemplateRuntime::add_to_linker::<_, wasmtime::component::HasSelf<_>>(&mut linker, |s: &mut HostState| s)
+        .map_err(PluginLoadError::Engine)?;
+    let linker = Arc::new(linker);
+
+    let read_dir = std::fs::read_dir(dir)
+        .map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
+
+    let mut runtimes = Vec::new();
+    for entry in read_dir {
+        let entry = entry.map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("wasm") {
+            continue;
+        }
+        let runtime = load_template_single(&engine, linker.clone(), &path)?;
+        runtimes.push(runtime);
+    }
+    Ok(runtimes)
+}
+
+fn load_template_single(
+    engine: &Engine,
+    linker: Arc<Linker<HostState>>,
+    path: &Path,
+) -> Result<TemplateRuntime, PluginLoadError> {
+    let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
+    let component =
+        Component::new(engine, &bytes).map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
+    TemplateRuntime::new(engine.clone(), component, linker)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }

@@ -15,7 +15,7 @@ use vfs::VfsMetadata;
 use vfs::VfsResult;
 use vfs::error::VfsErrorKind;
 
-use crate::bindings::exports::hxy::vfs::handler::FileType as WitFileType;
+use crate::bindings::handler_world::exports::hxy::vfs::handler::FileType as WitFileType;
 use crate::handler::PluginFileSystem;
 
 impl fmt::Debug for PluginFileSystem {

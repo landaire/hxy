@@ -18,7 +18,7 @@ use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceAny;
 
-use crate::bindings::Plugin;
+use crate::bindings::handler_world::Plugin;
 use crate::host::HostState;
 
 pub struct PluginHandler {
