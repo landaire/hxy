@@ -9,6 +9,7 @@ use egui_dock::Style;
 use egui_dock::TabViewer;
 use egui_dock::tab_viewer::OnCloseResponse;
 use hxy_vfs::TabSource;
+use hxy_vfs::VfsHandler;
 use hxy_vfs::VfsRegistry;
 use hxy_vfs::handlers::ZipHandler;
 use hxy_view::HexView;
@@ -55,6 +56,7 @@ impl HxyApp {
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
+        register_user_plugins(&mut registry);
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
@@ -700,6 +702,29 @@ fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Res
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn register_user_plugins(registry: &mut VfsRegistry) {
+    let Some(dir) = user_plugins_dir() else { return };
+    match hxy_plugin_host::load_plugins_from_dir(&dir) {
+        Ok(handlers) => {
+            for h in handlers {
+                tracing::info!(name = h.name(), "loaded wasm plugin");
+                registry.register(Arc::new(h));
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load plugins"),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn register_user_plugins(_registry: &mut VfsRegistry) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn user_plugins_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::config_dir()?;
+    Some(base.join(APP_NAME).join("plugins"))
 }
 
 fn install_fonts(ctx: &egui::Context) {
