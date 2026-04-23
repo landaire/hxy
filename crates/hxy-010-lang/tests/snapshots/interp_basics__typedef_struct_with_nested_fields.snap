@@ -1,0 +1,79 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [
+        NodeOut {
+            name: "header",
+            type_name: "HEADER",
+            offset: 0,
+            length: 7,
+            value: None,
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "version",
+            type_name: "uchar",
+            offset: 0,
+            length: 1,
+            value: Some(
+                Char {
+                    value: 1,
+                    kind: PrimKind {
+                        class: Char,
+                        width: 1,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: Some(
+                0,
+            ),
+            attrs: [],
+        },
+        NodeOut {
+            name: "flags",
+            type_name: "ushort",
+            offset: 1,
+            length: 2,
+            value: Some(
+                UInt {
+                    value: 2,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 2,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: Some(
+                0,
+            ),
+            attrs: [],
+        },
+        NodeOut {
+            name: "crc",
+            type_name: "uint32",
+            offset: 3,
+            length: 4,
+            value: Some(
+                UInt {
+                    value: 3735928559,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 4,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: Some(
+                0,
+            ),
+            attrs: [],
+        },
+    ],
+    diagnostics: [],
+    return_value: None,
+}

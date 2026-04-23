@@ -1,0 +1,64 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [
+        NodeOut {
+            name: "b",
+            type_name: "uchar",
+            offset: 0,
+            length: 1,
+            value: Some(
+                Char {
+                    value: 17,
+                    kind: PrimKind {
+                        class: Char,
+                        width: 1,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "b",
+            type_name: "uchar",
+            offset: 1,
+            length: 1,
+            value: Some(
+                Char {
+                    value: 34,
+                    kind: PrimKind {
+                        class: Char,
+                        width: 1,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "b",
+            type_name: "uchar",
+            offset: 2,
+            length: 1,
+            value: Some(
+                Char {
+                    value: 51,
+                    kind: PrimKind {
+                        class: Char,
+                        width: 1,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+    ],
+    diagnostics: [],
+    return_value: None,
+}

@@ -1,0 +1,64 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [
+        NodeOut {
+            name: "magic",
+            type_name: "uchar",
+            offset: 0,
+            length: 1,
+            value: Some(
+                Char {
+                    value: 171,
+                    kind: PrimKind {
+                        class: Char,
+                        width: 1,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "size",
+            type_name: "uint32",
+            offset: 1,
+            length: 4,
+            value: Some(
+                UInt {
+                    value: 16909060,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 4,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "offset",
+            type_name: "uint64",
+            offset: 5,
+            length: 8,
+            value: Some(
+                UInt {
+                    value: 723685415333072913,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 8,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
+        },
+    ],
+    diagnostics: [],
+    return_value: None,
+}

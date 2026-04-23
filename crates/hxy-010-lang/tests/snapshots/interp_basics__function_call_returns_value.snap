@@ -1,0 +1,9 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [],
+    diagnostics: [],
+    return_value: None,
+}

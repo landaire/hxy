@@ -1,0 +1,23 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [
+        NodeOut {
+            name: "greeting",
+            type_name: "char[5]",
+            offset: 0,
+            length: 5,
+            value: Some(
+                Str(
+                    "hello",
+                ),
+            ),
+            parent: None,
+            attrs: [],
+        },
+    ],
+    diagnostics: [],
+    return_value: None,
+}

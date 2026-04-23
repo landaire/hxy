@@ -1,0 +1,18 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [],
+    diagnostics: [
+        Diagnostic {
+            message: "oh no",
+            severity: Warning,
+            file_offset: Some(
+                0,
+            ),
+            template_line: None,
+        },
+    ],
+    return_value: None,
+}

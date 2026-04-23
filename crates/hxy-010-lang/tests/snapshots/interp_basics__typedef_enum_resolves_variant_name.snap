@@ -1,0 +1,23 @@
+---
+source: crates/hxy-010-lang/tests/interp_basics.rs
+expression: result
+---
+RunResult {
+    nodes: [
+        NodeOut {
+            name: "which",
+            type_name: "KIND",
+            offset: 0,
+            length: 1,
+            value: Some(
+                Str(
+                    "KIND_BAR",
+                ),
+            ),
+            parent: None,
+            attrs: [],
+        },
+    ],
+    diagnostics: [],
+    return_value: None,
+}
