@@ -41,6 +41,7 @@ welcome-recent-empty = No recent files yet.
 
 toolbar-open-file = Open file…
 toolbar-browse-archive = Browse archive
+toolbar-run-template = Run template…
 settings-offset-base = Offset base
 
 # Errors

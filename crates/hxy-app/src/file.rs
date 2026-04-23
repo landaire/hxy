@@ -55,6 +55,24 @@ pub struct OpenFile {
     /// meaningful when `mount` is `Some`. Starts true on mount; the
     /// user can hide the panel via its close button.
     pub show_vfs_tree: bool,
+    /// Template run state for this tab, if the user has applied a
+    /// template. `None` until the first successful run.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub template: Option<TemplateState>,
+}
+
+/// Result of applying a template-language runtime to the tab's byte
+/// source. Holds the parsed template (so deferred arrays can be
+/// expanded lazily) and the current tree view state.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TemplateState {
+    pub parsed: std::sync::Arc<hxy_plugin_host::ParsedTemplate>,
+    pub tree: hxy_plugin_host::ResultTree,
+    /// Show the panel in the file tab. User can toggle via the tree
+    /// panel's close button.
+    pub show_panel: bool,
+    /// `array_id` -> materialised children, by order of expansion.
+    pub expanded_arrays: std::collections::HashMap<u64, Vec<hxy_plugin_host::Node>>,
 }
 
 impl OpenFile {
@@ -78,6 +96,8 @@ impl OpenFile {
             detected_handler: None,
             mount: None,
             show_vfs_tree: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            template: None,
         }
     }
 

@@ -29,6 +29,7 @@ pub enum CommandEffect {
     OpenFileDialog,
     MountActiveFile,
     OpenRecent(std::path::PathBuf),
+    RunTemplateDialog,
 }
 
 /// Button in the global toolbar. Commands are registered once at
@@ -108,7 +109,34 @@ impl ToolbarCommand for BrowseArchiveCommand {
     }
 }
 
+/// Built-in command: run a template (`.bt`, `.hexpat`, ...) against the
+/// active file. Opens a file picker; the extension routes the template
+/// to the matching runtime.
+pub struct RunTemplateCommand;
+
+impl ToolbarCommand for RunTemplateCommand {
+    fn id(&self) -> &'static str {
+        "run-template"
+    }
+
+    fn label(&self, _: &ToolbarCtx<'_, '_>) -> String {
+        hxy_i18n::t("toolbar-run-template")
+    }
+
+    fn icon(&self) -> &'static str {
+        egui_phosphor::regular::SCROLL
+    }
+
+    fn enabled(&self, cx: &ToolbarCtx<'_, '_>) -> bool {
+        cx.active_file.is_some()
+    }
+
+    fn invoke(&self, cx: &mut ToolbarCtx<'_, '_>) {
+        cx.effects.push(CommandEffect::RunTemplateDialog);
+    }
+}
+
 /// Default command list registered at app startup.
 pub fn default_commands() -> Vec<Box<dyn ToolbarCommand>> {
-    vec![Box::new(OpenFileCommand), Box::new(BrowseArchiveCommand)]
+    vec![Box::new(OpenFileCommand), Box::new(BrowseArchiveCommand), Box::new(RunTemplateCommand)]
 }

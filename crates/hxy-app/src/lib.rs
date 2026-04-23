@@ -12,6 +12,9 @@ pub mod vfs_panel;
 pub mod window;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod template_panel;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 
 #[cfg(target_arch = "wasm32")]

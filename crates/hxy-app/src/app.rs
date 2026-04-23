@@ -28,6 +28,8 @@ pub struct HxyApp {
     state: SharedPersistedState,
     next_file_id: u64,
     registry: VfsRegistry,
+    #[cfg(not(target_arch = "wasm32"))]
+    template_runtimes: Vec<Arc<hxy_plugin_host::TemplateRuntime>>,
     commands: Vec<Box<dyn crate::commands::ToolbarCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -57,12 +59,16 @@ impl HxyApp {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
         register_user_plugins(&mut registry);
+        #[cfg(not(target_arch = "wasm32"))]
+        let template_runtimes = load_user_template_runtimes();
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
             state,
             next_file_id: 1,
             registry,
+            #[cfg(not(target_arch = "wasm32"))]
+            template_runtimes,
             commands: crate::commands::default_commands(),
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
@@ -70,6 +76,14 @@ impl HxyApp {
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<hxy_plugin_host::TemplateRuntime>> {
+        self.template_runtimes
+            .iter()
+            .find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension)))
+            .cloned()
     }
 
     pub fn registry(&self) -> &VfsRegistry {
@@ -532,6 +546,10 @@ fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::c
     match effect {
         CommandEffect::OpenFileDialog => handle_open_file(app),
         CommandEffect::MountActiveFile => mount_active_file(app),
+        CommandEffect::RunTemplateDialog => {
+            #[cfg(not(target_arch = "wasm32"))]
+            run_template_dialog(app);
+        }
         CommandEffect::OpenRecent(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             match std::fs::read(&path) {
@@ -553,6 +571,35 @@ fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::c
 /// Invoke the active tab's detected handler to mount its source into a
 /// browsable VFS. On success, the tree panel picks it up automatically
 /// because it reads `file.mount`.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_template_dialog(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(path) = rfd::FileDialog::new().pick_file() else { return };
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
+    let Some(runtime) = app.template_runtime_for(&ext) else {
+        tracing::warn!(ext = %ext, "no template runtime registered for extension");
+        return;
+    };
+    let template_source = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "read template source");
+            return;
+        }
+    };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    match runtime.parse(file.source.clone(), &template_source) {
+        Ok(parsed) => {
+            let parsed = Arc::new(parsed);
+            match crate::template_panel::new_state(parsed) {
+                Ok(state) => file.template = Some(state),
+                Err(e) => tracing::warn!(error = %e, "execute template"),
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, path = %path.display(), "parse template"),
+    }
+}
+
 fn mount_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -617,6 +664,9 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
             });
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    render_template_panel(ui, id, file);
+
     let copy_request = egui::CentralPanel::default()
         .frame(egui::Frame::new())
         .show_inside(ui, |ui| render_hex_body(ui, file, state))
@@ -635,6 +685,30 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
     if new_base != settings_base {
         state.app.offset_base = new_base;
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
+    let show = file.template.as_ref().is_some_and(|t| t.show_panel);
+    if !show {
+        return;
+    }
+    egui::Panel::right(egui::Id::new(("hxy-template-panel", id.get())))
+        .resizable(true)
+        .default_size(260.0)
+        .min_size(180.0)
+        .show_inside(ui, |ui| {
+            let Some(state) = file.template.as_mut() else { return };
+            let events = crate::template_panel::show(ui, id.get(), state);
+            for e in events {
+                match e {
+                    crate::template_panel::TemplateEvent::Close => state.show_panel = false,
+                    crate::template_panel::TemplateEvent::ExpandArray { array_id, count } => {
+                        crate::template_panel::expand_array(state, array_id, count);
+                    }
+                }
+            }
+        });
 }
 
 fn render_tree_panel_header(ui: &mut egui::Ui, show: &mut bool) {
@@ -725,6 +799,32 @@ fn register_user_plugins(_registry: &mut VfsRegistry) {}
 fn user_plugins_dir() -> Option<std::path::PathBuf> {
     let base = dirs::config_dir()?;
     Some(base.join(APP_NAME).join("plugins"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn user_template_runtimes_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::config_dir()?;
+    Some(base.join(APP_NAME).join("template-runtimes"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_user_template_runtimes() -> Vec<Arc<hxy_plugin_host::TemplateRuntime>> {
+    let Some(dir) = user_template_runtimes_dir() else { return Vec::new() };
+    match hxy_plugin_host::load_template_runtimes_from_dir(&dir) {
+        Ok(runtimes) => {
+            runtimes
+                .into_iter()
+                .map(|r| {
+                    tracing::info!(name = r.name(), exts = ?r.extensions(), "loaded template runtime");
+                    Arc::new(r)
+                })
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %dir.display(), "load template runtimes");
+            Vec::new()
+        }
+    }
 }
 
 fn install_fonts(ctx: &egui::Context) {
