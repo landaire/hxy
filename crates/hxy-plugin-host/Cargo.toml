@@ -1,0 +1,17 @@
+[package]
+name = "hxy-plugin-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+hxy-core = { workspace = true }
+hxy-vfs = { workspace = true }
+thiserror = "2.0.18"
+tracing = "0.1.44"
+vfs = "0.13.0"
+wasmtime = { version = "44", features = ["component-model", "runtime", "cranelift"] }
+wasmtime-wasi = "44"

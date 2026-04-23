@@ -1,0 +1,62 @@
+package hxy:vfs@0.1.0;
+
+/// Host-provided view of the byte source the plugin is mounting.
+/// Plugins call back into this to read arbitrary ranges without
+/// loading the whole file into memory.
+interface source {
+    /// Total length of the source in bytes.
+    len: func() -> u64;
+
+    /// Read `length` bytes starting at `offset`. Reads that extend past
+    /// the end return the truncated prefix. Returns a string error on
+    /// I/O failure from the host.
+    read: func(offset: u64, length: u64) -> result<list<u8>, string>;
+}
+
+/// Format-handler API that plugins export. Detection is stateless;
+/// mounting produces a long-lived `mount` resource whose methods the
+/// host invokes to enumerate and read entries. While a `mount` is live
+/// the host keeps the originating source alive and accessible via the
+/// imported `source` interface.
+interface handler {
+    enum file-type {
+        regular-file,
+        directory,
+    }
+
+    record metadata {
+        file-type: file-type,
+        length: u64,
+    }
+
+    resource mount {
+        /// List direct children of `path`. Paths are `/`-separated and
+        /// rooted at `/`.
+        read-dir: func(path: string) -> result<list<string>, string>;
+
+        /// Metadata for `path`.
+        metadata: func(path: string) -> result<metadata, string>;
+
+        /// Full contents of the file at `path`.
+        read-file: func(path: string) -> result<list<u8>, string>;
+    }
+
+    /// Sniff the first bytes of a source and report whether this
+    /// handler can mount it. Called once per open; receives up to 4 KiB.
+    matches: func(head: list<u8>) -> bool;
+
+    /// Short, human-readable identifier for logs.
+    name: func() -> string;
+
+    /// Parse the imported `source` and return a live mount. The plugin
+    /// may call `source.read` any number of times during and after this
+    /// call; the host keeps the source alive for the mount's lifetime.
+    mount-source: func() -> result<mount, string>;
+}
+
+/// Plugin world: exports the handler interface, imports the source
+/// interface it reads from.
+world plugin {
+    import source;
+    export handler;
+}
