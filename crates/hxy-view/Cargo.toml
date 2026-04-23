@@ -9,4 +9,5 @@ repository.workspace = true
 description = "Reusable egui hex-view widget"
 
 [dependencies]
+egui = "0.34.1"
 hxy-core = { workspace = true }
