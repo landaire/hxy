@@ -3,16 +3,44 @@ source: crates/hxy-010-lang/tests/interp_basics.rs
 expression: result
 ---
 RunResult {
-    nodes: [],
-    diagnostics: [
-        Diagnostic {
-            message: "unknown type `uint16`",
-            severity: Error,
-            file_offset: Some(
-                0,
+    nodes: [
+        NodeOut {
+            name: "a",
+            type_name: "uint16",
+            offset: 0,
+            length: 2,
+            value: Some(
+                UInt {
+                    value: 4660,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 2,
+                        signed: false,
+                    },
+                },
             ),
-            template_line: None,
+            parent: None,
+            attrs: [],
+        },
+        NodeOut {
+            name: "b",
+            type_name: "uint32",
+            offset: 2,
+            length: 4,
+            value: Some(
+                UInt {
+                    value: 3735928559,
+                    kind: PrimKind {
+                        class: Int,
+                        width: 4,
+                        signed: false,
+                    },
+                },
+            ),
+            parent: None,
+            attrs: [],
         },
     ],
+    diagnostics: [],
     return_value: None,
 }

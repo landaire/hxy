@@ -193,6 +193,8 @@ impl<S: HexSource> Interpreter<S> {
             ("UBYTE", P::u8()),
             ("short", P::i16()),
             ("ushort", P::u16()),
+            ("int16", P::i16()),
+            ("uint16", P::u16()),
             ("SHORT", P::i16()),
             ("USHORT", P::u16()),
             ("WORD", P::u16()),

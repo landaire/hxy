@@ -1,0 +1,22 @@
+[package]
+name = "hxy-bt-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+description = "Template-runtime plugin for 010 Editor .bt files."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
+hxy-010-lang = { path = "../../crates/hxy-010-lang" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace]
