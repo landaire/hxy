@@ -1,0 +1,2047 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "LittleEndian",
+                        span: Span {
+                            start: 286,
+                            end: 298,
+                        },
+                    },
+                    args: [],
+                    span: Span {
+                        start: 286,
+                        end: 300,
+                    },
+                },
+                span: Span {
+                    start: 286,
+                    end: 301,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "Header",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 324,
+                                    end: 330,
+                                },
+                            },
+                            name: "magic",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 324,
+                                end: 337,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 342,
+                                    end: 348,
+                                },
+                            },
+                            name: "version",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 342,
+                                end: 357,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 362,
+                                    end: 368,
+                                },
+                            },
+                            name: "checksum",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 362,
+                                end: 378,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint16",
+                                span: Span {
+                                    start: 383,
+                                    end: 389,
+                                },
+                            },
+                            name: "architecture_bit",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 383,
+                                end: 407,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint16",
+                                span: Span {
+                                    start: 412,
+                                    end: 418,
+                                },
+                            },
+                            name: "endianness",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 412,
+                                end: 430,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 303,
+                        end: 440,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "DatabaseInfo",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 463,
+                                    end: 469,
+                                },
+                            },
+                            name: "count",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 463,
+                                end: 476,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 531,
+                                    end: 537,
+                                },
+                            },
+                            name: "ptr",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 531,
+                                end: 542,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 442,
+                        end: 559,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "Header",
+                    span: Span {
+                        start: 561,
+                        end: 567,
+                    },
+                },
+                name: "header",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 561,
+                    end: 575,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "int64",
+                    span: Span {
+                        start: 583,
+                        end: 588,
+                    },
+                },
+                name: "resource_off",
+                array_size: None,
+                init: Some(
+                    Call {
+                        callee: Ident {
+                            name: "FTell",
+                            span: Span {
+                                start: 604,
+                                end: 609,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 604,
+                            end: 611,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 577,
+                    end: 612,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "idk",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 632,
+                                    end: 638,
+                                },
+                            },
+                            name: "a",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 632,
+                                end: 641,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 642,
+                                    end: 648,
+                                },
+                            },
+                            name: "b",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 642,
+                                end: 651,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 615,
+                        end: 658,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "DatabaseInfo",
+                    span: Span {
+                        start: 660,
+                        end: 672,
+                    },
+                },
+                name: "db",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 660,
+                    end: 676,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 678,
+                        end: 684,
+                    },
+                },
+                name: "values_ptr",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 678,
+                    end: 696,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 697,
+                        end: 703,
+                    },
+                },
+                name: "string_table_size",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 697,
+                    end: 722,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 723,
+                        end: 729,
+                    },
+                },
+                name: "strings_ptr",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 723,
+                    end: 742,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "int64",
+                    span: Span {
+                        start: 750,
+                        end: 755,
+                    },
+                },
+                name: "unk_offset",
+                array_size: None,
+                init: Some(
+                    Call {
+                        callee: Ident {
+                            name: "FTell",
+                            span: Span {
+                                start: 769,
+                                end: 774,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 769,
+                            end: 776,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 744,
+                    end: 777,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 824,
+                        end: 830,
+                    },
+                },
+                name: "some_count",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 824,
+                    end: 842,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 843,
+                        end: 849,
+                    },
+                },
+                name: "some_ptr",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 843,
+                    end: 859,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 893,
+                        end: 899,
+                    },
+                },
+                name: "unk_ptr",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 893,
+                    end: 908,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "int64",
+                    span: Span {
+                        start: 916,
+                        end: 921,
+                    },
+                },
+                name: "model_table_offset",
+                array_size: None,
+                init: Some(
+                    Call {
+                        callee: Ident {
+                            name: "FTell",
+                            span: Span {
+                                start: 943,
+                                end: 948,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 943,
+                            end: 950,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 910,
+                    end: 951,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 952,
+                        end: 958,
+                    },
+                },
+                name: "model_count",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 952,
+                    end: 971,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 972,
+                        end: 978,
+                    },
+                },
+                name: "models_offset",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 972,
+                    end: 993,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 995,
+                        end: 1001,
+                    },
+                },
+                name: "databases_count",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 995,
+                    end: 1018,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint64",
+                    span: Span {
+                        start: 1019,
+                        end: 1025,
+                    },
+                },
+                name: "databases_ptr",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1019,
+                    end: 1040,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 1042,
+                            end: 1047,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "model_table_offset",
+                                span: Span {
+                                    start: 1048,
+                                    end: 1066,
+                                },
+                            },
+                            rhs: Ident {
+                                name: "models_offset",
+                                span: Span {
+                                    start: 1069,
+                                    end: 1082,
+                                },
+                            },
+                            span: Span {
+                                start: 1048,
+                                end: 1082,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1042,
+                        end: 1083,
+                    },
+                },
+                span: Span {
+                    start: 1042,
+                    end: 1084,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "model_metadata",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 1122,
+                                    end: 1128,
+                                },
+                            },
+                            name: "self_id",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1122,
+                                end: 1137,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 1142,
+                                    end: 1148,
+                                },
+                            },
+                            name: "parent_id",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1142,
+                                end: 1159,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 1206,
+                                    end: 1211,
+                                },
+                            },
+                            name: "name_offset",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 1226,
+                                            end: 1231,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 1226,
+                                        end: 1233,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1200,
+                                end: 1234,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 1239,
+                                    end: 1245,
+                                },
+                            },
+                            name: "size",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1239,
+                                end: 1251,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 1256,
+                                    end: 1262,
+                                },
+                            },
+                            name: "offset",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1256,
+                                end: 1270,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 1281,
+                                    end: 1286,
+                                },
+                            },
+                            name: "after_offset_offset",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 1309,
+                                            end: 1314,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 1309,
+                                        end: 1316,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1275,
+                                end: 1317,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 1323,
+                                        end: 1328,
+                                    },
+                                },
+                                args: [
+                                    Binary {
+                                        op: Add,
+                                        lhs: Ident {
+                                            name: "name_offset",
+                                            span: Span {
+                                                start: 1329,
+                                                end: 1340,
+                                            },
+                                        },
+                                        rhs: Ident {
+                                            name: "offset",
+                                            span: Span {
+                                                start: 1343,
+                                                end: 1349,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 1329,
+                                            end: 1349,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1323,
+                                    end: 1350,
+                                },
+                            },
+                            span: Span {
+                                start: 1323,
+                                end: 1351,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "string",
+                                span: Span {
+                                    start: 1356,
+                                    end: 1362,
+                                },
+                            },
+                            name: "name",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1356,
+                                end: 1368,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 1373,
+                                        end: 1378,
+                                    },
+                                },
+                                args: [
+                                    Ident {
+                                        name: "after_offset_offset",
+                                        span: Span {
+                                            start: 1379,
+                                            end: 1398,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1373,
+                                    end: 1399,
+                                },
+                            },
+                            span: Span {
+                                start: 1373,
+                                end: 1400,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 1086,
+                        end: 1403,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "model_metadata",
+                    span: Span {
+                        start: 1405,
+                        end: 1419,
+                    },
+                },
+                name: "model_metadatas",
+                array_size: Some(
+                    Ident {
+                        name: "model_count",
+                        span: Span {
+                            start: 1436,
+                            end: 1447,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1405,
+                    end: 1449,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 1451,
+                            end: 1456,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "unk_offset",
+                                span: Span {
+                                    start: 1457,
+                                    end: 1467,
+                                },
+                            },
+                            rhs: Ident {
+                                name: "some_ptr",
+                                span: Span {
+                                    start: 1470,
+                                    end: 1478,
+                                },
+                            },
+                            span: Span {
+                                start: 1457,
+                                end: 1478,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1451,
+                        end: 1479,
+                    },
+                },
+                span: Span {
+                    start: 1451,
+                    end: 1480,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "idk2",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 1507,
+                                    end: 1513,
+                                },
+                            },
+                            name: "id",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1507,
+                                end: 1517,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 1522,
+                                    end: 1528,
+                                },
+                            },
+                            name: "unk",
+                            array_size: Some(
+                                IntLit {
+                                    value: 2,
+                                    span: Span {
+                                        start: 1533,
+                                        end: 1534,
+                                    },
+                                },
+                            ),
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1522,
+                                end: 1536,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 1481,
+                        end: 1539,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "idk2",
+                    span: Span {
+                        start: 1541,
+                        end: 1545,
+                    },
+                },
+                name: "some_things",
+                array_size: Some(
+                    Ident {
+                        name: "some_count",
+                        span: Span {
+                            start: 1558,
+                            end: 1568,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1541,
+                    end: 1570,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 1572,
+                            end: 1577,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "resource_off",
+                                span: Span {
+                                    start: 1578,
+                                    end: 1590,
+                                },
+                            },
+                            rhs: Member {
+                                target: Ident {
+                                    name: "db",
+                                    span: Span {
+                                        start: 1593,
+                                        end: 1595,
+                                    },
+                                },
+                                field: "ptr",
+                                span: Span {
+                                    start: 1593,
+                                    end: 1599,
+                                },
+                            },
+                            span: Span {
+                                start: 1578,
+                                end: 1599,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1572,
+                        end: 1600,
+                    },
+                },
+                span: Span {
+                    start: 1572,
+                    end: 1601,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "idk",
+                    span: Span {
+                        start: 1602,
+                        end: 1605,
+                    },
+                },
+                name: "who_knows",
+                array_size: Some(
+                    Member {
+                        target: Ident {
+                            name: "db",
+                            span: Span {
+                                start: 1616,
+                                end: 1618,
+                            },
+                        },
+                        field: "count",
+                        span: Span {
+                            start: 1616,
+                            end: 1624,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1602,
+                    end: 1626,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 1628,
+                            end: 1633,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "unk_offset",
+                                span: Span {
+                                    start: 1634,
+                                    end: 1644,
+                                },
+                            },
+                            rhs: Ident {
+                                name: "unk_ptr",
+                                span: Span {
+                                    start: 1647,
+                                    end: 1654,
+                                },
+                            },
+                            span: Span {
+                                start: 1634,
+                                end: 1654,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1628,
+                        end: 1655,
+                    },
+                },
+                span: Span {
+                    start: 1628,
+                    end: 1656,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "uint32",
+                    span: Span {
+                        start: 1674,
+                        end: 1680,
+                    },
+                },
+                name: "unk_data",
+                array_size: Some(
+                    Ident {
+                        name: "some_count",
+                        span: Span {
+                            start: 1690,
+                            end: 1700,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1674,
+                    end: 1702,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 1704,
+                            end: 1709,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "resource_off",
+                                span: Span {
+                                    start: 1710,
+                                    end: 1722,
+                                },
+                            },
+                            rhs: Ident {
+                                name: "values_ptr",
+                                span: Span {
+                                    start: 1725,
+                                    end: 1735,
+                                },
+                            },
+                            span: Span {
+                                start: 1710,
+                                end: 1735,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1704,
+                        end: 1736,
+                    },
+                },
+                span: Span {
+                    start: 1704,
+                    end: 1737,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "dependency",
+                    body: [
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 1761,
+                                    end: 1766,
+                                },
+                            },
+                            name: "start",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 1775,
+                                            end: 1780,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 1775,
+                                        end: 1782,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1755,
+                                end: 1783,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 1788,
+                                    end: 1794,
+                                },
+                            },
+                            name: "string_table_offset",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1788,
+                                end: 1815,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 1822,
+                                    end: 1827,
+                                },
+                            },
+                            name: "reset",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 1836,
+                                            end: 1841,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 1836,
+                                        end: 1843,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1816,
+                                end: 1844,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 1845,
+                                        end: 1850,
+                                    },
+                                },
+                                args: [
+                                    Binary {
+                                        op: Add,
+                                        lhs: Binary {
+                                            op: Add,
+                                            lhs: Ident {
+                                                name: "resource_off",
+                                                span: Span {
+                                                    start: 1851,
+                                                    end: 1863,
+                                                },
+                                            },
+                                            rhs: Ident {
+                                                name: "strings_ptr",
+                                                span: Span {
+                                                    start: 1866,
+                                                    end: 1877,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 1851,
+                                                end: 1877,
+                                            },
+                                        },
+                                        rhs: Ident {
+                                            name: "string_table_offset",
+                                            span: Span {
+                                                start: 1880,
+                                                end: 1899,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 1851,
+                                            end: 1899,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1845,
+                                    end: 1900,
+                                },
+                            },
+                            span: Span {
+                                start: 1845,
+                                end: 1901,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "string",
+                                span: Span {
+                                    start: 1906,
+                                    end: 1912,
+                                },
+                            },
+                            name: "name",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1906,
+                                end: 1918,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 1919,
+                                        end: 1924,
+                                    },
+                                },
+                                args: [
+                                    Ident {
+                                        name: "reset",
+                                        span: Span {
+                                            start: 1925,
+                                            end: 1930,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1919,
+                                    end: 1931,
+                                },
+                            },
+                            span: Span {
+                                start: 1919,
+                                end: 1932,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 1738,
+                        end: 1946,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "dependency",
+                    span: Span {
+                        start: 1947,
+                        end: 1957,
+                    },
+                },
+                name: "dependencies",
+                array_size: Some(
+                    Member {
+                        target: Ident {
+                            name: "db",
+                            span: Span {
+                                start: 1971,
+                                end: 1973,
+                            },
+                        },
+                        field: "count",
+                        span: Span {
+                            start: 1971,
+                            end: 1979,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [
+                        Attr {
+                            key: "optimize",
+                            value: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 1991,
+                                    end: 1996,
+                                },
+                            },
+                            span: Span {
+                                start: 1982,
+                                end: 1996,
+                            },
+                        },
+                    ],
+                ),
+                span: Span {
+                    start: 1947,
+                    end: 1998,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "skeleton_prototype",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 2021,
+                                    end: 2027,
+                                },
+                            },
+                            name: "count",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2021,
+                                end: 2034,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 2039,
+                                    end: 2045,
+                                },
+                            },
+                            name: "unk",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2039,
+                                end: 2050,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 2055,
+                                    end: 2061,
+                                },
+                            },
+                            name: "items_ptr",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2055,
+                                end: 2072,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 2000,
+                        end: 2094,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "FSeek",
+                        span: Span {
+                            start: 2096,
+                            end: 2101,
+                        },
+                    },
+                    args: [
+                        Binary {
+                            op: Add,
+                            lhs: Ident {
+                                name: "resource_off",
+                                span: Span {
+                                    start: 2102,
+                                    end: 2114,
+                                },
+                            },
+                            rhs: Ident {
+                                name: "databases_ptr",
+                                span: Span {
+                                    start: 2117,
+                                    end: 2130,
+                                },
+                            },
+                            span: Span {
+                                start: 2102,
+                                end: 2130,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 2096,
+                        end: 2131,
+                    },
+                },
+                span: Span {
+                    start: 2096,
+                    end: 2132,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "database",
+                    body: [
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 2156,
+                                    end: 2161,
+                                },
+                            },
+                            name: "database_offset",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 2180,
+                                            end: 2185,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 2180,
+                                        end: 2187,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2150,
+                                end: 2188,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 2193,
+                                    end: 2199,
+                                },
+                            },
+                            name: "prototype_magic",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2193,
+                                end: 2216,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint32",
+                                span: Span {
+                                    start: 2221,
+                                    end: 2227,
+                                },
+                            },
+                            name: "prototype_checksum",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2221,
+                                end: 2247,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 2252,
+                                    end: 2258,
+                                },
+                            },
+                            name: "size",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2252,
+                                end: 2264,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint64",
+                                span: Span {
+                                    start: 2269,
+                                    end: 2275,
+                                },
+                            },
+                            name: "offset",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2269,
+                                end: 2283,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "int64",
+                                span: Span {
+                                    start: 2290,
+                                    end: 2295,
+                                },
+                            },
+                            name: "reset",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 2304,
+                                            end: 2309,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 2304,
+                                        end: 2311,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2284,
+                                end: 2312,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 2313,
+                                        end: 2318,
+                                    },
+                                },
+                                args: [
+                                    Binary {
+                                        op: Add,
+                                        lhs: Ident {
+                                            name: "database_offset",
+                                            span: Span {
+                                                start: 2319,
+                                                end: 2334,
+                                            },
+                                        },
+                                        rhs: Ident {
+                                            name: "offset",
+                                            span: Span {
+                                                start: 2337,
+                                                end: 2343,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 2319,
+                                            end: 2343,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 2313,
+                                    end: 2344,
+                                },
+                            },
+                            span: Span {
+                                start: 2313,
+                                end: 2345,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "skeleton_prototype",
+                                span: Span {
+                                    start: 2350,
+                                    end: 2368,
+                                },
+                            },
+                            name: "skeleton",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2350,
+                                end: 2378,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "byte",
+                                span: Span {
+                                    start: 2383,
+                                    end: 2387,
+                                },
+                            },
+                            name: "data",
+                            array_size: Some(
+                                Binary {
+                                    op: Sub,
+                                    lhs: Ident {
+                                        name: "size",
+                                        span: Span {
+                                            start: 2393,
+                                            end: 2397,
+                                        },
+                                    },
+                                    rhs: Call {
+                                        callee: Ident {
+                                            name: "sizeof",
+                                            span: Span {
+                                                start: 2400,
+                                                end: 2406,
+                                            },
+                                        },
+                                        args: [
+                                            Ident {
+                                                name: "skeleton_prototype",
+                                                span: Span {
+                                                    start: 2407,
+                                                    end: 2425,
+                                                },
+                                            },
+                                        ],
+                                        span: Span {
+                                            start: 2400,
+                                            end: 2426,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 2393,
+                                        end: 2426,
+                                    },
+                                },
+                            ),
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 2383,
+                                end: 2428,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "FSeek",
+                                    span: Span {
+                                        start: 2429,
+                                        end: 2434,
+                                    },
+                                },
+                                args: [
+                                    Ident {
+                                        name: "reset",
+                                        span: Span {
+                                            start: 2435,
+                                            end: 2440,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 2429,
+                                    end: 2441,
+                                },
+                            },
+                            span: Span {
+                                start: 2429,
+                                end: 2442,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 2133,
+                        end: 2454,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "database",
+                    span: Span {
+                        start: 2455,
+                        end: 2463,
+                    },
+                },
+                name: "database_info",
+                array_size: Some(
+                    Ident {
+                        name: "databases_count",
+                        span: Span {
+                            start: 2478,
+                            end: 2493,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [
+                        Attr {
+                            key: "optimize",
+                            value: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 2504,
+                                    end: 2509,
+                                },
+                            },
+                            span: Span {
+                                start: 2495,
+                                end: 2509,
+                            },
+                        },
+                    ],
+                ),
+                span: Span {
+                    start: 2455,
+                    end: 2511,
+                },
+            },
+        ),
+    ],
+}

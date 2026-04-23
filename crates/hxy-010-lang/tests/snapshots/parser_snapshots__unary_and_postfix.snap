@@ -1,0 +1,114 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: Binary {
+                    op: Add,
+                    lhs: Binary {
+                        op: Add,
+                        lhs: Binary {
+                            op: Add,
+                            lhs: Binary {
+                                op: Add,
+                                lhs: Unary {
+                                    op: Neg,
+                                    operand: Ident {
+                                        name: "x",
+                                        span: Span {
+                                            start: 1,
+                                            end: 2,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 0,
+                                        end: 2,
+                                    },
+                                },
+                                rhs: Unary {
+                                    op: Not,
+                                    operand: Ident {
+                                        name: "y",
+                                        span: Span {
+                                            start: 6,
+                                            end: 7,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 5,
+                                        end: 7,
+                                    },
+                                },
+                                span: Span {
+                                    start: 0,
+                                    end: 7,
+                                },
+                            },
+                            rhs: Unary {
+                                op: BitNot,
+                                operand: Ident {
+                                    name: "z",
+                                    span: Span {
+                                        start: 11,
+                                        end: 12,
+                                    },
+                                },
+                                span: Span {
+                                    start: 10,
+                                    end: 12,
+                                },
+                            },
+                            span: Span {
+                                start: 0,
+                                end: 12,
+                            },
+                        },
+                        rhs: Unary {
+                            op: PostInc,
+                            operand: Ident {
+                                name: "p",
+                                span: Span {
+                                    start: 15,
+                                    end: 16,
+                                },
+                            },
+                            span: Span {
+                                start: 15,
+                                end: 18,
+                            },
+                        },
+                        span: Span {
+                            start: 0,
+                            end: 18,
+                        },
+                    },
+                    rhs: Unary {
+                        op: PreDec,
+                        operand: Ident {
+                            name: "q",
+                            span: Span {
+                                start: 23,
+                                end: 24,
+                            },
+                        },
+                        span: Span {
+                            start: 21,
+                            end: 24,
+                        },
+                    },
+                    span: Span {
+                        start: 0,
+                        end: 24,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 25,
+                },
+            },
+        ),
+    ],
+}

@@ -1,0 +1,141 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "HEADER",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uchar",
+                                span: Span {
+                                    start: 21,
+                                    end: 26,
+                                },
+                            },
+                            name: "version",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 21,
+                                end: 35,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "ushort",
+                                span: Span {
+                                    start: 40,
+                                    end: 46,
+                                },
+                            },
+                            name: "flags",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 40,
+                                end: 53,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: Gt,
+                                lhs: Ident {
+                                    name: "flags",
+                                    span: Span {
+                                        start: 63,
+                                        end: 68,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 71,
+                                        end: 72,
+                                    },
+                                },
+                                span: Span {
+                                    start: 63,
+                                    end: 72,
+                                },
+                            },
+                            then_branch: FieldDecl {
+                                modifier: Field,
+                                ty: TypeRef {
+                                    name: "uint",
+                                    span: Span {
+                                        start: 83,
+                                        end: 87,
+                                    },
+                                },
+                                name: "extra",
+                                array_size: None,
+                                init: None,
+                                attrs: Attrs(
+                                    [],
+                                ),
+                                span: Span {
+                                    start: 83,
+                                    end: 94,
+                                },
+                            },
+                            else_branch: None,
+                            span: Span {
+                                start: 58,
+                                end: 94,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [
+                            Attr {
+                                key: "read",
+                                value: Ident {
+                                    name: "ReadHeader",
+                                    span: Span {
+                                        start: 110,
+                                        end: 120,
+                                    },
+                                },
+                                span: Span {
+                                    start: 105,
+                                    end: 120,
+                                },
+                            },
+                            Attr {
+                                key: "style",
+                                value: Ident {
+                                    name: "sSection1",
+                                    span: Span {
+                                        start: 128,
+                                        end: 137,
+                                    },
+                                },
+                                span: Span {
+                                    start: 122,
+                                    end: 137,
+                                },
+                            },
+                        ],
+                    ),
+                    span: Span {
+                        start: 0,
+                        end: 139,
+                    },
+                },
+            ),
+        ),
+    ],
+}

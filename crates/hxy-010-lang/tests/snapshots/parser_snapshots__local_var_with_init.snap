@@ -1,0 +1,38 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "uint",
+                    span: Span {
+                        start: 6,
+                        end: 10,
+                    },
+                },
+                name: "tag",
+                array_size: None,
+                init: Some(
+                    IntLit {
+                        value: 0,
+                        span: Span {
+                            start: 17,
+                            end: 18,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 0,
+                    end: 19,
+                },
+            },
+        ),
+    ],
+}

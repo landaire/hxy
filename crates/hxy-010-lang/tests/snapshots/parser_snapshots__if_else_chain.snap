@@ -1,0 +1,131 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            If {
+                cond: Binary {
+                    op: Eq,
+                    lhs: Ident {
+                        name: "tag",
+                        span: Span {
+                            start: 5,
+                            end: 8,
+                        },
+                    },
+                    rhs: IntLit {
+                        value: 1,
+                        span: Span {
+                            start: 12,
+                            end: 13,
+                        },
+                    },
+                    span: Span {
+                        start: 5,
+                        end: 13,
+                    },
+                },
+                then_branch: Block {
+                    stmts: [
+                        Expr {
+                            expr: Ident {
+                                name: "a",
+                                span: Span {
+                                    start: 18,
+                                    end: 19,
+                                },
+                            },
+                            span: Span {
+                                start: 18,
+                                end: 20,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 16,
+                        end: 22,
+                    },
+                },
+                else_branch: Some(
+                    If {
+                        cond: Binary {
+                            op: Eq,
+                            lhs: Ident {
+                                name: "tag",
+                                span: Span {
+                                    start: 33,
+                                    end: 36,
+                                },
+                            },
+                            rhs: IntLit {
+                                value: 2,
+                                span: Span {
+                                    start: 40,
+                                    end: 41,
+                                },
+                            },
+                            span: Span {
+                                start: 33,
+                                end: 41,
+                            },
+                        },
+                        then_branch: Block {
+                            stmts: [
+                                Expr {
+                                    expr: Ident {
+                                        name: "b",
+                                        span: Span {
+                                            start: 46,
+                                            end: 47,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 46,
+                                        end: 48,
+                                    },
+                                },
+                            ],
+                            span: Span {
+                                start: 44,
+                                end: 50,
+                            },
+                        },
+                        else_branch: Some(
+                            Block {
+                                stmts: [
+                                    Expr {
+                                        expr: Ident {
+                                            name: "c",
+                                            span: Span {
+                                                start: 58,
+                                                end: 59,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 58,
+                                            end: 60,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 56,
+                                    end: 62,
+                                },
+                            },
+                        ),
+                        span: Span {
+                            start: 28,
+                            end: 62,
+                        },
+                    },
+                ),
+                span: Span {
+                    start: 0,
+                    end: 62,
+                },
+            },
+        ),
+    ],
+}

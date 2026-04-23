@@ -1,0 +1,857 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "RequiresVersion",
+                        span: Span {
+                            start: 297,
+                            end: 312,
+                        },
+                    },
+                    args: [
+                        IntLit {
+                            value: 14,
+                            span: Span {
+                                start: 314,
+                                end: 316,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 297,
+                        end: 318,
+                    },
+                },
+                span: Span {
+                    start: 297,
+                    end: 319,
+                },
+            },
+        ),
+        Stmt(
+            TypedefEnum(
+                EnumDecl {
+                    name: "KIND",
+                    backing: Some(
+                        TypeRef {
+                            name: "uchar",
+                            span: Span {
+                                start: 335,
+                                end: 340,
+                            },
+                        },
+                    ),
+                    variants: [
+                        EnumVariant {
+                            name: "KIND_NONE",
+                            value: Some(
+                                IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 363,
+                                        end: 364,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 348,
+                                end: 364,
+                            },
+                        },
+                        EnumVariant {
+                            name: "KIND_HEADER",
+                            value: Some(
+                                IntLit {
+                                    value: 1,
+                                    span: Span {
+                                        start: 385,
+                                        end: 386,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 370,
+                                end: 386,
+                            },
+                        },
+                        EnumVariant {
+                            name: "KIND_ENTRY",
+                            value: Some(
+                                IntLit {
+                                    value: 2,
+                                    span: Span {
+                                        start: 407,
+                                        end: 408,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 392,
+                                end: 408,
+                            },
+                        },
+                        EnumVariant {
+                            name: "KIND_FOOTER",
+                            value: Some(
+                                IntLit {
+                                    value: 255,
+                                    span: Span {
+                                        start: 429,
+                                        end: 433,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 414,
+                                end: 433,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 321,
+                        end: 441,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "ENTRY",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "char",
+                                span: Span {
+                                    start: 464,
+                                    end: 468,
+                                },
+                            },
+                            name: "signature",
+                            array_size: Some(
+                                IntLit {
+                                    value: 4,
+                                    span: Span {
+                                        start: 483,
+                                        end: 484,
+                                    },
+                                },
+                            ),
+                            init: None,
+                            attrs: Attrs(
+                                [
+                                    Attr {
+                                        key: "style",
+                                        value: Ident {
+                                            name: "sHeading1Accent",
+                                            span: Span {
+                                                start: 493,
+                                                end: 508,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 487,
+                                            end: 508,
+                                        },
+                                    },
+                                ],
+                            ),
+                            span: Span {
+                                start: 464,
+                                end: 510,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uchar",
+                                span: Span {
+                                    start: 515,
+                                    end: 520,
+                                },
+                            },
+                            name: "version",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [
+                                    Attr {
+                                        key: "format",
+                                        value: Ident {
+                                            name: "decimal",
+                                            span: Span {
+                                                start: 540,
+                                                end: 547,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 533,
+                                            end: 547,
+                                        },
+                                    },
+                                ],
+                            ),
+                            span: Span {
+                                start: 515,
+                                end: 549,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "ushort",
+                                span: Span {
+                                    start: 554,
+                                    end: 560,
+                                },
+                            },
+                            name: "flags",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 554,
+                                end: 569,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "KIND",
+                                span: Span {
+                                    start: 574,
+                                    end: 578,
+                                },
+                            },
+                            name: "kind",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 574,
+                                end: 588,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint",
+                                span: Span {
+                                    start: 593,
+                                    end: 597,
+                                },
+                            },
+                            name: "crc",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [
+                                    Attr {
+                                        key: "format",
+                                        value: Ident {
+                                            name: "hex",
+                                            span: Span {
+                                                start: 614,
+                                                end: 617,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 607,
+                                            end: 617,
+                                        },
+                                    },
+                                ],
+                            ),
+                            span: Span {
+                                start: 593,
+                                end: 619,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint",
+                                span: Span {
+                                    start: 624,
+                                    end: 628,
+                                },
+                            },
+                            name: "compressedSize",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 624,
+                                end: 648,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "uint",
+                                span: Span {
+                                    start: 653,
+                                    end: 657,
+                                },
+                            },
+                            name: "uncompressedSize",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 653,
+                                end: 679,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "ushort",
+                                span: Span {
+                                    start: 684,
+                                    end: 690,
+                                },
+                            },
+                            name: "nameLength",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 684,
+                                end: 704,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: Gt,
+                                lhs: Ident {
+                                    name: "nameLength",
+                                    span: Span {
+                                        start: 714,
+                                        end: 724,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 727,
+                                        end: 728,
+                                    },
+                                },
+                                span: Span {
+                                    start: 714,
+                                    end: 728,
+                                },
+                            },
+                            then_branch: FieldDecl {
+                                modifier: Field,
+                                ty: TypeRef {
+                                    name: "char",
+                                    span: Span {
+                                        start: 739,
+                                        end: 743,
+                                    },
+                                },
+                                name: "name",
+                                array_size: Some(
+                                    Ident {
+                                        name: "nameLength",
+                                        span: Span {
+                                            start: 751,
+                                            end: 761,
+                                        },
+                                    },
+                                ),
+                                init: None,
+                                attrs: Attrs(
+                                    [],
+                                ),
+                                span: Span {
+                                    start: 739,
+                                    end: 764,
+                                },
+                            },
+                            else_branch: None,
+                            span: Span {
+                                start: 709,
+                                end: 764,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: Gt,
+                                lhs: Ident {
+                                    name: "compressedSize",
+                                    span: Span {
+                                        start: 774,
+                                        end: 788,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 791,
+                                        end: 792,
+                                    },
+                                },
+                                span: Span {
+                                    start: 774,
+                                    end: 792,
+                                },
+                            },
+                            then_branch: FieldDecl {
+                                modifier: Field,
+                                ty: TypeRef {
+                                    name: "uchar",
+                                    span: Span {
+                                        start: 803,
+                                        end: 808,
+                                    },
+                                },
+                                name: "data",
+                                array_size: Some(
+                                    Ident {
+                                        name: "compressedSize",
+                                        span: Span {
+                                            start: 815,
+                                            end: 829,
+                                        },
+                                    },
+                                ),
+                                init: None,
+                                attrs: Attrs(
+                                    [
+                                        Attr {
+                                            key: "style",
+                                            value: Ident {
+                                                name: "sData",
+                                                span: Span {
+                                                    start: 839,
+                                                    end: 844,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 833,
+                                                end: 844,
+                                            },
+                                        },
+                                    ],
+                                ),
+                                span: Span {
+                                    start: 803,
+                                    end: 846,
+                                },
+                            },
+                            else_branch: None,
+                            span: Span {
+                                start: 769,
+                                end: 846,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [
+                            Attr {
+                                key: "read",
+                                value: Ident {
+                                    name: "ReadEntry",
+                                    span: Span {
+                                        start: 861,
+                                        end: 870,
+                                    },
+                                },
+                                span: Span {
+                                    start: 856,
+                                    end: 870,
+                                },
+                            },
+                            Attr {
+                                key: "style",
+                                value: Ident {
+                                    name: "sHeading1",
+                                    span: Span {
+                                        start: 878,
+                                        end: 887,
+                                    },
+                                },
+                                span: Span {
+                                    start: 872,
+                                    end: 887,
+                                },
+                            },
+                        ],
+                    ),
+                    span: Span {
+                        start: 443,
+                        end: 889,
+                    },
+                },
+            ),
+        ),
+        Function(
+            FunctionDef {
+                return_type: TypeRef {
+                    name: "string",
+                    span: Span {
+                        start: 891,
+                        end: 897,
+                    },
+                },
+                name: "ReadEntry",
+                params: [
+                    Param {
+                        ty: TypeRef {
+                            name: "ENTRY",
+                            span: Span {
+                                start: 909,
+                                end: 914,
+                            },
+                        },
+                        is_ref: true,
+                        name: "e",
+                        span: Span {
+                            start: 909,
+                            end: 917,
+                        },
+                    },
+                ],
+                body: [
+                    If {
+                        cond: Call {
+                            callee: Ident {
+                                name: "exists",
+                                span: Span {
+                                    start: 931,
+                                    end: 937,
+                                },
+                            },
+                            args: [
+                                Member {
+                                    target: Ident {
+                                        name: "e",
+                                        span: Span {
+                                            start: 939,
+                                            end: 940,
+                                        },
+                                    },
+                                    field: "name",
+                                    span: Span {
+                                        start: 939,
+                                        end: 945,
+                                    },
+                                },
+                            ],
+                            span: Span {
+                                start: 931,
+                                end: 947,
+                            },
+                        },
+                        then_branch: Return {
+                            value: Some(
+                                Member {
+                                    target: Ident {
+                                        name: "e",
+                                        span: Span {
+                                            start: 965,
+                                            end: 966,
+                                        },
+                                    },
+                                    field: "name",
+                                    span: Span {
+                                        start: 965,
+                                        end: 971,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 958,
+                                end: 972,
+                            },
+                        },
+                        else_branch: None,
+                        span: Span {
+                            start: 926,
+                            end: 972,
+                        },
+                    },
+                    Return {
+                        value: Some(
+                            StringLit {
+                                value: "",
+                                span: Span {
+                                    start: 984,
+                                    end: 986,
+                                },
+                            },
+                        ),
+                        span: Span {
+                            start: 977,
+                            end: 987,
+                        },
+                    },
+                ],
+                span: Span {
+                    start: 891,
+                    end: 989,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "uint",
+                    span: Span {
+                        start: 997,
+                        end: 1001,
+                    },
+                },
+                name: "tag",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 991,
+                    end: 1006,
+                },
+            },
+        ),
+        Stmt(
+            Expr {
+                expr: Call {
+                    callee: Ident {
+                        name: "LittleEndian",
+                        span: Span {
+                            start: 1007,
+                            end: 1019,
+                        },
+                    },
+                    args: [],
+                    span: Span {
+                        start: 1007,
+                        end: 1021,
+                    },
+                },
+                span: Span {
+                    start: 1007,
+                    end: 1022,
+                },
+            },
+        ),
+        Stmt(
+            While {
+                cond: Unary {
+                    op: Not,
+                    operand: Call {
+                        callee: Ident {
+                            name: "FEof",
+                            span: Span {
+                                start: 1032,
+                                end: 1036,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 1032,
+                            end: 1038,
+                        },
+                    },
+                    span: Span {
+                        start: 1031,
+                        end: 1038,
+                    },
+                },
+                body: Block {
+                    stmts: [
+                        Expr {
+                            expr: Assign {
+                                op: Assign,
+                                target: Ident {
+                                    name: "tag",
+                                    span: Span {
+                                        start: 1047,
+                                        end: 1050,
+                                    },
+                                },
+                                value: Call {
+                                    callee: Ident {
+                                        name: "ReadUInt",
+                                        span: Span {
+                                            start: 1053,
+                                            end: 1061,
+                                        },
+                                    },
+                                    args: [
+                                        Call {
+                                            callee: Ident {
+                                                name: "FTell",
+                                                span: Span {
+                                                    start: 1063,
+                                                    end: 1068,
+                                                },
+                                            },
+                                            args: [],
+                                            span: Span {
+                                                start: 1063,
+                                                end: 1070,
+                                            },
+                                        },
+                                    ],
+                                    span: Span {
+                                        start: 1053,
+                                        end: 1072,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1047,
+                                    end: 1072,
+                                },
+                            },
+                            span: Span {
+                                start: 1047,
+                                end: 1073,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: Eq,
+                                lhs: Ident {
+                                    name: "tag",
+                                    span: Span {
+                                        start: 1083,
+                                        end: 1086,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 1346720340,
+                                    span: Span {
+                                        start: 1090,
+                                        end: 1100,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1083,
+                                    end: 1100,
+                                },
+                            },
+                            then_branch: FieldDecl {
+                                modifier: Field,
+                                ty: TypeRef {
+                                    name: "ENTRY",
+                                    span: Span {
+                                        start: 1111,
+                                        end: 1116,
+                                    },
+                                },
+                                name: "entry",
+                                array_size: None,
+                                init: None,
+                                attrs: Attrs(
+                                    [],
+                                ),
+                                span: Span {
+                                    start: 1111,
+                                    end: 1123,
+                                },
+                            },
+                            else_branch: Some(
+                                Block {
+                                    stmts: [
+                                        Expr {
+                                            expr: Call {
+                                                callee: Ident {
+                                                    name: "Warning",
+                                                    span: Span {
+                                                        start: 1147,
+                                                        end: 1154,
+                                                    },
+                                                },
+                                                args: [
+                                                    StringLit {
+                                                        value: "unknown tag",
+                                                        span: Span {
+                                                            start: 1156,
+                                                            end: 1169,
+                                                        },
+                                                    },
+                                                ],
+                                                span: Span {
+                                                    start: 1147,
+                                                    end: 1171,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 1147,
+                                                end: 1172,
+                                            },
+                                        },
+                                        Return {
+                                            value: Some(
+                                                Unary {
+                                                    op: Neg,
+                                                    operand: IntLit {
+                                                        value: 1,
+                                                        span: Span {
+                                                            start: 1189,
+                                                            end: 1190,
+                                                        },
+                                                    },
+                                                    span: Span {
+                                                        start: 1188,
+                                                        end: 1190,
+                                                    },
+                                                },
+                                            ),
+                                            span: Span {
+                                                start: 1181,
+                                                end: 1191,
+                                            },
+                                        },
+                                    ],
+                                    span: Span {
+                                        start: 1137,
+                                        end: 1197,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 1078,
+                                end: 1197,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 1041,
+                        end: 1199,
+                    },
+                },
+                span: Span {
+                    start: 1023,
+                    end: 1199,
+                },
+            },
+        ),
+    ],
+}

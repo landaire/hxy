@@ -1,0 +1,65 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            TypedefEnum(
+                EnumDecl {
+                    name: "KIND",
+                    backing: Some(
+                        TypeRef {
+                            name: "uchar",
+                            span: Span {
+                                start: 14,
+                                end: 19,
+                            },
+                        },
+                    ),
+                    variants: [
+                        EnumVariant {
+                            name: "KIND_NONE",
+                            value: Some(
+                                IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 39,
+                                        end: 40,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 27,
+                                end: 40,
+                            },
+                        },
+                        EnumVariant {
+                            name: "KIND_OTHER",
+                            value: Some(
+                                IntLit {
+                                    value: 8,
+                                    span: Span {
+                                        start: 59,
+                                        end: 60,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 46,
+                                end: 60,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 0,
+                        end: 68,
+                    },
+                },
+            ),
+        ),
+    ],
+}

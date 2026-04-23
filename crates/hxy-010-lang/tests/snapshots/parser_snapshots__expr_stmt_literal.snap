@@ -1,0 +1,23 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: IntLit {
+                    value: 42,
+                    span: Span {
+                        start: 0,
+                        end: 2,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 3,
+                },
+            },
+        ),
+    ],
+}

@@ -1,0 +1,67 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "char",
+                    span: Span {
+                        start: 0,
+                        end: 4,
+                    },
+                },
+                name: "sig",
+                array_size: Some(
+                    IntLit {
+                        value: 4,
+                        span: Span {
+                            start: 9,
+                            end: 10,
+                        },
+                    },
+                ),
+                init: None,
+                attrs: Attrs(
+                    [
+                        Attr {
+                            key: "style",
+                            value: Ident {
+                                name: "sHeading1",
+                                span: Span {
+                                    start: 19,
+                                    end: 28,
+                                },
+                            },
+                            span: Span {
+                                start: 13,
+                                end: 28,
+                            },
+                        },
+                        Attr {
+                            key: "format",
+                            value: Ident {
+                                name: "hex",
+                                span: Span {
+                                    start: 37,
+                                    end: 40,
+                                },
+                            },
+                            span: Span {
+                                start: 30,
+                                end: 40,
+                            },
+                        },
+                    ],
+                ),
+                span: Span {
+                    start: 0,
+                    end: 42,
+                },
+            },
+        ),
+    ],
+}

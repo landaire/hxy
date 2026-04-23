@@ -1,0 +1,128 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            While {
+                cond: Unary {
+                    op: Not,
+                    operand: Call {
+                        callee: Ident {
+                            name: "FEof",
+                            span: Span {
+                                start: 9,
+                                end: 13,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 9,
+                            end: 15,
+                        },
+                    },
+                    span: Span {
+                        start: 8,
+                        end: 15,
+                    },
+                },
+                body: Block {
+                    stmts: [
+                        Expr {
+                            expr: Assign {
+                                op: Assign,
+                                target: Ident {
+                                    name: "tag",
+                                    span: Span {
+                                        start: 24,
+                                        end: 27,
+                                    },
+                                },
+                                value: Call {
+                                    callee: Ident {
+                                        name: "ReadUInt",
+                                        span: Span {
+                                            start: 30,
+                                            end: 38,
+                                        },
+                                    },
+                                    args: [
+                                        Call {
+                                            callee: Ident {
+                                                name: "FTell",
+                                                span: Span {
+                                                    start: 39,
+                                                    end: 44,
+                                                },
+                                            },
+                                            args: [],
+                                            span: Span {
+                                                start: 39,
+                                                end: 46,
+                                            },
+                                        },
+                                    ],
+                                    span: Span {
+                                        start: 30,
+                                        end: 47,
+                                    },
+                                },
+                                span: Span {
+                                    start: 24,
+                                    end: 47,
+                                },
+                            },
+                            span: Span {
+                                start: 24,
+                                end: 48,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: Eq,
+                                lhs: Ident {
+                                    name: "tag",
+                                    span: Span {
+                                        start: 58,
+                                        end: 61,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 65,
+                                        end: 66,
+                                    },
+                                },
+                                span: Span {
+                                    start: 58,
+                                    end: 66,
+                                },
+                            },
+                            then_branch: Break {
+                                span: Span {
+                                    start: 69,
+                                    end: 74,
+                                },
+                            },
+                            else_branch: None,
+                            span: Span {
+                                start: 53,
+                                end: 74,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 18,
+                        end: 77,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 77,
+                },
+            },
+        ),
+    ],
+}

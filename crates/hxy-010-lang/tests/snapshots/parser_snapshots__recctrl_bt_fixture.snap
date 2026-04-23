@@ -1,0 +1,1559 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            TypedefAlias {
+                new_name: "ULONG64",
+                source: TypeRef {
+                    name: "QWORD",
+                    span: Span {
+                        start: 335,
+                        end: 340,
+                    },
+                },
+                span: Span {
+                    start: 327,
+                    end: 349,
+                },
+            },
+        ),
+        Stmt(
+            TypedefAlias {
+                new_name: "LONGLONG",
+                source: TypeRef {
+                    name: "QWORD",
+                    span: Span {
+                        start: 358,
+                        end: 363,
+                    },
+                },
+                span: Span {
+                    start: 350,
+                    end: 373,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "MSSTRING",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 395,
+                                    end: 399,
+                                },
+                            },
+                            name: "Size",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 395,
+                                end: 405,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "CHAR",
+                                span: Span {
+                                    start: 408,
+                                    end: 412,
+                                },
+                            },
+                            name: "String",
+                            array_size: Some(
+                                Ident {
+                                    name: "Size",
+                                    span: Span {
+                                        start: 420,
+                                        end: 424,
+                                    },
+                                },
+                            ),
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 408,
+                                end: 426,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "uint",
+                                span: Span {
+                                    start: 438,
+                                    end: 442,
+                                },
+                            },
+                            name: "pos",
+                            array_size: None,
+                            init: Some(
+                                Call {
+                                    callee: Ident {
+                                        name: "FTell",
+                                        span: Span {
+                                            start: 449,
+                                            end: 454,
+                                        },
+                                    },
+                                    args: [],
+                                    span: Span {
+                                        start: 449,
+                                        end: 456,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 432,
+                                end: 457,
+                            },
+                        },
+                        If {
+                            cond: Binary {
+                                op: BitAnd,
+                                lhs: Ident {
+                                    name: "pos",
+                                    span: Span {
+                                        start: 463,
+                                        end: 466,
+                                    },
+                                },
+                                rhs: Binary {
+                                    op: Eq,
+                                    lhs: IntLit {
+                                        value: 1,
+                                        span: Span {
+                                            start: 469,
+                                            end: 470,
+                                        },
+                                    },
+                                    rhs: IntLit {
+                                        value: 1,
+                                        span: Span {
+                                            start: 474,
+                                            end: 475,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 469,
+                                        end: 475,
+                                    },
+                                },
+                                span: Span {
+                                    start: 463,
+                                    end: 475,
+                                },
+                            },
+                            then_branch: Block {
+                                stmts: [
+                                    FieldDecl {
+                                        modifier: Field,
+                                        ty: TypeRef {
+                                            name: "CHAR",
+                                            span: Span {
+                                                start: 483,
+                                                end: 487,
+                                            },
+                                        },
+                                        name: "padding",
+                                        array_size: None,
+                                        init: None,
+                                        attrs: Attrs(
+                                            [],
+                                        ),
+                                        span: Span {
+                                            start: 483,
+                                            end: 496,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 477,
+                                    end: 500,
+                                },
+                            },
+                            else_branch: None,
+                            span: Span {
+                                start: 460,
+                                end: 500,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 375,
+                        end: 503,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "DWORD",
+                    span: Span {
+                        start: 511,
+                        end: 516,
+                    },
+                },
+                name: "idx",
+                array_size: None,
+                init: Some(
+                    IntLit {
+                        value: 0,
+                        span: Span {
+                            start: 523,
+                            end: 524,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 505,
+                    end: 525,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "DWORD",
+                    span: Span {
+                        start: 532,
+                        end: 537,
+                    },
+                },
+                name: "addr",
+                array_size: None,
+                init: Some(
+                    IntLit {
+                        value: 0,
+                        span: Span {
+                            start: 545,
+                            end: 546,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 526,
+                    end: 547,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "RECENTRY",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 567,
+                                    end: 571,
+                                },
+                            },
+                            name: "VersionIndex",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 567,
+                                end: 585,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 588,
+                                    end: 592,
+                                },
+                            },
+                            name: "DeviceIndex",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 588,
+                                end: 605,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "DWORD",
+                                span: Span {
+                                    start: 608,
+                                    end: 613,
+                                },
+                            },
+                            name: "Length",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 608,
+                                end: 621,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "FILETIME",
+                                span: Span {
+                                    start: 624,
+                                    end: 632,
+                                },
+                            },
+                            name: "Timestamp",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 624,
+                                end: 643,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "MSSTRING",
+                                span: Span {
+                                    start: 653,
+                                    end: 661,
+                                },
+                            },
+                            name: "Path",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 653,
+                                end: 667,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 852,
+                                    end: 856,
+                                },
+                            },
+                            name: "testWord",
+                            array_size: None,
+                            init: Some(
+                                Unary {
+                                    op: Neg,
+                                    operand: IntLit {
+                                        value: 1,
+                                        span: Span {
+                                            start: 869,
+                                            end: 870,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 868,
+                                        end: 870,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 846,
+                                end: 871,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Local,
+                            ty: TypeRef {
+                                name: "DWORD",
+                                span: Span {
+                                    start: 880,
+                                    end: 885,
+                                },
+                            },
+                            name: "totalWord",
+                            array_size: None,
+                            init: Some(
+                                IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 898,
+                                        end: 899,
+                                    },
+                                },
+                            ),
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 874,
+                                end: 900,
+                            },
+                        },
+                        While {
+                            cond: Binary {
+                                op: NotEq,
+                                lhs: Ident {
+                                    name: "testWord",
+                                    span: Span {
+                                        start: 909,
+                                        end: 917,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 0,
+                                    span: Span {
+                                        start: 921,
+                                        end: 922,
+                                    },
+                                },
+                                span: Span {
+                                    start: 909,
+                                    end: 922,
+                                },
+                            },
+                            body: Block {
+                                stmts: [
+                                    FieldDecl {
+                                        modifier: Field,
+                                        ty: TypeRef {
+                                            name: "WORD",
+                                            span: Span {
+                                                start: 932,
+                                                end: 936,
+                                            },
+                                        },
+                                        name: "BlockCompressedSize",
+                                        array_size: None,
+                                        init: None,
+                                        attrs: Attrs(
+                                            [],
+                                        ),
+                                        span: Span {
+                                            start: 932,
+                                            end: 957,
+                                        },
+                                    },
+                                    Expr {
+                                        expr: Assign {
+                                            op: Assign,
+                                            target: Ident {
+                                                name: "testWord",
+                                                span: Span {
+                                                    start: 962,
+                                                    end: 970,
+                                                },
+                                            },
+                                            value: Ident {
+                                                name: "BlockCompressedSize",
+                                                span: Span {
+                                                    start: 973,
+                                                    end: 992,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 962,
+                                                end: 992,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 962,
+                                            end: 993,
+                                        },
+                                    },
+                                    Expr {
+                                        expr: Assign {
+                                            op: AddAssign,
+                                            target: Ident {
+                                                name: "totalWord",
+                                                span: Span {
+                                                    start: 998,
+                                                    end: 1007,
+                                                },
+                                            },
+                                            value: Ident {
+                                                name: "testWord",
+                                                span: Span {
+                                                    start: 1011,
+                                                    end: 1019,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 998,
+                                                end: 1019,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 998,
+                                            end: 1020,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 926,
+                                    end: 1024,
+                                },
+                            },
+                            span: Span {
+                                start: 903,
+                                end: 1024,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 1161,
+                                    end: 1165,
+                                },
+                            },
+                            name: "FinalBlockDecSize",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1161,
+                                end: 1184,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "WORD",
+                                span: Span {
+                                    start: 1187,
+                                    end: 1191,
+                                },
+                            },
+                            name: "BlockCompressedSize",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1187,
+                                end: 1212,
+                            },
+                        },
+                        Expr {
+                            expr: Assign {
+                                op: Assign,
+                                target: Ident {
+                                    name: "testWord",
+                                    span: Span {
+                                        start: 1294,
+                                        end: 1302,
+                                    },
+                                },
+                                value: Ident {
+                                    name: "BlockCompressedSize",
+                                    span: Span {
+                                        start: 1305,
+                                        end: 1324,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1294,
+                                    end: 1324,
+                                },
+                            },
+                            span: Span {
+                                start: 1294,
+                                end: 1325,
+                            },
+                        },
+                        Expr {
+                            expr: Assign {
+                                op: AddAssign,
+                                target: Ident {
+                                    name: "totalWord",
+                                    span: Span {
+                                        start: 1328,
+                                        end: 1337,
+                                    },
+                                },
+                                value: Ident {
+                                    name: "testWord",
+                                    span: Span {
+                                        start: 1341,
+                                        end: 1349,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1328,
+                                    end: 1349,
+                                },
+                            },
+                            span: Span {
+                                start: 1328,
+                                end: 1350,
+                            },
+                        },
+                        Expr {
+                            expr: Call {
+                                callee: Ident {
+                                    name: "Printf",
+                                    span: Span {
+                                        start: 1356,
+                                        end: 1362,
+                                    },
+                                },
+                                args: [
+                                    StringLit {
+                                        value: "File %d at 0x%x (size: %x)\n",
+                                        span: Span {
+                                            start: 1363,
+                                            end: 1393,
+                                        },
+                                    },
+                                    Ident {
+                                        name: "idx",
+                                        span: Span {
+                                            start: 1395,
+                                            end: 1398,
+                                        },
+                                    },
+                                    Ident {
+                                        name: "addr",
+                                        span: Span {
+                                            start: 1400,
+                                            end: 1404,
+                                        },
+                                    },
+                                    Ident {
+                                        name: "totalWord",
+                                        span: Span {
+                                            start: 1406,
+                                            end: 1415,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1356,
+                                    end: 1416,
+                                },
+                            },
+                            span: Span {
+                                start: 1356,
+                                end: 1417,
+                            },
+                        },
+                        Expr {
+                            expr: Unary {
+                                op: PostInc,
+                                operand: Ident {
+                                    name: "idx",
+                                    span: Span {
+                                        start: 1423,
+                                        end: 1426,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1423,
+                                    end: 1428,
+                                },
+                            },
+                            span: Span {
+                                start: 1423,
+                                end: 1429,
+                            },
+                        },
+                        Expr {
+                            expr: Assign {
+                                op: AddAssign,
+                                target: Ident {
+                                    name: "addr",
+                                    span: Span {
+                                        start: 1432,
+                                        end: 1436,
+                                    },
+                                },
+                                value: Ident {
+                                    name: "totalWord",
+                                    span: Span {
+                                        start: 1440,
+                                        end: 1449,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1432,
+                                    end: 1449,
+                                },
+                            },
+                            span: Span {
+                                start: 1432,
+                                end: 1450,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [
+                            Attr {
+                                key: "read",
+                                value: Ident {
+                                    name: "ReadRECENTRY",
+                                    span: Span {
+                                        start: 1470,
+                                        end: 1482,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1465,
+                                    end: 1482,
+                                },
+                            },
+                        ],
+                    ),
+                    span: Span {
+                        start: 548,
+                        end: 1484,
+                    },
+                },
+            ),
+        ),
+        Function(
+            FunctionDef {
+                return_type: TypeRef {
+                    name: "string",
+                    span: Span {
+                        start: 1486,
+                        end: 1492,
+                    },
+                },
+                name: "ReadRECENTRY",
+                params: [
+                    Param {
+                        ty: TypeRef {
+                            name: "RECENTRY",
+                            span: Span {
+                                start: 1507,
+                                end: 1515,
+                            },
+                        },
+                        is_ref: true,
+                        name: "d",
+                        span: Span {
+                            start: 1507,
+                            end: 1518,
+                        },
+                    },
+                ],
+                body: [
+                    FieldDecl {
+                        modifier: Field,
+                        ty: TypeRef {
+                            name: "string",
+                            span: Span {
+                                start: 1525,
+                                end: 1531,
+                            },
+                        },
+                        name: "s",
+                        array_size: None,
+                        init: None,
+                        attrs: Attrs(
+                            [],
+                        ),
+                        span: Span {
+                            start: 1525,
+                            end: 1534,
+                        },
+                    },
+                    If {
+                        cond: Binary {
+                            op: Gt,
+                            lhs: Member {
+                                target: Ident {
+                                    name: "d",
+                                    span: Span {
+                                        start: 1540,
+                                        end: 1541,
+                                    },
+                                },
+                                field: "VersionIndex",
+                                span: Span {
+                                    start: 1540,
+                                    end: 1554,
+                                },
+                            },
+                            rhs: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 1557,
+                                    end: 1558,
+                                },
+                            },
+                            span: Span {
+                                start: 1540,
+                                end: 1558,
+                            },
+                        },
+                        then_branch: Block {
+                            stmts: [
+                                Expr {
+                                    expr: Assign {
+                                        op: AddAssign,
+                                        target: Ident {
+                                            name: "s",
+                                            span: Span {
+                                                start: 1566,
+                                                end: 1567,
+                                            },
+                                        },
+                                        value: Member {
+                                            target: Index {
+                                                target: Ident {
+                                                    name: "Version",
+                                                    span: Span {
+                                                        start: 1571,
+                                                        end: 1578,
+                                                    },
+                                                },
+                                                index: Binary {
+                                                    op: Sub,
+                                                    lhs: Member {
+                                                        target: Ident {
+                                                            name: "d",
+                                                            span: Span {
+                                                                start: 1579,
+                                                                end: 1580,
+                                                            },
+                                                        },
+                                                        field: "VersionIndex",
+                                                        span: Span {
+                                                            start: 1579,
+                                                            end: 1593,
+                                                        },
+                                                    },
+                                                    rhs: IntLit {
+                                                        value: 1,
+                                                        span: Span {
+                                                            start: 1596,
+                                                            end: 1597,
+                                                        },
+                                                    },
+                                                    span: Span {
+                                                        start: 1579,
+                                                        end: 1597,
+                                                    },
+                                                },
+                                                span: Span {
+                                                    start: 1571,
+                                                    end: 1598,
+                                                },
+                                            },
+                                            field: "String",
+                                            span: Span {
+                                                start: 1571,
+                                                end: 1605,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 1566,
+                                            end: 1605,
+                                        },
+                                    },
+                                    span: Span {
+                                        start: 1566,
+                                        end: 1606,
+                                    },
+                                },
+                            ],
+                            span: Span {
+                                start: 1560,
+                                end: 1610,
+                            },
+                        },
+                        else_branch: Some(
+                            Block {
+                                stmts: [
+                                    Expr {
+                                        expr: Assign {
+                                            op: AddAssign,
+                                            target: Ident {
+                                                name: "s",
+                                                span: Span {
+                                                    start: 1622,
+                                                    end: 1623,
+                                                },
+                                            },
+                                            value: StringLit {
+                                                value: "ALL",
+                                                span: Span {
+                                                    start: 1627,
+                                                    end: 1632,
+                                                },
+                                            },
+                                            span: Span {
+                                                start: 1622,
+                                                end: 1632,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 1622,
+                                            end: 1633,
+                                        },
+                                    },
+                                ],
+                                span: Span {
+                                    start: 1616,
+                                    end: 1637,
+                                },
+                            },
+                        ),
+                        span: Span {
+                            start: 1537,
+                            end: 1637,
+                        },
+                    },
+                    Expr {
+                        expr: Assign {
+                            op: AddAssign,
+                            target: Ident {
+                                name: "s",
+                                span: Span {
+                                    start: 1640,
+                                    end: 1641,
+                                },
+                            },
+                            value: Member {
+                                target: Member {
+                                    target: Index {
+                                        target: Ident {
+                                            name: "Device",
+                                            span: Span {
+                                                start: 1645,
+                                                end: 1651,
+                                            },
+                                        },
+                                        index: Member {
+                                            target: Ident {
+                                                name: "d",
+                                                span: Span {
+                                                    start: 1652,
+                                                    end: 1653,
+                                                },
+                                            },
+                                            field: "DeviceIndex",
+                                            span: Span {
+                                                start: 1652,
+                                                end: 1665,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 1645,
+                                            end: 1666,
+                                        },
+                                    },
+                                    field: "Path",
+                                    span: Span {
+                                        start: 1645,
+                                        end: 1671,
+                                    },
+                                },
+                                field: "String",
+                                span: Span {
+                                    start: 1645,
+                                    end: 1678,
+                                },
+                            },
+                            span: Span {
+                                start: 1640,
+                                end: 1678,
+                            },
+                        },
+                        span: Span {
+                            start: 1640,
+                            end: 1679,
+                        },
+                    },
+                    Expr {
+                        expr: Assign {
+                            op: AddAssign,
+                            target: Ident {
+                                name: "s",
+                                span: Span {
+                                    start: 1682,
+                                    end: 1683,
+                                },
+                            },
+                            value: StringLit {
+                                value: "\\",
+                                span: Span {
+                                    start: 1687,
+                                    end: 1691,
+                                },
+                            },
+                            span: Span {
+                                start: 1682,
+                                end: 1691,
+                            },
+                        },
+                        span: Span {
+                            start: 1682,
+                            end: 1692,
+                        },
+                    },
+                    Expr {
+                        expr: Assign {
+                            op: AddAssign,
+                            target: Ident {
+                                name: "s",
+                                span: Span {
+                                    start: 1695,
+                                    end: 1696,
+                                },
+                            },
+                            value: Member {
+                                target: Member {
+                                    target: Ident {
+                                        name: "d",
+                                        span: Span {
+                                            start: 1700,
+                                            end: 1701,
+                                        },
+                                    },
+                                    field: "Path",
+                                    span: Span {
+                                        start: 1700,
+                                        end: 1706,
+                                    },
+                                },
+                                field: "String",
+                                span: Span {
+                                    start: 1700,
+                                    end: 1713,
+                                },
+                            },
+                            span: Span {
+                                start: 1695,
+                                end: 1713,
+                            },
+                        },
+                        span: Span {
+                            start: 1695,
+                            end: 1714,
+                        },
+                    },
+                    Return {
+                        value: Some(
+                            Ident {
+                                name: "s",
+                                span: Span {
+                                    start: 1725,
+                                    end: 1726,
+                                },
+                            },
+                        ),
+                        span: Span {
+                            start: 1718,
+                            end: 1727,
+                        },
+                    },
+                ],
+                span: Span {
+                    start: 1486,
+                    end: 1729,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "WORD",
+                    span: Span {
+                        start: 1731,
+                        end: 1735,
+                    },
+                },
+                name: "VersionCount",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1731,
+                    end: 1749,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Local,
+                ty: TypeRef {
+                    name: "int",
+                    span: Span {
+                        start: 1756,
+                        end: 1759,
+                    },
+                },
+                name: "i",
+                array_size: None,
+                init: Some(
+                    IntLit {
+                        value: 0,
+                        span: Span {
+                            start: 1764,
+                            end: 1765,
+                        },
+                    },
+                ),
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1750,
+                    end: 1766,
+                },
+            },
+        ),
+        Stmt(
+            For {
+                init: Some(
+                    Expr {
+                        expr: Assign {
+                            op: Assign,
+                            target: Ident {
+                                name: "i",
+                                span: Span {
+                                    start: 1772,
+                                    end: 1773,
+                                },
+                            },
+                            value: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 1776,
+                                    end: 1777,
+                                },
+                            },
+                            span: Span {
+                                start: 1772,
+                                end: 1777,
+                            },
+                        },
+                        span: Span {
+                            start: 1772,
+                            end: 1778,
+                        },
+                    },
+                ),
+                cond: Some(
+                    Binary {
+                        op: Lt,
+                        lhs: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 1779,
+                                end: 1780,
+                            },
+                        },
+                        rhs: Binary {
+                            op: Sub,
+                            lhs: Ident {
+                                name: "VersionCount",
+                                span: Span {
+                                    start: 1783,
+                                    end: 1795,
+                                },
+                            },
+                            rhs: IntLit {
+                                value: 1,
+                                span: Span {
+                                    start: 1798,
+                                    end: 1799,
+                                },
+                            },
+                            span: Span {
+                                start: 1783,
+                                end: 1799,
+                            },
+                        },
+                        span: Span {
+                            start: 1779,
+                            end: 1799,
+                        },
+                    },
+                ),
+                step: Some(
+                    Unary {
+                        op: PostInc,
+                        operand: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 1801,
+                                end: 1802,
+                            },
+                        },
+                        span: Span {
+                            start: 1801,
+                            end: 1804,
+                        },
+                    },
+                ),
+                body: FieldDecl {
+                    modifier: Field,
+                    ty: TypeRef {
+                        name: "MSSTRING",
+                        span: Span {
+                            start: 1808,
+                            end: 1816,
+                        },
+                    },
+                    name: "Version",
+                    array_size: None,
+                    init: None,
+                    attrs: Attrs(
+                        [
+                            Attr {
+                                key: "hidden",
+                                value: IntLit {
+                                    value: 1,
+                                    span: Span {
+                                        start: 1833,
+                                        end: 1837,
+                                    },
+                                },
+                                span: Span {
+                                    start: 1826,
+                                    end: 1837,
+                                },
+                            },
+                        ],
+                    ),
+                    span: Span {
+                        start: 1808,
+                        end: 1839,
+                    },
+                },
+                span: Span {
+                    start: 1767,
+                    end: 1839,
+                },
+            },
+        ),
+        Stmt(
+            TypedefStruct(
+                StructDecl {
+                    name: "RECDEVICE",
+                    body: [
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "MSSTRING",
+                                span: Span {
+                                    start: 1959,
+                                    end: 1967,
+                                },
+                            },
+                            name: "Name",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1959,
+                                end: 1973,
+                            },
+                        },
+                        FieldDecl {
+                            modifier: Field,
+                            ty: TypeRef {
+                                name: "MSSTRING",
+                                span: Span {
+                                    start: 1976,
+                                    end: 1984,
+                                },
+                            },
+                            name: "Path",
+                            array_size: None,
+                            init: None,
+                            attrs: Attrs(
+                                [],
+                            ),
+                            span: Span {
+                                start: 1976,
+                                end: 1990,
+                            },
+                        },
+                    ],
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 1938,
+                        end: 1993,
+                    },
+                },
+            ),
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "WORD",
+                    span: Span {
+                        start: 1994,
+                        end: 1998,
+                    },
+                },
+                name: "DeviceCount",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 1994,
+                    end: 2011,
+                },
+            },
+        ),
+        Stmt(
+            For {
+                init: Some(
+                    Expr {
+                        expr: Assign {
+                            op: Assign,
+                            target: Ident {
+                                name: "i",
+                                span: Span {
+                                    start: 2017,
+                                    end: 2018,
+                                },
+                            },
+                            value: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 2021,
+                                    end: 2022,
+                                },
+                            },
+                            span: Span {
+                                start: 2017,
+                                end: 2022,
+                            },
+                        },
+                        span: Span {
+                            start: 2017,
+                            end: 2023,
+                        },
+                    },
+                ),
+                cond: Some(
+                    Binary {
+                        op: Lt,
+                        lhs: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 2024,
+                                end: 2025,
+                            },
+                        },
+                        rhs: Ident {
+                            name: "DeviceCount",
+                            span: Span {
+                                start: 2028,
+                                end: 2039,
+                            },
+                        },
+                        span: Span {
+                            start: 2024,
+                            end: 2039,
+                        },
+                    },
+                ),
+                step: Some(
+                    Unary {
+                        op: PostInc,
+                        operand: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 2041,
+                                end: 2042,
+                            },
+                        },
+                        span: Span {
+                            start: 2041,
+                            end: 2044,
+                        },
+                    },
+                ),
+                body: FieldDecl {
+                    modifier: Field,
+                    ty: TypeRef {
+                        name: "RECDEVICE",
+                        span: Span {
+                            start: 2048,
+                            end: 2057,
+                        },
+                    },
+                    name: "Device",
+                    array_size: None,
+                    init: None,
+                    attrs: Attrs(
+                        [
+                            Attr {
+                                key: "hidden",
+                                value: IntLit {
+                                    value: 1,
+                                    span: Span {
+                                        start: 2073,
+                                        end: 2077,
+                                    },
+                                },
+                                span: Span {
+                                    start: 2066,
+                                    end: 2077,
+                                },
+                            },
+                        ],
+                    ),
+                    span: Span {
+                        start: 2048,
+                        end: 2079,
+                    },
+                },
+                span: Span {
+                    start: 2012,
+                    end: 2079,
+                },
+            },
+        ),
+        Stmt(
+            FieldDecl {
+                modifier: Field,
+                ty: TypeRef {
+                    name: "DWORD",
+                    span: Span {
+                        start: 2157,
+                        end: 2162,
+                    },
+                },
+                name: "LzxWindowSize",
+                array_size: None,
+                init: None,
+                attrs: Attrs(
+                    [],
+                ),
+                span: Span {
+                    start: 2157,
+                    end: 2177,
+                },
+            },
+        ),
+        Stmt(
+            While {
+                cond: Binary {
+                    op: Lt,
+                    lhs: Call {
+                        callee: Ident {
+                            name: "FTell",
+                            span: Span {
+                                start: 2185,
+                                end: 2190,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 2185,
+                            end: 2192,
+                        },
+                    },
+                    rhs: Call {
+                        callee: Ident {
+                            name: "FileSize",
+                            span: Span {
+                                start: 2195,
+                                end: 2203,
+                            },
+                        },
+                        args: [],
+                        span: Span {
+                            start: 2195,
+                            end: 2205,
+                        },
+                    },
+                    span: Span {
+                        start: 2185,
+                        end: 2205,
+                    },
+                },
+                body: FieldDecl {
+                    modifier: Field,
+                    ty: TypeRef {
+                        name: "RECENTRY",
+                        span: Span {
+                            start: 2209,
+                            end: 2217,
+                        },
+                    },
+                    name: "Entry",
+                    array_size: None,
+                    init: None,
+                    attrs: Attrs(
+                        [],
+                    ),
+                    span: Span {
+                        start: 2209,
+                        end: 2224,
+                    },
+                },
+                span: Span {
+                    start: 2179,
+                    end: 2224,
+                },
+            },
+        ),
+    ],
+}

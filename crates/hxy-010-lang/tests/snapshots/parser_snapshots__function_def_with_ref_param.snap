@@ -1,0 +1,116 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Function(
+            FunctionDef {
+                return_type: TypeRef {
+                    name: "string",
+                    span: Span {
+                        start: 0,
+                        end: 6,
+                    },
+                },
+                name: "ReadEntry",
+                params: [
+                    Param {
+                        ty: TypeRef {
+                            name: "ENTRY",
+                            span: Span {
+                                start: 19,
+                                end: 24,
+                            },
+                        },
+                        is_ref: true,
+                        name: "e",
+                        span: Span {
+                            start: 19,
+                            end: 27,
+                        },
+                    },
+                ],
+                body: [
+                    If {
+                        cond: Call {
+                            callee: Ident {
+                                name: "exists",
+                                span: Span {
+                                    start: 41,
+                                    end: 47,
+                                },
+                            },
+                            args: [
+                                Member {
+                                    target: Ident {
+                                        name: "e",
+                                        span: Span {
+                                            start: 48,
+                                            end: 49,
+                                        },
+                                    },
+                                    field: "name",
+                                    span: Span {
+                                        start: 48,
+                                        end: 54,
+                                    },
+                                },
+                            ],
+                            span: Span {
+                                start: 41,
+                                end: 55,
+                            },
+                        },
+                        then_branch: Return {
+                            value: Some(
+                                Member {
+                                    target: Ident {
+                                        name: "e",
+                                        span: Span {
+                                            start: 73,
+                                            end: 74,
+                                        },
+                                    },
+                                    field: "name",
+                                    span: Span {
+                                        start: 73,
+                                        end: 79,
+                                    },
+                                },
+                            ),
+                            span: Span {
+                                start: 66,
+                                end: 80,
+                            },
+                        },
+                        else_branch: None,
+                        span: Span {
+                            start: 36,
+                            end: 80,
+                        },
+                    },
+                    Return {
+                        value: Some(
+                            StringLit {
+                                value: "",
+                                span: Span {
+                                    start: 92,
+                                    end: 94,
+                                },
+                            },
+                        ),
+                        span: Span {
+                            start: 85,
+                            end: 95,
+                        },
+                    },
+                ],
+                span: Span {
+                    start: 0,
+                    end: 97,
+                },
+            },
+        ),
+    ],
+}

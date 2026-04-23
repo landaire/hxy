@@ -1,0 +1,93 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: Binary {
+                    op: LogicalOr,
+                    lhs: Binary {
+                        op: LogicalAnd,
+                        lhs: Binary {
+                            op: Eq,
+                            lhs: Ident {
+                                name: "a",
+                                span: Span {
+                                    start: 0,
+                                    end: 1,
+                                },
+                            },
+                            rhs: IntLit {
+                                value: 1,
+                                span: Span {
+                                    start: 5,
+                                    end: 6,
+                                },
+                            },
+                            span: Span {
+                                start: 0,
+                                end: 6,
+                            },
+                        },
+                        rhs: Binary {
+                            op: Gt,
+                            lhs: Ident {
+                                name: "b",
+                                span: Span {
+                                    start: 10,
+                                    end: 11,
+                                },
+                            },
+                            rhs: IntLit {
+                                value: 2,
+                                span: Span {
+                                    start: 14,
+                                    end: 15,
+                                },
+                            },
+                            span: Span {
+                                start: 10,
+                                end: 15,
+                            },
+                        },
+                        span: Span {
+                            start: 0,
+                            end: 15,
+                        },
+                    },
+                    rhs: Binary {
+                        op: NotEq,
+                        lhs: Ident {
+                            name: "c",
+                            span: Span {
+                                start: 19,
+                                end: 20,
+                            },
+                        },
+                        rhs: IntLit {
+                            value: 0,
+                            span: Span {
+                                start: 24,
+                                end: 25,
+                            },
+                        },
+                        span: Span {
+                            start: 19,
+                            end: 25,
+                        },
+                    },
+                    span: Span {
+                        start: 0,
+                        end: 25,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 26,
+                },
+            },
+        ),
+    ],
+}

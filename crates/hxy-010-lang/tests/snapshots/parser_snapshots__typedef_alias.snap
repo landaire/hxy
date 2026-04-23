@@ -1,0 +1,24 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            TypedefAlias {
+                new_name: "ULONG64",
+                source: TypeRef {
+                    name: "QWORD",
+                    span: Span {
+                        start: 8,
+                        end: 13,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 22,
+                },
+            },
+        ),
+    ],
+}

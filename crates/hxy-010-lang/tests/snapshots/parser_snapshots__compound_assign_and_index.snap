@@ -1,0 +1,86 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            Expr {
+                expr: Assign {
+                    op: AddAssign,
+                    target: Index {
+                        target: Ident {
+                            name: "arr",
+                            span: Span {
+                                start: 0,
+                                end: 3,
+                            },
+                        },
+                        index: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 4,
+                                end: 5,
+                            },
+                        },
+                        span: Span {
+                            start: 0,
+                            end: 6,
+                        },
+                    },
+                    value: Call {
+                        callee: Ident {
+                            name: "f",
+                            span: Span {
+                                start: 10,
+                                end: 11,
+                            },
+                        },
+                        args: [
+                            Ident {
+                                name: "x",
+                                span: Span {
+                                    start: 12,
+                                    end: 13,
+                                },
+                            },
+                            Binary {
+                                op: Add,
+                                lhs: Ident {
+                                    name: "y",
+                                    span: Span {
+                                        start: 15,
+                                        end: 16,
+                                    },
+                                },
+                                rhs: IntLit {
+                                    value: 1,
+                                    span: Span {
+                                        start: 19,
+                                        end: 20,
+                                    },
+                                },
+                                span: Span {
+                                    start: 15,
+                                    end: 20,
+                                },
+                            },
+                        ],
+                        span: Span {
+                            start: 10,
+                            end: 21,
+                        },
+                    },
+                    span: Span {
+                        start: 0,
+                        end: 21,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 22,
+                },
+            },
+        ),
+    ],
+}

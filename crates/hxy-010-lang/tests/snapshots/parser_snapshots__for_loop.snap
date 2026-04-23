@@ -1,0 +1,105 @@
+---
+source: crates/hxy-010-lang/tests/parser_snapshots.rs
+expression: ast
+---
+Program {
+    items: [
+        Stmt(
+            For {
+                init: Some(
+                    Expr {
+                        expr: Assign {
+                            op: Assign,
+                            target: Ident {
+                                name: "i",
+                                span: Span {
+                                    start: 5,
+                                    end: 6,
+                                },
+                            },
+                            value: IntLit {
+                                value: 0,
+                                span: Span {
+                                    start: 9,
+                                    end: 10,
+                                },
+                            },
+                            span: Span {
+                                start: 5,
+                                end: 10,
+                            },
+                        },
+                        span: Span {
+                            start: 5,
+                            end: 11,
+                        },
+                    },
+                ),
+                cond: Some(
+                    Binary {
+                        op: Lt,
+                        lhs: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 12,
+                                end: 13,
+                            },
+                        },
+                        rhs: Ident {
+                            name: "N",
+                            span: Span {
+                                start: 16,
+                                end: 17,
+                            },
+                        },
+                        span: Span {
+                            start: 12,
+                            end: 17,
+                        },
+                    },
+                ),
+                step: Some(
+                    Unary {
+                        op: PostInc,
+                        operand: Ident {
+                            name: "i",
+                            span: Span {
+                                start: 19,
+                                end: 20,
+                            },
+                        },
+                        span: Span {
+                            start: 19,
+                            end: 22,
+                        },
+                    },
+                ),
+                body: Block {
+                    stmts: [
+                        Expr {
+                            expr: Ident {
+                                name: "x",
+                                span: Span {
+                                    start: 26,
+                                    end: 27,
+                                },
+                            },
+                            span: Span {
+                                start: 26,
+                                end: 28,
+                            },
+                        },
+                    ],
+                    span: Span {
+                        start: 24,
+                        end: 30,
+                    },
+                },
+                span: Span {
+                    start: 0,
+                    end: 30,
+                },
+            },
+        ),
+    ],
+}
