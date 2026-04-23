@@ -1,0 +1,26 @@
+[package]
+name = "hxy-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "hxy hex editor application"
+
+[[bin]]
+name = "hxy"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["desktop"]
+desktop = []
+wasm = []
+
+[dependencies]
+hxy-core = { workspace = true }
+hxy-i18n = { workspace = true }
+hxy-view = { workspace = true }

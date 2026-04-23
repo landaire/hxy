@@ -1,0 +1,28 @@
+[tasks.fmt]
+description = "Runs rustfmt with unstable features"
+run = "cargo fmt -- --config unstable_features=true --config imports_granularity=Item --config imports_layout=Vertical"
+
+[tasks.check]
+description = "Runs cargo-check against all features and WASM target"
+run = [
+    "cargo check --all-features",
+    "cargo check -p hxy-app --target wasm32-unknown-unknown --no-default-features --features wasm",
+]
+
+[tasks.fix]
+description = "Runs cargo-fix against all features"
+run = "cargo fix --all-features --allow-dirty"
+depends_post = ["fmt"]
+
+[tasks.clippy-fix]
+description = "Runs cargo-clippy-fix against all features"
+run = "cargo clippy --fix --all-features --allow-dirty"
+depends_post = ["fmt"]
+
+[tasks.fix-all]
+description = "Runs clippy fix, fmt, and checks WASM target"
+run = [
+    "cargo clippy --fix --all-features --allow-dirty",
+    "cargo check -p hxy-app --target wasm32-unknown-unknown --no-default-features --features wasm",
+]
+depends_post = ["fmt"]

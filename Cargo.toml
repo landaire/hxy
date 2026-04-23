@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/hxy-core",
+    "crates/hxy-i18n",
+    "crates/hxy-view",
+    "crates/hxy-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+authors = ["Lander Brandt"]
+repository = "https://github.com/landaire/hxy"
+
+[workspace.dependencies]
+hxy-core = { path = "crates/hxy-core" }
+hxy-i18n = { path = "crates/hxy-i18n" }
+hxy-view = { path = "crates/hxy-view" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.profiling]
+inherits = "release"
+debug = true
