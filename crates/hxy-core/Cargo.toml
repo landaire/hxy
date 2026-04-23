@@ -9,3 +9,9 @@ repository.workspace = true
 description = "Core types and file abstractions for the hxy hex editor"
 
 [dependencies]
+fskit = { version = "0.2.0", features = ["vfs", "jiff"] }
+jiff = { version = "0.2.24", features = ["serde"] }
+rootcause = "0.12.1"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+vfs = "0.13.0"
