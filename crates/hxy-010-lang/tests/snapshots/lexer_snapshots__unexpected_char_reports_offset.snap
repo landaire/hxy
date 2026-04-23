@@ -1,0 +1,8 @@
+---
+source: crates/hxy-010-lang/tests/lexer_snapshots.rs
+expression: err
+---
+UnexpectedChar {
+    ch: '@',
+    offset: 6,
+}

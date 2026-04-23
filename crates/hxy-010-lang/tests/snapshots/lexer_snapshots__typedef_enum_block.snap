@@ -1,0 +1,134 @@
+---
+source: crates/hxy-010-lang/tests/lexer_snapshots.rs
+expression: tokenize(src).unwrap()
+---
+[
+    Token {
+        kind: Keyword(
+            Typedef,
+        ),
+        span: Span {
+            start: 0,
+            end: 7,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Enum,
+        ),
+        span: Span {
+            start: 8,
+            end: 12,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 13,
+            end: 14,
+        },
+    },
+    Token {
+        kind: Ident(
+            "short",
+        ),
+        span: Span {
+            start: 14,
+            end: 19,
+        },
+    },
+    Token {
+        kind: Gt,
+        span: Span {
+            start: 19,
+            end: 20,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 21,
+            end: 22,
+        },
+    },
+    Token {
+        kind: Ident(
+            "COMP_STORED",
+        ),
+        span: Span {
+            start: 27,
+            end: 38,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 42,
+            end: 43,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 44,
+            end: 45,
+        },
+    },
+    Token {
+        kind: Comma,
+        span: Span {
+            start: 45,
+            end: 46,
+        },
+    },
+    Token {
+        kind: Ident(
+            "COMP_DEFLATE",
+        ),
+        span: Span {
+            start: 51,
+            end: 63,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 66,
+            end: 67,
+        },
+    },
+    Token {
+        kind: Int(
+            8,
+        ),
+        span: Span {
+            start: 68,
+            end: 69,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 70,
+            end: 71,
+        },
+    },
+    Token {
+        kind: Ident(
+            "COMPTYPE",
+        ),
+        span: Span {
+            start: 72,
+            end: 80,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 80,
+            end: 81,
+        },
+    },
+]

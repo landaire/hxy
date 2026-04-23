@@ -1,0 +1,51 @@
+---
+source: crates/hxy-010-lang/tests/lexer_snapshots.rs
+expression: tokenize(src).unwrap()
+---
+[
+    Token {
+        kind: String(
+            "hello",
+        ),
+        span: Span {
+            start: 0,
+            end: 7,
+        },
+    },
+    Token {
+        kind: String(
+            "a\nb",
+        ),
+        span: Span {
+            start: 8,
+            end: 14,
+        },
+    },
+    Token {
+        kind: Char(
+            120,
+        ),
+        span: Span {
+            start: 15,
+            end: 18,
+        },
+    },
+    Token {
+        kind: Char(
+            9,
+        ),
+        span: Span {
+            start: 19,
+            end: 23,
+        },
+    },
+    Token {
+        kind: Char(
+            39,
+        ),
+        span: Span {
+            start: 24,
+            end: 28,
+        },
+    },
+]
