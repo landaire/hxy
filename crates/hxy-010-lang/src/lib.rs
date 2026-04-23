@@ -12,6 +12,9 @@ pub mod source;
 pub mod token;
 pub mod value;
 
+#[cfg(feature = "arbitrary")]
+pub mod fuzz;
+
 pub use interp::Diagnostic;
 pub use interp::Interpreter;
 pub use interp::NodeOut;

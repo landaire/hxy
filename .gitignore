@@ -3,3 +3,12 @@ dist/
 .cargo/config.toml
 .claude/
 *.log
+
+# cargo-fuzz: build outputs are reproducible, coverage profiles are
+# large. Seed corpus under fuzz/corpus/<target>/ IS tracked — once
+# it grows past the seed set, minimize with `cargo fuzz cmin` and
+# commit the trimmed result. `fuzz/artifacts/` holds reproducer
+# inputs for discovered crashes; committing those is fine too, but
+# our runs are currently clean.
+fuzz/target/
+fuzz/coverage/

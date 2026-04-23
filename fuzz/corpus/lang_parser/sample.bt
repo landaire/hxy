@@ -1,0 +1,50 @@
+// Synthetic 010 Editor Binary Template used as a lexer fixture.
+// Covers the language features the ZIP.bt template in the wild uses:
+// typedef + enum with explicit backing type, typedef struct with
+// attributes, conditional member declarations, function calls, and a
+// top-level while loop.
+
+RequiresVersion( 14 );
+
+typedef enum <uchar> {
+    KIND_NONE    = 0,
+    KIND_HEADER  = 1,
+    KIND_ENTRY   = 2,
+    KIND_FOOTER  = 0xFF
+} KIND;
+
+typedef struct {
+    char     signature[4] <style=sHeading1Accent>;
+    uchar    version <format=decimal>;
+    ushort   flags;
+    KIND     kind;
+    uint     crc <format=hex>;
+    uint     compressedSize;
+    uint     uncompressedSize;
+    ushort   nameLength;
+    if ( nameLength > 0 )
+        char  name[ nameLength ];
+    if ( compressedSize > 0 )
+        uchar data[ compressedSize ] <style=sData>;
+} ENTRY <read=ReadEntry, style=sHeading1>;
+
+string ReadEntry( ENTRY &e )
+{
+    if ( exists( e.name ) )
+        return e.name;
+    return "";
+}
+
+local uint tag;
+LittleEndian();
+while ( !FEof() )
+{
+    tag = ReadUInt( FTell() );
+    if ( tag == 0x50455254 )
+        ENTRY entry;
+    else
+    {
+        Warning( "unknown tag" );
+        return -1;
+    }
+}

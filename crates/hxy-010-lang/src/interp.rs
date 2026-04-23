@@ -105,7 +105,20 @@ pub struct Interpreter<S: HexSource> {
     nodes: Vec<NodeOut>,
     /// Non-fatal diagnostics emitted so far.
     diagnostics: Vec<Diagnostic>,
+    /// Statements executed so far. Compared against [`Self::step_limit`]
+    /// at every `exec_stmt` call to kill runaway templates.
+    steps: u64,
+    /// Maximum statement executions before the interpreter aborts
+    /// with an "exceeded step limit" diagnostic. Defaults to
+    /// [`DEFAULT_STEP_LIMIT`].
+    step_limit: u64,
 }
+
+/// Safety valve against templates with unbounded or near-unbounded
+/// loops. 10M statements lets real templates iterate through big
+/// archives while still catching `while(true)` holes in well under a
+/// second.
+pub const DEFAULT_STEP_LIMIT: u64 = 10_000_000;
 
 #[derive(Clone, Debug)]
 enum TypeDef {
@@ -140,9 +153,19 @@ impl<S: HexSource> Interpreter<S> {
             scopes: vec![Scope::default()],
             nodes: Vec::new(),
             diagnostics: Vec::new(),
+            steps: 0,
+            step_limit: DEFAULT_STEP_LIMIT,
         };
         me.register_primitives();
         me
+    }
+
+    /// Override the statement-execution budget. Useful for fuzzing
+    /// (keep it small) or for users running a deliberately expensive
+    /// template (raise the cap).
+    pub fn with_step_limit(mut self, limit: u64) -> Self {
+        self.step_limit = limit;
+        self
     }
 
     pub fn run(mut self, program: &Program) -> RunResult {
@@ -248,6 +271,13 @@ impl<S: HexSource> Interpreter<S> {
     // ---- statements ----
 
     fn exec_stmt(&mut self, stmt: &Stmt, parent: Option<u32>) -> Result<Flow, RuntimeError> {
+        self.steps = self.steps.saturating_add(1);
+        if self.steps > self.step_limit {
+            return Err(RuntimeError::Type(format!(
+                "exceeded step limit ({}) — template aborted",
+                self.step_limit
+            )));
+        }
         match stmt {
             Stmt::Block { stmts, .. } => self.exec_block(stmts, parent),
             Stmt::Expr { expr, .. } => {

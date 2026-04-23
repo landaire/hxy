@@ -1,0 +1,49 @@
+[package]
+name = "hxy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.hxy-010-lang]
+path = "../crates/hxy-010-lang"
+features = ["arbitrary"]
+
+[[bin]]
+name = "lang_lexer"
+path = "fuzz_targets/lang_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lang_parser"
+path = "fuzz_targets/lang_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lang_interpreter"
+path = "fuzz_targets/lang_interpreter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lang_structured"
+path = "fuzz_targets/lang_structured.rs"
+test = false
+doc = false
+bench = false
+
+# Keep the fuzz project out of the main workspace — cargo-fuzz wants
+# its own target dir and nightly toolchain, which shouldn't bleed
+# into normal `cargo build` runs.
+[workspace]

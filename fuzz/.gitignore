@@ -1,0 +1,11 @@
+target
+coverage
+# Only seed inputs are tracked under corpus/<target>/. Fuzzer-grown
+# corpora (thousands of files per target after a short run) are
+# local; minimize with `cargo fuzz cmin <target>` before committing
+# if you want to share coverage.
+corpus/*/*
+!corpus/*/*.bt
+# artifacts/ IS tracked so reproducer inputs for discovered crashes
+# stick around across runs.
+

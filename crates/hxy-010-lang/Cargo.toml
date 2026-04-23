@@ -8,7 +8,16 @@ authors.workspace = true
 repository.workspace = true
 description = "010 Editor Binary Template language: lexer, parser, interpreter."
 
+[features]
+default = []
+# Derive `Arbitrary` on the AST so the fuzz crate can generate
+# syntactically well-formed programs without having to hand-roll
+# generators. Off by default because it pulls in the arbitrary
+# crate and adds proc-macro time to downstream consumers.
+arbitrary = ["dep:arbitrary"]
+
 [dependencies]
+arbitrary = { version = "1", features = ["derive"], optional = true }
 thiserror = "2.0.18"
 winnow = "0.7"
 
