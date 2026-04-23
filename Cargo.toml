@@ -7,6 +7,7 @@ members = [
     "crates/hxy-vfs",
     "crates/hxy-app",
     "crates/hxy-plugin-host",
+    "crates/hxy-plugin-api",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ hxy-i18n = { path = "crates/hxy-i18n" }
 hxy-view = { path = "crates/hxy-view" }
 hxy-vfs = { path = "crates/hxy-vfs" }
 hxy-plugin-host = { path = "crates/hxy-plugin-host" }
+hxy-plugin-api = { path = "crates/hxy-plugin-api" }
 
 [profile.release]
 opt-level = 3

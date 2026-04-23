@@ -2,5 +2,5 @@
 
 wasmtime::component::bindgen!({
     world: "plugin",
-    path: "wit",
+    path: "../../wit",
 });
