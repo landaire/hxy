@@ -8,6 +8,7 @@ use tokio::runtime::Runtime;
 
 use crate::persist::PersistResult;
 use crate::persist::store_app_settings;
+use crate::persist::store_open_tabs;
 use crate::persist::store_window_settings;
 use crate::state::PersistedState;
 
@@ -28,9 +29,11 @@ impl SaveSink {
         let pool = self.pool.clone();
         let window = state.window;
         let app = state.app.clone();
+        let tabs = state.open_tabs.clone();
         self.runtime.block_on(async move {
             store_window_settings(&pool, &window).await?;
             store_app_settings(&pool, &app).await?;
+            store_open_tabs(&pool, &tabs).await?;
             Ok(())
         })
     }

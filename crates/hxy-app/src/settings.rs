@@ -1,8 +1,25 @@
 //! User-visible application settings.
 
+use std::path::PathBuf;
+
 use hxy_core::ColumnCount;
 use serde::Deserialize;
 use serde::Serialize;
+
+/// An entry in the recent-files list shown on the welcome screen.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecentFile {
+    pub path: PathBuf,
+    #[serde(default = "default_ts")]
+    pub last_opened: jiff::Timestamp,
+}
+
+fn default_ts() -> jiff::Timestamp {
+    jiff::Timestamp::UNIX_EPOCH
+}
+
+/// How many recents to retain.
+pub const MAX_RECENT_FILES: usize = 20;
 
 /// Base used by the status bar to render offsets. User can flip this by
 /// clicking on the status bar values.
@@ -22,8 +39,8 @@ impl OffsetBase {
     }
 }
 
-/// Where to paint byte-class color: as a background fill or as a tint on
-/// the glyphs themselves.
+/// Where to paint byte highlight color: as a background fill or as a
+/// tint on the glyphs themselves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ByteHighlightMode {
     #[default]
@@ -38,6 +55,16 @@ impl ByteHighlightMode {
             Self::Text => hxy_view::ValueHighlight::Text,
         }
     }
+}
+
+/// Colour scheme used when byte highlighting is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ByteHighlightScheme {
+    /// Group bytes into coarse classes (null, whitespace, printable, …).
+    #[default]
+    Class,
+    /// Give every byte value 0x00..0xFF its own colour.
+    Value,
 }
 
 /// General application preferences that are safe to persist across sessions.
@@ -69,6 +96,17 @@ pub struct AppSettings {
     /// Whether value-class highlighting is painted as a background fill
     /// or as a tint on the glyphs.
     pub byte_highlight_mode: ByteHighlightMode,
+
+    /// Which colour scheme the highlight uses.
+    pub byte_highlight_scheme: ByteHighlightScheme,
+
+    /// Show a minimap strip beside the hex view.
+    pub show_minimap: bool,
+
+    /// Files the user has opened recently, newest-first, capped at
+    /// [`MAX_RECENT_FILES`]. Surfaced on the welcome screen.
+    #[serde(default)]
+    pub recent_files: Vec<RecentFile>,
 }
 
 impl Default for AppSettings {
@@ -81,6 +119,19 @@ impl Default for AppSettings {
             offset_base: OffsetBase::default(),
             byte_value_highlight: true,
             byte_highlight_mode: ByteHighlightMode::default(),
+            byte_highlight_scheme: ByteHighlightScheme::default(),
+            show_minimap: true,
+            recent_files: Vec::new(),
         }
+    }
+}
+
+impl AppSettings {
+    /// Push a newly-opened path to the top of the recent-files list,
+    /// deduplicating and capping at [`MAX_RECENT_FILES`].
+    pub fn record_recent(&mut self, path: PathBuf) {
+        self.recent_files.retain(|r| r.path != path);
+        self.recent_files.insert(0, RecentFile { path, last_opened: jiff::Timestamp::now() });
+        self.recent_files.truncate(MAX_RECENT_FILES);
     }
 }

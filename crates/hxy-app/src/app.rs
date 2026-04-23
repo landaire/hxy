@@ -63,6 +63,7 @@ impl HxyApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_sink(mut self, sink: crate::persist::SaveSink) -> Self {
         self.sink = Some(sink);
+        self.restore_open_tabs();
         self
     }
 
@@ -73,7 +74,7 @@ impl HxyApp {
     }
 
     pub fn open_in_memory(&mut self, display_name: impl Into<String>, bytes: Vec<u8>) -> FileId {
-        self.open_in_memory_with_path(display_name, None, bytes)
+        self.open_in_memory_with_path(display_name, None, bytes, None, None)
     }
 
     pub fn open_in_memory_with_path(
@@ -81,12 +82,62 @@ impl HxyApp {
         display_name: impl Into<String>,
         path: Option<std::path::PathBuf>,
         bytes: Vec<u8>,
+        restore_selection: Option<hxy_core::Selection>,
+        restore_scroll: Option<f32>,
     ) -> FileId {
         let id = self.fresh_file_id();
-        let file = OpenFile::from_bytes(id, display_name, path, bytes);
+        let mut file = OpenFile::from_bytes(id, display_name, path.clone(), bytes);
+        file.selection = restore_selection;
+        if let Some(s) = restore_scroll {
+            file.pending_scroll = Some(s);
+            file.scroll_offset = s;
+        }
         self.files.insert(id, file);
         self.dock.push_to_focused_leaf(Tab::File(id));
+
+        if let Some(p) = path {
+            let mut g = self.state.write();
+            g.app.record_recent(p.clone());
+            if !g.open_tabs.iter().any(|t| t.path == p) {
+                g.open_tabs.push(crate::state::OpenTabState {
+                    path: p,
+                    selection: restore_selection,
+                    scroll_offset: restore_scroll.unwrap_or(0.0),
+                });
+            }
+        }
         id
+    }
+
+    /// Try to open each saved tab from disk. Missing files are dropped
+    /// from the persisted list.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_open_tabs(&mut self) {
+        let tabs = self.state.read().open_tabs.clone();
+        let mut surviving: Vec<crate::state::OpenTabState> = Vec::new();
+        for tab in tabs {
+            match std::fs::read(&tab.path) {
+                Ok(bytes) => {
+                    let name = tab
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| tab.path.display().to_string());
+                    let id = self.fresh_file_id();
+                    let mut file = OpenFile::from_bytes(id, name, Some(tab.path.clone()), bytes);
+                    file.selection = tab.selection;
+                    file.pending_scroll = Some(tab.scroll_offset);
+                    file.scroll_offset = tab.scroll_offset;
+                    self.files.insert(id, file);
+                    self.dock.push_to_focused_leaf(Tab::File(id));
+                    surviving.push(tab);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %tab.path.display(), "restore open tab");
+                }
+            }
+        }
+        self.state.write().open_tabs = surviving;
     }
 
     /// Save the current state if it has drifted from what was last written.
@@ -126,9 +177,31 @@ impl eframe::App for HxyApp {
 
         paint_drop_overlay(ui.ctx());
         consume_dropped_files(ui.ctx(), self);
+        consume_welcome_open_request(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
+}
+
+fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
+    let req = ctx.data_mut(|d| d.remove_temp::<std::path::PathBuf>(egui::Id::new(WELCOME_OPEN_RECENT)));
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = req {
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                app.open_in_memory_with_path(name, Some(path), bytes, None, None);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "open recent file");
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (req, app);
 }
 
 fn paint_drop_overlay(ctx: &egui::Context) {
@@ -171,7 +244,7 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    app.open_in_memory_with_path(name, Some(path), bytes);
+                    app.open_in_memory_with_path(name, Some(path), bytes, None, None);
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, path = %path.display(), "open dropped file");
@@ -179,9 +252,11 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if !file.bytes.is_empty() {
-            let name = if file.name.is_empty() { "dropped".to_string() } else { file.name.clone() };
-            app.open_in_memory(name, file.bytes.to_vec());
+        if let Some(bytes) = file.bytes.as_deref() {
+            if !bytes.is_empty() {
+                let name = if file.name.is_empty() { "dropped".to_string() } else { file.name.clone() };
+                app.open_in_memory(name, bytes.to_vec());
+            }
         }
     }
 }
@@ -255,7 +330,7 @@ fn handle_open_file(app: &mut HxyApp) {
     #[cfg(not(target_arch = "wasm32"))]
     match pick_and_read_file() {
         Ok((name, path, bytes)) => {
-            app.open_in_memory_with_path(name, Some(path), bytes);
+            app.open_in_memory_with_path(name, Some(path), bytes, None, None);
         }
         Err(crate::file::FileOpenError::Cancelled) => {}
         Err(e) => {
@@ -300,7 +375,7 @@ impl TabViewer for HxyTabViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
-            Tab::Welcome => welcome_ui(ui),
+            Tab::Welcome => welcome_ui(ui, self.state),
             Tab::Settings => settings_ui(ui, &mut self.state.app),
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
@@ -314,29 +389,37 @@ impl TabViewer for HxyTabViewer<'_> {
                     );
                     let highlight =
                         self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
+                    let palette = build_palette(ui.visuals().dark_mode, &self.state.app, highlight);
                     let mut copy_request: Option<CopyKind> = None;
                     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
-                    let response = egui::CentralPanel::default()
-                        .show_inside(ui, |ui| {
-                            HexView::new(&*file.source, &mut file.selection)
-                                .columns(self.state.app.hex_columns)
-                                .value_highlight(highlight)
-                                .context_menu(|ui| {
-                                    ui.add_enabled_ui(has_sel, |ui| {
-                                        if ui.button("Copy bytes").clicked() {
-                                            copy_request = Some(CopyKind::Bytes);
-                                            ui.close();
-                                        }
-                                        if ui.button("Copy hex string").clicked() {
-                                            copy_request = Some(CopyKind::Hex);
-                                            ui.close();
-                                        }
-                                    });
-                                })
-                                .show(ui)
+                    let pending_scroll = file.pending_scroll.take();
+                    let mut view = HexView::new(&*file.source, &mut file.selection)
+                        .columns(self.state.app.hex_columns)
+                        .value_highlight(highlight)
+                        .minimap(self.state.app.show_minimap);
+                    if let Some(p) = palette {
+                        view = view.palette(p);
+                    }
+                    if let Some(s) = pending_scroll {
+                        view = view.scroll_to(s);
+                    }
+                    let response = view
+                        .context_menu(|ui| {
+                            ui.add_enabled_ui(has_sel, |ui| {
+                                if ui.button("Copy bytes").clicked() {
+                                    copy_request = Some(CopyKind::Bytes);
+                                    ui.close();
+                                }
+                                if ui.button("Copy hex string").clicked() {
+                                    copy_request = Some(CopyKind::Hex);
+                                    ui.close();
+                                }
+                            });
                         })
-                        .inner;
+                        .show(ui);
                     file.hovered = response.hovered_offset;
+                    file.scroll_offset = response.scroll_offset;
+                    sync_tab_state(self.state, file);
                     if let Some(kind) = copy_request {
                         do_copy(ui.ctx(), file, kind);
                     }
@@ -357,11 +440,40 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
-        if let Tab::File(id) = tab {
-            self.files.remove(id);
+        if let Tab::File(id) = tab
+            && let Some(removed) = self.files.remove(id)
+            && let Some(path) = removed.path
+        {
+            self.state.open_tabs.retain(|t| t.path != path);
         }
         OnCloseResponse::Close
     }
+}
+
+/// Mirror the tab's in-memory selection + scroll into
+/// [`PersistedState::open_tabs`] so the save-on-dirty path picks it up.
+fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
+    let Some(path) = &file.path else { return };
+    if let Some(entry) = state.open_tabs.iter_mut().find(|t| t.path == *path) {
+        entry.selection = file.selection;
+        entry.scroll_offset = file.scroll_offset;
+    }
+}
+
+fn build_palette(
+    dark: bool,
+    settings: &crate::settings::AppSettings,
+    highlight: Option<hxy_view::ValueHighlight>,
+) -> Option<hxy_view::HighlightPalette> {
+    let mode = highlight?;
+    Some(match settings.byte_highlight_scheme {
+        crate::settings::ByteHighlightScheme::Class => {
+            hxy_view::HighlightPalette::Class(hxy_view::BytePalette::for_theme_and_mode(dark, mode))
+        }
+        crate::settings::ByteHighlightScheme::Value => {
+            hxy_view::HighlightPalette::Value(hxy_view::ValueGradient::for_theme_and_mode(dark, mode))
+        }
+    })
 }
 
 fn status_bar_ui(
@@ -372,13 +484,13 @@ fn status_bar_ui(
 ) {
     ui.horizontal(|ui| {
         if let Some(hov) = file.hovered {
-            let r = ui.add(
-                egui::Label::new(format!("Hover: {}", format_offset(hov.get(), base))).sense(egui::Sense::click()),
+            copyable_status_label(
+                ui,
+                &format!("Hover: {}", format_offset(hov.get(), base)),
+                Some(format_offset(hov.get(), base.toggle())),
+                new_base,
+                base,
             );
-            if r.clicked() {
-                *new_base = base.toggle();
-            }
-            r.on_hover_text(format_offset(hov.get(), base.toggle()));
         } else {
             ui.label("Hover: —");
         }
@@ -386,34 +498,63 @@ fn status_bar_ui(
         if let Some(sel) = file.selection {
             let range = sel.range();
             let last_inclusive = range.end().get().saturating_sub(1);
-            let label = if sel.is_caret() {
-                format!("Caret: {}", format_offset(range.start().get(), base))
-            } else {
-                format!(
-                    "Sel: {}–{} ({} bytes)",
-                    format_offset(range.start().get(), base),
-                    format_offset(last_inclusive, base),
-                    range.len().get(),
-                )
-            };
-            let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-            if r.clicked() {
-                *new_base = base.toggle();
-            }
-            let tooltip = if sel.is_caret() {
-                format_offset(range.start().get(), base.toggle())
-            } else {
-                format!(
-                    "{}–{}",
+            let (label, tooltip) = if sel.is_caret() {
+                (
+                    format!("Caret: {}", format_offset(range.start().get(), base)),
                     format_offset(range.start().get(), base.toggle()),
-                    format_offset(last_inclusive, base.toggle()),
+                )
+            } else {
+                (
+                    format!(
+                        "Sel: {}–{} ({} bytes)",
+                        format_offset(range.start().get(), base),
+                        format_offset(last_inclusive, base),
+                        range.len().get(),
+                    ),
+                    format!(
+                        "{}–{}",
+                        format_offset(range.start().get(), base.toggle()),
+                        format_offset(last_inclusive, base.toggle()),
+                    ),
                 )
             };
-            r.on_hover_text(tooltip);
+            copyable_status_label(ui, &label, Some(tooltip), new_base, base);
         } else {
             ui.label("Sel: —");
         }
+
+        let size = file.source.len().get();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            copyable_status_label(
+                ui,
+                &format!("Length: {}", format_offset(size, base)),
+                Some(format_offset(size, base.toggle())),
+                new_base,
+                base,
+            );
+        });
     });
+}
+
+/// Click to toggle offset base, hover for the alternate-base tooltip,
+/// and — while hovered — consume Cmd/Ctrl+C to copy the label's text.
+/// Consuming the shortcut keeps the hex-view selection copy handler
+/// from also firing in the same frame.
+fn copyable_status_label(
+    ui: &mut egui::Ui,
+    text: &str,
+    tooltip: Option<String>,
+    new_base: &mut crate::settings::OffsetBase,
+    base: crate::settings::OffsetBase,
+) {
+    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+    if r.clicked() {
+        *new_base = base.toggle();
+    }
+    let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
+    if r.hovered() && ui.ctx().input_mut(|i| i.consume_shortcut(&COPY_BYTES)) {
+        ui.ctx().copy_text(text.to_string());
+    }
 }
 
 fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
@@ -475,11 +616,32 @@ fn format_hex_string(bytes: &[u8]) -> String {
     out
 }
 
-fn welcome_ui(ui: &mut egui::Ui) {
+const WELCOME_OPEN_RECENT: &str = "hxy_welcome_open_recent";
+
+fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     ui.vertical_centered(|ui| {
         ui.add_space(32.0);
         ui.heading(hxy_i18n::t("app-name"));
         ui.label(hxy_i18n::t("app-tagline"));
+    });
+    ui.add_space(16.0);
+    ui.separator();
+    ui.add_space(8.0);
+    ui.heading(hxy_i18n::t("welcome-recent"));
+    if state.app.recent_files.is_empty() {
+        ui.weak(hxy_i18n::t("welcome-recent-empty"));
+        return;
+    }
+    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+        for entry in &state.app.recent_files {
+            let label = entry.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let row = ui
+                .add(egui::Button::new(label).wrap_mode(egui::TextWrapMode::Truncate))
+                .on_hover_text(entry.path.display().to_string());
+            if row.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(WELCOME_OPEN_RECENT), entry.path.clone()));
+            }
+        }
     });
 }
 
@@ -520,6 +682,25 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings) {
                 hxy_i18n::t("settings-byte-highlight-text"),
             );
         });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-byte-highlight-scheme"));
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut settings.byte_highlight_scheme,
+                crate::settings::ByteHighlightScheme::Class,
+                hxy_i18n::t("settings-byte-highlight-scheme-class"),
+            );
+            ui.selectable_value(
+                &mut settings.byte_highlight_scheme,
+                crate::settings::ByteHighlightScheme::Value,
+                hxy_i18n::t("settings-byte-highlight-scheme-value"),
+            );
+        });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-minimap"));
+        ui.checkbox(&mut settings.show_minimap, "");
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-offset-base"));

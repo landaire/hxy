@@ -28,6 +28,13 @@ settings-byte-highlight = Byte-value highlighting
 settings-byte-highlight-mode = Highlight mode
 settings-byte-highlight-background = Background
 settings-byte-highlight-text = Text
+settings-byte-highlight-scheme = Highlight scheme
+settings-byte-highlight-scheme-class = By class
+settings-byte-highlight-scheme-value = By value
+settings-minimap = Show minimap
+
+welcome-recent = Recent files
+welcome-recent-empty = No recent files yet.
 settings-offset-base = Offset base
 
 # Errors

@@ -28,7 +28,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
-    let (sink, loaded_app) = {
+    let (sink, loaded_app, loaded_tabs) = {
         let _guard = runtime.enter();
         match runtime.block_on(persist::open_db()) {
             Ok(pool) => {
@@ -39,17 +39,27 @@ fn main() -> eframe::Result<()> {
                         None
                     }
                 };
-                (Some(SaveSink::new(pool, Arc::clone(&runtime))), app_settings)
+                let tabs = match runtime.block_on(persist::load_open_tabs(&pool)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load open tabs — starting empty");
+                        None
+                    }
+                };
+                (Some(SaveSink::new(pool, Arc::clone(&runtime))), app_settings, tabs)
             }
             Err(e) => {
                 tracing::warn!(error = %e, "open settings database");
-                (None, None)
+                (None, None, None)
             }
         }
     };
 
-    let state =
-        shared(PersistedState { window: loaded_window.unwrap_or_default(), app: loaded_app.unwrap_or_default() });
+    let state = shared(PersistedState {
+        window: loaded_window.unwrap_or_default(),
+        app: loaded_app.unwrap_or_default(),
+        open_tabs: loaded_tabs.unwrap_or_default(),
+    });
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(hxy_app::APP_NAME)

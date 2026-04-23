@@ -8,10 +8,12 @@ use sqlx::SqlitePool;
 use crate::persist::PersistError;
 use crate::persist::PersistResult;
 use crate::settings::AppSettings;
+use crate::state::OpenTabState;
 use crate::window::WindowSettings;
 
 const KEY_WINDOW: &str = "window";
 const KEY_APP: &str = "app_settings";
+const KEY_OPEN_TABS: &str = "open_tabs";
 
 async fn fetch(pool: &SqlitePool, key: &str) -> PersistResult<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
@@ -56,4 +58,12 @@ pub async fn load_app_settings(pool: &SqlitePool) -> PersistResult<Option<AppSet
 
 pub async fn store_app_settings(pool: &SqlitePool, s: &AppSettings) -> PersistResult<()> {
     store(pool, KEY_APP, s).await
+}
+
+pub async fn load_open_tabs(pool: &SqlitePool) -> PersistResult<Option<Vec<OpenTabState>>> {
+    load(pool, KEY_OPEN_TABS).await
+}
+
+pub async fn store_open_tabs(pool: &SqlitePool, tabs: &[OpenTabState]) -> PersistResult<()> {
+    store(pool, KEY_OPEN_TABS, &tabs).await
 }

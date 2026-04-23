@@ -34,6 +34,12 @@ pub struct OpenFile {
     /// Last-hovered byte offset reported by the hex view — surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
     pub hovered: Option<ByteOffset>,
+    /// Most recent scroll offset reported by the hex view.
+    pub scroll_offset: f32,
+    /// When `Some`, the widget should scroll to this offset on its next
+    /// frame. Used to restore saved scroll position on reopen. Cleared
+    /// after one frame so the user can scroll freely afterward.
+    pub pending_scroll: Option<f32>,
 }
 
 impl OpenFile {
@@ -47,6 +53,8 @@ impl OpenFile {
             source: Arc::new(MemorySource::new(bytes)),
             selection: None,
             hovered: None,
+            scroll_offset: 0.0,
+            pending_scroll: None,
         }
     }
 }
