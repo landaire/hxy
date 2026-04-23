@@ -47,3 +47,10 @@ settings-offset-base = Offset base
 # Errors
 error-open-failed = Failed to open file
 error-read-failed = Failed to read file
+
+# Duplicate-open dialog
+duplicate-open-title = File already open
+duplicate-open-body = This file is already open in another tab.
+duplicate-open-focus = Go to existing tab
+duplicate-open-new-tab = Open in new tab
+duplicate-open-cancel = Cancel

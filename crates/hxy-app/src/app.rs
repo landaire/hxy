@@ -45,6 +45,21 @@ pub struct HxyApp {
     /// settings changes into the live context without re-running every
     /// frame.
     applied_zoom: f32,
+
+    /// An open request that collided with an already-open tab. Held
+    /// here while the modal asks the user whether to focus the
+    /// existing tab or open a second copy. `None` outside that window.
+    pending_duplicate: Option<PendingDuplicate>,
+}
+
+/// A deferred filesystem-open request awaiting the user's choice in
+/// the duplicate-open dialog. Retains the bytes we already read so we
+/// don't hit the disk twice.
+struct PendingDuplicate {
+    display_name: String,
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+    existing: FileId,
 }
 
 impl HxyApp {
@@ -75,6 +90,7 @@ impl HxyApp {
             prev_window: None,
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
+            pending_duplicate: None,
         }
     }
 
@@ -116,6 +132,43 @@ impl HxyApp {
         restore_scroll: Option<f32>,
     ) -> FileId {
         self.open(display_name, Some(TabSource::Filesystem(path)), bytes, restore_selection, restore_scroll, false)
+    }
+
+    /// User-facing open: if the path is already in another tab, stash
+    /// the request and show a "focus existing vs open duplicate"
+    /// modal on the next frame. Otherwise opens straight away.
+    ///
+    /// Restore paths deliberately bypass this — reopening a file
+    /// across restarts shouldn't prompt.
+    pub fn request_open_filesystem(
+        &mut self,
+        display_name: impl Into<String>,
+        path: std::path::PathBuf,
+        bytes: Vec<u8>,
+    ) {
+        let display_name = display_name.into();
+        if let Some(existing) = self.existing_filesystem_tab(&path) {
+            self.pending_duplicate =
+                Some(PendingDuplicate { display_name, path, bytes, existing });
+            return;
+        }
+        self.open_filesystem(display_name, path, bytes, None, None);
+    }
+
+    fn existing_filesystem_tab(&self, path: &std::path::Path) -> Option<FileId> {
+        self.files.iter().find_map(|(id, f)| match &f.source_kind {
+            Some(TabSource::Filesystem(p)) if p == path => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// Move dock focus to the tab backing `file_id`, if found.
+    fn focus_file_tab(&mut self, file_id: FileId) {
+        let Some(path) = self.dock.find_tab(&Tab::File(file_id)) else { return };
+        let node_path = path.node_path();
+        // Ignore errors — the worst case is the tab isn't focused.
+        let _ = self.dock.set_active_tab(path);
+        self.dock.set_focused_node_and_surface(node_path);
     }
 
     /// Open a new file tab with the given display name, persistent
@@ -301,9 +354,76 @@ impl eframe::App for HxyApp {
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
+        render_duplicate_open_dialog(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
+}
+
+/// Modal dialog shown when a user-facing open request hit a path
+/// that's already open in another tab. Offers to focus the existing
+/// tab, open a duplicate, or cancel. Held in `app.pending_duplicate`
+/// so the decision survives across frames.
+fn render_duplicate_open_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pending_duplicate.is_none() {
+        return;
+    }
+    // Local copy of the display name so we can borrow `app` mutably
+    // inside the modal body.
+    let (name, path_display) = {
+        let p = app.pending_duplicate.as_ref().unwrap();
+        (p.display_name.clone(), p.path.display().to_string())
+    };
+
+    let mut action: Option<DuplicateAction> = None;
+    let mut open = true;
+    egui::Window::new(hxy_i18n::t("duplicate-open-title"))
+        .id(egui::Id::new("hxy_duplicate_open_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(hxy_i18n::t("duplicate-open-body"));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&name).strong());
+            ui.label(egui::RichText::new(&path_display).weak());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("duplicate-open-focus")).clicked() {
+                    action = Some(DuplicateAction::Focus);
+                }
+                if ui.button(hxy_i18n::t("duplicate-open-new-tab")).clicked() {
+                    action = Some(DuplicateAction::OpenNewTab);
+                }
+                if ui.button(hxy_i18n::t("duplicate-open-cancel")).clicked() {
+                    action = Some(DuplicateAction::Cancel);
+                }
+            });
+        });
+
+    // Closing the window via its X button counts as cancel.
+    if !open && action.is_none() {
+        action = Some(DuplicateAction::Cancel);
+    }
+
+    let Some(action) = action else { return };
+    let pending = app.pending_duplicate.take().unwrap();
+    match action {
+        DuplicateAction::Focus => {
+            app.focus_file_tab(pending.existing);
+        }
+        DuplicateAction::OpenNewTab => {
+            app.open_filesystem(pending.display_name, pending.path, pending.bytes, None, None);
+        }
+        DuplicateAction::Cancel => {}
+    }
+}
+
+enum DuplicateAction {
+    Focus,
+    OpenNewTab,
+    Cancel,
 }
 
 /// App-level copy shortcut handler. Runs after the dock renders, so
@@ -353,7 +473,7 @@ fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                app.open_filesystem(name, path, bytes, None, None);
+                app.request_open_filesystem(name, path, bytes);
             }
             Err(e) => {
                 tracing::warn!(error = %e, path = %path.display(), "open recent file");
@@ -404,7 +524,7 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    app.open_filesystem(name, path, bytes, None, None);
+                    app.request_open_filesystem(name, path, bytes);
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, path = %path.display(), "open dropped file");
@@ -558,7 +678,7 @@ fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::c
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    app.open_filesystem(name, path, bytes, None, None);
+                    app.request_open_filesystem(name, path, bytes);
                 }
                 Err(e) => tracing::warn!(error = %e, path = %path.display(), "open recent"),
             }
@@ -890,7 +1010,7 @@ fn handle_open_file(app: &mut HxyApp) {
     #[cfg(not(target_arch = "wasm32"))]
     match pick_and_read_file() {
         Ok((name, path, bytes)) => {
-            app.open_filesystem(name, path, bytes, None, None);
+            app.request_open_filesystem(name, path, bytes);
         }
         Err(crate::file::FileOpenError::Cancelled) => {}
         Err(e) => {
