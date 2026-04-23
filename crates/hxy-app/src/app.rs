@@ -88,7 +88,7 @@ impl HxyApp {
     }
 
     pub fn open_in_memory(&mut self, display_name: impl Into<String>, bytes: Vec<u8>) -> FileId {
-        self.open(display_name, None, bytes, None, None)
+        self.open(display_name, None, bytes, None, None, false)
     }
 
     pub fn open_filesystem(
@@ -99,13 +99,17 @@ impl HxyApp {
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
     ) -> FileId {
-        self.open(display_name, Some(TabSource::Filesystem(path)), bytes, restore_selection, restore_scroll)
+        self.open(display_name, Some(TabSource::Filesystem(path)), bytes, restore_selection, restore_scroll, false)
     }
 
     /// Open a new file tab with the given display name, persistent
     /// source identity, and byte contents. Runs format detection
     /// against the source's first bytes and caches the matching handler
     /// (if any) on the tab so the toolbar command can enable itself.
+    /// When `restore_show_vfs_tree` is true and a handler matches, the
+    /// source is mounted and the tree panel opens immediately — used by
+    /// restore-on-launch so children of mounted archives can find their
+    /// parent mount.
     pub fn open(
         &mut self,
         display_name: impl Into<String>,
@@ -113,6 +117,7 @@ impl HxyApp {
         bytes: Vec<u8>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
+        restore_show_vfs_tree: bool,
     ) -> FileId {
         let id = self.fresh_file_id();
         let mut file = OpenFile::from_bytes(id, display_name, source_kind.clone(), bytes);
@@ -131,6 +136,18 @@ impl HxyApp {
             file.detected_handler = self.registry.detect(&head);
         }
 
+        if restore_show_vfs_tree
+            && let Some(handler) = file.detected_handler.clone()
+        {
+            match handler.mount(file.source.clone()) {
+                Ok(mount) => {
+                    file.mount = Some(Arc::new(mount));
+                    file.show_vfs_tree = true;
+                }
+                Err(e) => tracing::warn!(error = %e, handler = handler.name(), "restore mount"),
+            }
+        }
+
         self.files.insert(id, file);
         self.dock.push_to_focused_leaf(Tab::File(id));
 
@@ -144,6 +161,7 @@ impl HxyApp {
                     source,
                     selection: restore_selection,
                     scroll_offset: restore_scroll.unwrap_or(0.0),
+                    show_vfs_tree: restore_show_vfs_tree,
                 });
             }
         }
@@ -163,9 +181,20 @@ impl HxyApp {
         // before any child that references them.
         tabs.sort_by_key(|t| t.source.depth());
 
+        // Any tab that is a `parent` of another persisted tab must mount
+        // on restore, otherwise the child can't find its source bytes.
+        let parent_sources: std::collections::HashSet<TabSource> = tabs
+            .iter()
+            .filter_map(|t| match &t.source {
+                TabSource::VfsEntry { parent, .. } => Some((**parent).clone()),
+                _ => None,
+            })
+            .collect();
+
         let mut surviving: Vec<crate::state::OpenTabState> = Vec::new();
         for tab in tabs {
-            let result = self.restore_one_tab(&tab);
+            let must_mount = parent_sources.contains(&tab.source);
+            let result = self.restore_one_tab(&tab, must_mount);
             match result {
                 Ok(()) => surviving.push(tab),
                 Err(e) => {
@@ -177,7 +206,12 @@ impl HxyApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn restore_one_tab(&mut self, tab: &crate::state::OpenTabState) -> Result<(), crate::file::FileOpenError> {
+    fn restore_one_tab(
+        &mut self,
+        tab: &crate::state::OpenTabState,
+        must_mount: bool,
+    ) -> Result<(), crate::file::FileOpenError> {
+        let show_tree = tab.show_vfs_tree || must_mount;
         match &tab.source {
             TabSource::Filesystem(path) => {
                 let bytes = std::fs::read(path)
@@ -186,7 +220,7 @@ impl HxyApp {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset));
+                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), show_tree);
                 Ok(())
             }
             TabSource::VfsEntry { parent, entry_path } => {
@@ -204,7 +238,7 @@ impl HxyApp {
                 let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
                     .map_err(|e| crate::file::FileOpenError::Read { path: entry_path.into(), source: e })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
-                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset));
+                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), show_tree);
                 Ok(())
             }
         }
@@ -434,7 +468,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
         };
         let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
         let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
-        app.open(name, Some(source), bytes, None, None);
+        app.open(name, Some(source), bytes, None, None, false);
     }
 }
 
@@ -817,6 +851,7 @@ fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
     if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
         entry.selection = file.selection;
         entry.scroll_offset = file.scroll_offset;
+        entry.show_vfs_tree = file.show_vfs_tree;
     }
 }
 

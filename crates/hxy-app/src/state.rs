@@ -25,6 +25,10 @@ pub struct OpenTabState {
     pub selection: Option<Selection>,
     #[serde(default)]
     pub scroll_offset: f32,
+    /// Whether the VFS tree side panel was open last time this tab was
+    /// active. Only meaningful for tabs that mount a VFS.
+    #[serde(default)]
+    pub show_vfs_tree: bool,
 }
 
 #[derive(Clone, Default, PartialEq)]
