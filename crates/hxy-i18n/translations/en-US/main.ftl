@@ -38,6 +38,9 @@ settings-minimap-colored = Colored minimap
 
 welcome-recent = Recent files
 welcome-recent-empty = No recent files yet.
+
+toolbar-open-file = Open file…
+toolbar-browse-archive = Browse archive
 settings-offset-base = Offset base
 
 # Errors

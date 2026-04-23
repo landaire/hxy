@@ -27,6 +27,7 @@ pub struct HxyApp {
     state: SharedPersistedState,
     next_file_id: u64,
     registry: VfsRegistry,
+    commands: Vec<Box<dyn crate::commands::ToolbarCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
     sink: Option<crate::persist::SaveSink>,
@@ -60,6 +61,7 @@ impl HxyApp {
             state,
             next_file_id: 1,
             registry,
+            commands: crate::commands::default_commands(),
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
@@ -231,6 +233,7 @@ impl eframe::App for HxyApp {
         let snapshot_before = self.state.read().clone();
 
         top_menu_bar(ui, self);
+        render_toolbar_and_apply(ui, self);
 
         {
             let mut state_guard = self.state.write();
@@ -403,6 +406,95 @@ fn capture_window_on_drag_end(
     let mut g = state.write();
     if g.window != current {
         g.window = current;
+    }
+}
+
+fn render_toolbar_and_apply(ui: &mut egui::Ui, app: &mut HxyApp) {
+    use crate::commands::CommandEffect;
+    use crate::commands::ToolbarCtx;
+
+    let active_file_id = active_file_id(app);
+    // Resolve styles + icon font once outside the borrow so the command
+    // trait objects can read them via the context below.
+    let mut effects: Vec<CommandEffect> = Vec::new();
+
+    // Snapshot the command list off `app` so we can borrow other fields
+    // of `app` through `ToolbarCtx`. Commands are `Send + Sync` and are
+    // owned trait objects — moving them out and back is cheap (they're
+    // zero-size types in practice).
+    let commands = std::mem::take(&mut app.commands);
+
+    egui::Panel::top("hxy_toolbar")
+        .resizable(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)))
+        .show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                let mut state_guard = app.state.write();
+                let active_file = active_file_id.and_then(|id| app.files.get_mut(&id));
+                let ctx_handle = ui.ctx().clone();
+                let mut cx = ToolbarCtx {
+                    ctx: &ctx_handle,
+                    state: &mut state_guard,
+                    active_file,
+                    active_file_id,
+                    effects: &mut effects,
+                };
+                for cmd in &commands {
+                    let enabled = cmd.enabled(&cx);
+                    let label = cmd.label(&cx);
+                    let icon = cmd.icon();
+                    let btn = egui::Button::new(egui::RichText::new(icon).size(16.0)).frame(false);
+                    let r = ui.add_enabled(enabled, btn).on_hover_text(&label);
+                    if r.clicked() {
+                        cmd.invoke(&mut cx);
+                    }
+                }
+            });
+        });
+
+    app.commands = commands;
+
+    for effect in effects {
+        apply_command_effect(ui.ctx(), app, effect);
+    }
+}
+
+fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
+    use crate::commands::CommandEffect;
+    match effect {
+        CommandEffect::OpenFileDialog => handle_open_file(app),
+        CommandEffect::MountActiveFile => mount_active_file(app),
+        CommandEffect::OpenRecent(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    app.open_filesystem(name, path, bytes, None, None);
+                }
+                Err(e) => tracing::warn!(error = %e, path = %path.display(), "open recent"),
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = path;
+        }
+    }
+}
+
+/// Invoke the active tab's detected handler to mount its source into a
+/// browsable VFS. On success, the tree panel picks it up automatically
+/// because it reads `file.mount`.
+fn mount_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    if file.mount.is_some() {
+        return;
+    }
+    let Some(handler) = file.detected_handler.clone() else { return };
+    match handler.mount(file.source.clone()) {
+        Ok(mount) => file.mount = Some(Arc::new(mount)),
+        Err(e) => tracing::warn!(error = %e, handler = handler.name(), "mount vfs"),
     }
 }
 

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod commands;
 pub mod file;
 pub mod settings;
 pub mod state;
