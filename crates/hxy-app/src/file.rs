@@ -6,7 +6,7 @@ use std::sync::Arc;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
-use rootcause::Report;
+use thiserror::Error;
 
 /// Identifier for an open-file tab. Stable across the tab's lifetime so
 /// egui_dock can refer to it even as the tab moves around the dock tree.
@@ -46,16 +46,14 @@ impl OpenFile {
     }
 }
 
-/// A file currently in the process of being opened. Replaced by an
-/// [`OpenFile`] (or dropped on error) once the read finishes.
-pub struct PendingFile {
-    pub id: FileId,
-    pub display_name: String,
-    pub path: Option<PathBuf>,
-}
-
-/// Result of a background file load.
-pub enum LoadResult {
-    Ok { id: FileId, bytes: Vec<u8> },
-    Err { id: FileId, error: Report },
+#[derive(Debug, Error)]
+pub enum FileOpenError {
+    #[error("user cancelled the file picker")]
+    Cancelled,
+    #[error("read file {path}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }

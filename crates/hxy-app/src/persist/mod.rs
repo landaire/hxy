@@ -2,19 +2,12 @@
 
 use std::path::PathBuf;
 
-use rootcause::Report;
-use rootcause::prelude::ResultExt;
-use rootcause::report;
-
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-#[error("cannot resolve storage directory")]
-struct StorageDirMissing;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
+use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
+use thiserror::Error;
 
 mod kv;
 mod save;
@@ -23,11 +16,46 @@ pub use kv::load_app_settings;
 pub use kv::load_window_settings;
 pub use kv::store_app_settings;
 pub use kv::store_window_settings;
-pub use save::SaveHandle;
-pub use save::spawn_save_task;
+pub use save::SaveSink;
 
-/// Per-platform data directory for hxy. Returns `None` only when the
-/// platform has no obvious home/data path (very rare).
+#[derive(Debug, Error)]
+pub enum PersistError {
+    #[error("cannot resolve storage directory for this platform")]
+    StorageDirMissing,
+    #[error("create storage directory {path}")]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("open sqlite connection pool at {path}")]
+    OpenPool {
+        path: PathBuf,
+        #[source]
+        source: sqlx::Error,
+    },
+    #[error("run sqlite migrations")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+    #[error("query settings table")]
+    Query(#[source] sqlx::Error),
+    #[error("serialize setting {key}")]
+    Serialize {
+        key: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("deserialize setting {key}")]
+    Deserialize {
+        key: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("build tokio runtime")]
+    Runtime(#[source] std::io::Error),
+}
+
+pub type PersistResult<T> = Result<T, PersistError>;
+
 pub fn storage_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -53,35 +81,33 @@ fn db_path() -> Option<PathBuf> {
     storage_dir().map(|d| d.join("hxy.db"))
 }
 
-/// Open (creating if needed) the settings database and run migrations.
-pub async fn open_db() -> Result<SqlitePool, Report> {
-    let path = db_path().ok_or_else(|| report!(StorageDirMissing).into_dynamic())?;
+pub async fn open_db() -> PersistResult<SqlitePool> {
+    let path = db_path().ok_or(PersistError::StorageDirMissing)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create storage dir")?;
+        std::fs::create_dir_all(parent)
+            .map_err(|source| PersistError::CreateDir { path: parent.to_path_buf(), source })?;
     }
     let opts = SqliteConnectOptions::new()
         .filename(&path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+    let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(opts)
         .await
-        .context("open sqlite pool")?;
-    sqlx::migrate!("./migrations").run(&pool).await.context("run migrations")?;
+        .map_err(|source| PersistError::OpenPool { path: path.clone(), source })?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
 
-/// Blocking variant of [`load_window_settings`] so the pre-eframe startup
-/// code can restore the window geometry without establishing the full
-/// tokio runtime.
-pub fn load_window_settings_sync() -> Option<crate::window::WindowSettings> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+/// Blocking variant of [`load_window_settings`] for pre-eframe startup.
+pub fn load_window_settings_sync() -> PersistResult<Option<crate::window::WindowSettings>> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(PersistError::Runtime)?;
     rt.block_on(async {
-        let pool = open_db().await.ok()?;
-        let settings = load_window_settings(&pool).await.ok().flatten();
+        let pool = open_db().await?;
+        let settings = load_window_settings(&pool).await?;
         pool.close().await;
-        settings
+        Ok(settings)
     })
 }

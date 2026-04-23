@@ -1849,7 +1849,6 @@ dependencies = [
  "js-sys",
  "parking_lot",
  "rfd",
- "rootcause",
  "serde",
  "serde_json",
  "sqlx",

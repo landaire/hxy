@@ -1,6 +1,7 @@
 //! Persisted state shared between the UI thread and (on desktop) the
-//! background save task. Held behind an `Arc<RwLock<>>` so the save task
-//! can read without blocking the UI.
+//! synchronous save sink. The only mutable access path goes through
+//! [`HxyApp::persist_mut`](crate::app::HxyApp::persist_mut) so every
+//! change gets persisted unconditionally.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use parking_lot::RwLock;
 use crate::settings::AppSettings;
 use crate::window::WindowSettings;
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct PersistedState {
     pub window: WindowSettings,
     pub app: AppSettings,

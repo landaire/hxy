@@ -15,22 +15,37 @@ use crate::file::OpenFile;
 use crate::state::PersistedState;
 use crate::state::SharedPersistedState;
 use crate::tabs::Tab;
+use crate::window::WindowSettings;
 
 pub struct HxyApp {
     dock: DockState<Tab>,
     files: HashMap<FileId, OpenFile>,
     state: SharedPersistedState,
     next_file_id: u64,
+
     #[cfg(not(target_arch = "wasm32"))]
-    save_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
-    last_saved_zoom: f32,
+    sink: Option<crate::persist::SaveSink>,
+
+    /// Window geometry captured last frame, used to detect drag-end: the
+    /// first frame where `prev_window == current_window` and the saved
+    /// value still differs triggers the persistence write.
+    prev_window: Option<WindowSettings>,
+    last_saved_window: Option<WindowSettings>,
+
+    /// Zoom factor we last applied to the egui context. Used to push
+    /// settings changes into the live context without re-running every
+    /// frame.
+    applied_zoom: f32,
 }
 
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
-        let initial_zoom = state.read().app.zoom_factor;
+        let (initial_zoom, initial_window) = {
+            let s = state.read();
+            (s.app.zoom_factor, s.window)
+        };
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
@@ -38,14 +53,16 @@ impl HxyApp {
             state,
             next_file_id: 1,
             #[cfg(not(target_arch = "wasm32"))]
-            save_notify: None,
-            last_saved_zoom: initial_zoom,
+            sink: None,
+            prev_window: None,
+            last_saved_window: Some(initial_window),
+            applied_zoom: initial_zoom,
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_save_notify(mut self, notify: std::sync::Arc<tokio::sync::Notify>) -> Self {
-        self.save_notify = Some(notify);
+    pub fn with_sink(mut self, sink: crate::persist::SaveSink) -> Self {
+        self.sink = Some(sink);
         self
     }
 
@@ -56,70 +73,98 @@ impl HxyApp {
     }
 
     pub fn open_in_memory(&mut self, display_name: impl Into<String>, bytes: Vec<u8>) -> FileId {
+        self.open_in_memory_with_path(display_name, None, bytes)
+    }
+
+    pub fn open_in_memory_with_path(
+        &mut self,
+        display_name: impl Into<String>,
+        path: Option<std::path::PathBuf>,
+        bytes: Vec<u8>,
+    ) -> FileId {
         let id = self.fresh_file_id();
-        let file = OpenFile::from_bytes(id, display_name, None, bytes);
+        let file = OpenFile::from_bytes(id, display_name, path, bytes);
         self.files.insert(id, file);
         self.dock.push_to_focused_leaf(Tab::File(id));
         id
     }
 
-    fn notify_save(&self) {
+    /// Save the current state if it has drifted from what was last written.
+    /// No-op on wasm (no sink yet).
+    fn save_if_dirty(&mut self, snapshot_before: &PersistedState) {
+        let after = self.state.read().clone();
+        if *snapshot_before == after {
+            return;
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(notify) = &self.save_notify {
-            notify.notify_one();
+        if let Some(sink) = &self.sink {
+            if let Err(e) = sink.save(&after) {
+                tracing::warn!(error = %e, "save persisted state");
+            } else {
+                self.last_saved_window = Some(after.window);
+            }
         }
     }
 }
 
 impl eframe::App for HxyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let before = serialize_settings_for_diff(&self.state.read());
+        let snapshot_before = self.state.read().clone();
 
         top_menu_bar(ui, self);
 
-        let mut state_guard = self.state.write();
-        let mut viewer = HxyTabViewer { files: &mut self.files, state: &mut state_guard };
-        let style = Style::from_egui(ui.style());
-        DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
-        drop(state_guard);
-
-        let app_settings_now = self.state.read().app.clone();
-        if (app_settings_now.zoom_factor - self.last_saved_zoom).abs() > f32::EPSILON {
-            ui.ctx().set_zoom_factor(app_settings_now.zoom_factor);
-            self.last_saved_zoom = app_settings_now.zoom_factor;
+        {
+            let mut state_guard = self.state.write();
+            let mut viewer = HxyTabViewer { files: &mut self.files, state: &mut state_guard };
+            let style = Style::from_egui(ui.style());
+            DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
         }
 
-        capture_window_info(ui.ctx(), &self.state, app_settings_now.zoom_factor);
+        apply_zoom_change(ui.ctx(), &self.state, &mut self.applied_zoom);
 
-        let after = serialize_settings_for_diff(&self.state.read());
-        if before != after {
-            self.notify_save();
-        }
+        capture_window_on_drag_end(ui.ctx(), &self.state, &mut self.prev_window, &self.last_saved_window);
+
+        self.save_if_dirty(&snapshot_before);
     }
 }
 
-fn serialize_settings_for_diff(state: &PersistedState) -> Option<String> {
-    serde_json::to_string(&(&state.app, &state.window)).ok()
+/// Push the current `settings.zoom_factor` into the egui context whenever
+/// it drifts from what we last applied.
+fn apply_zoom_change(ctx: &egui::Context, state: &SharedPersistedState, applied: &mut f32) {
+    let target = state.read().app.zoom_factor;
+    if (target - *applied).abs() > f32::EPSILON {
+        ctx.set_zoom_factor(target);
+        *applied = target;
+    }
 }
 
-fn capture_window_info(ctx: &egui::Context, state: &SharedPersistedState, zoom_factor: f32) {
-    ctx.input(|i| {
-        let Some(info) = i.raw.viewports.get(&i.raw.viewport_id) else {
-            return;
-        };
-        let new = crate::window::WindowSettings::from_viewport_info(info, zoom_factor);
-        let mut g = state.write();
-        if !window_matches(&g.window, &new) {
-            g.window = new;
-        }
-    });
-}
-
-fn window_matches(a: &crate::window::WindowSettings, b: &crate::window::WindowSettings) -> bool {
-    a.inner_size_points == b.inner_size_points
-        && a.outer_position_pixels == b.outer_position_pixels
-        && a.fullscreen == b.fullscreen
-        && a.maximized == b.maximized
+/// Read the current viewport's window geometry; push it into the shared
+/// state only when geometry has been stable for at least one frame and
+/// differs from the last persisted value. This is the drag-end signal.
+fn capture_window_on_drag_end(
+    ctx: &egui::Context,
+    state: &SharedPersistedState,
+    prev_window: &mut Option<WindowSettings>,
+    last_saved_window: &Option<WindowSettings>,
+) {
+    let zoom = state.read().app.zoom_factor;
+    let current = ctx
+        .input(|i| i.raw.viewports.get(&i.raw.viewport_id).map(|info| WindowSettings::from_viewport_info(info, zoom)));
+    let Some(current) = current else {
+        return;
+    };
+    let stable = prev_window.as_ref() == Some(&current);
+    *prev_window = Some(current);
+    if !stable {
+        return;
+    }
+    if last_saved_window.as_ref() == Some(&current) {
+        return;
+    }
+    let mut g = state.write();
+    if g.window != current {
+        g.window = current;
+    }
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -134,7 +179,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
             ui.menu_button(hxy_i18n::t("menu-file"), |ui| {
                 if ui.button(hxy_i18n::t("menu-file-open")).clicked() {
                     ui.close();
-                    open_file_placeholder(app);
+                    handle_open_file(app);
                 }
                 ui.separator();
                 if ui.button(hxy_i18n::t("menu-file-quit")).clicked() {
@@ -148,9 +193,32 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     });
 }
 
-fn open_file_placeholder(app: &mut HxyApp) {
-    let bytes: Vec<u8> = (0u8..=255).collect();
-    app.open_in_memory("sample", bytes);
+fn handle_open_file(app: &mut HxyApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    match pick_and_read_file() {
+        Ok((name, path, bytes)) => {
+            app.open_in_memory_with_path(name, Some(path), bytes);
+        }
+        Err(crate::file::FileOpenError::Cancelled) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "open file");
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pick_and_read_file() -> Result<(String, std::path::PathBuf, Vec<u8>), crate::file::FileOpenError> {
+    let Some(path) = rfd::FileDialog::new().pick_file() else {
+        return Err(crate::file::FileOpenError::Cancelled);
+    };
+    let bytes =
+        std::fs::read(&path).map_err(|source| crate::file::FileOpenError::Read { path: path.clone(), source })?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    Ok((name, path, bytes))
 }
 
 struct HxyTabViewer<'a> {

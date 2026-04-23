@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// General application preferences that are safe to persist across sessions.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     /// User's preferred language. `None` means follow the system locale at

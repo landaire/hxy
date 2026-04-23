@@ -7,7 +7,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
     pub inner_size_points: Option<[f32; 2]>,
