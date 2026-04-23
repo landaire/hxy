@@ -1,0 +1,2400 @@
+---
+source: crates/hxy-010-lang/tests/lexer_snapshots.rs
+expression: tokens
+---
+[
+    Token {
+        kind: Keyword(
+            Typedef,
+        ),
+        span: Span {
+            start: 327,
+            end: 334,
+        },
+    },
+    Token {
+        kind: Ident(
+            "QWORD",
+        ),
+        span: Span {
+            start: 335,
+            end: 340,
+        },
+    },
+    Token {
+        kind: Ident(
+            "ULONG64",
+        ),
+        span: Span {
+            start: 341,
+            end: 348,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 348,
+            end: 349,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Typedef,
+        ),
+        span: Span {
+            start: 350,
+            end: 357,
+        },
+    },
+    Token {
+        kind: Ident(
+            "QWORD",
+        ),
+        span: Span {
+            start: 358,
+            end: 363,
+        },
+    },
+    Token {
+        kind: Ident(
+            "LONGLONG",
+        ),
+        span: Span {
+            start: 364,
+            end: 372,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 372,
+            end: 373,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Struct,
+        ),
+        span: Span {
+            start: 375,
+            end: 381,
+        },
+    },
+    Token {
+        kind: Ident(
+            "MSSTRING",
+        ),
+        span: Span {
+            start: 382,
+            end: 390,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 391,
+            end: 392,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 395,
+            end: 399,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Size",
+        ),
+        span: Span {
+            start: 400,
+            end: 404,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 404,
+            end: 405,
+        },
+    },
+    Token {
+        kind: Ident(
+            "CHAR",
+        ),
+        span: Span {
+            start: 408,
+            end: 412,
+        },
+    },
+    Token {
+        kind: Ident(
+            "String",
+        ),
+        span: Span {
+            start: 413,
+            end: 419,
+        },
+    },
+    Token {
+        kind: LBracket,
+        span: Span {
+            start: 419,
+            end: 420,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Size",
+        ),
+        span: Span {
+            start: 420,
+            end: 424,
+        },
+    },
+    Token {
+        kind: RBracket,
+        span: Span {
+            start: 424,
+            end: 425,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 425,
+            end: 426,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 432,
+            end: 437,
+        },
+    },
+    Token {
+        kind: Ident(
+            "uint",
+        ),
+        span: Span {
+            start: 438,
+            end: 442,
+        },
+    },
+    Token {
+        kind: Ident(
+            "pos",
+        ),
+        span: Span {
+            start: 443,
+            end: 446,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 447,
+            end: 448,
+        },
+    },
+    Token {
+        kind: Ident(
+            "FTell",
+        ),
+        span: Span {
+            start: 449,
+            end: 454,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 454,
+            end: 455,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 455,
+            end: 456,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 456,
+            end: 457,
+        },
+    },
+    Token {
+        kind: Keyword(
+            If,
+        ),
+        span: Span {
+            start: 460,
+            end: 462,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 462,
+            end: 463,
+        },
+    },
+    Token {
+        kind: Ident(
+            "pos",
+        ),
+        span: Span {
+            start: 463,
+            end: 466,
+        },
+    },
+    Token {
+        kind: Amp,
+        span: Span {
+            start: 467,
+            end: 468,
+        },
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        span: Span {
+            start: 469,
+            end: 470,
+        },
+    },
+    Token {
+        kind: EqEq,
+        span: Span {
+            start: 471,
+            end: 473,
+        },
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        span: Span {
+            start: 474,
+            end: 475,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 475,
+            end: 476,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 477,
+            end: 478,
+        },
+    },
+    Token {
+        kind: Ident(
+            "CHAR",
+        ),
+        span: Span {
+            start: 483,
+            end: 487,
+        },
+    },
+    Token {
+        kind: Ident(
+            "padding",
+        ),
+        span: Span {
+            start: 488,
+            end: 495,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 495,
+            end: 496,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 499,
+            end: 500,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 501,
+            end: 502,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 502,
+            end: 503,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 505,
+            end: 510,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DWORD",
+        ),
+        span: Span {
+            start: 511,
+            end: 516,
+        },
+    },
+    Token {
+        kind: Ident(
+            "idx",
+        ),
+        span: Span {
+            start: 517,
+            end: 520,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 521,
+            end: 522,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 523,
+            end: 524,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 524,
+            end: 525,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 526,
+            end: 531,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DWORD",
+        ),
+        span: Span {
+            start: 532,
+            end: 537,
+        },
+    },
+    Token {
+        kind: Ident(
+            "addr",
+        ),
+        span: Span {
+            start: 538,
+            end: 542,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 543,
+            end: 544,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 545,
+            end: 546,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 546,
+            end: 547,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Typedef,
+        ),
+        span: Span {
+            start: 548,
+            end: 555,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Struct,
+        ),
+        span: Span {
+            start: 556,
+            end: 562,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 563,
+            end: 564,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 567,
+            end: 571,
+        },
+    },
+    Token {
+        kind: Ident(
+            "VersionIndex",
+        ),
+        span: Span {
+            start: 572,
+            end: 584,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 584,
+            end: 585,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 588,
+            end: 592,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DeviceIndex",
+        ),
+        span: Span {
+            start: 593,
+            end: 604,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 604,
+            end: 605,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DWORD",
+        ),
+        span: Span {
+            start: 608,
+            end: 613,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Length",
+        ),
+        span: Span {
+            start: 614,
+            end: 620,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 620,
+            end: 621,
+        },
+    },
+    Token {
+        kind: Ident(
+            "FILETIME",
+        ),
+        span: Span {
+            start: 624,
+            end: 632,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Timestamp",
+        ),
+        span: Span {
+            start: 633,
+            end: 642,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 642,
+            end: 643,
+        },
+    },
+    Token {
+        kind: Ident(
+            "MSSTRING",
+        ),
+        span: Span {
+            start: 653,
+            end: 661,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Path",
+        ),
+        span: Span {
+            start: 662,
+            end: 666,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 666,
+            end: 667,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 846,
+            end: 851,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 852,
+            end: 856,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 857,
+            end: 865,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 866,
+            end: 867,
+        },
+    },
+    Token {
+        kind: Minus,
+        span: Span {
+            start: 868,
+            end: 869,
+        },
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        span: Span {
+            start: 869,
+            end: 870,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 870,
+            end: 871,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 874,
+            end: 879,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DWORD",
+        ),
+        span: Span {
+            start: 880,
+            end: 885,
+        },
+    },
+    Token {
+        kind: Ident(
+            "totalWord",
+        ),
+        span: Span {
+            start: 886,
+            end: 895,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 896,
+            end: 897,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 898,
+            end: 899,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 899,
+            end: 900,
+        },
+    },
+    Token {
+        kind: Keyword(
+            While,
+        ),
+        span: Span {
+            start: 903,
+            end: 908,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 908,
+            end: 909,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 909,
+            end: 917,
+        },
+    },
+    Token {
+        kind: NotEq,
+        span: Span {
+            start: 918,
+            end: 920,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 921,
+            end: 922,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 922,
+            end: 923,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 926,
+            end: 927,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 932,
+            end: 936,
+        },
+    },
+    Token {
+        kind: Ident(
+            "BlockCompressedSize",
+        ),
+        span: Span {
+            start: 937,
+            end: 956,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 956,
+            end: 957,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 962,
+            end: 970,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 971,
+            end: 972,
+        },
+    },
+    Token {
+        kind: Ident(
+            "BlockCompressedSize",
+        ),
+        span: Span {
+            start: 973,
+            end: 992,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 992,
+            end: 993,
+        },
+    },
+    Token {
+        kind: Ident(
+            "totalWord",
+        ),
+        span: Span {
+            start: 998,
+            end: 1007,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1008,
+            end: 1010,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 1011,
+            end: 1019,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1019,
+            end: 1020,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1023,
+            end: 1024,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 1161,
+            end: 1165,
+        },
+    },
+    Token {
+        kind: Ident(
+            "FinalBlockDecSize",
+        ),
+        span: Span {
+            start: 1166,
+            end: 1183,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1183,
+            end: 1184,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 1187,
+            end: 1191,
+        },
+    },
+    Token {
+        kind: Ident(
+            "BlockCompressedSize",
+        ),
+        span: Span {
+            start: 1192,
+            end: 1211,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1211,
+            end: 1212,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 1294,
+            end: 1302,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 1303,
+            end: 1304,
+        },
+    },
+    Token {
+        kind: Ident(
+            "BlockCompressedSize",
+        ),
+        span: Span {
+            start: 1305,
+            end: 1324,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1324,
+            end: 1325,
+        },
+    },
+    Token {
+        kind: Ident(
+            "totalWord",
+        ),
+        span: Span {
+            start: 1328,
+            end: 1337,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1338,
+            end: 1340,
+        },
+    },
+    Token {
+        kind: Ident(
+            "testWord",
+        ),
+        span: Span {
+            start: 1341,
+            end: 1349,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1349,
+            end: 1350,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Printf",
+        ),
+        span: Span {
+            start: 1356,
+            end: 1362,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 1362,
+            end: 1363,
+        },
+    },
+    Token {
+        kind: String(
+            "File %d at 0x%x (size: %x)\n",
+        ),
+        span: Span {
+            start: 1363,
+            end: 1393,
+        },
+    },
+    Token {
+        kind: Comma,
+        span: Span {
+            start: 1393,
+            end: 1394,
+        },
+    },
+    Token {
+        kind: Ident(
+            "idx",
+        ),
+        span: Span {
+            start: 1395,
+            end: 1398,
+        },
+    },
+    Token {
+        kind: Comma,
+        span: Span {
+            start: 1398,
+            end: 1399,
+        },
+    },
+    Token {
+        kind: Ident(
+            "addr",
+        ),
+        span: Span {
+            start: 1400,
+            end: 1404,
+        },
+    },
+    Token {
+        kind: Comma,
+        span: Span {
+            start: 1404,
+            end: 1405,
+        },
+    },
+    Token {
+        kind: Ident(
+            "totalWord",
+        ),
+        span: Span {
+            start: 1406,
+            end: 1415,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 1415,
+            end: 1416,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1416,
+            end: 1417,
+        },
+    },
+    Token {
+        kind: Ident(
+            "idx",
+        ),
+        span: Span {
+            start: 1423,
+            end: 1426,
+        },
+    },
+    Token {
+        kind: PlusPlus,
+        span: Span {
+            start: 1426,
+            end: 1428,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1428,
+            end: 1429,
+        },
+    },
+    Token {
+        kind: Ident(
+            "addr",
+        ),
+        span: Span {
+            start: 1432,
+            end: 1436,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1437,
+            end: 1439,
+        },
+    },
+    Token {
+        kind: Ident(
+            "totalWord",
+        ),
+        span: Span {
+            start: 1440,
+            end: 1449,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1449,
+            end: 1450,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1454,
+            end: 1455,
+        },
+    },
+    Token {
+        kind: Ident(
+            "RECENTRY",
+        ),
+        span: Span {
+            start: 1456,
+            end: 1464,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 1464,
+            end: 1465,
+        },
+    },
+    Token {
+        kind: Ident(
+            "read",
+        ),
+        span: Span {
+            start: 1465,
+            end: 1469,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 1469,
+            end: 1470,
+        },
+    },
+    Token {
+        kind: Ident(
+            "ReadRECENTRY",
+        ),
+        span: Span {
+            start: 1470,
+            end: 1482,
+        },
+    },
+    Token {
+        kind: Gt,
+        span: Span {
+            start: 1482,
+            end: 1483,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1483,
+            end: 1484,
+        },
+    },
+    Token {
+        kind: Ident(
+            "string",
+        ),
+        span: Span {
+            start: 1486,
+            end: 1492,
+        },
+    },
+    Token {
+        kind: Ident(
+            "ReadRECENTRY",
+        ),
+        span: Span {
+            start: 1493,
+            end: 1505,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 1505,
+            end: 1506,
+        },
+    },
+    Token {
+        kind: Ident(
+            "RECENTRY",
+        ),
+        span: Span {
+            start: 1507,
+            end: 1515,
+        },
+    },
+    Token {
+        kind: Amp,
+        span: Span {
+            start: 1516,
+            end: 1517,
+        },
+    },
+    Token {
+        kind: Ident(
+            "d",
+        ),
+        span: Span {
+            start: 1517,
+            end: 1518,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 1519,
+            end: 1520,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 1521,
+            end: 1522,
+        },
+    },
+    Token {
+        kind: Ident(
+            "string",
+        ),
+        span: Span {
+            start: 1525,
+            end: 1531,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1532,
+            end: 1533,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1533,
+            end: 1534,
+        },
+    },
+    Token {
+        kind: Keyword(
+            If,
+        ),
+        span: Span {
+            start: 1537,
+            end: 1539,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 1539,
+            end: 1540,
+        },
+    },
+    Token {
+        kind: Ident(
+            "d",
+        ),
+        span: Span {
+            start: 1540,
+            end: 1541,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1541,
+            end: 1542,
+        },
+    },
+    Token {
+        kind: Ident(
+            "VersionIndex",
+        ),
+        span: Span {
+            start: 1542,
+            end: 1554,
+        },
+    },
+    Token {
+        kind: Gt,
+        span: Span {
+            start: 1555,
+            end: 1556,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 1557,
+            end: 1558,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 1558,
+            end: 1559,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 1560,
+            end: 1561,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1566,
+            end: 1567,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1568,
+            end: 1570,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Version",
+        ),
+        span: Span {
+            start: 1571,
+            end: 1578,
+        },
+    },
+    Token {
+        kind: LBracket,
+        span: Span {
+            start: 1578,
+            end: 1579,
+        },
+    },
+    Token {
+        kind: Ident(
+            "d",
+        ),
+        span: Span {
+            start: 1579,
+            end: 1580,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1580,
+            end: 1581,
+        },
+    },
+    Token {
+        kind: Ident(
+            "VersionIndex",
+        ),
+        span: Span {
+            start: 1581,
+            end: 1593,
+        },
+    },
+    Token {
+        kind: Minus,
+        span: Span {
+            start: 1594,
+            end: 1595,
+        },
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        span: Span {
+            start: 1596,
+            end: 1597,
+        },
+    },
+    Token {
+        kind: RBracket,
+        span: Span {
+            start: 1597,
+            end: 1598,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1598,
+            end: 1599,
+        },
+    },
+    Token {
+        kind: Ident(
+            "String",
+        ),
+        span: Span {
+            start: 1599,
+            end: 1605,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1605,
+            end: 1606,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1609,
+            end: 1610,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Else,
+        ),
+        span: Span {
+            start: 1611,
+            end: 1615,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 1616,
+            end: 1617,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1622,
+            end: 1623,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1624,
+            end: 1626,
+        },
+    },
+    Token {
+        kind: String(
+            "ALL",
+        ),
+        span: Span {
+            start: 1627,
+            end: 1632,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1632,
+            end: 1633,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1636,
+            end: 1637,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1640,
+            end: 1641,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1642,
+            end: 1644,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Device",
+        ),
+        span: Span {
+            start: 1645,
+            end: 1651,
+        },
+    },
+    Token {
+        kind: LBracket,
+        span: Span {
+            start: 1651,
+            end: 1652,
+        },
+    },
+    Token {
+        kind: Ident(
+            "d",
+        ),
+        span: Span {
+            start: 1652,
+            end: 1653,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1653,
+            end: 1654,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DeviceIndex",
+        ),
+        span: Span {
+            start: 1654,
+            end: 1665,
+        },
+    },
+    Token {
+        kind: RBracket,
+        span: Span {
+            start: 1665,
+            end: 1666,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1666,
+            end: 1667,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Path",
+        ),
+        span: Span {
+            start: 1667,
+            end: 1671,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1671,
+            end: 1672,
+        },
+    },
+    Token {
+        kind: Ident(
+            "String",
+        ),
+        span: Span {
+            start: 1672,
+            end: 1678,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1678,
+            end: 1679,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1682,
+            end: 1683,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1684,
+            end: 1686,
+        },
+    },
+    Token {
+        kind: String(
+            "\\",
+        ),
+        span: Span {
+            start: 1687,
+            end: 1691,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1691,
+            end: 1692,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1695,
+            end: 1696,
+        },
+    },
+    Token {
+        kind: PlusEq,
+        span: Span {
+            start: 1697,
+            end: 1699,
+        },
+    },
+    Token {
+        kind: Ident(
+            "d",
+        ),
+        span: Span {
+            start: 1700,
+            end: 1701,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1701,
+            end: 1702,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Path",
+        ),
+        span: Span {
+            start: 1702,
+            end: 1706,
+        },
+    },
+    Token {
+        kind: Dot,
+        span: Span {
+            start: 1706,
+            end: 1707,
+        },
+    },
+    Token {
+        kind: Ident(
+            "String",
+        ),
+        span: Span {
+            start: 1707,
+            end: 1713,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1713,
+            end: 1714,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Return,
+        ),
+        span: Span {
+            start: 1718,
+            end: 1724,
+        },
+    },
+    Token {
+        kind: Ident(
+            "s",
+        ),
+        span: Span {
+            start: 1725,
+            end: 1726,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1726,
+            end: 1727,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1728,
+            end: 1729,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 1731,
+            end: 1735,
+        },
+    },
+    Token {
+        kind: Ident(
+            "VersionCount",
+        ),
+        span: Span {
+            start: 1736,
+            end: 1748,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1748,
+            end: 1749,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Local,
+        ),
+        span: Span {
+            start: 1750,
+            end: 1755,
+        },
+    },
+    Token {
+        kind: Ident(
+            "int",
+        ),
+        span: Span {
+            start: 1756,
+            end: 1759,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 1760,
+            end: 1761,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 1762,
+            end: 1763,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 1764,
+            end: 1765,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1765,
+            end: 1766,
+        },
+    },
+    Token {
+        kind: Keyword(
+            For,
+        ),
+        span: Span {
+            start: 1767,
+            end: 1770,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 1771,
+            end: 1772,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 1772,
+            end: 1773,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 1774,
+            end: 1775,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 1776,
+            end: 1777,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1777,
+            end: 1778,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 1779,
+            end: 1780,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 1781,
+            end: 1782,
+        },
+    },
+    Token {
+        kind: Ident(
+            "VersionCount",
+        ),
+        span: Span {
+            start: 1783,
+            end: 1795,
+        },
+    },
+    Token {
+        kind: Minus,
+        span: Span {
+            start: 1796,
+            end: 1797,
+        },
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        span: Span {
+            start: 1798,
+            end: 1799,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1799,
+            end: 1800,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 1801,
+            end: 1802,
+        },
+    },
+    Token {
+        kind: PlusPlus,
+        span: Span {
+            start: 1802,
+            end: 1804,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 1804,
+            end: 1805,
+        },
+    },
+    Token {
+        kind: Ident(
+            "MSSTRING",
+        ),
+        span: Span {
+            start: 1808,
+            end: 1816,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Version",
+        ),
+        span: Span {
+            start: 1817,
+            end: 1824,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 1825,
+            end: 1826,
+        },
+    },
+    Token {
+        kind: Ident(
+            "hidden",
+        ),
+        span: Span {
+            start: 1826,
+            end: 1832,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 1832,
+            end: 1833,
+        },
+    },
+    Token {
+        kind: Keyword(
+            True,
+        ),
+        span: Span {
+            start: 1833,
+            end: 1837,
+        },
+    },
+    Token {
+        kind: Gt,
+        span: Span {
+            start: 1837,
+            end: 1838,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1838,
+            end: 1839,
+        },
+    },
+    Token {
+        kind: Keyword(
+            Struct,
+        ),
+        span: Span {
+            start: 1938,
+            end: 1944,
+        },
+    },
+    Token {
+        kind: Ident(
+            "RECDEVICE",
+        ),
+        span: Span {
+            start: 1945,
+            end: 1954,
+        },
+    },
+    Token {
+        kind: LBrace,
+        span: Span {
+            start: 1955,
+            end: 1956,
+        },
+    },
+    Token {
+        kind: Ident(
+            "MSSTRING",
+        ),
+        span: Span {
+            start: 1959,
+            end: 1967,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Name",
+        ),
+        span: Span {
+            start: 1968,
+            end: 1972,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1972,
+            end: 1973,
+        },
+    },
+    Token {
+        kind: Ident(
+            "MSSTRING",
+        ),
+        span: Span {
+            start: 1976,
+            end: 1984,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Path",
+        ),
+        span: Span {
+            start: 1985,
+            end: 1989,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1989,
+            end: 1990,
+        },
+    },
+    Token {
+        kind: RBrace,
+        span: Span {
+            start: 1991,
+            end: 1992,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 1992,
+            end: 1993,
+        },
+    },
+    Token {
+        kind: Ident(
+            "WORD",
+        ),
+        span: Span {
+            start: 1994,
+            end: 1998,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DeviceCount",
+        ),
+        span: Span {
+            start: 1999,
+            end: 2010,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2010,
+            end: 2011,
+        },
+    },
+    Token {
+        kind: Keyword(
+            For,
+        ),
+        span: Span {
+            start: 2012,
+            end: 2015,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 2016,
+            end: 2017,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 2017,
+            end: 2018,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 2019,
+            end: 2020,
+        },
+    },
+    Token {
+        kind: Int(
+            0,
+        ),
+        span: Span {
+            start: 2021,
+            end: 2022,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2022,
+            end: 2023,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 2024,
+            end: 2025,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 2026,
+            end: 2027,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DeviceCount",
+        ),
+        span: Span {
+            start: 2028,
+            end: 2039,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2039,
+            end: 2040,
+        },
+    },
+    Token {
+        kind: Ident(
+            "i",
+        ),
+        span: Span {
+            start: 2041,
+            end: 2042,
+        },
+    },
+    Token {
+        kind: PlusPlus,
+        span: Span {
+            start: 2042,
+            end: 2044,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 2044,
+            end: 2045,
+        },
+    },
+    Token {
+        kind: Ident(
+            "RECDEVICE",
+        ),
+        span: Span {
+            start: 2048,
+            end: 2057,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Device",
+        ),
+        span: Span {
+            start: 2058,
+            end: 2064,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 2065,
+            end: 2066,
+        },
+    },
+    Token {
+        kind: Ident(
+            "hidden",
+        ),
+        span: Span {
+            start: 2066,
+            end: 2072,
+        },
+    },
+    Token {
+        kind: Eq,
+        span: Span {
+            start: 2072,
+            end: 2073,
+        },
+    },
+    Token {
+        kind: Keyword(
+            True,
+        ),
+        span: Span {
+            start: 2073,
+            end: 2077,
+        },
+    },
+    Token {
+        kind: Gt,
+        span: Span {
+            start: 2077,
+            end: 2078,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2078,
+            end: 2079,
+        },
+    },
+    Token {
+        kind: Ident(
+            "DWORD",
+        ),
+        span: Span {
+            start: 2157,
+            end: 2162,
+        },
+    },
+    Token {
+        kind: Ident(
+            "LzxWindowSize",
+        ),
+        span: Span {
+            start: 2163,
+            end: 2176,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2176,
+            end: 2177,
+        },
+    },
+    Token {
+        kind: Keyword(
+            While,
+        ),
+        span: Span {
+            start: 2179,
+            end: 2184,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 2184,
+            end: 2185,
+        },
+    },
+    Token {
+        kind: Ident(
+            "FTell",
+        ),
+        span: Span {
+            start: 2185,
+            end: 2190,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 2190,
+            end: 2191,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 2191,
+            end: 2192,
+        },
+    },
+    Token {
+        kind: Lt,
+        span: Span {
+            start: 2193,
+            end: 2194,
+        },
+    },
+    Token {
+        kind: Ident(
+            "FileSize",
+        ),
+        span: Span {
+            start: 2195,
+            end: 2203,
+        },
+    },
+    Token {
+        kind: LParen,
+        span: Span {
+            start: 2203,
+            end: 2204,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 2204,
+            end: 2205,
+        },
+    },
+    Token {
+        kind: RParen,
+        span: Span {
+            start: 2205,
+            end: 2206,
+        },
+    },
+    Token {
+        kind: Ident(
+            "RECENTRY",
+        ),
+        span: Span {
+            start: 2209,
+            end: 2217,
+        },
+    },
+    Token {
+        kind: Ident(
+            "Entry",
+        ),
+        span: Span {
+            start: 2218,
+            end: 2223,
+        },
+    },
+    Token {
+        kind: Semi,
+        span: Span {
+            start: 2223,
+            end: 2224,
+        },
+    },
+]

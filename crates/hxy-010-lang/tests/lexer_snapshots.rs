@@ -112,3 +112,26 @@ fn sample_bt_full_file() {
     let tokens = tokenize(src).unwrap();
     insta::assert_debug_snapshot!(tokens);
 }
+
+/// Real-world template from landaire/wows-toolkit — MIT licensed.
+/// Covers: LittleEndian() at top level, typedef struct without
+/// attributes, nested structs declared inline, and for-loops with
+/// compound bodies.
+#[test]
+fn assets_bin_bt() {
+    let src = include_str!("../fixtures/assets_bin.bt");
+    let tokens = tokenize(src).unwrap();
+    insta::assert_debug_snapshot!(tokens);
+}
+
+/// Real-world template from emoose/xbox-reversing — BSD 3-Clause.
+/// Covers: typedef aliases for capitalised primitives (QWORD, DWORD,
+/// FILETIME), struct with local vars and internal while-loop,
+/// top-level for-loops, function definitions, `&` reference params,
+/// and struct attributes on the type name (`RECENTRY<read=...>`).
+#[test]
+fn recctrl_bt() {
+    let src = include_str!("../fixtures/recctrl.bt");
+    let tokens = tokenize(src).unwrap();
+    insta::assert_debug_snapshot!(tokens);
+}
