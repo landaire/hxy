@@ -178,9 +178,47 @@ impl eframe::App for HxyApp {
         paint_drop_overlay(ui.ctx());
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
+        dispatch_copy_shortcut(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
+}
+
+/// App-level copy shortcut handler. Runs after the dock renders, so
+/// per-widget hover-copy (status bar labels) has already had a chance
+/// to consume the event. Whatever's left dispatches to the currently
+/// active file tab.
+fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    let kind = ctx.input_mut(|i| {
+        if i.consume_shortcut(&COPY_HEX) {
+            Some(CopyKind::Hex)
+        } else if consume_copy_event(i) {
+            Some(CopyKind::Bytes)
+        } else {
+            None
+        }
+    });
+    let Some(kind) = kind else { return };
+    let file_id =
+        app.dock.find_active_focused().and_then(|(_, tab)| if let Tab::File(id) = *tab { Some(id) } else { None });
+    if let Some(id) = file_id
+        && let Some(file) = app.files.get(&id)
+    {
+        do_copy(ctx, file, kind);
+    }
+}
+
+/// Consume the plain "copy" shortcut in all the forms the integration
+/// might deliver it: as an `Event::Copy` (winit on macOS converts Cmd+C
+/// to a semantic copy event), or as a normal `Event::Key` with the
+/// Command modifier on platforms that pass it through.
+fn consume_copy_event(input: &mut egui::InputState) -> bool {
+    let had_copy = input.events.iter().any(|e| matches!(e, egui::Event::Copy));
+    if had_copy {
+        input.events.retain(|e| !matches!(e, egui::Event::Copy));
+        return true;
+    }
+    input.consume_shortcut(&COPY_BYTES)
 }
 
 fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
@@ -319,11 +357,44 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
+            ui.menu_button(hxy_i18n::t("menu-edit"), |ui| {
+                let copy_bytes_text = ui.ctx().format_shortcut(&COPY_BYTES);
+                let copy_hex_text = ui.ctx().format_shortcut(&COPY_HEX);
+                let active_file = active_file_id(app);
+                ui.add_enabled_ui(active_file.is_some(), |ui| {
+                    if ui
+                        .add(egui::Button::new(hxy_i18n::t("menu-edit-copy-bytes")).shortcut_text(copy_bytes_text))
+                        .clicked()
+                    {
+                        if let Some(id) = active_file
+                            && let Some(file) = app.files.get(&id)
+                        {
+                            do_copy(ui.ctx(), file, CopyKind::Bytes);
+                        }
+                        ui.close();
+                    }
+                    if ui
+                        .add(egui::Button::new(hxy_i18n::t("menu-edit-copy-hex")).shortcut_text(copy_hex_text))
+                        .clicked()
+                    {
+                        if let Some(id) = active_file
+                            && let Some(file) = app.files.get(&id)
+                        {
+                            do_copy(ui.ctx(), file, CopyKind::Hex);
+                        }
+                        ui.close();
+                    }
+                });
+            });
             ui.menu_button(hxy_i18n::t("menu-help"), |ui| {
                 ui.label(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION")));
             });
         });
     });
+}
+
+fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
+    app.dock.find_active_focused().and_then(|(_, tab)| if let Tab::File(id) = *tab { Some(id) } else { None })
 }
 
 fn handle_open_file(app: &mut HxyApp) {
@@ -381,12 +452,13 @@ impl TabViewer for HxyTabViewer<'_> {
                 Some(file) => {
                     let settings_base = self.state.app.offset_base;
                     let mut new_base = settings_base;
-                    egui::Panel::bottom(egui::Id::new(("hxy-status-bar", id.get()))).resizable(false).show_inside(
-                        ui,
-                        |ui| {
+                    let panel_fill = ui.visuals().panel_fill;
+                    egui::Panel::bottom(egui::Id::new(("hxy-status-bar", id.get())))
+                        .resizable(false)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).fill(panel_fill))
+                        .show_inside(ui, |ui| {
                             status_bar_ui(ui, file, settings_base, &mut new_base);
-                        },
-                    );
+                        });
                     let highlight =
                         self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
                     let palette = build_palette(ui.visuals().dark_mode, &self.state.app, highlight);
@@ -396,7 +468,8 @@ impl TabViewer for HxyTabViewer<'_> {
                     let mut view = HexView::new(&*file.source, &mut file.selection)
                         .columns(self.state.app.hex_columns)
                         .value_highlight(highlight)
-                        .minimap(self.state.app.show_minimap);
+                        .minimap(self.state.app.show_minimap)
+                        .minimap_colored(self.state.app.minimap_colored);
                     if let Some(p) = palette {
                         view = view.palette(p);
                     }
@@ -423,7 +496,6 @@ impl TabViewer for HxyTabViewer<'_> {
                     if let Some(kind) = copy_request {
                         do_copy(ui.ctx(), file, kind);
                     }
-                    handle_copy_shortcuts(ui, file);
                     if new_base != settings_base {
                         self.state.app.offset_base = new_base;
                     }
@@ -484,9 +556,11 @@ fn status_bar_ui(
 ) {
     ui.horizontal(|ui| {
         if let Some(hov) = file.hovered {
+            let value = format_offset(hov.get(), base);
             copyable_status_label(
                 ui,
-                &format!("Hover: {}", format_offset(hov.get(), base)),
+                &format!("Hover: {value}"),
+                &value,
                 Some(format_offset(hov.get(), base.toggle())),
                 new_base,
                 base,
@@ -498,36 +572,33 @@ fn status_bar_ui(
         if let Some(sel) = file.selection {
             let range = sel.range();
             let last_inclusive = range.end().get().saturating_sub(1);
-            let (label, tooltip) = if sel.is_caret() {
-                (
-                    format!("Caret: {}", format_offset(range.start().get(), base)),
-                    format_offset(range.start().get(), base.toggle()),
-                )
+            let (display, copy, tooltip) = if sel.is_caret() {
+                let v = format_offset(range.start().get(), base);
+                (format!("Caret: {v}"), v, format_offset(range.start().get(), base.toggle()))
             } else {
-                (
-                    format!(
-                        "Sel: {}–{} ({} bytes)",
-                        format_offset(range.start().get(), base),
-                        format_offset(last_inclusive, base),
-                        range.len().get(),
-                    ),
-                    format!(
-                        "{}–{}",
-                        format_offset(range.start().get(), base.toggle()),
-                        format_offset(last_inclusive, base.toggle()),
-                    ),
-                )
+                let start = format_offset(range.start().get(), base);
+                let end = format_offset(last_inclusive, base);
+                let len = range.len().get();
+                let copy_value = format!("{start}–{end} ({len} bytes)");
+                let tooltip = format!(
+                    "{}–{}",
+                    format_offset(range.start().get(), base.toggle()),
+                    format_offset(last_inclusive, base.toggle()),
+                );
+                (format!("Sel: {copy_value}"), copy_value, tooltip)
             };
-            copyable_status_label(ui, &label, Some(tooltip), new_base, base);
+            copyable_status_label(ui, &display, &copy, Some(tooltip), new_base, base);
         } else {
             ui.label("Sel: —");
         }
 
         let size = file.source.len().get();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let value = format_offset(size, base);
             copyable_status_label(
                 ui,
-                &format!("Length: {}", format_offset(size, base)),
+                &format!("Length: {value}"),
+                &value,
                 Some(format_offset(size, base.toggle())),
                 new_base,
                 base,
@@ -542,18 +613,19 @@ fn status_bar_ui(
 /// from also firing in the same frame.
 fn copyable_status_label(
     ui: &mut egui::Ui,
-    text: &str,
+    display: &str,
+    copy: &str,
     tooltip: Option<String>,
     new_base: &mut crate::settings::OffsetBase,
     base: crate::settings::OffsetBase,
 ) {
-    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+    let r = ui.add(egui::Label::new(display).sense(egui::Sense::click()));
     if r.clicked() {
         *new_base = base.toggle();
     }
     let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
-    if r.hovered() && ui.ctx().input_mut(|i| i.consume_shortcut(&COPY_BYTES)) {
-        ui.ctx().copy_text(text.to_string());
+    if r.hovered() && ui.ctx().input_mut(consume_copy_event) {
+        ui.ctx().copy_text(copy.to_string());
     }
 }
 
@@ -573,16 +645,6 @@ enum CopyKind {
 const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
-
-fn handle_copy_shortcuts(ui: &egui::Ui, file: &OpenFile) {
-    let ctx = ui.ctx();
-    let (want_hex, want_bytes) = ctx.input_mut(|i| (i.consume_shortcut(&COPY_HEX), i.consume_shortcut(&COPY_BYTES)));
-    if want_hex {
-        do_copy(ctx, file, CopyKind::Hex);
-    } else if want_bytes {
-        do_copy(ctx, file, CopyKind::Bytes);
-    }
-}
 
 fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
     let Some(selection) = file.selection else { return };
@@ -701,6 +763,12 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings) {
 
         ui.label(hxy_i18n::t("settings-minimap"));
         ui.checkbox(&mut settings.show_minimap, "");
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-minimap-colored"));
+        ui.add_enabled_ui(settings.show_minimap, |ui| {
+            ui.checkbox(&mut settings.minimap_colored, "");
+        });
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-offset-base"));

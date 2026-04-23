@@ -103,6 +103,10 @@ pub struct AppSettings {
     /// Show a minimap strip beside the hex view.
     pub show_minimap: bool,
 
+    /// When the minimap is shown, paint it with the highlight palette.
+    /// Off falls back to a plain grayscale gradient that's less busy.
+    pub minimap_colored: bool,
+
     /// Files the user has opened recently, newest-first, capped at
     /// [`MAX_RECENT_FILES`]. Surfaced on the welcome screen.
     #[serde(default)]
@@ -121,6 +125,7 @@ impl Default for AppSettings {
             byte_highlight_mode: ByteHighlightMode::default(),
             byte_highlight_scheme: ByteHighlightScheme::default(),
             show_minimap: true,
+            minimap_colored: true,
             recent_files: Vec::new(),
         }
     }

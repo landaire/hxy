@@ -49,6 +49,7 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     palette_override: Option<HighlightPalette>,
     context_menu: Option<ContextMenuFn<'s>>,
     minimap: bool,
+    minimap_colored: bool,
     initial_scroll: Option<f32>,
 }
 
@@ -62,6 +63,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             palette_override: None,
             context_menu: None,
             minimap: false,
+            minimap_colored: true,
             initial_scroll: None,
         }
     }
@@ -79,6 +81,14 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     /// viewport indicator, and supports click/drag to scroll.
     pub fn minimap(mut self, enabled: bool) -> Self {
         self.minimap = enabled;
+        self
+    }
+
+    /// When the minimap is enabled, toggle whether bytes are painted in
+    /// the highlight palette's colours or as a simple grayscale gradient
+    /// keyed on byte value. Off is less busy.
+    pub fn minimap_colored(mut self, colored: bool) -> Self {
+        self.minimap_colored = colored;
         self
     }
 
@@ -119,6 +129,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             palette_override,
             context_menu,
             minimap,
+            minimap_colored,
             initial_scroll,
         } = self;
         let palette = value_highlight.map(|mode| {
@@ -152,6 +163,9 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         let hex_out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
                 let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt(scroll_id);
+                if minimap {
+                    area = area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                }
                 if let Some(target) = pending_offset {
                     area = area.vertical_scroll_offset(target);
                 }
@@ -185,6 +199,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 source,
                 source_len,
                 palette,
+                minimap_colored,
                 row_height,
                 hex_out.state.offset.y,
                 hex_out.inner_rect.height(),
@@ -859,6 +874,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
     source: &S,
     source_len: ByteLen,
     palette: Option<(ValueHighlight, HighlightPalette)>,
+    colored: bool,
     row_height: f32,
     current_offset: f32,
     viewport_height: f32,
@@ -867,82 +883,112 @@ fn draw_minimap<S: HexSource + ?Sized>(
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
     }
+    let cols = 16usize;
     let response = ui.allocate_rect(minimap_rect, Sense::click_and_drag());
     let painter = ui.painter_at(minimap_rect);
-
     painter.rect_filled(minimap_rect, 0.0, ui.visuals().extreme_bg_color);
 
-    let rows_per_pixel = (total_rows as f32 / minimap_rect.height()).max(1.0);
-    let len = source_len.get();
+    let cell_w = (minimap_rect.width() / cols as f32).max(1.0);
+    // Fixed zoom: each hex row gets a constant number of minimap pixels
+    // regardless of file size. The minimap is a window onto the file
+    // that scrolls with the main viewport, not a whole-file overview.
+    let cell_h = 2.0_f32;
 
-    // Sample one byte per minimap pixel, taking it from the start of the
-    // representative row bucket. For small files (rows_per_pixel < 1) we
-    // instead spread available rows across the top of the minimap.
-    let usable_height =
-        if total_rows as f32 >= minimap_rect.height() { minimap_rect.height() } else { total_rows as f32 };
-    let effective_pixels = usable_height.floor() as usize;
-
-    let samples = collect_minimap_samples(source, len, total_rows, rows_per_pixel, effective_pixels);
+    let minimap_capacity_rows = (minimap_rect.height() / cell_h).floor() as usize;
+    if minimap_capacity_rows == 0 {
+        return;
+    }
     let fallback = ui.visuals().text_color();
-    for (i, byte) in samples.iter().enumerate() {
-        let y = minimap_rect.top() + i as f32;
-        let color = palette.map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback);
-        painter.hline(minimap_rect.x_range(), y, Stroke::new(1.0, color));
-    }
+    let len = source_len.get();
+    let dark = ui.visuals().dark_mode;
 
-    // Viewport indicator.
+    // Map the minimap window's top row linearly to the file's scroll
+    // fraction. That way the viewport indicator travels the full height
+    // of the minimap as you scroll from start to end — like a regular
+    // scrollbar — instead of pinning itself to the middle.
+    let viewport_top_row_f = (current_offset / row_height).max(0.0);
+    let viewport_rows_f = (viewport_height / row_height).max(1.0);
+    let capacity_f = minimap_capacity_rows as f32;
     let content_height = total_rows as f32 * row_height;
-    if content_height > 0.0 {
-        let v_top = (current_offset / content_height) * minimap_rect.height();
-        let v_bot = ((current_offset + viewport_height) / content_height) * minimap_rect.height();
-        let indicator = Rect::from_min_max(
-            Pos2::new(minimap_rect.left(), minimap_rect.top() + v_top.clamp(0.0, minimap_rect.height())),
-            Pos2::new(minimap_rect.right(), minimap_rect.top() + v_bot.clamp(0.0, minimap_rect.height())),
-        );
-        let indicator_fill = Color32::from_white_alpha(if ui.visuals().dark_mode { 30 } else { 60 });
-        painter.rect_filled(indicator, 0.0, indicator_fill);
-        painter.rect_stroke(indicator, 0.0, Stroke::new(1.0, ui.visuals().weak_text_color()), StrokeKind::Inside);
+    let max_scroll = (content_height - viewport_height).max(0.0);
+    let scroll_frac = if max_scroll > 0.0 { (current_offset / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
+    let max_top = (total_rows as f32 - capacity_f).max(0.0);
+    let window_top_f = scroll_frac * max_top;
+    let window_top_row = window_top_f.floor() as u64;
+    let shown_rows = minimap_capacity_rows.min(total_rows.saturating_sub(window_top_row as usize));
+
+    // Single contiguous read for all rows visible in the window.
+    let read_start = window_top_row.saturating_mul(cols as u64).min(len);
+    let read_end = read_start.saturating_add(shown_rows as u64 * cols as u64).min(len);
+    let bytes = ByteRange::new(ByteOffset::new(read_start), ByteOffset::new(read_end))
+        .ok()
+        .and_then(|r| source.read(r).ok())
+        .unwrap_or_default();
+
+    for i in 0..shown_rows {
+        let chunk_start = i * cols;
+        if chunk_start >= bytes.len() {
+            break;
+        }
+        let chunk_end = (chunk_start + cols).min(bytes.len());
+        let chunk = &bytes[chunk_start..chunk_end];
+        let y = minimap_rect.top() + i as f32 * cell_h;
+        for (c, byte) in chunk.iter().enumerate() {
+            let x = minimap_rect.left() + c as f32 * cell_w;
+            let color = if colored {
+                palette.map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
+            } else {
+                grayscale_for_byte(*byte, dark)
+            };
+            painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h)), 0.0, color);
+        }
     }
 
-    // Interaction: clicking or dragging sets a target scroll offset
-    // that centers the pointed-to byte in the hex viewport next frame.
+    // Viewport indicator at its absolute position inside the scrolled
+    // window. High-contrast outline + accent bracket for readability
+    // over any palette.
+    let indicator_top_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
+    let indicator_height = viewport_rows_f * cell_h;
+    let indicator = Rect::from_min_max(
+        Pos2::new(minimap_rect.left(), indicator_top_y.max(minimap_rect.top())),
+        Pos2::new(minimap_rect.right(), (indicator_top_y + indicator_height).min(minimap_rect.bottom())),
+    );
+    let (fill, outline) = if dark {
+        (Color32::from_rgba_unmultiplied(255, 255, 255, 70), Color32::WHITE)
+    } else {
+        (Color32::from_rgba_unmultiplied(0, 0, 0, 70), Color32::from_rgb(20, 20, 20))
+    };
+    painter.rect_filled(indicator, 0.0, fill);
+    painter.rect_stroke(indicator, 0.0, Stroke::new(2.0, outline), StrokeKind::Inside);
+    let accent = ui.visuals().selection.bg_fill;
+    let bracket = Rect::from_min_max(indicator.left_top(), Pos2::new(indicator.left() + 4.0, indicator.bottom()));
+    painter.rect_filled(bracket, 0.0, accent);
+
+    // Click/drag maps pointer y to a position in the *whole file* so a
+    // top→bottom drag on the minimap scrolls from file start to end in
+    // one motion, regardless of how much content the fixed-zoom window
+    // happens to be showing right now.
     let pointer = response
         .interact_pointer_pos()
         .or_else(|| response.hover_pos().filter(|_| response.is_pointer_button_down_on()));
     if let Some(pos) = pointer.filter(|_| response.dragged() || response.clicked() || response.drag_started()) {
         let y = (pos.y - minimap_rect.top()).clamp(0.0, minimap_rect.height());
         let frac = y / minimap_rect.height();
-        let target_center = frac * content_height;
-        let target = (target_center - viewport_height / 2.0).max(0.0);
-        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target));
+        let target_scroll = (frac * max_scroll).clamp(0.0, max_scroll);
+        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target_scroll));
         ui.ctx().request_repaint();
     }
 }
 
-/// Sample one byte per minimap pixel row. Reads are batched: we fetch
-/// one byte at each sample point, which is `effective_pixels` reads.
-fn collect_minimap_samples<S: HexSource + ?Sized>(
-    source: &S,
-    len: u64,
-    total_rows: usize,
-    rows_per_pixel: f32,
-    effective_pixels: usize,
-) -> Vec<u8> {
-    let cols = 16u64;
-    let mut out = Vec::with_capacity(effective_pixels);
-    for i in 0..effective_pixels {
-        let row_idx = (i as f32 * rows_per_pixel) as u64;
-        let row_idx = row_idx.min(total_rows.saturating_sub(1) as u64);
-        let byte_offset = row_idx.saturating_mul(cols).min(len.saturating_sub(1));
-        let Ok(r) = ByteRange::new(ByteOffset::new(byte_offset), ByteOffset::new(byte_offset + 1)) else {
-            continue;
-        };
-        match source.read(r) {
-            Ok(bytes) => out.push(*bytes.first().unwrap_or(&0)),
-            Err(_) => out.push(0),
-        }
-    }
-    out
+/// Uncoloured minimap fallback. Byte value 0x00 maps to the theme's
+/// darkest content shade and 0xFF to near-white (or the opposite on
+/// light mode), giving a faint brightness gradient that still reveals
+/// structure without dragging in the palette.
+fn grayscale_for_byte(byte: u8, dark: bool) -> Color32 {
+    let t = f32::from(byte) / 255.0;
+    let (lo, hi) = if dark { (40.0, 230.0) } else { (40.0, 220.0) };
+    let v = (lo * (1.0 - t) + hi * t).round() as u8;
+    Color32::from_rgb(v, v, v)
 }
 
 /// Paint a one-row header with column indices ("0" through "f" in a 16-
