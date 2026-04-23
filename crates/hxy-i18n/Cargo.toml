@@ -9,3 +9,6 @@ repository.workspace = true
 description = "Fluent-based localization for hxy"
 
 [dependencies]
+fluent-templates = "0.13.3"
+sys-locale = "0.3.2"
+unic-langid = "0.9.6"
