@@ -521,12 +521,174 @@ fn mount_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
     if file.mount.is_some() {
+        file.ensure_vfs_tree_open();
         return;
     }
     let Some(handler) = file.detected_handler.clone() else { return };
     match handler.mount(file.source.clone()) {
-        Ok(mount) => file.mount = Some(Arc::new(mount)),
+        Ok(mount) => {
+            file.mount = Some(Arc::new(mount));
+            file.ensure_vfs_tree_open();
+        }
         Err(e) => tracing::warn!(error = %e, handler = handler.name(), "mount vfs"),
+    }
+}
+
+fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &mut PersistedState) {
+    let settings_base = state.app.offset_base;
+    let mut new_base = settings_base;
+
+    // Paint a uniform opaque background under the whole tab so the
+    // panels we layer on top (status bar + inner dock) share visuals.
+    let tab_rect = ui.available_rect_before_wrap();
+    let bg = ui.visuals().window_fill();
+    ui.painter().rect_filled(tab_rect, 0.0, bg);
+
+    let text_h = ui.text_style_height(&egui::TextStyle::Body);
+    let status_h = text_h + 2.0;
+
+    // Status bar at the bottom of the whole file tab, outside the inner dock.
+    egui::Panel::bottom(egui::Id::new(("hxy-status-panel", id.get())))
+        .resizable(false)
+        .exact_size(status_h)
+        .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }))
+        .show_inside(ui, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                status_bar_ui(ui, file, settings_base, &mut new_base);
+            });
+        });
+
+    // Separator line above the status bar.
+    let body_rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        tab_rect.x_range(),
+        body_rect.bottom(),
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+    );
+
+    // Inner dock contains the hex view + optional VFS tree. The outer
+    // dock handed us a surface; we own a second dock state inside.
+    let mut inner_events = InnerEvents::default();
+    let placeholder = egui_dock::DockState::new(Vec::<crate::tabs::InnerTab>::new());
+    let mut inner_dock = std::mem::replace(&mut file.inner_dock, placeholder);
+    let mut inner_viewer = InnerTabViewer { id, file, state, events: &mut inner_events };
+    let style = egui_dock::Style::from_egui(ui.style());
+    egui_dock::DockArea::new(&mut inner_dock)
+        .id(egui::Id::new(("hxy-inner-dock", id.get())))
+        .style(style)
+        .show_inside(ui, &mut inner_viewer);
+    inner_viewer.file.inner_dock = inner_dock;
+
+    if let Some(kind) = inner_events.copy_request {
+        do_copy(ui.ctx(), file, kind);
+    }
+    for entry_path in inner_events.open_vfs_entries {
+        ui.ctx().data_mut(|d| {
+            let queue: &mut Vec<(FileId, String)> =
+                d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+            queue.push((id, entry_path));
+        });
+    }
+
+    if new_base != settings_base {
+        state.app.offset_base = new_base;
+    }
+}
+
+#[derive(Default)]
+struct InnerEvents {
+    copy_request: Option<CopyKind>,
+    open_vfs_entries: Vec<String>,
+}
+
+struct InnerTabViewer<'a> {
+    id: FileId,
+    file: &'a mut OpenFile,
+    state: &'a mut PersistedState,
+    events: &'a mut InnerEvents,
+}
+
+impl egui_dock::TabViewer for InnerTabViewer<'_> {
+    type Tab = crate::tabs::InnerTab;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        match tab {
+            crate::tabs::InnerTab::Hex => self.file.display_name.clone().into(),
+            crate::tabs::InnerTab::VfsTree => format!("{} Tree", egui_phosphor::regular::TREE_STRUCTURE).into(),
+        }
+    }
+
+    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
+        matches!(tab, crate::tabs::InnerTab::VfsTree)
+    }
+
+    fn on_close(&mut self, _tab: &mut Self::Tab) -> egui_dock::tab_viewer::OnCloseResponse {
+        egui_dock::tab_viewer::OnCloseResponse::Close
+    }
+
+    fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
+        [false, false]
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        match tab {
+            crate::tabs::InnerTab::Hex => self.render_hex(ui),
+            crate::tabs::InnerTab::VfsTree => self.render_tree(ui),
+        }
+    }
+}
+
+impl InnerTabViewer<'_> {
+    fn render_hex(&mut self, ui: &mut egui::Ui) {
+        let highlight = self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
+        let palette = build_palette(ui.visuals().dark_mode, &self.state.app, highlight);
+        let has_sel = self.file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
+        let pending_scroll = self.file.pending_scroll.take();
+
+        let mut copy_request: Option<CopyKind> = None;
+        let mut view = HexView::new(&*self.file.source, &mut self.file.selection)
+            .columns(self.state.app.hex_columns)
+            .value_highlight(highlight)
+            .minimap(self.state.app.show_minimap)
+            .minimap_colored(self.state.app.minimap_colored);
+        if let Some(p) = palette {
+            view = view.palette(p);
+        }
+        if let Some(s) = pending_scroll {
+            view = view.scroll_to(s);
+        }
+        let response = view
+            .context_menu(|ui| {
+                ui.add_enabled_ui(has_sel, |ui| {
+                    if ui.button("Copy bytes").clicked() {
+                        copy_request = Some(CopyKind::Bytes);
+                        ui.close();
+                    }
+                    if ui.button("Copy hex string").clicked() {
+                        copy_request = Some(CopyKind::Hex);
+                        ui.close();
+                    }
+                });
+            })
+            .show(ui);
+        self.file.hovered = response.hovered_offset;
+        self.file.scroll_offset = response.scroll_offset;
+        sync_tab_state(self.state, self.file);
+        if let Some(kind) = copy_request {
+            self.events.copy_request = Some(kind);
+        }
+    }
+
+    fn render_tree(&mut self, ui: &mut egui::Ui) {
+        let Some(mount) = self.file.mount.clone() else {
+            ui.weak("No mounted VFS. Click Browse archive on the toolbar.");
+            return;
+        };
+        let events = crate::vfs_panel::show(ui, self.id.get(), &*mount.fs);
+        for e in events {
+            let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
+            self.events.open_vfs_entries.push(path);
+        }
     }
 }
 
@@ -659,121 +821,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Settings => settings_ui(ui, &mut self.state.app),
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
-                    let settings_base = self.state.app.offset_base;
-                    let mut new_base = settings_base;
-                    let highlight =
-                        self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
-                    let palette = build_palette(ui.visuals().dark_mode, &self.state.app, highlight);
-                    let mut copy_request: Option<CopyKind> = None;
-                    let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
-                    let pending_scroll = file.pending_scroll.take();
-
-                    // Explicit layout: split the tab into optional tree
-                    // panel (left), hex view (center), status bar
-                    // (bottom). Background is a uniform opaque fill so
-                    // the hex view and status bar share visuals cleanly.
-                    let tab_rect = ui.available_rect_before_wrap();
-                    let bg = ui.visuals().window_fill();
-                    ui.painter().rect_filled(tab_rect, 0.0, bg);
-
-                    let text_h = ui.text_style_height(&egui::TextStyle::Body);
-                    let status_h = text_h + 2.0;
-                    let status_top_y = tab_rect.bottom() - status_h;
-
-                    let tree_panel_width = if file.mount.is_some() { 240.0 } else { 0.0 };
-                    let tree_rect = egui::Rect::from_min_max(
-                        tab_rect.min,
-                        egui::Pos2::new(tab_rect.left() + tree_panel_width, status_top_y),
-                    );
-                    let hex_rect = egui::Rect::from_min_max(
-                        egui::Pos2::new(tab_rect.left() + tree_panel_width, tab_rect.top()),
-                        egui::Pos2::new(tab_rect.right(), status_top_y),
-                    );
-                    let status_rect =
-                        egui::Rect::from_min_max(egui::Pos2::new(tab_rect.left(), status_top_y), tab_rect.max);
-
-                    ui.painter().hline(
-                        tab_rect.x_range(),
-                        status_top_y,
-                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-                    );
-
-                    if let Some(mount) = file.mount.clone() {
-                        ui.painter().vline(
-                            hex_rect.left(),
-                            tree_rect.y_range(),
-                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-                        );
-                        let events = ui
-                            .scope_builder(
-                                egui::UiBuilder::new().max_rect(tree_rect.shrink2(egui::Vec2::new(6.0, 4.0))),
-                                |ui| crate::vfs_panel::show(ui, id.get(), &*mount.fs),
-                            )
-                            .inner;
-                        if !events.is_empty() {
-                            ui.ctx().data_mut(|d| {
-                                let queue: &mut Vec<(FileId, String)> =
-                                    d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
-                                for e in events {
-                                    let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
-                                    queue.push((*id, path));
-                                }
-                            });
-                        }
-                    }
-
-                    let mut view = HexView::new(&*file.source, &mut file.selection)
-                        .columns(self.state.app.hex_columns)
-                        .value_highlight(highlight)
-                        .minimap(self.state.app.show_minimap)
-                        .minimap_colored(self.state.app.minimap_colored);
-                    if let Some(p) = palette {
-                        view = view.palette(p);
-                    }
-                    if let Some(s) = pending_scroll {
-                        view = view.scroll_to(s);
-                    }
-                    let response = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
-                            view.context_menu(|ui| {
-                                ui.add_enabled_ui(has_sel, |ui| {
-                                    if ui.button("Copy bytes").clicked() {
-                                        copy_request = Some(CopyKind::Bytes);
-                                        ui.close();
-                                    }
-                                    if ui.button("Copy hex string").clicked() {
-                                        copy_request = Some(CopyKind::Hex);
-                                        ui.close();
-                                    }
-                                });
-                            })
-                            .show(ui)
-                        })
-                        .inner;
-                    file.hovered = response.hovered_offset;
-                    file.scroll_offset = response.scroll_offset;
-                    sync_tab_state(self.state, file);
-
-                    // Re-assert the background fill over the status bar
-                    // rect right before painting its content, so whatever
-                    // the hex view may or may not have drawn below its
-                    // rect doesn't show through.
-                    ui.painter().rect_filled(status_rect, 0.0, bg);
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(status_rect.shrink2(egui::Vec2::new(8.0, 0.0)))
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        |ui| {
-                            status_bar_ui(ui, file, settings_base, &mut new_base);
-                        },
-                    );
-
-                    if let Some(kind) = copy_request {
-                        do_copy(ui.ctx(), file, kind);
-                    }
-                    if new_base != settings_base {
-                        self.state.app.offset_base = new_base;
-                    }
+                    render_file_tab(ui, *id, file, self.state);
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
