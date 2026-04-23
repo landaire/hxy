@@ -10,6 +10,10 @@ pub enum Tab {
     Welcome,
     File(FileId),
     Settings,
+    /// Append-only log of plugin / template output. Opened from the
+    /// View menu; closeable and persists across sessions via the
+    /// dock state (but the entries themselves are in-memory only).
+    Console,
 }
 
 impl Tab {

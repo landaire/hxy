@@ -50,6 +50,28 @@ pub struct HxyApp {
     /// here while the modal asks the user whether to focus the
     /// existing tab or open a second copy. `None` outside that window.
     pending_duplicate: Option<PendingDuplicate>,
+
+    /// Bounded ring buffer of plugin / template log entries. Rendered
+    /// by the Console dock tab when it's open; entries accumulate
+    /// regardless so opening the tab later reveals back-scroll.
+    console: std::collections::VecDeque<ConsoleEntry>,
+}
+
+/// One entry in the Console tab. `context` identifies the plugin run
+/// that produced the message — typically `<data-file> / <template-file>`.
+#[derive(Clone, Debug)]
+pub struct ConsoleEntry {
+    pub timestamp: jiff::Timestamp,
+    pub severity: ConsoleSeverity,
+    pub context: String,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsoleSeverity {
+    Info,
+    Warning,
+    Error,
 }
 
 /// A deferred filesystem-open request awaiting the user's choice in
@@ -91,6 +113,38 @@ impl HxyApp {
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
             pending_duplicate: None,
+            console: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Append a message to the Console tab. Caps the buffer at
+    /// [`Self::CONSOLE_CAPACITY`] entries; older entries are dropped
+    /// first so long-running sessions don't accumulate unbounded RAM.
+    pub fn console_log(&mut self, severity: ConsoleSeverity, context: impl Into<String>, message: impl Into<String>) {
+        let entry = ConsoleEntry {
+            timestamp: jiff::Timestamp::now(),
+            severity,
+            context: context.into(),
+            message: message.into(),
+        };
+        while self.console.len() >= Self::CONSOLE_CAPACITY {
+            self.console.pop_front();
+        }
+        self.console.push_back(entry);
+    }
+
+    pub const CONSOLE_CAPACITY: usize = 2048;
+
+    /// Open the Console tab if it isn't already present, and move
+    /// dock focus to it. Called by the View menu entry.
+    pub fn show_console(&mut self) {
+        if self.dock.find_tab(&Tab::Console).is_none() {
+            self.dock.push_to_focused_leaf(Tab::Console);
+        }
+        if let Some(path) = self.dock.find_tab(&Tab::Console) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
         }
     }
 
@@ -340,7 +394,11 @@ impl eframe::App for HxyApp {
 
         {
             let mut state_guard = self.state.write();
-            let mut viewer = HxyTabViewer { files: &mut self.files, state: &mut state_guard };
+            let mut viewer = HxyTabViewer {
+                files: &mut self.files,
+                state: &mut state_guard,
+                console: &self.console,
+            };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
         }
@@ -697,13 +755,24 @@ fn run_template_dialog(app: &mut HxyApp) {
     let Some(path) = rfd::FileDialog::new().pick_file() else { return };
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
 
+    // Context used on every console entry for this run so the user
+    // can tell which file/template produced a given message.
+    let data_name = app
+        .files
+        .get(&id)
+        .map(|f| f.display_name.clone())
+        .unwrap_or_else(|| format!("file-{}", id.get()));
+    let tpl_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    let ctx = format!("{data_name} / {tpl_name}");
+
     let Some(runtime) = app.template_runtime_for(&ext) else {
         let dir = user_template_runtimes_dir()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "$CONFIG/hxy/template-runtimes".to_owned());
+            .unwrap_or_else(|| "$DATA/hxy/template-runtimes".to_owned());
         let msg = format!(
             "No template runtime is registered for .{ext} files.\nInstall a matching runtime component (.wasm) into:\n{dir}"
         );
+        app.console_log(ConsoleSeverity::Error, &ctx, &msg);
         if let Some(file) = app.files.get_mut(&id) {
             file.template = Some(crate::template_panel::error_state(msg));
         }
@@ -714,6 +783,7 @@ fn run_template_dialog(app: &mut HxyApp) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("Failed to read template source {}: {e}", path.display());
+            app.console_log(ConsoleSeverity::Error, &ctx, &msg);
             if let Some(file) = app.files.get_mut(&id) {
                 file.template = Some(crate::template_panel::error_state(msg));
             }
@@ -721,15 +791,49 @@ fn run_template_dialog(app: &mut HxyApp) {
         }
     };
 
-    let Some(file) = app.files.get_mut(&id) else { return };
-    let state = match runtime.parse(file.source.clone(), &template_source) {
-        Ok(parsed) => match crate::template_panel::new_state(Arc::new(parsed)) {
-            Ok(state) => state,
-            Err(e) => crate::template_panel::error_state(format!("Execute failed: {e}")),
-        },
-        Err(e) => crate::template_panel::error_state(format!("Parse failed: {e}")),
+    let (state, diags_for_console) = {
+        let Some(file) = app.files.get_mut(&id) else { return };
+        match runtime.parse(file.source.clone(), &template_source) {
+            Ok(parsed) => match crate::template_panel::new_state(Arc::new(parsed)) {
+                Ok(state) => {
+                    let diags: Vec<_> = state.tree.diagnostics.clone();
+                    (state, diags)
+                }
+                Err(e) => (
+                    crate::template_panel::error_state(format!("Execute failed: {e}")),
+                    Vec::new(),
+                ),
+            },
+            Err(e) => (
+                crate::template_panel::error_state(format!("Parse failed: {e}")),
+                Vec::new(),
+            ),
+        }
     };
-    file.template = Some(state);
+    if let Some(file) = app.files.get_mut(&id) {
+        file.template = Some(state);
+    }
+
+    // Stream the template's own diagnostics into the console too —
+    // per-tab panel stays the primary surface, console gives a
+    // cross-tab history.
+    for d in &diags_for_console {
+        let severity = match d.severity {
+            hxy_plugin_host::Severity::Error => ConsoleSeverity::Error,
+            hxy_plugin_host::Severity::Warning => ConsoleSeverity::Warning,
+            hxy_plugin_host::Severity::Info => ConsoleSeverity::Info,
+        };
+        let loc = match d.file_offset {
+            Some(off) => format!(" @ {off:#x}"),
+            None => String::new(),
+        };
+        app.console_log(severity, &ctx, format!("{}{}", d.message, loc));
+    }
+    if diags_for_console.is_empty()
+        && app.files.get(&id).and_then(|f| f.template.as_ref()).is_some_and(|t| !t.tree.nodes.is_empty())
+    {
+        app.console_log(ConsoleSeverity::Info, &ctx, "template executed successfully");
+    }
 }
 
 fn mount_active_file(app: &mut HxyApp) {
@@ -929,13 +1033,18 @@ fn register_user_plugins(_registry: &mut VfsRegistry) {}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn user_plugins_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::config_dir()?;
+    // Plugins are installed artefacts (binaries + metadata), not user
+    // settings — they belong under the data dir, not the config dir.
+    // On Linux this resolves to `$XDG_DATA_HOME/hxy/plugins` (i.e.
+    // ~/.local/share/hxy/plugins); on macOS to `~/Library/Application
+    // Support/hxy/plugins`.
+    let base = dirs::data_dir()?;
     Some(base.join(APP_NAME).join("plugins"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn user_template_runtimes_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::config_dir()?;
+    let base = dirs::data_dir()?;
     Some(base.join(APP_NAME).join("template-runtimes"))
 }
 
@@ -1033,6 +1142,12 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     }
                 });
             });
+            ui.menu_button(hxy_i18n::t("menu-view"), |ui| {
+                if ui.button(hxy_i18n::t("menu-view-console")).clicked() {
+                    app.show_console();
+                    ui.close();
+                }
+            });
             ui.menu_button(hxy_i18n::t("menu-help"), |ui| {
                 ui.label(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION")));
             });
@@ -1075,6 +1190,7 @@ fn pick_and_read_file() -> Result<(String, std::path::PathBuf, Vec<u8>), crate::
 struct HxyTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     state: &'a mut PersistedState,
+    console: &'a std::collections::VecDeque<ConsoleEntry>,
 }
 
 impl TabViewer for HxyTabViewer<'_> {
@@ -1084,6 +1200,7 @@ impl TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::Welcome => hxy_i18n::t("tab-welcome").into(),
             Tab::Settings => hxy_i18n::t("tab-settings").into(),
+            Tab::Console => hxy_i18n::t("tab-console").into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => f.display_name.clone().into(),
                 None => format!("file-{}", id.get()).into(),
@@ -1095,6 +1212,7 @@ impl TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::Welcome => welcome_ui(ui, self.state),
             Tab::Settings => settings_ui(ui, &mut self.state.app),
+            Tab::Console => console_ui(ui, self.console),
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
                     render_file_tab(ui, *id, file, self.state);
@@ -1107,13 +1225,14 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        matches!(tab, Tab::File(_))
+        matches!(tab, Tab::File(_) | Tab::Console)
     }
 
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
         // File tabs manage their own scrolling via the hex view's
         // internal scroll area + minimap — no outer dock scrollbar.
-        if matches!(tab, Tab::File(_)) { [false, false] } else { [true, true] }
+        // The console renders its own scroll area too.
+        if matches!(tab, Tab::File(_) | Tab::Console) { [false, false] } else { [true, true] }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
@@ -1285,6 +1404,55 @@ fn format_hex_string(bytes: &[u8]) -> String {
 }
 
 const WELCOME_OPEN_RECENT: &str = "hxy_welcome_open_recent";
+
+fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEntry>) {
+    if console.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            ui.weak(hxy_i18n::t("console-empty"));
+        });
+        return;
+    }
+
+    // Newest entries at the bottom, matching the usual log UX.
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            egui::Grid::new("hxy_console_grid")
+                .num_columns(4)
+                .striped(true)
+                .show(ui, |ui| {
+                    for entry in console.iter() {
+                        let (icon, color) = match entry.severity {
+                            ConsoleSeverity::Info => (egui_phosphor::regular::INFO, None),
+                            ConsoleSeverity::Warning => {
+                                (egui_phosphor::regular::WARNING, Some(egui::Color32::YELLOW))
+                            }
+                            ConsoleSeverity::Error => {
+                                (egui_phosphor::regular::X_CIRCLE, Some(egui::Color32::LIGHT_RED))
+                            }
+                        };
+                        let time = format_console_time(entry.timestamp);
+                        ui.label(egui::RichText::new(&time).monospace().weak());
+                        let mut icon_text = egui::RichText::new(icon);
+                        if let Some(c) = color {
+                            icon_text = icon_text.color(c);
+                        }
+                        ui.label(icon_text);
+                        ui.label(egui::RichText::new(&entry.context).weak());
+                        ui.label(&entry.message);
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn format_console_time(ts: jiff::Timestamp) -> String {
+    // Keep the display compact — HH:MM:SS.mmm, user-local.
+    let zoned = ts.in_tz("UTC").unwrap_or_else(|_| ts.to_zoned(jiff::tz::TimeZone::UTC));
+    format!("{:02}:{:02}:{:02}", zoned.hour(), zoned.minute(), zoned.second())
+}
 
 fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     ui.vertical_centered(|ui| {

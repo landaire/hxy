@@ -11,12 +11,17 @@ menu-edit = Edit
 menu-edit-copy-bytes = Copy bytes
 menu-edit-copy-hex = Copy hex string
 menu-view = View
+menu-view-console = Show Console
 menu-help = Help
 menu-help-about = About
 
 # Tabs
 tab-settings = Settings
 tab-welcome = Welcome
+tab-console = Console
+
+# Console tab
+console-empty = No plugin output yet. Template diagnostics will appear here.
 
 # Settings panel
 settings-general-header = General
