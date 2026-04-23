@@ -120,6 +120,10 @@ impl HxyApp {
     /// Append a message to the Console tab. Caps the buffer at
     /// [`Self::CONSOLE_CAPACITY`] entries; older entries are dropped
     /// first so long-running sessions don't accumulate unbounded RAM.
+    ///
+    /// Errors auto-open the Console at the bottom of the main dock
+    /// so the user notices them without having to hunt through the
+    /// View menu.
     pub fn console_log(&mut self, severity: ConsoleSeverity, context: impl Into<String>, message: impl Into<String>) {
         let entry = ConsoleEntry {
             timestamp: jiff::Timestamp::now(),
@@ -131,21 +135,32 @@ impl HxyApp {
             self.console.pop_front();
         }
         self.console.push_back(entry);
+        if severity == ConsoleSeverity::Error {
+            self.show_console();
+        }
     }
 
     pub const CONSOLE_CAPACITY: usize = 2048;
 
-    /// Open the Console tab if it isn't already present, and move
-    /// dock focus to it. Called by the View menu entry.
+    /// Open the Console tab as a horizontal split at the bottom of
+    /// the main dock area. If the tab is already docked anywhere,
+    /// just focus it. Called both from View > Show Console and
+    /// automatically by `console_log` when an error lands.
     pub fn show_console(&mut self) {
-        if self.dock.find_tab(&Tab::Console).is_none() {
-            self.dock.push_to_focused_leaf(Tab::Console);
-        }
         if let Some(path) = self.dock.find_tab(&Tab::Console) {
             let node_path = path.node_path();
             let _ = self.dock.set_active_tab(path);
             self.dock.set_focused_node_and_surface(node_path);
+            return;
         }
+        // Split the main surface's root so the console always docks
+        // at the bottom regardless of whatever layout the user is
+        // running with.
+        self.dock.main_surface_mut().split_below(
+            egui_dock::NodeIndex::root(),
+            0.75,
+            vec![Tab::Console],
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
