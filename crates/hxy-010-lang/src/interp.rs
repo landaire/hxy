@@ -215,6 +215,18 @@ impl<S: HexSource> Interpreter<S> {
             ("double", P::f64()),
             ("FLOAT", P::f32()),
             ("DOUBLE", P::f64()),
+            // 010 built-in date / time types. Width matches the
+            // on-disk encoding; the `<format=...>` attribute and a
+            // future renderer-side converter can turn the raw value
+            // into a human-readable date.
+            ("DOSDATE", P::u16()),
+            ("DOSTIME", P::u16()),
+            ("time_t", P::i32()),
+            ("time64_t", P::i64()),
+            ("FILETIME", P::u64()),
+            ("OLETIME", P::f64()),
+            ("hfloat", P::u16()), // half-float — read as raw u16 for now
+            ("HFLOAT", P::u16()),
         ];
         for (name, kind) in table {
             self.types.insert((*name).to_owned(), TypeDef::Primitive(*kind));

@@ -64,6 +64,21 @@ pub struct OpenFile {
 /// Result of applying a template-language runtime to the tab's byte
 /// source. Holds the parsed template (so deferred arrays can be
 /// expanded lazily) and the current tree view state.
+/// Index into a [`TemplateState::tree`]'s flat node list. Newtype so
+/// we don't confuse it with the `u64` array ids the runtime hands out
+/// for deferred arrays.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TemplateNodeIdx(pub u32);
+
+/// Opaque identifier for a deferred array, handed back to the plugin
+/// when the UI wants to materialise more elements. Distinct from
+/// [`TemplateNodeIdx`] — same `u64` width as the WIT record but
+/// typed so we can't pass a node index where an array id is wanted.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TemplateArrayId(pub u64);
+
 #[cfg(not(target_arch = "wasm32"))]
 pub struct TemplateState {
     /// `None` when the state was built as a diagnostics-only surface
@@ -75,8 +90,16 @@ pub struct TemplateState {
     /// Show the panel in the file tab. User can toggle via the tree
     /// panel's close button.
     pub show_panel: bool,
-    /// `array_id` -> materialised children, by order of expansion.
-    pub expanded_arrays: std::collections::HashMap<u64, Vec<hxy_plugin_host::Node>>,
+    /// Array id -> materialised children, by order of expansion.
+    pub expanded_arrays: std::collections::HashMap<TemplateArrayId, Vec<hxy_plugin_host::Node>>,
+    /// Indexes of nodes whose subtrees the user has collapsed. Default
+    /// is expanded; we store the negation so freshly-run templates
+    /// reveal everything without per-node defaults.
+    pub collapsed: std::collections::HashSet<TemplateNodeIdx>,
+    /// Last-frame's hover target in the panel table: the node index
+    /// whose row the pointer is over, if any. Consumed by the hex
+    /// view to paint a highlight over that node's byte span.
+    pub hovered_node: Option<TemplateNodeIdx>,
 }
 
 impl OpenFile {

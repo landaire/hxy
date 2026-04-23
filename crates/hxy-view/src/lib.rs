@@ -85,6 +85,11 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     minimap: bool,
     minimap_colored: bool,
     initial_scroll: Option<f32>,
+    /// Transient highlight for a byte range the consumer wants to
+    /// draw attention to — e.g. the template panel reflecting which
+    /// field the pointer is over. Painted as a secondary fill that
+    /// co-exists with the primary selection.
+    hover_span: Option<ByteRange>,
 }
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
@@ -102,7 +107,15 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             minimap: false,
             minimap_colored: true,
             initial_scroll: None,
+            hover_span: None,
         }
+    }
+
+    /// Tell the hex view to draw a secondary highlight over the given
+    /// byte range. Consumer-driven; cleared when `None` is passed.
+    pub fn hover_span(mut self, span: Option<ByteRange>) -> Self {
+        self.hover_span = span;
+        self
     }
 
     /// Install a per-byte styler. When set, the callback's returned
@@ -194,6 +207,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             minimap,
             minimap_colored,
             initial_scroll,
+            hover_span,
         } = self;
         let palette = value_highlight.map(|mode| {
             let palette =
@@ -256,6 +270,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                         byte_styler.as_deref(),
                         address_formatter.as_deref(),
                         context_menu,
+                        hover_span,
                         &mut response,
                     );
                 })
@@ -525,6 +540,7 @@ struct PaintCtx<'a> {
     selected_range: Option<ByteRange>,
     cursor_offset: Option<ByteOffset>,
     hover_offset: Option<ByteOffset>,
+    hover_span: Option<ByteRange>,
 }
 
 /// Geometry + source metadata used for pointer hit-testing against the
@@ -563,6 +579,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     byte_styler: Option<&dyn Fn(u8, ByteOffset) -> ByteStyle>,
     address_formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
     context_menu: Option<ContextMenuFn<'_>>,
+    hover_span: Option<ByteRange>,
     response_out: &mut HexViewResponse,
 ) {
     let cols = usize::from(columns.get());
@@ -627,6 +644,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         selected_range,
         cursor_offset,
         hover_offset,
+        hover_span,
     };
     let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
@@ -712,6 +730,23 @@ fn paint_row_backs_and_glyphs(
             chunk.len(),
             range,
             ctx.colors.selection_bg,
+        );
+    }
+    if let Some(range) = ctx.hover_span {
+        // Paint hover underneath the selection so the user's explicit
+        // selection colour stays authoritative. Gamma-multiply the
+        // selection background to get a softer tint that reads as a
+        // secondary marker rather than a primary highlight.
+        let tint = ctx.colors.selection_bg.gamma_multiply(0.45);
+        paint_row_selection(
+            painter,
+            ctx.layout,
+            row_origin,
+            ctx.row_height,
+            row_first_offset,
+            chunk.len(),
+            range,
+            tint,
         );
     }
 

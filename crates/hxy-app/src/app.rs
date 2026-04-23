@@ -931,8 +931,8 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
     }
     egui::Panel::right(egui::Id::new(("hxy-template-panel", id.get())))
         .resizable(true)
-        .default_size(260.0)
-        .min_size(180.0)
+        .default_size(320.0)
+        .min_size(240.0)
         .show_inside(ui, |ui| {
             let Some(state) = file.template.as_mut() else { return };
             let events = crate::template_panel::show(ui, id.get(), state);
@@ -941,6 +941,12 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                     crate::template_panel::TemplateEvent::Close => state.show_panel = false,
                     crate::template_panel::TemplateEvent::ExpandArray { array_id, count } => {
                         crate::template_panel::expand_array(state, array_id, count);
+                    }
+                    crate::template_panel::TemplateEvent::ToggleCollapse(idx) => {
+                        crate::template_panel::toggle_collapse(state, idx);
+                    }
+                    crate::template_panel::TemplateEvent::Hover(idx) => {
+                        state.hovered_node = idx;
                     }
                 }
             }
@@ -966,11 +972,23 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let pending_scroll = file.pending_scroll.take();
 
     let mut copy_request: Option<CopyKind> = None;
+    let hover_span = file
+        .template
+        .as_ref()
+        .and_then(|t| t.hovered_node)
+        .and_then(|idx| file.template.as_ref().and_then(|t| t.tree.nodes.get(idx.0 as usize)))
+        .and_then(|node| {
+            let start = node.span.offset;
+            let end = start.saturating_add(node.span.length);
+            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
+        });
+
     let mut view = HexView::new(&*file.source, &mut file.selection)
         .columns(state.app.hex_columns)
         .value_highlight(highlight)
         .minimap(state.app.show_minimap)
-        .minimap_colored(state.app.minimap_colored);
+        .minimap_colored(state.app.minimap_colored)
+        .hover_span(hover_span);
     if let Some(p) = palette {
         view = view.palette(p);
     }
