@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use egui_dock::DockState;
 use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
@@ -12,8 +11,6 @@ use hxy_vfs::MountedVfs;
 use hxy_vfs::TabSource;
 use hxy_vfs::VfsHandler;
 use thiserror::Error;
-
-use crate::tabs::InnerTab;
 
 /// Identifier for an open-file tab. Stable across the tab's lifetime so
 /// egui_dock can refer to it even as the tab moves around the dock tree.
@@ -54,10 +51,10 @@ pub struct OpenFile {
     /// "Browse archive" command. Shared so descendant tabs can open
     /// entries against the same mount.
     pub mount: Option<Arc<MountedVfs>>,
-    /// Nested dock state for this file tab. Always contains at least a
-    /// `Hex` tab; the VFS tree tab is added on mount and removed on
-    /// user-driven close.
-    pub inner_dock: DockState<InnerTab>,
+    /// Whether the VFS tree side panel should render for this tab. Only
+    /// meaningful when `mount` is `Some`. Starts true on mount; the
+    /// user can hide the panel via its close button.
+    pub show_vfs_tree: bool,
 }
 
 impl OpenFile {
@@ -80,16 +77,7 @@ impl OpenFile {
             pending_scroll: None,
             detected_handler: None,
             mount: None,
-            inner_dock: DockState::new(vec![InnerTab::Hex]),
-        }
-    }
-
-    /// Ensure the VFS tree tab is present in this file's inner dock,
-    /// inserting it to the left of the hex tab if it isn't already.
-    pub fn ensure_vfs_tree_open(&mut self) {
-        let already = self.inner_dock.iter_all_tabs().any(|(_, t)| matches!(t, InnerTab::VfsTree));
-        if !already {
-            self.inner_dock.push_to_focused_leaf(InnerTab::VfsTree);
+            show_vfs_tree: false,
         }
     }
 

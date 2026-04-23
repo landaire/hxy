@@ -18,14 +18,6 @@ impl Tab {
     }
 }
 
-/// Tab within a single file tab's nested dock. Room to grow — template
-/// editor, struct inspector, etc. will land as new variants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InnerTab {
-    Hex,
-    VfsTree,
-}
-
 impl Serialize for FileId {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_u64(self.get())
