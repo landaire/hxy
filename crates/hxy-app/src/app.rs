@@ -452,19 +452,37 @@ impl TabViewer for HxyTabViewer<'_> {
                 Some(file) => {
                     let settings_base = self.state.app.offset_base;
                     let mut new_base = settings_base;
-                    let panel_fill = ui.visuals().panel_fill;
-                    egui::Panel::bottom(egui::Id::new(("hxy-status-bar", id.get())))
-                        .resizable(false)
-                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).fill(panel_fill))
-                        .show_inside(ui, |ui| {
-                            status_bar_ui(ui, file, settings_base, &mut new_base);
-                        });
                     let highlight =
                         self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
                     let palette = build_palette(ui.visuals().dark_mode, &self.state.app, highlight);
                     let mut copy_request: Option<CopyKind> = None;
                     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
                     let pending_scroll = file.pending_scroll.take();
+
+                    // Explicit layout: split the tab into hex (top) and
+                    // status bar (bottom). Both share the same painted
+                    // background. The status bar rect is sized to fit
+                    // the text + symmetric padding with no leftover
+                    // vertical space, and uses a centered layout so the
+                    // text sits in the middle of its rect.
+                    let tab_rect = ui.available_rect_before_wrap();
+                    let bg = ui.visuals().window_fill();
+                    ui.painter().rect_filled(tab_rect, 0.0, bg);
+
+                    let text_h = ui.text_style_height(&egui::TextStyle::Body);
+                    let status_h = text_h + 2.0;
+                    let status_top_y = tab_rect.bottom() - status_h;
+                    let hex_rect =
+                        egui::Rect::from_min_max(tab_rect.min, egui::Pos2::new(tab_rect.right(), status_top_y));
+                    let status_rect =
+                        egui::Rect::from_min_max(egui::Pos2::new(tab_rect.left(), status_top_y), tab_rect.max);
+
+                    ui.painter().hline(
+                        tab_rect.x_range(),
+                        status_top_y,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
+
                     let mut view = HexView::new(&*file.source, &mut file.selection)
                         .columns(self.state.app.hex_columns)
                         .value_highlight(highlight)
@@ -476,23 +494,41 @@ impl TabViewer for HxyTabViewer<'_> {
                     if let Some(s) = pending_scroll {
                         view = view.scroll_to(s);
                     }
-                    let response = view
-                        .context_menu(|ui| {
-                            ui.add_enabled_ui(has_sel, |ui| {
-                                if ui.button("Copy bytes").clicked() {
-                                    copy_request = Some(CopyKind::Bytes);
-                                    ui.close();
-                                }
-                                if ui.button("Copy hex string").clicked() {
-                                    copy_request = Some(CopyKind::Hex);
-                                    ui.close();
-                                }
-                            });
+                    let response = ui
+                        .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
+                            view.context_menu(|ui| {
+                                ui.add_enabled_ui(has_sel, |ui| {
+                                    if ui.button("Copy bytes").clicked() {
+                                        copy_request = Some(CopyKind::Bytes);
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy hex string").clicked() {
+                                        copy_request = Some(CopyKind::Hex);
+                                        ui.close();
+                                    }
+                                });
+                            })
+                            .show(ui)
                         })
-                        .show(ui);
+                        .inner;
                     file.hovered = response.hovered_offset;
                     file.scroll_offset = response.scroll_offset;
                     sync_tab_state(self.state, file);
+
+                    // Re-assert the background fill over the status bar
+                    // rect right before painting its content, so whatever
+                    // the hex view may or may not have drawn below its
+                    // rect doesn't show through.
+                    ui.painter().rect_filled(status_rect, 0.0, bg);
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(status_rect.shrink2(egui::Vec2::new(8.0, 0.0)))
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            status_bar_ui(ui, file, settings_base, &mut new_base);
+                        },
+                    );
+
                     if let Some(kind) = copy_request {
                         do_copy(ui.ctx(), file, kind);
                     }
@@ -509,6 +545,12 @@ impl TabViewer for HxyTabViewer<'_> {
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
         matches!(tab, Tab::File(_))
+    }
+
+    fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
+        // File tabs manage their own scrolling via the hex view's
+        // internal scroll area + minimap — no outer dock scrollbar.
+        if matches!(tab, Tab::File(_)) { [false, false] } else { [true, true] }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {

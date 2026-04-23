@@ -41,12 +41,46 @@ pub enum ValueHighlight {
 /// anywhere in the hex or ASCII pane.
 pub type ContextMenuFn<'s> = Box<dyn FnOnce(&mut egui::Ui) + 's>;
 
+/// Foreground + background colour choice for a single byte cell.
+/// Returned by a [`ByteStylerFn`] so the consumer can fully override the
+/// built-in palette's decision per byte (e.g. to highlight a matched
+/// pattern, a diff, or bytes pointed to by a parsed template).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ByteStyle {
+    /// Background tint for the byte cell. `None` falls back to whatever
+    /// the configured palette would have chosen (or nothing, if none).
+    pub bg: Option<Color32>,
+    /// Text (glyph) color. `None` falls back to the default palette /
+    /// theme behavior, including contrast adjustment against `bg`.
+    pub fg: Option<Color32>,
+}
+
+/// Per-byte styler. Receives each byte's value and absolute file offset
+/// and returns a [`ByteStyle`]. Consumers can use this to drive their
+/// own colour logic (search hits, struct-field overlays, diff colours,
+/// etc.) without subclassing the widget.
+pub type ByteStylerFn<'s> = Box<dyn Fn(u8, ByteOffset) -> ByteStyle + 's>;
+
+/// Formatter for address-column labels. Receives the offset of the row's
+/// first byte and the width (in characters) the built-in address uses,
+/// returns the string to render. Default formats as uppercase zero-padded
+/// hex.
+pub type AddressFormatterFn<'s> = Box<dyn Fn(ByteOffset, usize) -> String + 's>;
+
+/// Formatter for the column-header row above the hex/ascii panes.
+/// Receives the zero-based column index and returns its label. Default
+/// renders an uppercase hex digit.
+pub type ColumnHeaderFormatterFn<'s> = Box<dyn Fn(usize) -> String + 's>;
+
 pub struct HexView<'s, S: HexSource + ?Sized> {
     source: &'s S,
     columns: ColumnCount,
     selection: &'s mut Option<Selection>,
     value_highlight: Option<ValueHighlight>,
     palette_override: Option<HighlightPalette>,
+    byte_styler: Option<ByteStylerFn<'s>>,
+    address_formatter: Option<AddressFormatterFn<'s>>,
+    column_header_formatter: Option<ColumnHeaderFormatterFn<'s>>,
     context_menu: Option<ContextMenuFn<'s>>,
     minimap: bool,
     minimap_colored: bool,
@@ -61,11 +95,37 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             selection,
             value_highlight: None,
             palette_override: None,
+            byte_styler: None,
+            address_formatter: None,
+            column_header_formatter: None,
             context_menu: None,
             minimap: false,
             minimap_colored: true,
             initial_scroll: None,
         }
+    }
+
+    /// Install a per-byte styler. When set, the callback's returned
+    /// [`ByteStyle`] takes precedence over the palette for that byte.
+    /// `None` fields in the returned style fall back to the palette's
+    /// choice (or theme default).
+    pub fn byte_styler(mut self, f: impl Fn(u8, ByteOffset) -> ByteStyle + 's) -> Self {
+        self.byte_styler = Some(Box::new(f));
+        self
+    }
+
+    /// Override the address-column label formatter. Default is uppercase
+    /// zero-padded hex.
+    pub fn address_formatter(mut self, f: impl Fn(ByteOffset, usize) -> String + 's) -> Self {
+        self.address_formatter = Some(Box::new(f));
+        self
+    }
+
+    /// Override the column-header label formatter. Default is a single
+    /// uppercase hex digit.
+    pub fn column_header_formatter(mut self, f: impl Fn(usize) -> String + 's) -> Self {
+        self.column_header_formatter = Some(Box::new(f));
+        self
     }
 
     /// Scroll the view to `offset` (in pixels from the top of content)
@@ -127,6 +187,9 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             selection,
             value_highlight,
             palette_override,
+            byte_styler,
+            address_formatter,
+            column_header_formatter,
             context_menu,
             minimap,
             minimap_colored,
@@ -147,7 +210,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
         let mut response = HexViewResponse::default();
 
-        paint_column_header(ui, &layout, &font_id, row_height);
+        paint_column_header(ui, &layout, &font_id, row_height, column_header_formatter.as_deref());
 
         let scroll_id = ui.id().with("hxy_scroll");
         // Minimap click, explicit `scroll_to`, or a stashed pending value
@@ -155,17 +218,26 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         let pending_offset = ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)).or(initial_scroll);
 
         let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
+        let scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
         let avail = ui.available_rect_before_wrap();
-        let hex_rect = Rect::from_min_size(avail.min, Vec2::new(avail.width() - minimap_width, avail.height()));
+        let hex_rect =
+            Rect::from_min_size(avail.min, Vec2::new(avail.width() - minimap_width - scrollbar_width, avail.height()));
         let minimap_rect =
             Rect::from_min_size(Pos2::new(hex_rect.right(), avail.top()), Vec2::new(minimap_width, avail.height()));
+        let scrollbar_rect = Rect::from_min_size(
+            Pos2::new(minimap_rect.right(), avail.top()),
+            Vec2::new(scrollbar_width, avail.height()),
+        );
 
         let hex_out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
-                let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt(scroll_id);
-                if minimap {
-                    area = area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-                }
+                // Hex view owns scroll state but the visible bar lives
+                // in the rightmost column (past the minimap) as a
+                // separate widget, so we always hide the inner bar.
+                let mut area = egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .id_salt(scroll_id)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
                 if let Some(target) = pending_offset {
                     area = area.vertical_scroll_offset(target);
                 }
@@ -181,6 +253,8 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                         source,
                         selection,
                         palette,
+                        byte_styler.as_deref(),
+                        address_formatter.as_deref(),
                         context_menu,
                         &mut response,
                     );
@@ -207,6 +281,15 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             );
         }
 
+        draw_scrollbar(
+            ui,
+            scroll_id,
+            scrollbar_rect,
+            hex_out.state.offset.y,
+            hex_out.inner_rect.height(),
+            total_rows as f32 * row_height,
+        );
+
         response
     }
 }
@@ -219,6 +302,79 @@ pub struct HexViewResponse {
     pub scroll_offset: f32,
     /// Visible viewport height (in pixels).
     pub viewport_height: f32,
+    /// Byte range actually rendered this frame (after clipping). Useful
+    /// for consumers that want to paint overlays only over visible bytes.
+    pub visible_range: Option<ByteRange>,
+    /// Cursor byte offset from the current selection. Mirrors
+    /// `selection.cursor`. None when no selection is set.
+    pub cursor_offset: Option<ByteOffset>,
+    /// Geometry info for the just-rendered frame. Lets consumers compute
+    /// the screen rect of any visible byte (useful for painting overlays
+    /// from outside the widget).
+    pub layout: Option<HexViewLayout>,
+}
+
+/// Immutable snapshot of the HexView's per-frame geometry. Values are in
+/// screen coordinates (absolute, already accounting for scroll). Only
+/// valid within the current egui frame.
+#[derive(Clone, Copy, Debug)]
+pub struct HexViewLayout {
+    block_rect: Rect,
+    row_height: f32,
+    columns: ColumnCount,
+    source_len: ByteLen,
+    inner: RowLayout,
+}
+
+impl HexViewLayout {
+    /// Columns rendered per row.
+    pub fn columns(&self) -> ColumnCount {
+        self.columns
+    }
+
+    /// Screen rect of the hex cell for the given byte offset, if the
+    /// offset is within the source. The rect may fall outside the
+    /// currently-visible viewport — callers doing overlay painting
+    /// should intersect with the viewport clip.
+    pub fn hex_cell_rect(&self, offset: ByteOffset) -> Option<Rect> {
+        let (row_origin, col) = self.row_origin_and_col(offset)?;
+        Some(self.inner.hex_cell_rect(row_origin, col, self.row_height))
+    }
+
+    /// Screen rect of the ASCII cell for the given byte offset.
+    pub fn ascii_cell_rect(&self, offset: ByteOffset) -> Option<Rect> {
+        let (row_origin, col) = self.row_origin_and_col(offset)?;
+        Some(self.inner.ascii_cell_rect(row_origin, col, self.row_height))
+    }
+
+    /// Screen rect spanning a contiguous run of cells on a single row
+    /// (from column `from` through column `to`, inclusive). Useful for
+    /// drawing a bracket over an entire row's worth of selection. If
+    /// the range crosses multiple rows, callers should issue one span
+    /// rect per row.
+    pub fn hex_span_rect(&self, row: hxy_core::RowIndex, from: usize, to: usize) -> Option<Rect> {
+        let cols = usize::from(self.columns.get());
+        if from >= cols || to >= cols || from > to {
+            return None;
+        }
+        let row_origin = self.row_origin_for_row(row)?;
+        Some(self.inner.hex_span_rect(row_origin, from, to, self.row_height))
+    }
+
+    fn row_origin_and_col(&self, offset: ByteOffset) -> Option<(Pos2, usize)> {
+        if offset.get() >= self.source_len.get() {
+            return None;
+        }
+        let cols = u64::from(self.columns.get());
+        let row = offset.get() / cols;
+        let col = (offset.get() % cols) as usize;
+        Some((self.row_origin_for_row(hxy_core::RowIndex::new(row))?, col))
+    }
+
+    fn row_origin_for_row(&self, row: hxy_core::RowIndex) -> Option<Pos2> {
+        let y = self.block_rect.top() + row.get() as f32 * self.row_height;
+        Some(Pos2::new(self.block_rect.left(), y))
+    }
 }
 
 fn row_count(len: ByteLen, columns: ColumnCount) -> usize {
@@ -242,6 +398,7 @@ fn measure_char_width(ui: &Ui, font_id: &FontId) -> f32 {
 }
 
 /// Precomputed x-offsets for every slot in a row. Addressed in "points".
+#[derive(Clone, Copy, Debug)]
 struct RowLayout {
     address_w: f32,
     hex_start_x: f32,
@@ -362,6 +519,8 @@ struct PaintCtx<'a> {
     row_height: f32,
     columns: ColumnCount,
     palette: Option<(ValueHighlight, HighlightPalette)>,
+    byte_styler: Option<&'a dyn Fn(u8, ByteOffset) -> ByteStyle>,
+    address_formatter: Option<&'a dyn Fn(ByteOffset, usize) -> String>,
     colors: RowColors,
     selected_range: Option<ByteRange>,
     cursor_offset: Option<ByteOffset>,
@@ -401,6 +560,8 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     source: &S,
     selection: &mut Option<Selection>,
     palette: Option<(ValueHighlight, HighlightPalette)>,
+    byte_styler: Option<&dyn Fn(u8, ByteOffset) -> ByteStyle>,
+    address_formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
     context_menu: Option<ContextMenuFn<'_>>,
     response_out: &mut HexViewResponse,
 ) {
@@ -454,14 +615,28 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     let cursor_offset = selection.map(|s| s.cursor);
     let hover_offset = hovered_byte(ui, &response, &hit);
 
-    let ctx =
-        PaintCtx { layout, font_id, row_height, columns, palette, colors, selected_range, cursor_offset, hover_offset };
+    let ctx = PaintCtx {
+        layout,
+        font_id,
+        row_height,
+        columns,
+        palette,
+        byte_styler,
+        address_formatter,
+        colors,
+        selected_range,
+        cursor_offset,
+        hover_offset,
+    };
     let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
 
     apply_interaction(ui, &response, &hit, selection);
 
     response_out.hovered_offset = hover_offset;
+    response_out.cursor_offset = cursor_offset;
+    response_out.visible_range = Some(read_range);
+    response_out.layout = Some(HexViewLayout { block_rect, row_height, columns, source_len, inner: *layout });
 
     if let Some(add) = context_menu {
         response.context_menu(add);
@@ -519,7 +694,10 @@ fn paint_row_backs_and_glyphs(
     painter.text(
         ctx.layout.address_rect(row_origin, ctx.row_height).left_center(),
         Align2::LEFT_CENTER,
-        format_address(row_first_offset, ctx.layout.address_chars),
+        match ctx.address_formatter {
+            Some(f) => f(row_first_offset, ctx.layout.address_chars),
+            None => format_address(row_first_offset, ctx.layout.address_chars),
+        },
         ctx.font_id.clone(),
         ctx.colors.weak,
     );
@@ -543,10 +721,24 @@ fn paint_row_backs_and_glyphs(
         let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, i, ctx.row_height);
         let is_sel = ctx.selected_range.is_some_and(|r| r.contains(byte_offset));
 
+        // Palette-derived defaults for this byte.
         let class_color = ctx.palette.map(|(_, p)| p.color_for(*byte));
-        if let (Some((ValueHighlight::Background, _)), Some(color)) = (ctx.palette, class_color)
-            && !is_sel
-        {
+        let (palette_bg, palette_fg) = match ctx.palette {
+            Some((ValueHighlight::Background, _)) => {
+                let bg = class_color;
+                let fg = contrast_text_color(class_color.unwrap_or(ctx.colors.text), ctx.colors.text);
+                (bg, fg)
+            }
+            Some((ValueHighlight::Text, _)) => (None, class_color.unwrap_or(ctx.colors.text)),
+            None => (None, ctx.colors.text),
+        };
+
+        // Per-byte styler overrides; `None` fields fall back to palette.
+        let user_style = ctx.byte_styler.map(|f| f(*byte, byte_offset));
+        let bg = user_style.and_then(|s| s.bg).or(palette_bg);
+        let fg_override = user_style.and_then(|s| s.fg);
+
+        if let Some(color) = bg.filter(|_| !is_sel) {
             let hex_tint = ctx.layout.hex_tint_rect(row_origin, i, cols, ctx.row_height);
             let ascii_tint = ctx.layout.ascii_tint_rect(row_origin, i, cols, ctx.row_height);
             painter.rect_filled(hex_tint, 0.0, color);
@@ -555,14 +747,13 @@ fn paint_row_backs_and_glyphs(
 
         let fg = if is_sel {
             ctx.colors.selection_fg
+        } else if let Some(f) = fg_override {
+            f
+        } else if let Some(color) = bg {
+            // Styler supplied a bg but no fg — pick a contrast color.
+            contrast_text_color(color, ctx.colors.text)
         } else {
-            match ctx.palette {
-                Some((ValueHighlight::Text, _)) => class_color.unwrap_or(ctx.colors.text),
-                Some((ValueHighlight::Background, _)) => {
-                    contrast_text_color(class_color.unwrap_or(ctx.colors.text), ctx.colors.text)
-                }
-                None => ctx.colors.text,
-            }
+            palette_fg
         };
 
         painter.text(hex_rect.center(), Align2::CENTER_CENTER, format!("{byte:02X}"), ctx.font_id.clone(), fg);
@@ -980,6 +1171,61 @@ fn draw_minimap<S: HexSource + ?Sized>(
     }
 }
 
+/// Custom vertical scrollbar rendered in the strip to the right of the
+/// minimap. The inner scroll area's own bar is hidden, so this is the
+/// only visible scroll indicator. Click/drag maps pointer y linearly to
+/// the file's full scroll range, like the minimap's interaction.
+fn draw_scrollbar(
+    ui: &mut Ui,
+    scroll_id: egui::Id,
+    rect: Rect,
+    current_offset: f32,
+    viewport_height: f32,
+    content_height: f32,
+) {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return;
+    }
+    let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+
+    let track_color = ui.visuals().extreme_bg_color;
+    painter.rect_filled(rect, 3.0, track_color);
+
+    if content_height <= viewport_height {
+        return;
+    }
+
+    let viewport_frac = (viewport_height / content_height).clamp(0.05, 1.0);
+    let max_scroll = (content_height - viewport_height).max(1.0);
+    let scroll_frac = (current_offset / max_scroll).clamp(0.0, 1.0);
+
+    let thumb_h = (viewport_frac * rect.height()).max(18.0);
+    let thumb_top = rect.top() + scroll_frac * (rect.height() - thumb_h);
+    let thumb_rect =
+        Rect::from_min_size(Pos2::new(rect.left() + 2.0, thumb_top), Vec2::new(rect.width() - 4.0, thumb_h));
+
+    let widget_visuals = if response.is_pointer_button_down_on() {
+        ui.visuals().widgets.active
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered
+    } else {
+        ui.visuals().widgets.inactive
+    };
+    painter.rect_filled(thumb_rect, 3.0, widget_visuals.bg_fill);
+
+    let pointer = response
+        .interact_pointer_pos()
+        .or_else(|| response.hover_pos().filter(|_| response.is_pointer_button_down_on()));
+    if let Some(pos) = pointer.filter(|_| response.dragged() || response.clicked() || response.drag_started()) {
+        let y = (pos.y - rect.top() - thumb_h * 0.5).clamp(0.0, rect.height() - thumb_h);
+        let frac = if rect.height() > thumb_h { y / (rect.height() - thumb_h) } else { 0.0 };
+        let target = (frac * max_scroll).clamp(0.0, max_scroll);
+        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// Uncoloured minimap fallback. Byte value 0x00 maps to the theme's
 /// darkest content shade and 0xFF to near-white (or the opposite on
 /// light mode), giving a faint brightness gradient that still reveals
@@ -994,7 +1240,13 @@ fn grayscale_for_byte(byte: u8, dark: bool) -> Color32 {
 /// Paint a one-row header with column indices ("0" through "f" in a 16-
 /// column view) aligned with each hex cell. Rendered outside the scroll
 /// area so it stays in view while scrolling.
-fn paint_column_header(ui: &mut Ui, layout: &RowLayout, font_id: &FontId, row_height: f32) {
+fn paint_column_header(
+    ui: &mut Ui,
+    layout: &RowLayout,
+    font_id: &FontId,
+    row_height: f32,
+    formatter: Option<&dyn Fn(usize) -> String>,
+) {
     let cols = usize::from(layout.columns.get());
     let header_height = row_height * 0.75;
     let (header_rect, _) = ui.allocate_exact_size(Vec2::new(layout.total_width, header_height), Sense::empty());
@@ -1002,10 +1254,14 @@ fn paint_column_header(ui: &mut Ui, layout: &RowLayout, font_id: &FontId, row_he
     let color = ui.visuals().weak_text_color();
     let origin = header_rect.min;
     for col in 0..cols {
+        let label = match formatter {
+            Some(f) => f(col),
+            None => format!("{col:X}"),
+        };
         let cell = layout.hex_cell_rect(origin, col, header_height);
-        painter.text(cell.center(), Align2::CENTER_CENTER, format!("{col:X}"), font_id.clone(), color);
+        painter.text(cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
         let ascii_cell = layout.ascii_cell_rect(origin, col, header_height);
-        painter.text(ascii_cell.center(), Align2::CENTER_CENTER, format!("{col:X}"), font_id.clone(), color);
+        painter.text(ascii_cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
     }
     let divider_y = header_rect.bottom();
     painter.line_segment(
