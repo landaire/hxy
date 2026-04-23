@@ -1,13 +1,18 @@
 //! Template-result side panel. Renders the flat node tree a
-//! [`TemplateState`] holds as a table with columns for Name, Type,
-//! Offset, Length, and Value. Row hover feeds back into the hex view
-//! so the user can see where in the data a field lives.
+//! [`TemplateState`] holds as a virtualized [`egui_table`] with
+//! columns for Name, Type, Offset, Length, and Value. Row hover feeds
+//! back into the hex view so the user can see where a field lives.
 
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use egui_table::Column;
+use egui_table::HeaderCellInfo;
+use egui_table::HeaderRow;
+use egui_table::Table;
+use egui_table::TableDelegate;
 use hxy_plugin_host::Node;
 use hxy_plugin_host::ParsedTemplate;
 
@@ -25,13 +30,7 @@ pub enum TemplateEvent {
     Hover(Option<TemplateNodeIdx>),
 }
 
-/// Pixel width of one indent step in the Name column.
 const INDENT_STEP: f32 = 14.0;
-/// Fixed widths for numeric + type columns. Value column is elastic
-/// and consumes whatever remains.
-const TYPE_COL_WIDTH: f32 = 120.0;
-const OFFSET_COL_WIDTH: f32 = 80.0;
-const LENGTH_COL_WIDTH: f32 = 64.0;
 
 pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<TemplateEvent> {
     let mut events = Vec::new();
@@ -69,66 +68,229 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
         return events;
     }
 
-    // Header row.
-    let header_rect_start = ui.cursor().min;
-    ui.horizontal(|ui| {
-        ui.add_space(0.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(
-                ui.available_width() - TYPE_COL_WIDTH - OFFSET_COL_WIDTH - LENGTH_COL_WIDTH - 24.0,
-                0.0,
-            ),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.strong("Name");
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(TYPE_COL_WIDTH, 0.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.strong("Type");
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(OFFSET_COL_WIDTH, 0.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.strong("Offset");
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(LENGTH_COL_WIDTH, 0.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.strong("Length");
-            },
-        );
-        ui.strong("Value");
-    });
-    let _ = header_rect_start;
-    ui.separator();
-
     let children = children_by_parent(&state.tree.nodes);
+    let visible = build_visible(state, &children);
 
+    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut any_hover: Option<TemplateNodeIdx> = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let roots = children.get(&None).cloned().unwrap_or_default();
-        for root_idx in roots {
-            walk_and_render(ui, id_seed, state, &children, root_idx, 0, &mut events, &mut any_hover);
-        }
-    });
 
-    // Fire Hover(None) when the pointer isn't over any row this frame
-    // but was over one last frame. Subsequent frames with no hover
-    // stay quiet.
-    let prev = state.hovered_node;
-    if any_hover != prev {
+    let mut delegate = TemplateTableDelegate {
+        state,
+        visible: &visible,
+        events: &mut events,
+        any_hover: &mut any_hover,
+        row_height,
+    };
+
+    Table::new()
+        .id_salt(("hxy_tmpl_table", id_seed))
+        .num_rows(visible.len() as u64)
+        .columns(vec![
+            Column::new(240.0).range(80.0..=600.0).resizable(true).id(egui::Id::new("tmpl-col-name")),
+            Column::new(110.0).range(60.0..=300.0).resizable(true).id(egui::Id::new("tmpl-col-type")),
+            Column::new(90.0).range(60.0..=160.0).resizable(true).id(egui::Id::new("tmpl-col-off")),
+            Column::new(70.0).range(50.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-len")),
+            Column::new(220.0).range(80.0..=800.0).resizable(true).id(egui::Id::new("tmpl-col-val")),
+        ])
+        .headers(vec![HeaderRow::new(row_height)])
+        .auto_size_mode(egui_table::AutoSizeMode::OnParentResize)
+        .show(ui, &mut delegate);
+
+    if any_hover != state.hovered_node {
         events.push(TemplateEvent::Hover(any_hover));
     }
 
     events
 }
+
+/// One visible row in the flattened table — either a real node or a
+/// placeholder row inside an expanded deferred array. Array elements
+/// don't live in `tree.nodes`, so they get a distinct row kind.
+#[derive(Clone)]
+enum RowKind {
+    Node { idx: TemplateNodeIdx, depth: usize, is_parent: bool, collapsed: bool },
+    /// "[N × type, stride bytes each]" placeholder with an Expand button.
+    DeferredArray { array_id: TemplateArrayId, count: u64, stride: u64, element_type: String, depth: usize },
+    /// Materialised element of an expanded deferred array.
+    ArrayElement { array_id: TemplateArrayId, index: usize, depth: usize },
+}
+
+struct TemplateTableDelegate<'a> {
+    state: &'a TemplateState,
+    visible: &'a [RowKind],
+    events: &'a mut Vec<TemplateEvent>,
+    any_hover: &'a mut Option<TemplateNodeIdx>,
+    row_height: f32,
+}
+
+impl TableDelegate for TemplateTableDelegate<'_> {
+    fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &HeaderCellInfo) {
+        let label = match cell.col_range.start {
+            0 => "Name",
+            1 => "Type",
+            2 => "Offset",
+            3 => "Length",
+            4 => "Value",
+            _ => "",
+        };
+        ui.add_space(6.0);
+        ui.strong(label);
+    }
+
+    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
+        // The ui handed to us has max_rect set to the full row rect.
+        // Use that to detect hover on the whole row, regardless of
+        // which cell the pointer is over.
+        let row_rect = ui.max_rect();
+        if ui.rect_contains_pointer(row_rect) {
+            let Some(row) = self.visible.get(row_nr as usize) else { return };
+            if let RowKind::Node { idx, .. } = row {
+                *self.any_hover = Some(*idx);
+            }
+        }
+        // Highlight the row background when it's this-frame's active
+        // hover (what the hex view is using).
+        let this_row_highlighted = match self.visible.get(row_nr as usize) {
+            Some(RowKind::Node { idx, .. }) => self.state.hovered_node == Some(*idx),
+            _ => false,
+        };
+        if this_row_highlighted {
+            ui.painter().rect_filled(
+                row_rect,
+                0.0,
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35),
+            );
+        }
+    }
+
+    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
+        let Some(row) = self.visible.get(cell.row_nr as usize) else { return };
+        ui.add_space(6.0);
+        match row {
+            RowKind::Node { idx, depth, is_parent, collapsed } => {
+                self.render_node_cell(ui, cell.col_nr, *idx, *depth, *is_parent, *collapsed);
+            }
+            RowKind::DeferredArray { array_id, count, stride, element_type, depth } => {
+                self.render_deferred_cell(ui, cell.col_nr, *array_id, *count, *stride, element_type, *depth);
+            }
+            RowKind::ArrayElement { array_id, index, depth } => {
+                self.render_array_element_cell(ui, cell.col_nr, *array_id, *index, *depth);
+            }
+        }
+    }
+
+    fn default_row_height(&self) -> f32 {
+        self.row_height
+    }
+}
+
+impl TemplateTableDelegate<'_> {
+    fn render_node_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        col_nr: usize,
+        idx: TemplateNodeIdx,
+        depth: usize,
+        is_parent: bool,
+        collapsed: bool,
+    ) {
+        let node = &self.state.tree.nodes[idx.0 as usize];
+        match col_nr {
+            0 => {
+                ui.add_space((depth as f32) * INDENT_STEP);
+                if is_parent {
+                    let icon = if collapsed {
+                        egui_phosphor::regular::CARET_RIGHT
+                    } else {
+                        egui_phosphor::regular::CARET_DOWN
+                    };
+                    let r = ui.add(egui::Button::new(icon).frame(false).min_size(egui::vec2(14.0, 14.0)));
+                    if r.clicked() {
+                        self.events.push(TemplateEvent::ToggleCollapse(idx));
+                    }
+                } else {
+                    ui.add_space(14.0);
+                }
+                ui.add(egui::Label::new(&node.name).truncate());
+            }
+            1 => {
+                ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()).truncate());
+            }
+            2 => {
+                ui.monospace(format!("{:#x}", node.span.offset));
+            }
+            3 => {
+                ui.monospace(node.span.length.to_string());
+            }
+            4 => {
+                ui.add(egui::Label::new(format_value(node)).truncate());
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_deferred_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        col_nr: usize,
+        array_id: TemplateArrayId,
+        count: u64,
+        stride: u64,
+        element_type: &str,
+        depth: usize,
+    ) {
+        match col_nr {
+            0 => {
+                ui.add_space((depth as f32) * INDENT_STEP + 14.0);
+                ui.weak(format!("[{count} × {element_type}]"));
+                if ui.small_button("Expand").clicked() {
+                    self.events.push(TemplateEvent::ExpandArray { array_id, count });
+                }
+            }
+            1 => {
+                ui.add(egui::Label::new(egui::RichText::new(element_type).weak()));
+            }
+            3 => {
+                ui.monospace(format!("{}", count.saturating_mul(stride)));
+            }
+            _ => {}
+        }
+    }
+
+    fn render_array_element_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        col_nr: usize,
+        array_id: TemplateArrayId,
+        index: usize,
+        depth: usize,
+    ) {
+        let Some(elements) = self.state.expanded_arrays.get(&array_id) else { return };
+        let Some(node) = elements.get(index) else { return };
+        match col_nr {
+            0 => {
+                ui.add_space((depth as f32) * INDENT_STEP + 14.0);
+                ui.label(format!("[{index}]"));
+            }
+            1 => {
+                ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()));
+            }
+            2 => {
+                ui.monospace(format!("{:#x}", node.span.offset));
+            }
+            3 => {
+                ui.monospace(node.span.length.to_string());
+            }
+            4 => {
+                ui.add(egui::Label::new(format_value(node)).truncate());
+            }
+            _ => {}
+        }
+    }
+}
+
+// ---- visibility computation ------------------------------------------------
 
 fn children_by_parent(nodes: &[Node]) -> HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> {
     let mut map: HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> = HashMap::new();
@@ -139,16 +301,28 @@ fn children_by_parent(nodes: &[Node]) -> HashMap<Option<TemplateNodeIdx>, Vec<Te
     map
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk_and_render(
-    ui: &mut egui::Ui,
-    id_seed: u64,
+/// Flatten the tree into the exact list of rows we want the table
+/// to render, respecting collapsed subtrees and expanded deferred
+/// arrays. Done up-front so egui_table can virtualize with accurate
+/// row counts.
+fn build_visible(
+    state: &TemplateState,
+    children: &HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>>,
+) -> Vec<RowKind> {
+    let mut out = Vec::new();
+    let roots = children.get(&None).cloned().unwrap_or_default();
+    for root in roots {
+        emit_node(state, children, root, 0, &mut out);
+    }
+    out
+}
+
+fn emit_node(
     state: &TemplateState,
     children: &HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>>,
     idx: TemplateNodeIdx,
     depth: usize,
-    events: &mut Vec<TemplateEvent>,
-    any_hover: &mut Option<TemplateNodeIdx>,
+    out: &mut Vec<RowKind>,
 ) {
     let node = &state.tree.nodes[idx.0 as usize];
     let kids = children.get(&Some(idx)).cloned().unwrap_or_default();
@@ -156,182 +330,33 @@ fn walk_and_render(
     let is_parent = !kids.is_empty() || has_array;
     let collapsed = state.collapsed.contains(&idx);
 
-    render_row(ui, id_seed, idx, node, depth, is_parent, collapsed, state, events, any_hover);
+    out.push(RowKind::Node { idx, depth, is_parent, collapsed });
 
     if collapsed {
         return;
     }
     for cid in kids {
-        walk_and_render(ui, id_seed, state, children, cid, depth + 1, events, any_hover);
+        emit_node(state, children, cid, depth + 1, out);
     }
-    // Deferred-array elements render after the struct children, under
-    // the array's own parent node.
     if let Some(arr) = node.array.as_ref() {
         let array_id = TemplateArrayId(arr.id);
         if let Some(elements) = state.expanded_arrays.get(&array_id) {
-            for (i, el) in elements.iter().enumerate() {
-                render_array_element_row(ui, id_seed, idx, i, el, depth + 1, any_hover, events);
+            for i in 0..elements.len() {
+                out.push(RowKind::ArrayElement { array_id, index: i, depth: depth + 1 });
             }
         } else {
-            render_expand_array_row(ui, id_seed, arr, depth + 1, events);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_row(
-    ui: &mut egui::Ui,
-    id_seed: u64,
-    idx: TemplateNodeIdx,
-    node: &Node,
-    depth: usize,
-    is_parent: bool,
-    collapsed: bool,
-    state: &TemplateState,
-    events: &mut Vec<TemplateEvent>,
-    any_hover: &mut Option<TemplateNodeIdx>,
-) {
-    let row_resp = ui
-        .scope(|ui| {
-            let is_hovered_last_frame = state.hovered_node == Some(idx);
-            if is_hovered_last_frame {
-                ui.style_mut().visuals.widgets.noninteractive.bg_fill =
-                    ui.visuals().widgets.active.bg_fill;
-            }
-            ui.horizontal(|ui| {
-                // Name column: indent + expand caret + name
-                let name_width = ui
-                    .available_width()
-                    .saturating_sub_f32(TYPE_COL_WIDTH + OFFSET_COL_WIDTH + LENGTH_COL_WIDTH);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(name_width, 0.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_space((depth as f32) * INDENT_STEP);
-                        if is_parent {
-                            let icon = if collapsed {
-                                egui_phosphor::regular::CARET_RIGHT
-                            } else {
-                                egui_phosphor::regular::CARET_DOWN
-                            };
-                            let r = ui.add(
-                                egui::Button::new(icon).frame(false).min_size(egui::vec2(14.0, 14.0)),
-                            );
-                            if r.clicked() {
-                                events.push(TemplateEvent::ToggleCollapse(idx));
-                            }
-                        } else {
-                            ui.add_space(14.0);
-                        }
-                        ui.label(&node.name);
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(TYPE_COL_WIDTH, 0.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()).truncate());
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(OFFSET_COL_WIDTH, 0.0),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(format!("{:#x}", node.span.offset)).monospace()));
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(LENGTH_COL_WIDTH, 0.0),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(node.span.length.to_string()).monospace()));
-                    },
-                );
-                ui.add(egui::Label::new(format_value(node)).truncate());
-            });
-        })
-        .response
-        .interact(egui::Sense::hover());
-
-    if row_resp.hovered() {
-        *any_hover = Some(idx);
-    }
-    let _ = id_seed;
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_array_element_row(
-    ui: &mut egui::Ui,
-    id_seed: u64,
-    _parent_idx: TemplateNodeIdx,
-    index: usize,
-    node: &Node,
-    depth: usize,
-    any_hover: &mut Option<TemplateNodeIdx>,
-    _events: &mut Vec<TemplateEvent>,
-) {
-    // Array elements don't live in the main node list, so they can't
-    // be "hovered" via an index into it. We still render them but
-    // don't report hover-to-highlight for now (a later pass can give
-    // them synthetic indexes).
-    let _ = id_seed;
-    let _ = any_hover;
-    ui.horizontal(|ui| {
-        let name_width = ui
-            .available_width()
-            .saturating_sub_f32(TYPE_COL_WIDTH + OFFSET_COL_WIDTH + LENGTH_COL_WIDTH);
-        ui.allocate_ui_with_layout(
-            egui::vec2(name_width, 0.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.add_space((depth as f32) * INDENT_STEP + 14.0);
-                ui.label(format!("[{index}]"));
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(TYPE_COL_WIDTH, 0.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()));
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(OFFSET_COL_WIDTH, 0.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.monospace(format!("{:#x}", node.span.offset));
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(LENGTH_COL_WIDTH, 0.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.monospace(node.span.length.to_string());
-            },
-        );
-        ui.label(format_value(node));
-    });
-}
-
-fn render_expand_array_row(
-    ui: &mut egui::Ui,
-    id_seed: u64,
-    arr: &hxy_plugin_host::DeferredArray,
-    depth: usize,
-    events: &mut Vec<TemplateEvent>,
-) {
-    let _ = id_seed;
-    ui.horizontal(|ui| {
-        ui.add_space((depth as f32) * INDENT_STEP + 14.0);
-        ui.weak(format!("[{} × {}, {} bytes each]", arr.element_type, arr.count, arr.stride));
-        if ui.small_button("Expand").clicked() {
-            events.push(TemplateEvent::ExpandArray {
-                array_id: TemplateArrayId(arr.id),
+            out.push(RowKind::DeferredArray {
+                array_id,
                 count: arr.count,
+                stride: arr.stride,
+                element_type: arr.element_type.clone(),
+                depth: depth + 1,
             });
         }
-    });
+    }
 }
+
+// ---- value formatting ------------------------------------------------------
 
 fn format_value(node: &Node) -> String {
     use hxy_plugin_host::Value;
@@ -359,9 +384,9 @@ fn format_value(node: &Node) -> String {
     }
 }
 
+// ---- state helpers ---------------------------------------------------------
+
 pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count: u64) {
-    // Cap materialisation to keep the UI responsive. User can re-invoke
-    // to grow the visible range if needed later.
     const MAX_INITIAL: u64 = 512;
     let Some(parsed) = state.parsed.as_ref() else { return };
     let end = count.min(MAX_INITIAL);
@@ -379,7 +404,6 @@ pub fn toggle_collapse(state: &mut TemplateState, idx: TemplateNodeIdx) {
     }
 }
 
-/// Build a fresh [`TemplateState`] by running a parsed template.
 pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
     let tree = parsed.execute(&[])?;
     Ok(TemplateState {
@@ -392,10 +416,6 @@ pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState
     })
 }
 
-/// Build a state that carries only a fatal diagnostic message — used
-/// when we can't even get to the point of parsing (no runtime, source
-/// unreadable, etc.). Surfaces the panel so the user sees the message
-/// instead of the command appearing to do nothing.
 pub fn error_state(message: String) -> TemplateState {
     TemplateState {
         parsed: None,
@@ -412,15 +432,5 @@ pub fn error_state(message: String) -> TemplateState {
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
-    }
-}
-
-trait SubF32 {
-    fn saturating_sub_f32(self, other: f32) -> f32;
-}
-
-impl SubF32 for f32 {
-    fn saturating_sub_f32(self, other: f32) -> f32 {
-        (self - other).max(0.0)
     }
 }

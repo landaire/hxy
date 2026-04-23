@@ -48,6 +48,7 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 hxy-vfs.workspace = true
 egui_ltreeview = "0.7.0"
+egui_table = "0.8.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
