@@ -47,12 +47,20 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     columns: ColumnCount,
     selection: &'s mut Option<Selection>,
     value_highlight: Option<ValueHighlight>,
+    palette_override: Option<BytePalette>,
     context_menu: Option<ContextMenuFn<'s>>,
 }
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     pub fn new(source: &'s S, selection: &'s mut Option<Selection>) -> Self {
-        Self { source, columns: ColumnCount::DEFAULT, selection, value_highlight: None, context_menu: None }
+        Self {
+            source,
+            columns: ColumnCount::DEFAULT,
+            selection,
+            value_highlight: None,
+            palette_override: None,
+            context_menu: None,
+        }
     }
 
     pub fn columns(mut self, cols: ColumnCount) -> Self {
@@ -67,6 +75,13 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         self
     }
 
+    /// Override the built-in theme-based palette. Use this to plug in a
+    /// completely custom color scheme.
+    pub fn palette(mut self, palette: BytePalette) -> Self {
+        self.palette_override = Some(palette);
+        self
+    }
+
     /// Install a context-menu callback rendered when the user
     /// right-clicks anywhere in the hex or ASCII pane. Callers use this
     /// to add per-app commands like Copy.
@@ -76,8 +91,12 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     }
 
     pub fn show(self, ui: &mut Ui) -> HexViewResponse {
-        let Self { source, columns, selection, value_highlight, context_menu } = self;
-        let palette = value_highlight.map(|mode| (mode, BytePalette::for_theme_and_mode(ui.visuals().dark_mode, mode)));
+        let Self { source, columns, selection, value_highlight, palette_override, context_menu } = self;
+        let palette = value_highlight.map(|mode| {
+            let palette =
+                palette_override.unwrap_or_else(|| BytePalette::for_theme_and_mode(ui.visuals().dark_mode, mode));
+            (mode, palette)
+        });
         let mut context_menu_slot = context_menu;
         let total_rows = row_count(source.len(), columns);
         let address_chars = address_hex_width(source.len());

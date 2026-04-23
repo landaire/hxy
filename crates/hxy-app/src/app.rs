@@ -124,7 +124,65 @@ impl eframe::App for HxyApp {
 
         capture_window_on_drag_end(ui.ctx(), &self.state, &mut self.prev_window, &self.last_saved_window);
 
+        paint_drop_overlay(ui.ctx());
+        consume_dropped_files(ui.ctx(), self);
+
         self.save_if_dirty(&snapshot_before);
+    }
+}
+
+fn paint_drop_overlay(ctx: &egui::Context) {
+    let hovered_count = ctx.input(|i| i.raw.hovered_files.len());
+    if hovered_count == 0 {
+        return;
+    }
+    let text = ctx.input(|i| {
+        if i.raw.hovered_files.len() > 1 {
+            return "Drop one file at a time".to_owned();
+        }
+        let Some(file) = i.raw.hovered_files.first() else {
+            return "Drop a file".to_owned();
+        };
+        match file.path.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+            Some(name) => format!("Drop to open\n{name}"),
+            None => "Drop to open".to_owned(),
+        }
+    });
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hxy_drop_target")));
+    let screen = ctx.content_rect();
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(192));
+    painter.text(
+        screen.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::TextStyle::Heading.resolve(&ctx.global_style()),
+        egui::Color32::WHITE,
+    );
+}
+
+fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
+    let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+    for file in dropped {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = file.path {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    app.open_in_memory_with_path(name, Some(path), bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %path.display(), "open dropped file");
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !file.bytes.is_empty() {
+            let name = if file.name.is_empty() { "dropped".to_string() } else { file.name.clone() };
+            app.open_in_memory(name, file.bytes.to_vec());
+        }
     }
 }
 
