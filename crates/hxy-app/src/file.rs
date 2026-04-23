@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
@@ -30,6 +31,9 @@ pub struct OpenFile {
     pub path: Option<PathBuf>,
     pub source: Arc<dyn HexSource>,
     pub selection: Option<Selection>,
+    /// Last-hovered byte offset reported by the hex view — surfaced in
+    /// the status bar. Cleared each frame (set from `HexViewResponse`).
+    pub hovered: Option<ByteOffset>,
 }
 
 impl OpenFile {
@@ -42,6 +46,7 @@ impl OpenFile {
             path,
             source: Arc::new(MemorySource::new(bytes)),
             selection: None,
+            hovered: None,
         }
     }
 }

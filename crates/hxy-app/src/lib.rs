@@ -12,6 +12,9 @@ pub mod window;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
 pub use app::HxyApp;
 
 pub const APP_NAME: &str = "hxy";

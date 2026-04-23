@@ -246,8 +246,46 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Settings => settings_ui(ui, &mut self.state.app),
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
-                    HexView::new(&*file.source, &mut file.selection).columns(self.state.app.hex_columns).show(ui);
+                    let settings_base = self.state.app.offset_base;
+                    let mut new_base = settings_base;
+                    egui::Panel::bottom(egui::Id::new(("hxy-status-bar", id.get()))).resizable(false).show_inside(
+                        ui,
+                        |ui| {
+                            status_bar_ui(ui, file, settings_base, &mut new_base);
+                        },
+                    );
+                    let highlight =
+                        self.state.app.byte_value_highlight.then(|| self.state.app.byte_highlight_mode.as_view());
+                    let mut copy_request: Option<CopyKind> = None;
+                    let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
+                    let response = egui::CentralPanel::default()
+                        .show_inside(ui, |ui| {
+                            HexView::new(&*file.source, &mut file.selection)
+                                .columns(self.state.app.hex_columns)
+                                .value_highlight(highlight)
+                                .context_menu(|ui| {
+                                    ui.add_enabled_ui(has_sel, |ui| {
+                                        if ui.button("Copy bytes").clicked() {
+                                            copy_request = Some(CopyKind::Bytes);
+                                            ui.close();
+                                        }
+                                        if ui.button("Copy hex string").clicked() {
+                                            copy_request = Some(CopyKind::Hex);
+                                            ui.close();
+                                        }
+                                    });
+                                })
+                                .show(ui)
+                        })
+                        .inner;
+                    file.hovered = response.hovered_offset;
+                    if let Some(kind) = copy_request {
+                        do_copy(ui.ctx(), file, kind);
+                    }
                     handle_copy_shortcuts(ui, file);
+                    if new_base != settings_base {
+                        self.state.app.offset_base = new_base;
+                    }
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
@@ -268,25 +306,91 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 }
 
+fn status_bar_ui(
+    ui: &mut egui::Ui,
+    file: &OpenFile,
+    base: crate::settings::OffsetBase,
+    new_base: &mut crate::settings::OffsetBase,
+) {
+    ui.horizontal(|ui| {
+        if let Some(hov) = file.hovered {
+            let r = ui.add(
+                egui::Label::new(format!("Hover: {}", format_offset(hov.get(), base))).sense(egui::Sense::click()),
+            );
+            if r.clicked() {
+                *new_base = base.toggle();
+            }
+            r.on_hover_text(format_offset(hov.get(), base.toggle()));
+        } else {
+            ui.label("Hover: —");
+        }
+        ui.separator();
+        if let Some(sel) = file.selection {
+            let range = sel.range();
+            let last_inclusive = range.end().get().saturating_sub(1);
+            let label = if sel.is_caret() {
+                format!("Caret: {}", format_offset(range.start().get(), base))
+            } else {
+                format!(
+                    "Sel: {}–{} ({} bytes)",
+                    format_offset(range.start().get(), base),
+                    format_offset(last_inclusive, base),
+                    range.len().get(),
+                )
+            };
+            let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+            if r.clicked() {
+                *new_base = base.toggle();
+            }
+            let tooltip = if sel.is_caret() {
+                format_offset(range.start().get(), base.toggle())
+            } else {
+                format!(
+                    "{}–{}",
+                    format_offset(range.start().get(), base.toggle()),
+                    format_offset(last_inclusive, base.toggle()),
+                )
+            };
+            r.on_hover_text(tooltip);
+        } else {
+            ui.label("Sel: —");
+        }
+    });
+}
+
+fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
+    match base {
+        crate::settings::OffsetBase::Hex => format!("0x{value:X}"),
+        crate::settings::OffsetBase::Decimal => format!("{value}"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CopyKind {
+    Bytes,
+    Hex,
+}
+
 const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
 
-/// Hook Cmd/Ctrl+C (bytes as lossy UTF-8) and Shift+Cmd/Ctrl+C (bytes as
-/// space-separated hex) when a file tab is the focused surface.
 fn handle_copy_shortcuts(ui: &egui::Ui, file: &OpenFile) {
+    let ctx = ui.ctx();
+    let (want_hex, want_bytes) = ctx.input_mut(|i| (i.consume_shortcut(&COPY_HEX), i.consume_shortcut(&COPY_BYTES)));
+    if want_hex {
+        do_copy(ctx, file, CopyKind::Hex);
+    } else if want_bytes {
+        do_copy(ctx, file, CopyKind::Bytes);
+    }
+}
+
+fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
     let Some(selection) = file.selection else { return };
     let range = selection.range();
     if range.is_empty() {
         return;
     }
-
-    let ctx = ui.ctx();
-    let (copy_hex, copy_bytes) = ctx.input_mut(|i| (i.consume_shortcut(&COPY_HEX), i.consume_shortcut(&COPY_BYTES)));
-    if !(copy_hex || copy_bytes) {
-        return;
-    }
-
     let bytes = match file.source.read(range) {
         Ok(b) => b,
         Err(e) => {
@@ -294,8 +398,10 @@ fn handle_copy_shortcuts(ui: &egui::Ui, file: &OpenFile) {
             return;
         }
     };
-
-    let text = if copy_hex { format_hex_string(&bytes) } else { String::from_utf8_lossy(&bytes).into_owned() };
+    let text = match kind {
+        CopyKind::Bytes => String::from_utf8_lossy(&bytes).into_owned(),
+        CopyKind::Hex => format_hex_string(&bytes),
+    };
     ctx.copy_text(text);
 }
 
@@ -306,7 +412,7 @@ fn format_hex_string(bytes: &[u8]) -> String {
             out.push(' ');
         }
         use std::fmt::Write;
-        let _ = write!(out, "{b:02x}");
+        let _ = write!(out, "{b:02X}");
     }
     out
 }
@@ -337,6 +443,37 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings) {
 
         ui.label(hxy_i18n::t("settings-check-updates"));
         ui.checkbox(&mut settings.check_for_updates, "");
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-byte-highlight"));
+        ui.checkbox(&mut settings.byte_value_highlight, "");
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-byte-highlight-mode"));
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut settings.byte_highlight_mode,
+                crate::settings::ByteHighlightMode::Background,
+                hxy_i18n::t("settings-byte-highlight-background"),
+            );
+            ui.selectable_value(
+                &mut settings.byte_highlight_mode,
+                crate::settings::ByteHighlightMode::Text,
+                hxy_i18n::t("settings-byte-highlight-text"),
+            );
+        });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-offset-base"));
+        egui::ComboBox::from_id_salt("hxy-offset-base")
+            .selected_text(match settings.offset_base {
+                crate::settings::OffsetBase::Hex => "Hex",
+                crate::settings::OffsetBase::Decimal => "Decimal",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Hex, "Hex");
+                ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Decimal, "Decimal");
+            });
         ui.end_row();
     });
 }

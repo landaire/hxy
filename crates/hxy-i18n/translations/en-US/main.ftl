@@ -24,6 +24,11 @@ settings-zoom = Zoom
 settings-zoom-reset = Reset
 settings-columns = Hex columns
 settings-check-updates = Check for updates
+settings-byte-highlight = Byte-value highlighting
+settings-byte-highlight-mode = Highlight mode
+settings-byte-highlight-background = Background
+settings-byte-highlight-text = Text
+settings-offset-base = Offset base
 
 # Errors
 error-open-failed = Failed to open file
