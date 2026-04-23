@@ -1,0 +1,21 @@
+[package]
+name = "hxy-plugin-passthrough"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+description = "Sample hxy VFS plugin — exposes the whole source as a single file."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace]
