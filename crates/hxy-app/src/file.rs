@@ -66,7 +66,11 @@ pub struct OpenFile {
 /// expanded lazily) and the current tree view state.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct TemplateState {
-    pub parsed: std::sync::Arc<hxy_plugin_host::ParsedTemplate>,
+    /// `None` when the state was built as a diagnostics-only surface
+    /// (e.g. missing runtime, parse failure) — in that case
+    /// `expand_array` can't be called and the panel renders only the
+    /// diagnostics header.
+    pub parsed: Option<std::sync::Arc<hxy_plugin_host::ParsedTemplate>>,
     pub tree: hxy_plugin_host::ResultTree,
     /// Show the panel in the file tab. User can toggle via the tree
     /// panel's close button.

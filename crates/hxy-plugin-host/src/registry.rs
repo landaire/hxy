@@ -139,3 +139,26 @@ fn load_template_single(
     TemplateRuntime::new(engine.clone(), component, linker)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
+
+/// Compile an already-in-memory component into a [`TemplateRuntime`].
+/// The `label` is only used for error reporting — typically a short
+/// identifier like `"builtin:010-bt"`.
+pub fn load_template_runtime_from_bytes(
+    bytes: &[u8],
+    label: &str,
+) -> Result<TemplateRuntime, PluginLoadError> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
+
+    let mut linker: Linker<HostState> = Linker::new(&engine);
+    WitTemplateRuntime::add_to_linker::<_, wasmtime::component::HasSelf<_>>(&mut linker, |s: &mut HostState| s)
+        .map_err(PluginLoadError::Engine)?;
+    let linker = Arc::new(linker);
+
+    let label_path = PathBuf::from(label);
+    let component = Component::new(&engine, bytes)
+        .map_err(|source| PluginLoadError::Compile { path: label_path.clone(), source })?;
+    TemplateRuntime::new(engine, component, linker)
+        .map_err(|source| PluginLoadError::Probe { path: label_path, source })
+}

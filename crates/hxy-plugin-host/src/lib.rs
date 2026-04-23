@@ -19,6 +19,7 @@ mod template;
 pub use handler::PluginHandler;
 pub use registry::PluginLoadError;
 pub use registry::load_plugins_from_dir;
+pub use registry::load_template_runtime_from_bytes;
 pub use registry::load_template_runtimes_from_dir;
 pub use template::Arg;
 pub use template::ArgValue;

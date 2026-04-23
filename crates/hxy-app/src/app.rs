@@ -696,28 +696,40 @@ fn run_template_dialog(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(path) = rfd::FileDialog::new().pick_file() else { return };
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
+
     let Some(runtime) = app.template_runtime_for(&ext) else {
-        tracing::warn!(ext = %ext, "no template runtime registered for extension");
+        let dir = user_template_runtimes_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "$CONFIG/hxy/template-runtimes".to_owned());
+        let msg = format!(
+            "No template runtime is registered for .{ext} files.\nInstall a matching runtime component (.wasm) into:\n{dir}"
+        );
+        if let Some(file) = app.files.get_mut(&id) {
+            file.template = Some(crate::template_panel::error_state(msg));
+        }
         return;
     };
+
     let template_source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "read template source");
+            let msg = format!("Failed to read template source {}: {e}", path.display());
+            if let Some(file) = app.files.get_mut(&id) {
+                file.template = Some(crate::template_panel::error_state(msg));
+            }
             return;
         }
     };
+
     let Some(file) = app.files.get_mut(&id) else { return };
-    match runtime.parse(file.source.clone(), &template_source) {
-        Ok(parsed) => {
-            let parsed = Arc::new(parsed);
-            match crate::template_panel::new_state(parsed) {
-                Ok(state) => file.template = Some(state),
-                Err(e) => tracing::warn!(error = %e, "execute template"),
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, path = %path.display(), "parse template"),
-    }
+    let state = match runtime.parse(file.source.clone(), &template_source) {
+        Ok(parsed) => match crate::template_panel::new_state(Arc::new(parsed)) {
+            Ok(state) => state,
+            Err(e) => crate::template_panel::error_state(format!("Execute failed: {e}")),
+        },
+        Err(e) => crate::template_panel::error_state(format!("Parse failed: {e}")),
+    };
+    file.template = Some(state);
 }
 
 fn mount_active_file(app: &mut HxyApp) {
@@ -929,23 +941,49 @@ fn user_template_runtimes_dir() -> Option<std::path::PathBuf> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_user_template_runtimes() -> Vec<Arc<hxy_plugin_host::TemplateRuntime>> {
-    let Some(dir) = user_template_runtimes_dir() else { return Vec::new() };
-    match hxy_plugin_host::load_template_runtimes_from_dir(&dir) {
-        Ok(runtimes) => {
-            runtimes
-                .into_iter()
-                .map(|r| {
-                    tracing::info!(name = r.name(), exts = ?r.extensions(), "loaded template runtime");
-                    Arc::new(r)
-                })
-                .collect()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, dir = %dir.display(), "load template runtimes");
-            Vec::new()
+    let mut out: Vec<Arc<hxy_plugin_host::TemplateRuntime>> = Vec::new();
+
+    // Built-in runtimes ship with the binary so the common template
+    // languages work out of the box. They're registered before the
+    // user's plugin directory so user-installed overrides can shadow
+    // them (lookup prefers the later match? — actually we scan
+    // sequentially and pick the first hit, so put user plugins LAST
+    // to allow override; we put builtins last here so user ones win).
+    for (label, bytes) in BUILTIN_TEMPLATE_RUNTIMES {
+        match hxy_plugin_host::load_template_runtime_from_bytes(bytes, label) {
+            Ok(r) => {
+                tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = true, "loaded template runtime");
+                out.push(Arc::new(r));
+            }
+            Err(e) => tracing::warn!(error = %e, label = label, "load builtin template runtime"),
         }
     }
+
+    if let Some(dir) = user_template_runtimes_dir() {
+        match hxy_plugin_host::load_template_runtimes_from_dir(&dir) {
+            Ok(runtimes) => {
+                for r in runtimes {
+                    tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = false, "loaded template runtime");
+                    // Prepend user runtimes so they take precedence
+                    // over builtins with the same extension.
+                    out.insert(0, Arc::new(r));
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load template runtimes"),
+        }
+    }
+
+    out
 }
+
+/// Components embedded in the binary so common template languages
+/// are usable without the user having to install anything. Each
+/// entry is `(label, bytes)` — `label` is only used in error reports.
+#[cfg(not(target_arch = "wasm32"))]
+const BUILTIN_TEMPLATE_RUNTIMES: &[(&str, &[u8])] = &[(
+    "builtin:010-bt",
+    include_bytes!("../assets/bt-runtime.component.wasm"),
+)];
 
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();

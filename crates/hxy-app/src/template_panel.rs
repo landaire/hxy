@@ -162,8 +162,9 @@ pub fn expand_array(state: &mut TemplateState, array_id: u64, count: u64) {
     // Cap materialisation to keep the UI responsive. User can re-invoke
     // to grow the visible range if needed later.
     const MAX_INITIAL: u64 = 512;
+    let Some(parsed) = state.parsed.as_ref() else { return };
     let end = count.min(MAX_INITIAL);
-    match state.parsed.expand_array(array_id, 0, end) {
+    match parsed.expand_array(array_id, 0, end) {
         Ok(elements) => {
             state.expanded_arrays.insert(array_id, elements);
         }
@@ -174,5 +175,31 @@ pub fn expand_array(state: &mut TemplateState, array_id: u64, count: u64) {
 /// Build a fresh [`TemplateState`] by running a parsed template.
 pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
     let tree = parsed.execute(&[])?;
-    Ok(TemplateState { parsed, tree, show_panel: true, expanded_arrays: HashMap::new() })
+    Ok(TemplateState {
+        parsed: Some(parsed),
+        tree,
+        show_panel: true,
+        expanded_arrays: HashMap::new(),
+    })
+}
+
+/// Build a state that carries only a fatal diagnostic message — used
+/// when we can't even get to the point of parsing (no runtime, source
+/// unreadable, etc.). Surfaces the panel so the user sees the message
+/// instead of the command appearing to do nothing.
+pub fn error_state(message: String) -> TemplateState {
+    TemplateState {
+        parsed: None,
+        tree: hxy_plugin_host::ResultTree {
+            nodes: Vec::new(),
+            diagnostics: vec![hxy_plugin_host::Diagnostic {
+                message,
+                severity: hxy_plugin_host::Severity::Error,
+                file_offset: None,
+                template_line: None,
+            }],
+        },
+        show_panel: true,
+        expanded_arrays: HashMap::new(),
+    }
 }
