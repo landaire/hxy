@@ -4,6 +4,7 @@ members = [
     "crates/hxy-core",
     "crates/hxy-i18n",
     "crates/hxy-view",
+    "crates/hxy-vfs",
     "crates/hxy-app",
 ]
 
@@ -19,6 +20,7 @@ repository = "https://github.com/landaire/hxy"
 hxy-core = { path = "crates/hxy-core" }
 hxy-i18n = { path = "crates/hxy-i18n" }
 hxy-view = { path = "crates/hxy-view" }
+hxy-vfs = { path = "crates/hxy-vfs" }
 
 [profile.release]
 opt-level = 3

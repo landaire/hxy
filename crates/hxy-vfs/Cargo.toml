@@ -1,0 +1,18 @@
+[package]
+name = "hxy-vfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "VFS detection, registry, and built-in handlers for the hxy hex editor"
+
+[dependencies]
+file_type = "0.8.11"
+fskit = { version = "0.2", features = ["vfs"] }
+hxy-core = { workspace = true }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+vfs = "0.13.0"
+zip = { version = "8.5.1", default-features = false, features = ["deflate", "deflate64"] }
