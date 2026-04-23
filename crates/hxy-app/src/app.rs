@@ -244,14 +244,10 @@ impl TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::Welcome => welcome_ui(ui),
             Tab::Settings => settings_ui(ui, &mut self.state.app),
-            Tab::File(id) => match self.files.get(id) {
+            Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
-                    let view = HexView::new(&*file.source).columns(self.state.app.hex_columns);
-                    let view = match file.selection.as_ref() {
-                        Some(sel) => view.selection(sel),
-                        None => view,
-                    };
-                    view.show(ui);
+                    HexView::new(&*file.source, &mut file.selection).columns(self.state.app.hex_columns).show(ui);
+                    handle_copy_shortcuts(ui, file);
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
@@ -270,6 +266,49 @@ impl TabViewer for HxyTabViewer<'_> {
         }
         OnCloseResponse::Close
     }
+}
+
+const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+const COPY_HEX: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
+
+/// Hook Cmd/Ctrl+C (bytes as lossy UTF-8) and Shift+Cmd/Ctrl+C (bytes as
+/// space-separated hex) when a file tab is the focused surface.
+fn handle_copy_shortcuts(ui: &egui::Ui, file: &OpenFile) {
+    let Some(selection) = file.selection else { return };
+    let range = selection.range();
+    if range.is_empty() {
+        return;
+    }
+
+    let ctx = ui.ctx();
+    let (copy_hex, copy_bytes) = ctx.input_mut(|i| (i.consume_shortcut(&COPY_HEX), i.consume_shortcut(&COPY_BYTES)));
+    if !(copy_hex || copy_bytes) {
+        return;
+    }
+
+    let bytes = match file.source.read(range) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "read selection for copy");
+            return;
+        }
+    };
+
+    let text = if copy_hex { format_hex_string(&bytes) } else { String::from_utf8_lossy(&bytes).into_owned() };
+    ctx.copy_text(text);
+}
+
+fn format_hex_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 fn welcome_ui(ui: &mut egui::Ui) {
