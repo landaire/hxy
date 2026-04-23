@@ -1,12 +1,16 @@
 //! Main application type.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use egui_dock::DockArea;
 use egui_dock::DockState;
 use egui_dock::Style;
 use egui_dock::TabViewer;
 use egui_dock::tab_viewer::OnCloseResponse;
+use hxy_vfs::TabSource;
+use hxy_vfs::VfsRegistry;
+use hxy_vfs::handlers::ZipHandler;
 use hxy_view::HexView;
 
 use crate::APP_NAME;
@@ -22,6 +26,7 @@ pub struct HxyApp {
     files: HashMap<FileId, OpenFile>,
     state: SharedPersistedState,
     next_file_id: u64,
+    registry: VfsRegistry,
 
     #[cfg(not(target_arch = "wasm32"))]
     sink: Option<crate::persist::SaveSink>,
@@ -47,17 +52,24 @@ impl HxyApp {
             (s.app.zoom_factor, s.window)
         };
         cc.egui_ctx.set_zoom_factor(initial_zoom);
+        let mut registry = VfsRegistry::new();
+        registry.register(Arc::new(ZipHandler::new()));
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
             state,
             next_file_id: 1,
+            registry,
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
         }
+    }
+
+    pub fn registry(&self) -> &VfsRegistry {
+        &self.registry
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -74,33 +86,60 @@ impl HxyApp {
     }
 
     pub fn open_in_memory(&mut self, display_name: impl Into<String>, bytes: Vec<u8>) -> FileId {
-        self.open_in_memory_with_path(display_name, None, bytes, None, None)
+        self.open(display_name, None, bytes, None, None)
     }
 
-    pub fn open_in_memory_with_path(
+    pub fn open_filesystem(
         &mut self,
         display_name: impl Into<String>,
-        path: Option<std::path::PathBuf>,
+        path: std::path::PathBuf,
+        bytes: Vec<u8>,
+        restore_selection: Option<hxy_core::Selection>,
+        restore_scroll: Option<f32>,
+    ) -> FileId {
+        self.open(display_name, Some(TabSource::Filesystem(path)), bytes, restore_selection, restore_scroll)
+    }
+
+    /// Open a new file tab with the given display name, persistent
+    /// source identity, and byte contents. Runs format detection
+    /// against the source's first bytes and caches the matching handler
+    /// (if any) on the tab so the toolbar command can enable itself.
+    pub fn open(
+        &mut self,
+        display_name: impl Into<String>,
+        source_kind: Option<TabSource>,
         bytes: Vec<u8>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
     ) -> FileId {
         let id = self.fresh_file_id();
-        let mut file = OpenFile::from_bytes(id, display_name, path.clone(), bytes);
+        let mut file = OpenFile::from_bytes(id, display_name, source_kind.clone(), bytes);
         file.selection = restore_selection;
         if let Some(s) = restore_scroll {
             file.pending_scroll = Some(s);
             file.scroll_offset = s;
         }
+
+        // Detect a matching VFS handler against the first ~4 KiB.
+        if let Ok(range) = hxy_core::ByteRange::new(
+            hxy_core::ByteOffset::new(0),
+            hxy_core::ByteOffset::new(file.source.len().get().min(4096)),
+        ) && let Ok(head) = file.source.read(range)
+        {
+            file.detected_handler = self.registry.detect(&head);
+        }
+
         self.files.insert(id, file);
         self.dock.push_to_focused_leaf(Tab::File(id));
 
-        if let Some(p) = path {
+        if let Some(source) = source_kind {
             let mut g = self.state.write();
-            g.app.record_recent(p.clone());
-            if !g.open_tabs.iter().any(|t| t.path == p) {
+            if let TabSource::Filesystem(p) = &source {
+                g.app.record_recent(p.clone());
+            }
+            if !g.open_tabs.iter().any(|t| t.source == source) {
                 g.open_tabs.push(crate::state::OpenTabState {
-                    path: p,
+                    source,
                     selection: restore_selection,
                     scroll_offset: restore_scroll.unwrap_or(0.0),
                 });
@@ -109,35 +148,64 @@ impl HxyApp {
         id
     }
 
-    /// Try to open each saved tab from disk. Missing files are dropped
+    /// Try to open each saved tab. Filesystem tabs are read directly
+    /// from disk; VFS-entry tabs require their parent tab to be open
+    /// with a materialised mount. We sort tabs by `TabSource` depth so
+    /// parents are restored before their children. Failures (file
+    /// missing, parent failed to mount, entry path gone) drop the tab
     /// from the persisted list.
     #[cfg(not(target_arch = "wasm32"))]
     fn restore_open_tabs(&mut self) {
-        let tabs = self.state.read().open_tabs.clone();
+        let mut tabs = self.state.read().open_tabs.clone();
+        // Topologically order: shallower depth first so parents load
+        // before any child that references them.
+        tabs.sort_by_key(|t| t.source.depth());
+
         let mut surviving: Vec<crate::state::OpenTabState> = Vec::new();
         for tab in tabs {
-            match std::fs::read(&tab.path) {
-                Ok(bytes) => {
-                    let name = tab
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| tab.path.display().to_string());
-                    let id = self.fresh_file_id();
-                    let mut file = OpenFile::from_bytes(id, name, Some(tab.path.clone()), bytes);
-                    file.selection = tab.selection;
-                    file.pending_scroll = Some(tab.scroll_offset);
-                    file.scroll_offset = tab.scroll_offset;
-                    self.files.insert(id, file);
-                    self.dock.push_to_focused_leaf(Tab::File(id));
-                    surviving.push(tab);
-                }
+            let result = self.restore_one_tab(&tab);
+            match result {
+                Ok(()) => surviving.push(tab),
                 Err(e) => {
-                    tracing::warn!(error = %e, path = %tab.path.display(), "restore open tab");
+                    tracing::warn!(error = %e, "restore open tab");
                 }
             }
         }
         self.state.write().open_tabs = surviving;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_one_tab(&mut self, tab: &crate::state::OpenTabState) -> Result<(), crate::file::FileOpenError> {
+        match &tab.source {
+            TabSource::Filesystem(path) => {
+                let bytes = std::fs::read(path)
+                    .map_err(|source| crate::file::FileOpenError::Read { path: path.clone(), source })?;
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset));
+                Ok(())
+            }
+            TabSource::VfsEntry { parent, entry_path } => {
+                // Parent must already exist as an open tab with a mount.
+                let parent_file_id = self
+                    .files
+                    .iter()
+                    .find_map(|(id, f)| (f.source_kind.as_ref() == Some(parent.as_ref())).then_some(*id))
+                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
+                let parent_mount = self
+                    .files
+                    .get(&parent_file_id)
+                    .and_then(|f| f.mount.clone())
+                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
+                let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
+                    .map_err(|e| crate::file::FileOpenError::Read { path: entry_path.into(), source: e })?;
+                let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
+                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset));
+                Ok(())
+            }
+        }
     }
 
     /// Save the current state if it has drifted from what was last written.
@@ -231,7 +299,7 @@ fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                app.open_in_memory_with_path(name, Some(path), bytes, None, None);
+                app.open_filesystem(name, path, bytes, None, None);
             }
             Err(e) => {
                 tracing::warn!(error = %e, path = %path.display(), "open recent file");
@@ -282,7 +350,7 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    app.open_in_memory_with_path(name, Some(path), bytes, None, None);
+                    app.open_filesystem(name, path, bytes, None, None);
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, path = %path.display(), "open dropped file");
@@ -336,6 +404,23 @@ fn capture_window_on_drag_end(
     if g.window != current {
         g.window = current;
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parent_missing(parent: &TabSource) -> crate::file::FileOpenError {
+    crate::file::FileOpenError::Read {
+        path: std::path::PathBuf::from(format!("{parent:?}")),
+        source: std::io::Error::new(std::io::ErrorKind::NotFound, "parent tab / mount not available"),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = fs.open_file(path).map_err(|e| std::io::Error::other(format!("open {path}: {e}")))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -401,7 +486,7 @@ fn handle_open_file(app: &mut HxyApp) {
     #[cfg(not(target_arch = "wasm32"))]
     match pick_and_read_file() {
         Ok((name, path, bytes)) => {
-            app.open_in_memory_with_path(name, Some(path), bytes, None, None);
+            app.open_filesystem(name, path, bytes, None, None);
         }
         Err(crate::file::FileOpenError::Cancelled) => {}
         Err(e) => {
@@ -556,9 +641,9 @@ impl TabViewer for HxyTabViewer<'_> {
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
         if let Tab::File(id) = tab
             && let Some(removed) = self.files.remove(id)
-            && let Some(path) = removed.path
+            && let Some(source) = removed.source_kind
         {
-            self.state.open_tabs.retain(|t| t.path != path);
+            self.state.open_tabs.retain(|t| t.source != source);
         }
         OnCloseResponse::Close
     }
@@ -567,8 +652,8 @@ impl TabViewer for HxyTabViewer<'_> {
 /// Mirror the tab's in-memory selection + scroll into
 /// [`PersistedState::open_tabs`] so the save-on-dirty path picks it up.
 fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
-    let Some(path) = &file.path else { return };
-    if let Some(entry) = state.open_tabs.iter_mut().find(|t| t.path == *path) {
+    let Some(source) = &file.source_kind else { return };
+    if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
         entry.selection = file.selection;
         entry.scroll_offset = file.scroll_offset;
     }

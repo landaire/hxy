@@ -1872,6 +1872,7 @@ dependencies = [
  "egui_taffy",
  "hxy-core",
  "hxy-i18n",
+ "hxy-vfs",
  "hxy-view",
  "jiff",
  "js-sys",

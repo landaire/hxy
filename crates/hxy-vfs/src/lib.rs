@@ -21,3 +21,4 @@ pub use handler::MountedVfs;
 pub use handler::VfsHandler;
 pub use registry::VfsRegistry;
 pub use tab_source::TabSource;
+pub use vfs;

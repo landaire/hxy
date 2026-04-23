@@ -46,6 +46,7 @@ serde_json = "1.0.149"
 sys-locale = "0.3.2"
 thiserror = "2.0.18"
 tracing = "0.1.44"
+hxy-vfs.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
