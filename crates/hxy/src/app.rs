@@ -3343,15 +3343,24 @@ fn build_palette_entries(
                 );
             }
             if history_ctx.has_active_file {
-                let (label_key, toggle_icon) = if history_ctx.can_paste {
-                    ("palette-toggle-edit-mode-leave", icon::LOCK)
+                // Subtitle advertises the *resulting* state: when
+                // currently mutable, invoking flips us to readonly,
+                // and vice-versa. Same intent as the icon, spelled
+                // out in words so the user doesn't have to interpret
+                // padlock vs open-padlock semantics.
+                let (result_key, toggle_icon) = if history_ctx.can_paste {
+                    ("palette-toggle-readonly-result-readonly", icon::LOCK)
                 } else {
-                    ("palette-toggle-edit-mode-enter", icon::LOCK_OPEN)
+                    ("palette-toggle-readonly-result-mutable", icon::LOCK_OPEN)
                 };
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t(label_key), Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleEditMode))
-                        .with_icon(toggle_icon)
-                        .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-toggle-readonly"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleEditMode),
+                    )
+                    .with_subtitle(hxy_i18n::t(result_key))
+                    .with_icon(toggle_icon)
+                    .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
                 );
             }
             if history_ctx.can_paste {
