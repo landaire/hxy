@@ -297,8 +297,12 @@ impl Default for Style {
             inner_margin: egui::Margin::symmetric(12, 10),
             row_padding: egui::vec2(4.0, 2.0),
             corner_radius: egui::CornerRadius::same(8),
-            list_max_height: 560.0,
-            list_min_height: 200.0,
+            // Cap the visible list around ~12 rows before scrolling
+            // kicks in. Matches the "Cmd+P shows a dozen matches"
+            // feel of VS Code / Zed / Sublime; hosts that want the
+            // palette to expand further can raise this.
+            list_max_height: 300.0,
+            list_min_height: 120.0,
             row_reserve: 96.0,
             list_shrink_to_fit: true,
             backdrop: Some(Color32::from_black_alpha(120)),
@@ -526,29 +530,13 @@ pub fn show_with_style<A: Clone>(
                 // -- often the bottom row the user was hovering when
                 // they hit Cmd+P -- instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                // Compute the list's allocated height ourselves each
-                // frame from the visible row count (not via
-                // `auto_shrink`) so the panel both shrinks down as the
-                // filter narrows *and* grows back when matches widen
-                // again. `auto_shrink` in practice only shrinks --
-                // once the ScrollArea has claimed a smaller size egui
-                // doesn't re-expand it on the next frame when content
-                // wants more room.
-                let row_stride = style.row_height + ui.spacing().item_spacing.y;
-                let content_height = if filtered.is_empty() {
-                    // Empty state: two 16px spacers + one body-text
-                    // line, roughly. Over-estimate by a few px is
-                    // fine; the ScrollArea absorbs the slack.
-                    48.0
-                } else {
-                    (filtered.len() as f32) * row_stride
-                };
-                let list_height = if style.list_shrink_to_fit {
-                    content_height.min(list_max_height)
-                } else {
-                    list_max_height
-                };
-                egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
+                // Row-rendering body, hoisted so both the direct and
+                // scrolled branches can call it. Captures
+                // `filtered`, `entries`, `style`, `pointer_moving`,
+                // `picked_idx`, and `state` -- closures are easier
+                // here than threading every reference through an
+                // explicit helper fn.
+                let mut render_rows = |ui: &mut egui::Ui| {
                     for (row, hit) in filtered.iter().enumerate() {
                         let entry = &entries[hit.index];
                         let selected = row == state.selected;
@@ -567,7 +555,37 @@ pub fn show_with_style<A: Clone>(
                         });
                         ui.add_space(16.0);
                     }
-                });
+                };
+                // Decide whether we even need a ScrollArea. When
+                // `list_shrink_to_fit` is on and the rows comfortably
+                // fit in `list_max_height`, rendering them straight
+                // into the parent Ui lets the outer `Area`
+                // re-measure its content every frame, so the panel
+                // both shrinks and grows back cleanly as the filter
+                // widens or narrows. Wrapping in a ScrollArea even
+                // when no scrolling is needed traps the Area in a
+                // "stuck small" state in egui 0.34 -- the ScrollArea
+                // remembers its shrunken allocation from the prior
+                // frame and won't grow past it when content does.
+                let row_stride = style.row_height + ui.spacing().item_spacing.y;
+                let content_height = if filtered.is_empty() {
+                    // Empty-state block: two 16 px spacers + one
+                    // body-text line. Over-estimating by a few pixels
+                    // just means the ScrollArea path is chosen a bit
+                    // earlier; it stays visually correct either way.
+                    48.0
+                } else {
+                    (filtered.len() as f32) * row_stride
+                };
+                let scroll_needed = !style.list_shrink_to_fit || content_height > list_max_height;
+                if scroll_needed {
+                    egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(
+                        ui,
+                        |ui| render_rows(ui),
+                    );
+                } else {
+                    render_rows(ui);
+                }
             });
         });
 
