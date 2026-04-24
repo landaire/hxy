@@ -1033,9 +1033,163 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                     crate::template_panel::TemplateEvent::Hover(idx) => {
                         state.hovered_node = idx;
                     }
+                    crate::template_panel::TemplateEvent::Select(idx) => {
+                        if let Some(node) = state.tree.nodes.get(idx.0 as usize) {
+                            let offset = node.span.offset;
+                            let length = node.span.length.max(1);
+                            let end_inclusive = offset.saturating_add(length - 1);
+                            file.selection = Some(hxy_core::Selection {
+                                anchor: hxy_core::ByteOffset::new(offset),
+                                cursor: hxy_core::ByteOffset::new(end_inclusive),
+                            });
+                            file.pending_scroll_to_byte = Some(hxy_core::ByteOffset::new(offset));
+                        }
+                    }
+                    crate::template_panel::TemplateEvent::Copy { idx, kind } => {
+                        if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
+                            let source = file.source.clone();
+                            let ctx = ui.ctx().clone();
+                            if let Some(text) = format_template_copy(&source, &node, kind) {
+                                ctx.copy_text(text);
+                            }
+                        }
+                    }
+                    crate::template_panel::TemplateEvent::SaveBytes(idx) => {
+                        if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
+                            save_template_bytes(&file.source, &node);
+                        }
+                    }
                 }
             }
         });
+}
+
+/// Read `node`'s byte span from `source` and format it according to
+/// `kind`. Returns `None` when the bytes can't be read (out of
+/// bounds, I/O error) — the caller silently drops the copy.
+#[cfg(not(target_arch = "wasm32"))]
+fn format_template_copy(
+    source: &std::sync::Arc<dyn hxy_core::HexSource>,
+    node: &hxy_plugin_host::Node,
+    kind: crate::template_panel::CopyKind,
+) -> Option<String> {
+    use crate::template_panel::CopyKind;
+    use std::fmt::Write as _;
+
+    // Value-kind copies need only the already-decoded scalar.
+    match kind {
+        CopyKind::ValueHex | CopyKind::ValueDecimal | CopyKind::ValueOctal => {
+            let raw = scalar_value_u64(node.value.as_ref()?)?;
+            return Some(match kind {
+                CopyKind::ValueHex => format!("0x{raw:X}"),
+                CopyKind::ValueDecimal => format!("{raw}"),
+                CopyKind::ValueOctal => format!("0o{raw:o}"),
+                _ => unreachable!(),
+            });
+        }
+        _ => {}
+    }
+
+    // Bytes-kind copies need the raw span.
+    let start = hxy_core::ByteOffset::new(node.span.offset);
+    let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
+    let range = hxy_core::ByteRange::new(start, end).ok()?;
+    let bytes = source.read(range).ok()?;
+    let ty = node.type_name.as_str();
+    let name = sanitize_ident(&node.name);
+
+    Some(match kind {
+        CopyKind::BytesHexSpaced => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
+        CopyKind::BytesHexCompact => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""),
+        CopyKind::BytesDecimalCsv => bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "),
+        CopyKind::BytesOctalCsv => bytes.iter().map(|b| format!("0o{b:o}")).collect::<Vec<_>>().join(", "),
+        CopyKind::BytesCArray => {
+            let mut out = String::new();
+            let _ = write!(out, "uint8_t {name}[{}] = {{ ", bytes.len());
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "0x{b:02X}");
+            }
+            out.push_str(" }; /* ");
+            out.push_str(ty);
+            out.push_str(" */");
+            out
+        }
+        CopyKind::BytesRustArray => {
+            let mut out = String::new();
+            let _ = write!(out, "let {name}: [u8; {}] = [", bytes.len());
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "0x{b:02X}");
+            }
+            let _ = write!(out, "]; // {ty}");
+            out
+        }
+        CopyKind::ValueHex | CopyKind::ValueDecimal | CopyKind::ValueOctal => unreachable!(),
+    })
+}
+
+/// Extract a u64 bit pattern from a scalar [`hxy_plugin_host::Value`],
+/// preserving signed-bit representation so hex displays match what the
+/// user sees on the wire. Returns `None` for non-scalar values (Str /
+/// Bool / Bytes / Enum).
+#[cfg(not(target_arch = "wasm32"))]
+fn scalar_value_u64(v: &hxy_plugin_host::Value) -> Option<u64> {
+    use hxy_plugin_host::Value;
+    Some(match v {
+        Value::U8Val(x) => u64::from(*x),
+        Value::U16Val(x) => u64::from(*x),
+        Value::U32Val(x) => u64::from(*x),
+        Value::U64Val(x) => *x,
+        Value::S8Val(x) => *x as u8 as u64,
+        Value::S16Val(x) => *x as u16 as u64,
+        Value::S32Val(x) => *x as u32 as u64,
+        Value::S64Val(x) => *x as u64,
+        _ => return None,
+    })
+}
+
+/// Replace anything that isn't a valid C / Rust identifier character
+/// with `_`, so copying a template field named `frCrc <format=hex>`
+/// produces compilable declarations.
+#[cfg(not(target_arch = "wasm32"))]
+fn sanitize_ident(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for (i, c) in raw.chars().enumerate() {
+        let keep = c.is_ascii_alphanumeric() || c == '_';
+        if i == 0 && c.is_ascii_digit() {
+            out.push('_');
+            out.push(c);
+        } else if keep {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() { "data".to_owned() } else { out }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &hxy_plugin_host::Node) {
+    let start = hxy_core::ByteOffset::new(node.span.offset);
+    let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
+    let Ok(range) = hxy_core::ByteRange::new(start, end) else { return };
+    let bytes = match source.read(range) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "read bytes for save");
+            return;
+        }
+    };
+    let default_name = format!("{}.bin", sanitize_ident(&node.name));
+    let Some(path) = rfd::FileDialog::new().set_file_name(&default_name).save_file() else { return };
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        tracing::warn!(error = %e, path = %path.display(), "write template bytes");
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1074,6 +1228,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let palette = build_palette(ui.visuals().dark_mode, &state.app, highlight);
     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
     let pending_scroll = file.pending_scroll.take();
+    let pending_scroll_to_byte = file.pending_scroll_to_byte.take();
 
     let mut copy_request: Option<CopyKind> = None;
     let hover_span = file
@@ -1098,6 +1253,9 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     }
     if let Some(s) = pending_scroll {
         view = view.scroll_to(s);
+    }
+    if let Some(b) = pending_scroll_to_byte {
+        view = view.scroll_to_byte(b);
     }
     let response = view
         .context_menu(|ui| {

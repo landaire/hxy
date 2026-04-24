@@ -43,6 +43,10 @@ pub struct OpenFile {
     /// frame. Used to restore saved scroll position on reopen. Cleared
     /// after one frame so the user can scroll freely afterward.
     pub pending_scroll: Option<f32>,
+    /// Programmatic "scroll to this byte" request. Resolved at render
+    /// time (needs columns + row height). Takes precedence over
+    /// `pending_scroll`. Cleared after one frame.
+    pub pending_scroll_to_byte: Option<hxy_core::ByteOffset>,
     /// VFS handler detected for this file's byte source, if any. Cached
     /// from the first-frame detection so the toolbar command can check
     /// availability without re-scanning on each frame.
@@ -145,6 +149,7 @@ impl OpenFile {
             hovered: None,
             scroll_offset: 0.0,
             pending_scroll: None,
+            pending_scroll_to_byte: None,
             detected_handler: None,
             mount: None,
             show_vfs_tree: false,

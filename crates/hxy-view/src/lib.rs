@@ -85,6 +85,9 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     minimap: bool,
     minimap_colored: bool,
     initial_scroll: Option<f32>,
+    /// When set, overrides `initial_scroll` — resolved at render
+    /// time to place the row containing this byte near the top.
+    scroll_to_byte: Option<ByteOffset>,
     /// Transient highlight for a byte range the consumer wants to
     /// draw attention to — e.g. the template panel reflecting which
     /// field the pointer is over. Painted as a secondary fill that
@@ -107,6 +110,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             minimap: false,
             minimap_colored: true,
             initial_scroll: None,
+            scroll_to_byte: None,
             hover_span: None,
         }
     }
@@ -146,6 +150,14 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     /// file reopen.
     pub fn scroll_to(mut self, offset: f32) -> Self {
         self.initial_scroll = Some(offset);
+        self
+    }
+
+    /// Scroll so the row containing `byte` is near the top of the
+    /// visible area. Resolved at render time using the current font
+    /// and column settings; takes precedence over `scroll_to`.
+    pub fn scroll_to_byte(mut self, byte: ByteOffset) -> Self {
+        self.scroll_to_byte = Some(byte);
         self
     }
 
@@ -207,6 +219,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             minimap,
             minimap_colored,
             initial_scroll,
+            scroll_to_byte,
             hover_span,
         } = self;
         let palette = value_highlight.map(|mode| {
@@ -229,7 +242,15 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         let scroll_id = ui.id().with("hxy_scroll");
         // Minimap click, explicit `scroll_to`, or a stashed pending value
         // from a prior frame can all drive the next scroll position.
-        let pending_offset = ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)).or(initial_scroll);
+        // `scroll_to_byte` takes precedence: compute the target row's
+        // top Y from columns + row_height.
+        let pending_offset = scroll_to_byte
+            .map(|b| {
+                let row = b.get() / u64::from(columns.get());
+                (row as f32) * row_height
+            })
+            .or_else(|| ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)))
+            .or(initial_scroll);
 
         let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
         let scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);

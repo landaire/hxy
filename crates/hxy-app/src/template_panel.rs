@@ -28,6 +28,30 @@ pub enum TemplateEvent {
     /// The pointer is currently over a row. `None` fires on the first
     /// frame the pointer leaves the table.
     Hover(Option<TemplateNodeIdx>),
+    /// User clicked the row — jump the hex view to this node's span
+    /// and select it.
+    Select(TemplateNodeIdx),
+    /// User picked a copy option from the row's context menu. `kind`
+    /// names what to format and how.
+    Copy { idx: TemplateNodeIdx, kind: CopyKind },
+    /// User picked "Save bytes to file…". App should pop up a save
+    /// dialog and write this node's byte span.
+    SaveBytes(TemplateNodeIdx),
+}
+
+/// Every format the context menu offers. Bytes variants work on any
+/// node; value variants only show up for scalar nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    BytesHexSpaced,    // "50 4B 03 04"
+    BytesHexCompact,   // "504B0304"
+    BytesDecimalCsv,   // "80, 75, 3, 4"
+    BytesOctalCsv,     // "0o120, 0o113, 0o003, 0o004"
+    BytesCArray,       // "uint8_t data[4] = { 0x50, 0x4B, 0x03, 0x04 };"
+    BytesRustArray,    // "let data: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];"
+    ValueHex,
+    ValueDecimal,
+    ValueOctal,
 }
 
 const INDENT_STEP: f32 = 14.0;
@@ -139,21 +163,38 @@ impl TableDelegate for TemplateTableDelegate<'_> {
 
     fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
         // The ui handed to us has max_rect set to the full row rect.
-        // Use that to detect hover on the whole row, regardless of
-        // which cell the pointer is over.
         let row_rect = ui.max_rect();
-        if ui.rect_contains_pointer(row_rect) {
-            let Some(row) = self.visible.get(row_nr as usize) else { return };
-            if let RowKind::Node { idx, .. } = row {
-                *self.any_hover = Some(*idx);
+        let row_kind = self.visible.get(row_nr as usize).cloned();
+
+        let Some(row) = row_kind else { return };
+        let node_idx = match &row {
+            RowKind::Node { idx, .. } => Some(*idx),
+            _ => None,
+        };
+
+        // Interact on the whole row rect so clicks on any column
+        // register, including empty ones.
+        let row_id = egui::Id::new(("hxy-tmpl-row", row_nr));
+        let resp = ui.interact(row_rect, row_id, egui::Sense::click());
+        if resp.hovered()
+            && let Some(idx) = node_idx {
+                *self.any_hover = Some(idx);
             }
+        if resp.clicked()
+            && let Some(idx) = node_idx {
+                self.events.push(TemplateEvent::Select(idx));
+            }
+
+        // Right-click context menu. Offered only for real Node rows;
+        // array placeholders and elements can grow their own menu
+        // later.
+        if let Some(idx) = node_idx {
+            resp.context_menu(|ui| self.row_context_menu(ui, idx));
         }
+
         // Highlight the row background when it's this-frame's active
         // hover (what the hex view is using).
-        let this_row_highlighted = match self.visible.get(row_nr as usize) {
-            Some(RowKind::Node { idx, .. }) => self.state.hovered_node == Some(*idx),
-            _ => false,
-        };
+        let this_row_highlighted = node_idx == self.state.hovered_node && node_idx.is_some();
         if this_row_highlighted {
             ui.painter().rect_filled(
                 row_rect,
@@ -185,6 +226,63 @@ impl TableDelegate for TemplateTableDelegate<'_> {
 }
 
 impl TemplateTableDelegate<'_> {
+    fn row_context_menu(&mut self, ui: &mut egui::Ui, idx: TemplateNodeIdx) {
+        let Some(node) = self.state.tree.nodes.get(idx.0 as usize) else { return };
+        let is_scalar = node.value.as_ref().is_some_and(|v| {
+            matches!(
+                v,
+                hxy_plugin_host::Value::U8Val(_)
+                    | hxy_plugin_host::Value::U16Val(_)
+                    | hxy_plugin_host::Value::U32Val(_)
+                    | hxy_plugin_host::Value::U64Val(_)
+                    | hxy_plugin_host::Value::S8Val(_)
+                    | hxy_plugin_host::Value::S16Val(_)
+                    | hxy_plugin_host::Value::S32Val(_)
+                    | hxy_plugin_host::Value::S64Val(_)
+            )
+        });
+
+        ui.label(egui::RichText::new(format!("{}  ({} bytes)", node.name, node.span.length)).strong());
+        ui.separator();
+
+        if is_scalar {
+            ui.menu_button("Copy value as", |ui| {
+                for (label, kind) in [
+                    ("Hex", CopyKind::ValueHex),
+                    ("Decimal", CopyKind::ValueDecimal),
+                    ("Octal", CopyKind::ValueOctal),
+                ] {
+                    if ui.button(label).clicked() {
+                        self.events.push(TemplateEvent::Copy { idx, kind });
+                        ui.close();
+                    }
+                }
+            });
+        }
+
+        ui.menu_button("Copy bytes as", |ui| {
+            for (label, kind) in [
+                ("Hex (spaced)", CopyKind::BytesHexSpaced),
+                ("Hex (compact)", CopyKind::BytesHexCompact),
+                ("Decimal (CSV)", CopyKind::BytesDecimalCsv),
+                ("Octal (CSV)", CopyKind::BytesOctalCsv),
+                ("C array", CopyKind::BytesCArray),
+                ("Rust array", CopyKind::BytesRustArray),
+            ] {
+                if ui.button(label).clicked() {
+                    self.events.push(TemplateEvent::Copy { idx, kind });
+                    ui.close();
+                }
+            }
+        });
+
+        ui.separator();
+        if ui.button("Save bytes to file…").clicked() {
+            self.events.push(TemplateEvent::SaveBytes(idx));
+            ui.close();
+        }
+    }
+
     fn render_node_cell(
         &mut self,
         ui: &mut egui::Ui,
