@@ -33,6 +33,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+
 use egui::Color32;
 use egui::Pos2;
 use egui::Stroke;
@@ -215,6 +217,13 @@ pub struct Style {
     /// Unicode normalisation applied to both the pattern and each
     /// haystack. Default [`Normalization::Smart`].
     pub normalization: Normalization,
+
+    /// Keys that dismiss the palette without picking an entry.
+    /// Defaults to `[Escape]`. Set to `&[]` to disable keyboard
+    /// dismissal entirely (backdrop click still works if
+    /// [`Style::close_on_backdrop_click`] is on); add more keys to
+    /// support alternative bindings like Ctrl+G.
+    pub dismiss_keys: Cow<'static, [egui::Key]>,
 }
 
 impl Default for Style {
@@ -246,6 +255,7 @@ impl Default for Style {
             matcher: MatcherConfig::DEFAULT,
             case_matching: CaseMatching::Smart,
             normalization: Normalization::Smart,
+            dismiss_keys: Cow::Borrowed(&[egui::Key::Escape]),
         }
     }
 }
@@ -300,7 +310,7 @@ pub fn show_with_style<A: Clone>(
         return None;
     }
 
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if ctx.input(|i| style.dismiss_keys.iter().any(|k| i.key_pressed(*k))) {
         return Some(Outcome::Closed);
     }
 
