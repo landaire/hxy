@@ -37,6 +37,22 @@ pub enum CommandEffect {
     UndoActiveFile,
     /// Redo the most recently undone edit on the active tab.
     RedoActiveFile,
+    /// Split the focused dock leaf, duplicating the active tab into
+    /// the new pane.
+    DockSplit(DockDir),
+    /// Merge the focused dock leaf with the neighbour in `DockDir`,
+    /// moving all its tabs into that neighbour and collapsing the
+    /// empty split.
+    DockMerge(DockDir),
+}
+
+/// Directional axis for dock-pane split / merge commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockDir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 /// Button in the global toolbar. Commands are registered once at

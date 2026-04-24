@@ -69,6 +69,14 @@ palette-install-template = Install template…
 palette-install-template-subtitle = Pick a .bt file; any #included dependencies come with it.
 palette-uninstall-template = Uninstall template…
 palette-delete-template-fmt = Delete { $name }
+palette-split-right = Split pane right
+palette-split-left = Split pane left
+palette-split-up = Split pane up
+palette-split-down = Split pane down
+palette-merge-right = Merge pane with right
+palette-merge-left = Merge pane with left
+palette-merge-up = Merge pane with up
+palette-merge-down = Merge pane with down
 
 # Errors
 error-open-failed = Failed to open file

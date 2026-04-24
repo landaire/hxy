@@ -1267,6 +1267,121 @@ fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::co
             #[cfg(not(target_arch = "wasm32"))]
             redo_active_file(app);
         }
+        CommandEffect::DockSplit(dir) => dock_split_focused(app, dir),
+        CommandEffect::DockMerge(dir) => dock_merge_focused(app, dir),
+    }
+}
+
+/// Resolve which dock leaf a split / merge command should act on.
+/// Prefers the focused leaf; falls back to the leaf containing the
+/// active file so the user doesn't have to click into a tab first.
+fn resolve_target_leaf(app: &mut HxyApp) -> Option<egui_dock::NodePath> {
+    if let Some(path) = app.dock.focused_leaf() {
+        return Some(path);
+    }
+    let id = active_file_id(app)?;
+    let tab = app.dock.find_tab(&Tab::File(id))?;
+    Some(egui_dock::NodePath { surface: tab.surface, node: tab.node })
+}
+
+/// Split the target leaf in `dir`, duplicating the focused tab into
+/// the new pane. The new leaf becomes focused so follow-up commands
+/// (navigation, another split) target it.
+fn dock_split_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
+    use crate::commands::DockDir;
+    let Some(path) = resolve_target_leaf(app) else { return };
+    let tab = match &app.dock[path.surface][path.node] {
+        egui_dock::Node::Leaf(leaf) => leaf.tabs.first().cloned(),
+        _ => None,
+    };
+    let Some(tab) = tab else { return };
+    let tree = &mut app.dock[path.surface];
+    let [_, new_node] = match dir {
+        DockDir::Right => tree.split_right(path.node, 0.5, vec![tab]),
+        DockDir::Left => tree.split_left(path.node, 0.5, vec![tab]),
+        DockDir::Up => tree.split_above(path.node, 0.5, vec![tab]),
+        DockDir::Down => tree.split_below(path.node, 0.5, vec![tab]),
+    };
+    app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: path.surface, node: new_node });
+}
+
+/// Collapse the target leaf into its neighbour on `dir`: move every
+/// tab into the neighbour's leaf and let egui_dock drop the now-
+/// empty leaf + collapse the parent split. No-op when there's no
+/// neighbour on that side (e.g. merge-left from the leftmost pane).
+fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
+    let Some(path) = resolve_target_leaf(app) else { return };
+    let tree = &app.dock[path.surface];
+    let Some(target) = find_neighbor_leaf(tree, path.node, dir) else { return };
+    if target == path.node {
+        return;
+    }
+    let tree = &mut app.dock[path.surface];
+    let tabs: Vec<_> = match &mut tree[path.node] {
+        egui_dock::Node::Leaf(leaf) => std::mem::take(&mut leaf.tabs),
+        _ => return,
+    };
+    for tab in tabs {
+        tree[target].append_tab(tab);
+    }
+    tree.remove_leaf(path.node);
+    // remove_leaf rewires node indices, so re-resolve the target by
+    // its first tab before re-focusing. Safe to skip focus update on
+    // the rare case we can't find it back.
+    if let Some(tab) = match &tree[target] {
+        egui_dock::Node::Leaf(leaf) => leaf.tabs.first().cloned(),
+        _ => None,
+    } && let Some(found) = app.dock.find_tab(&tab)
+    {
+        app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
+    }
+}
+
+/// Walk up the tree from `current` looking for the nearest ancestor
+/// split oriented so `dir` steps across it; then descend the sibling
+/// subtree to find a concrete leaf. Returns `None` when no such
+/// neighbour exists (current is on the outer edge in `dir`).
+fn find_neighbor_leaf(
+    tree: &egui_dock::Tree<Tab>,
+    current: egui_dock::NodeIndex,
+    dir: crate::commands::DockDir,
+) -> Option<egui_dock::NodeIndex> {
+    use crate::commands::DockDir;
+    use egui_dock::Node;
+    let mut node = current;
+    loop {
+        let parent = node.parent()?;
+        let was_left = node == parent.left();
+        if parent.0 >= tree.len() {
+            return None;
+        }
+        let takes_us_across = match (&tree[parent], dir) {
+            (Node::Horizontal(_), DockDir::Right) if was_left => true,
+            (Node::Horizontal(_), DockDir::Left) if !was_left => true,
+            (Node::Vertical(_), DockDir::Down) if was_left => true,
+            (Node::Vertical(_), DockDir::Up) if !was_left => true,
+            _ => false,
+        };
+        if takes_us_across {
+            let sibling = if was_left { parent.right() } else { parent.left() };
+            return first_leaf_in(tree, sibling);
+        }
+        node = parent;
+    }
+}
+
+fn first_leaf_in(tree: &egui_dock::Tree<Tab>, start: egui_dock::NodeIndex) -> Option<egui_dock::NodeIndex> {
+    use egui_dock::Node;
+    let mut cur = start;
+    loop {
+        if cur.0 >= tree.len() {
+            return None;
+        }
+        match &tree[cur] {
+            Node::Leaf(_) => return Some(cur),
+            Node::Empty => return None,
+            Node::Horizontal(_) | Node::Vertical(_) => cur = cur.left(),
+        }
     }
 }
 
@@ -2354,6 +2469,38 @@ fn build_palette_entries(
                     .with_shortcut(fmt(&PASTE_AS_HEX)),
                 );
             }
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand("split-right"))
+                    .with_icon(icon::ARROW_SQUARE_RIGHT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand("split-left"))
+                    .with_icon(icon::ARROW_SQUARE_LEFT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand("split-down"))
+                    .with_icon(icon::ARROW_SQUARE_DOWN),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand("split-up"))
+                    .with_icon(icon::ARROW_SQUARE_UP),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand("merge-right"))
+                    .with_icon(icon::ARROW_LINE_RIGHT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand("merge-left"))
+                    .with_icon(icon::ARROW_LINE_LEFT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand("merge-down"))
+                    .with_icon(icon::ARROW_LINE_DOWN),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand("merge-up"))
+                    .with_icon(icon::ARROW_LINE_UP),
+            );
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
@@ -2445,6 +2592,26 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 "redo" => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
                 "paste" => paste_active_file(app, false),
                 "paste-as-hex" => paste_active_file(app, true),
+                "split-right" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Right))
+                }
+                "split-left" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Left))
+                }
+                "split-up" => apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Up)),
+                "split-down" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Down))
+                }
+                "merge-right" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Right))
+                }
+                "merge-left" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Left))
+                }
+                "merge-up" => apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Up)),
+                "merge-down" => {
+                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Down))
+                }
                 _ => {}
             }
         }
