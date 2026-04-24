@@ -27,6 +27,10 @@ use crate::copy_format::CopyKind;
 #[derive(Clone, Copy, Debug)]
 pub enum MenuAction {
     OpenFile,
+    /// Save the active tab in place. Falls back to Save As when the
+    /// tab has no path backing it.
+    Save,
+    SaveAs,
     CopyBytes,
     CopyHex,
     CopyAs(CopyKind),
@@ -42,6 +46,9 @@ pub struct MenuState {
     actions: HashMap<String, MenuAction>,
     bytes_items: Vec<MenuItem>,
     scalar_items: Vec<MenuItem>,
+    /// Save and Save As; greyed out unless the active tab is dirty
+    /// or has a path to write to.
+    save_items: Vec<MenuItem>,
     _menu: Menu,
 }
 
@@ -81,6 +88,18 @@ impl MenuState {
         let open = MenuItem::new("Open...", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)));
         file_menu.append(&open).expect("append open");
         actions.insert(open.id().0.clone(), MenuAction::OpenFile);
+
+        let save = MenuItem::new("Save", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)));
+        let save_as = MenuItem::new(
+            "Save As...",
+            false,
+            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyS)),
+        );
+        file_menu.append(&save).expect("append save");
+        file_menu.append(&save_as).expect("append save as");
+        actions.insert(save.id().0.clone(), MenuAction::Save);
+        actions.insert(save_as.id().0.clone(), MenuAction::SaveAs);
+        let save_items = vec![save, save_as];
 
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
@@ -130,7 +149,14 @@ impl MenuState {
 
         menu.init_for_nsapp();
 
-        Self { actions, bytes_items, scalar_items, _menu: menu }
+        Self { actions, bytes_items, scalar_items, save_items, _menu: menu }
+    }
+
+    /// Toggle the Save / Save As entries' enabled state.
+    pub fn set_save_enabled(&self, enabled: bool) {
+        for item in &self.save_items {
+            item.set_enabled(enabled);
+        }
     }
 
     /// Grey out / enable the byte-copy items. Called once per frame

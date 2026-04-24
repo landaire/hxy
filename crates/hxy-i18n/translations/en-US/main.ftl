@@ -5,6 +5,8 @@ app-tagline = A hex editor
 # Menus
 menu-file = File
 menu-file-open = Open…
+menu-file-save = Save
+menu-file-save-as = Save As…
 menu-file-close = Close
 menu-file-quit = Quit
 menu-edit = Edit

@@ -546,6 +546,7 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         drain_template_runs(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
+        dispatch_save_shortcut(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -620,6 +621,20 @@ enum DuplicateAction {
     OpenNewTab,
     Cancel,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    let (save, save_as) =
+        ctx.input_mut(|i| (i.consume_shortcut(&SAVE_FILE), i.consume_shortcut(&SAVE_FILE_AS)));
+    if save_as {
+        save_active_file(app, true);
+    } else if save {
+        save_active_file(app, false);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_save_shortcut(_ctx: &egui::Context, _app: &mut HxyApp) {}
 
 /// App-level copy shortcut handler. Runs after the dock renders, so
 /// per-widget hover-copy (status bar labels) has already had a chance
@@ -1528,6 +1543,8 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
     for action in actions {
         match action {
             crate::menu::MenuAction::OpenFile => handle_open_file(app),
+            crate::menu::MenuAction::Save => save_active_file(app, false),
+            crate::menu::MenuAction::SaveAs => save_active_file(app, true),
             crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
@@ -1547,9 +1564,11 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         .and_then(|f| f.selection)
         .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
         .unwrap_or(false);
+    let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.is_dirty() || f.root_path().is_some());
     if let Some(menu) = app.menu.as_ref() {
         menu.set_file_open(has_file);
         menu.set_scalar_selection(has_scalar);
+        menu.set_save_enabled(can_save);
     }
 }
 
@@ -1569,6 +1588,25 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     ui.close();
                     handle_open_file(app);
                 }
+                let active = active_file_id(app);
+                let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.is_dirty() || f.root_path().is_some());
+                let save_text = ui.ctx().format_shortcut(&SAVE_FILE);
+                let save_as_text = ui.ctx().format_shortcut(&SAVE_FILE_AS);
+                ui.add_enabled_ui(can_save, |ui| {
+                    if ui.add(egui::Button::new(hxy_i18n::t("menu-file-save")).shortcut_text(save_text)).clicked() {
+                        ui.close();
+                        save_active_file(app, false);
+                    }
+                });
+                ui.add_enabled_ui(active.is_some(), |ui| {
+                    if ui
+                        .add(egui::Button::new(hxy_i18n::t("menu-file-save-as")).shortcut_text(save_as_text))
+                        .clicked()
+                    {
+                        ui.close();
+                        save_active_file(app, true);
+                    }
+                });
                 ui.separator();
                 if ui.button(hxy_i18n::t("menu-file-quit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1924,6 +1962,71 @@ fn handle_open_file(app: &mut HxyApp) {
     }
 }
 
+/// Save the active tab. `force_dialog` always asks for a destination
+/// (Save As); otherwise the tab's existing filesystem path is used
+/// when present, falling back to the dialog when there isn't one.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get(&id) else { return };
+    let display = file.display_name.clone();
+    let target = if force_dialog {
+        let mut dialog = rfd::FileDialog::new().set_file_name(&display);
+        if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(parent);
+        }
+        dialog.save_file()
+    } else {
+        match file.root_path().cloned() {
+            Some(p) => Some(p),
+            None => rfd::FileDialog::new().set_file_name(&display).save_file(),
+        }
+    };
+    let Some(path) = target else { return };
+
+    let ctx = format!("Save {}", path.display());
+    let len = file.source.len().get();
+    let bytes = match file.source.read(
+        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).expect("valid range"),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Error, &ctx, format!("read patched bytes: {e}"));
+            return;
+        }
+    };
+    if let Err(e) = write_atomic(&path, &bytes) {
+        app.console_log(ConsoleSeverity::Error, &ctx, format!("write: {e}"));
+        return;
+    }
+
+    // Successful write -- drop the patch, re-anchor the tab to the
+    // new path, and re-detect handler / template suggestions against
+    // the freshly-written bytes.
+    if let Some(file) = app.files.get_mut(&id) {
+        file.revert();
+        file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
+        if let Some(name) = path.file_name() {
+            file.display_name = name.to_string_lossy().into_owned();
+        }
+    }
+    app.console_log(ConsoleSeverity::Info, &ctx, "saved");
+}
+
+/// Write `bytes` to `path` atomically: stage in a sibling tempfile,
+/// fsync, then rename. Avoids leaving a half-written file if the
+/// process crashes mid-write.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.as_file_mut().write_all(bytes)?;
+    tmp.as_file_mut().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn pick_and_read_file() -> Result<(String, std::path::PathBuf, Vec<u8>), crate::file::FileOpenError> {
     let Some(path) = rfd::FileDialog::new().pick_file() else {
@@ -1991,7 +2094,14 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
             Tab::Plugins => "Plugins".into(),
             Tab::File(id) => match self.files.get(id) {
-                Some(f) => f.display_name.clone().into(),
+                Some(f) => {
+                    // Trailing dot marks unsaved edits. Mirrors the
+                    // convention every text editor (VS Code, Vim,
+                    // Emacs) uses; readers won't mistake it for part
+                    // of the filename.
+                    let mark = if f.is_dirty() { " \u{2022}" } else { "" };
+                    format!("{}{mark}", f.display_name).into()
+                }
                 None => format!("file-{}", id.get()).into(),
             },
         }
@@ -2171,6 +2281,9 @@ use crate::copy_format::CopyKind;
 const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
+const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+const SAVE_FILE_AS: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
 
 /// Read the active selection's bytes from `file` and copy them to
 /// the clipboard formatted per `kind`. Value-kind variants read the
