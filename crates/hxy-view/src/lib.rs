@@ -2170,9 +2170,17 @@ fn paint_column_header(
     let color = ui.visuals().weak_text_color();
     let origin = header_rect.min;
     for col in 0..cols {
+        // Default labelling repeats 0..F per group of 16 columns.
+        // The high nibbles of the absolute offset come from the
+        // address column on the left, so the header only needs to
+        // identify the column's *position within its 16-byte
+        // group* -- same convention as `xxd` / `hexdump -C`. This
+        // also keeps every label one char wide so it fits cleanly
+        // in both the 2-char hex cell and the 1-char ASCII cell at
+        // any column count without overflow tricks.
         let label = match formatter {
             Some(f) => f(col),
-            None => format!("{col:X}"),
+            None => format!("{:X}", col % 16),
         };
         let cell = layout.hex_cell_rect(origin, col, header_height);
         painter.text(cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
