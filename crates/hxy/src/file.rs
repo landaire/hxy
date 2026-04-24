@@ -50,6 +50,28 @@ pub enum WriteError {
     Rejected(String),
 }
 
+/// Single reversible edit: the byte range `[offset, offset+len)`, the
+/// bytes that were there before the edit, and the bytes that replaced
+/// them. Length-preserving, so `old_bytes.len() == new_bytes.len()`.
+#[derive(Clone, Debug)]
+pub struct EditEntry {
+    pub offset: u64,
+    pub old_bytes: Vec<u8>,
+    pub new_bytes: Vec<u8>,
+}
+
+impl EditEntry {
+    fn end(&self) -> u64 {
+        self.offset + self.new_bytes.len() as u64
+    }
+}
+
+/// Cap on how many separate undo entries we retain per tab. Old entries
+/// fall off the bottom when the cap is exceeded -- a hex editor doesn't
+/// benefit from bottomless history and a million single-byte edits
+/// would balloon memory.
+const UNDO_HISTORY_CAP: usize = 1000;
+
 pub struct OpenFile {
     pub id: FileId,
     pub display_name: String,
@@ -77,6 +99,20 @@ pub struct OpenFile {
     /// nibble pointer; otherwise typing after an arrow-key move
     /// would land on the wrong nibble.
     pub last_cursor_offset: Option<u64>,
+    /// Undo stack: most recent edit at the end. Consecutive writes
+    /// that overlap or abut each other coalesce into a single entry
+    /// unless a boundary has been pushed (via navigation, mode
+    /// toggle, save, revert, etc.).
+    pub undo_stack: Vec<EditEntry>,
+    /// Redo stack: entries popped by `undo()` land here and get
+    /// reapplied by `redo()`. Cleared whenever a fresh write
+    /// diverges from the undone branch.
+    pub redo_stack: Vec<EditEntry>,
+    /// `true` when the next `request_write` must start a fresh undo
+    /// entry rather than coalesce into the previous one. Set by
+    /// `push_history_boundary`, `undo`, `redo`, and `revert` (which
+    /// also clears both stacks).
+    pub history_break: bool,
     pub selection: Option<Selection>,
     /// Last-hovered byte offset reported by the hex view -- surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
@@ -258,6 +294,9 @@ impl OpenFile {
             edit_mode,
             edit_high_nibble: true,
             last_cursor_offset: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            history_break: false,
             selection: None,
             hovered: None,
             scroll_offset: 0.0,
@@ -289,8 +328,10 @@ impl OpenFile {
 
     /// Record a length-preserving write through the edit-mode gate.
     /// Errors when the tab is in [`EditMode::Readonly`] or the write
-    /// would extend past the current source length.
-    pub fn request_write(&self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
+    /// would extend past the current source length. Also records
+    /// the edit in the undo stack, coalescing with the most recent
+    /// entry when the ranges touch and no boundary has been pushed.
+    pub fn request_write(&mut self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
         if self.edit_mode != EditMode::Mutable {
             return Err(WriteError::Readonly);
         }
@@ -299,16 +340,114 @@ impl OpenFile {
         if end > source_len {
             return Err(WriteError::OutOfBounds { offset, len: bytes.len() as u64, source_len });
         }
+        let mut old_bytes = Vec::with_capacity(bytes.len());
+        for i in 0..bytes.len() {
+            old_bytes.push(self.read_byte_at(offset + i as u64)?);
+        }
         self.patch
             .write()
             .expect("patch lock poisoned")
-            .write(offset, bytes)
-            .map_err(|e| WriteError::Rejected(e.to_string()))
+            .write(offset, bytes.clone())
+            .map_err(|e| WriteError::Rejected(e.to_string()))?;
+        self.redo_stack.clear();
+        let entry = EditEntry { offset, old_bytes, new_bytes: bytes };
+        if !self.history_break
+            && let Some(last) = self.undo_stack.last_mut()
+            && ranges_touch(last.offset, last.end(), entry.offset, entry.end())
+        {
+            merge_entry(last, &entry);
+        } else {
+            self.undo_stack.push(entry);
+            if self.undo_stack.len() > UNDO_HISTORY_CAP {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.history_break = false;
+        Ok(())
     }
 
-    /// Drop all pending edits.
-    pub fn revert(&self) {
+    /// Drop all pending edits and clear both history stacks.
+    pub fn revert(&mut self) {
         *self.patch.write().expect("patch lock poisoned") = Patch::new();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.history_break = true;
+    }
+
+    /// Force the next `request_write` to start a new undo entry
+    /// rather than coalesce with the previous one. Called on cursor
+    /// navigation, edit-mode toggle, save, and anywhere else an
+    /// interactive boundary should end a coalescing run.
+    pub fn push_history_boundary(&mut self) {
+        self.history_break = true;
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Revert the most recent undo entry. Moves it to the redo stack,
+    /// rebuilds the patch from the remaining undo entries, and sets
+    /// a history boundary so the next write starts a fresh entry.
+    /// Returns the reverted entry so callers can realign the cursor.
+    pub fn undo(&mut self) -> Option<EditEntry> {
+        if self.edit_mode != EditMode::Mutable {
+            return None;
+        }
+        let entry = self.undo_stack.pop()?;
+        self.rebuild_patch_from_stack();
+        self.redo_stack.push(entry.clone());
+        self.history_break = true;
+        self.edit_high_nibble = true;
+        Some(entry)
+    }
+
+    /// Re-apply the top entry on the redo stack. Returns the entry so
+    /// callers can realign the cursor. Sets a history boundary so a
+    /// subsequent write starts fresh rather than coalescing into the
+    /// just-redone entry.
+    pub fn redo(&mut self) -> Option<EditEntry> {
+        if self.edit_mode != EditMode::Mutable {
+            return None;
+        }
+        let entry = self.redo_stack.pop()?;
+        if let Err(e) = self
+            .patch
+            .write()
+            .expect("patch lock poisoned")
+            .write(entry.offset, entry.new_bytes.clone())
+        {
+            tracing::warn!(error = %e, "redo write rejected; restoring redo stack");
+            self.redo_stack.push(entry);
+            return None;
+        }
+        self.undo_stack.push(entry.clone());
+        self.history_break = true;
+        self.edit_high_nibble = true;
+        Some(entry)
+    }
+
+    /// Rebuild the tab's patch from the current undo stack. After any
+    /// undo we discard the patch and replay every surviving entry so
+    /// fully undoing back to zero leaves the patch empty (and
+    /// `is_dirty()` false). Preserves any [`suture::metadata::SourceMetadata`]
+    /// already attached.
+    fn rebuild_patch_from_stack(&self) {
+        let mut patch = self.patch.write().expect("patch lock poisoned");
+        let metadata = patch.metadata().cloned();
+        *patch = match metadata {
+            Some(m) => Patch::with_metadata(m),
+            None => Patch::new(),
+        };
+        for entry in &self.undo_stack {
+            if let Err(e) = patch.write(entry.offset, entry.new_bytes.clone()) {
+                tracing::warn!(error = %e, "rebuild_patch_from_stack: entry rejected");
+            }
+        }
     }
 
     /// Apply one hex-digit keystroke at the current cursor offset.
@@ -369,6 +508,143 @@ impl OpenFile {
             .iter()
             .map(|op| (op.offset, op.offset + op.new_bytes.len() as u64))
             .collect()
+    }
+}
+
+/// True when two half-open `[start, end)` byte ranges overlap or are
+/// exactly adjacent. Adjacent runs (e.g. typing consecutive bytes)
+/// should coalesce into one undo entry.
+fn ranges_touch(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start <= b_end && b_start <= a_end
+}
+
+/// Merge `next` into `dst` in place, extending `dst`'s range to
+/// cover the union and painting `next`'s new bytes on top of any
+/// overlapping tail. `dst.old_bytes` only grows where the range
+/// extends past what was already tracked -- original bytes inside
+/// an already-edited span were captured by the first write and must
+/// not be clobbered by the later value we just wrote.
+fn merge_entry(dst: &mut EditEntry, next: &EditEntry) {
+    let start = dst.offset.min(next.offset);
+    let end = dst.end().max(next.end());
+    let len = (end - start) as usize;
+    let mut new_bytes = vec![0u8; len];
+    let mut old_bytes = vec![0u8; len];
+    let dst_off = (dst.offset - start) as usize;
+    new_bytes[dst_off..dst_off + dst.new_bytes.len()].copy_from_slice(&dst.new_bytes);
+    old_bytes[dst_off..dst_off + dst.old_bytes.len()].copy_from_slice(&dst.old_bytes);
+    let next_off = (next.offset - start) as usize;
+    new_bytes[next_off..next_off + next.new_bytes.len()].copy_from_slice(&next.new_bytes);
+    if next.offset < dst.offset {
+        let prefix_len = (dst.offset - next.offset) as usize;
+        old_bytes[0..prefix_len].copy_from_slice(&next.old_bytes[..prefix_len]);
+    }
+    if next.end() > dst.end() {
+        let overlap = (dst.end().saturating_sub(next.offset)) as usize;
+        let tail = &next.old_bytes[overlap..];
+        let tail_off = (dst.end() - start) as usize;
+        old_bytes[tail_off..tail_off + tail.len()].copy_from_slice(tail);
+    }
+    dst.offset = start;
+    dst.new_bytes = new_bytes;
+    dst.old_bytes = old_bytes;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> OpenFile {
+        OpenFile::from_bytes(FileId::new(1), "t", None, vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
+    }
+
+    #[test]
+    fn consecutive_writes_coalesce_into_one_undo_entry() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.request_write(1, vec![0xAB]).unwrap();
+        f.request_write(2, vec![0xCC]).unwrap();
+        assert_eq!(f.undo_stack.len(), 1);
+        let e = &f.undo_stack[0];
+        assert_eq!(e.offset, 1);
+        assert_eq!(e.new_bytes, vec![0xAB, 0xCC]);
+        assert_eq!(e.old_bytes, vec![0x11, 0x22]);
+    }
+
+    #[test]
+    fn history_boundary_starts_a_new_entry() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.push_history_boundary();
+        f.request_write(2, vec![0xBB]).unwrap();
+        assert_eq!(f.undo_stack.len(), 2);
+    }
+
+    #[test]
+    fn undo_returns_to_clean_state() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.request_write(2, vec![0xBB]).unwrap();
+        assert!(f.is_dirty());
+        assert!(f.undo().is_some());
+        assert!(!f.is_dirty());
+        assert_eq!(f.undo_stack.len(), 0);
+        assert_eq!(f.redo_stack.len(), 1);
+    }
+
+    #[test]
+    fn redo_reapplies_the_edit() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.undo().unwrap();
+        assert!(!f.is_dirty());
+        f.redo().unwrap();
+        assert!(f.is_dirty());
+        assert_eq!(f.undo_stack.len(), 1);
+        assert_eq!(f.redo_stack.len(), 0);
+    }
+
+    #[test]
+    fn fresh_write_after_undo_clears_redo() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.undo().unwrap();
+        assert_eq!(f.redo_stack.len(), 1);
+        f.push_history_boundary();
+        f.request_write(3, vec![0xDD]).unwrap();
+        assert_eq!(f.redo_stack.len(), 0);
+    }
+
+    #[test]
+    fn revert_clears_both_stacks() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.undo().unwrap();
+        f.revert();
+        assert_eq!(f.undo_stack.len(), 0);
+        assert_eq!(f.redo_stack.len(), 0);
+    }
+
+    #[test]
+    fn readonly_blocks_undo_and_redo() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.edit_mode = EditMode::Readonly;
+        assert!(f.undo().is_none());
+        f.edit_mode = EditMode::Mutable;
+        f.undo().unwrap();
+        f.edit_mode = EditMode::Readonly;
+        assert!(f.redo().is_none());
+    }
+
+    #[test]
+    fn undo_cap_drops_oldest() {
+        let mut f = sample();
+        for _ in 0..(UNDO_HISTORY_CAP + 5) {
+            f.push_history_boundary();
+            f.request_write(0, vec![0x01]).unwrap();
+        }
+        assert_eq!(f.undo_stack.len(), UNDO_HISTORY_CAP);
     }
 }
 

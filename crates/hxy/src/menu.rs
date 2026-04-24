@@ -33,6 +33,8 @@ pub enum MenuAction {
     SaveAs,
     /// Flip the active tab between read-only and mutable.
     ToggleEditMode,
+    Undo,
+    Redo,
     CopyBytes,
     CopyHex,
     CopyAs(CopyKind),
@@ -53,6 +55,10 @@ pub struct MenuState {
     save_items: Vec<MenuItem>,
     /// Toggle Edit Mode entries; greyed out when no file is active.
     edit_mode_items: Vec<MenuItem>,
+    /// Undo entry; greyed out when the active tab has no undo history.
+    undo_items: Vec<MenuItem>,
+    /// Redo entry; greyed out when the active tab has no redo history.
+    redo_items: Vec<MenuItem>,
     _menu: Menu,
 }
 
@@ -108,6 +114,20 @@ impl MenuState {
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
 
+        let undo = MenuItem::new("Undo", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyZ)));
+        let redo = MenuItem::new(
+            "Redo",
+            false,
+            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ)),
+        );
+        edit_menu.append(&undo).expect("append undo");
+        edit_menu.append(&redo).expect("append redo");
+        actions.insert(undo.id().0.clone(), MenuAction::Undo);
+        actions.insert(redo.id().0.clone(), MenuAction::Redo);
+        let undo_items = vec![undo];
+        let redo_items = vec![redo];
+        edit_menu.append(&PredefinedMenuItem::separator()).expect("append separator");
+
         let toggle_edit =
             MenuItem::new("Toggle Edit Mode", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyE)));
         edit_menu.append(&toggle_edit).expect("append toggle edit");
@@ -160,7 +180,7 @@ impl MenuState {
 
         menu.init_for_nsapp();
 
-        Self { actions, bytes_items, scalar_items, save_items, edit_mode_items, _menu: menu }
+        Self { actions, bytes_items, scalar_items, save_items, edit_mode_items, undo_items, redo_items, _menu: menu }
     }
 
     /// Toggle the Save / Save As entries' enabled state.
@@ -172,6 +192,18 @@ impl MenuState {
 
     pub fn set_edit_mode_enabled(&self, enabled: bool) {
         for item in &self.edit_mode_items {
+            item.set_enabled(enabled);
+        }
+    }
+
+    pub fn set_undo_enabled(&self, enabled: bool) {
+        for item in &self.undo_items {
+            item.set_enabled(enabled);
+        }
+    }
+
+    pub fn set_redo_enabled(&self, enabled: bool) {
+        for item in &self.redo_items {
             item.set_enabled(enabled);
         }
     }

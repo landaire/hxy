@@ -867,6 +867,7 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
     let current_cursor = file.selection.as_ref().map(|s| s.cursor.get());
     if current_cursor != file.last_cursor_offset {
         file.reset_edit_nibble();
+        file.push_history_boundary();
         file.last_cursor_offset = current_cursor;
     }
 
@@ -937,10 +938,22 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "hex edit"),
             },
-            EditPress::NavLeft => nav_nibble(file, -1),
-            EditPress::NavRight => nav_nibble(file, 1),
-            EditPress::NavUp => nav_row(file, -1, columns, source_len),
-            EditPress::NavDown => nav_row(file, 1, columns, source_len),
+            EditPress::NavLeft => {
+                nav_nibble(file, -1);
+                file.push_history_boundary();
+            }
+            EditPress::NavRight => {
+                nav_nibble(file, 1);
+                file.push_history_boundary();
+            }
+            EditPress::NavUp => {
+                nav_row(file, -1, columns, source_len);
+                file.push_history_boundary();
+            }
+            EditPress::NavDown => {
+                nav_row(file, 1, columns, source_len);
+                file.push_history_boundary();
+            }
             EditPress::ResetNibble => file.reset_edit_nibble(),
         }
     }
@@ -1049,8 +1062,14 @@ fn key_to_hex_nibble(key: egui::Key) -> Option<u8> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    let (save, save_as, toggle) = ctx.input_mut(|i| {
-        (i.consume_shortcut(&SAVE_FILE), i.consume_shortcut(&SAVE_FILE_AS), i.consume_shortcut(&TOGGLE_EDIT_MODE))
+    let (save, save_as, toggle, undo, redo) = ctx.input_mut(|i| {
+        (
+            i.consume_shortcut(&SAVE_FILE),
+            i.consume_shortcut(&SAVE_FILE_AS),
+            i.consume_shortcut(&TOGGLE_EDIT_MODE),
+            i.consume_shortcut(&UNDO),
+            i.consume_shortcut(&REDO),
+        )
     });
     if save_as {
         save_active_file(app, true);
@@ -1059,6 +1078,11 @@ fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
     if toggle {
         toggle_active_edit_mode(app);
+    }
+    if redo {
+        redo_active_file(app);
+    } else if undo {
+        undo_active_file(app);
     }
 }
 
@@ -2012,6 +2036,8 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::Save => save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => save_active_file(app, true),
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
+            crate::menu::MenuAction::Undo => undo_active_file(app),
+            crate::menu::MenuAction::Redo => redo_active_file(app),
             crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
@@ -2032,11 +2058,17 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
         .unwrap_or(false);
     let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.is_dirty() || f.root_path().is_some());
+    let (can_undo, can_redo) = active
+        .and_then(|id| app.files.get(&id))
+        .map(|f| (f.can_undo(), f.can_redo()))
+        .unwrap_or((false, false));
     if let Some(menu) = app.menu.as_ref() {
         menu.set_file_open(has_file);
         menu.set_scalar_selection(has_scalar);
         menu.set_save_enabled(can_save);
         menu.set_edit_mode_enabled(has_file);
+        menu.set_undo_enabled(can_undo);
+        menu.set_redo_enabled(can_redo);
     }
 }
 
@@ -2049,6 +2081,38 @@ fn toggle_active_edit_mode(app: &mut HxyApp) {
         crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
     };
     file.reset_edit_nibble();
+    file.push_history_boundary();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn undo_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    if let Some(entry) = file.undo() {
+        jump_cursor_to(file, entry.offset);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn redo_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    if let Some(entry) = file.redo() {
+        jump_cursor_to(file, entry.offset);
+    }
+}
+
+/// Park the cursor at `offset` (clamped to the tab's source length)
+/// after an undo or redo so the user can see where the change
+/// landed. Also resets the nibble pointer and `last_cursor_offset`
+/// so typing after the jump starts on the high nibble.
+#[cfg(not(target_arch = "wasm32"))]
+fn jump_cursor_to(file: &mut crate::file::OpenFile, offset: u64) {
+    let len = file.source.len().get();
+    let clamped = offset.min(len.saturating_sub(1));
+    file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped)));
+    file.reset_edit_nibble();
+    file.last_cursor_offset = Some(clamped);
 }
 
 #[cfg(target_os = "macos")]
@@ -2095,7 +2159,26 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 let copy_bytes_text = ui.ctx().format_shortcut(&COPY_BYTES);
                 let copy_hex_text = ui.ctx().format_shortcut(&COPY_HEX);
                 let toggle_text = ui.ctx().format_shortcut(&TOGGLE_EDIT_MODE);
+                let undo_text = ui.ctx().format_shortcut(&UNDO);
+                let redo_text = ui.ctx().format_shortcut(&REDO);
                 let active_file = active_file_id(app);
+                let (can_undo, can_redo) = active_file
+                    .and_then(|id| app.files.get(&id))
+                    .map(|f| (f.can_undo(), f.can_redo()))
+                    .unwrap_or((false, false));
+                ui.add_enabled_ui(can_undo, |ui| {
+                    if ui.add(egui::Button::new(hxy_i18n::t("menu-edit-undo")).shortcut_text(undo_text)).clicked() {
+                        ui.close();
+                        undo_active_file(app);
+                    }
+                });
+                ui.add_enabled_ui(can_redo, |ui| {
+                    if ui.add(egui::Button::new(hxy_i18n::t("menu-edit-redo")).shortcut_text(redo_text)).clicked() {
+                        ui.close();
+                        redo_active_file(app);
+                    }
+                });
+                ui.separator();
                 let mode_label = active_file
                     .and_then(|id| app.files.get(&id))
                     .map(|f| match f.edit_mode {
@@ -2757,6 +2840,7 @@ fn status_bar_ui(
                     crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
                 };
                 file.reset_edit_nibble();
+                file.push_history_boundary();
             }
 
             let value = format_offset(size, base);
@@ -2810,6 +2894,9 @@ const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modi
 const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
 const TOGGLE_EDIT_MODE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
+const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+const REDO: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
