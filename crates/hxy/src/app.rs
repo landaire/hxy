@@ -102,6 +102,22 @@ pub struct HxyApp {
     /// closes the palette, opening the palette cancels the picker.
     #[cfg(not(target_arch = "wasm32"))]
     pending_pane_pick: Option<crate::pane_pick::PendingPanePick>,
+    /// Set when the user tries to close a tab that has unsaved
+    /// edits -- via Cmd+W or by clicking the tab's X. The modal
+    /// renders next frame and asks Save / Don't Save / Cancel;
+    /// only `Save`-then-success or `Don't Save` actually close the
+    /// tab, the third does nothing.
+    pending_close_tab: Option<PendingCloseTab>,
+}
+
+/// One tab the user has asked to close, gated on its dirty buffer.
+/// Carries enough metadata to render the prompt without re-reading
+/// `app.files` (which would force the modal to re-borrow during
+/// rendering).
+#[derive(Clone, Debug)]
+pub struct PendingCloseTab {
+    pub file_id: FileId,
+    pub display_name: String,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -190,6 +206,7 @@ impl HxyApp {
             palette: crate::command_palette::PaletteState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
+            pending_close_tab: None,
         }
     }
 
@@ -621,6 +638,7 @@ impl eframe::App for HxyApp {
                 inspector_data,
                 #[cfg(not(target_arch = "wasm32"))]
                 plugin_rescan: &mut self.plugin_rescan,
+                pending_close_tab: &mut self.pending_close_tab,
             };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock)
@@ -663,11 +681,15 @@ impl eframe::App for HxyApp {
         dispatch_copy_shortcut(ui.ctx(), self);
         dispatch_save_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        dispatch_close_shortcut(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         dispatch_paste_shortcut(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         render_patch_restore_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        render_close_tab_dialog(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
@@ -2478,6 +2500,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::OpenFile => handle_open_file(app),
             crate::menu::MenuAction::Save => save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => save_active_file(app, true),
+            crate::menu::MenuAction::CloseTab => request_close_active_tab(app),
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::Undo => undo_active_file(app),
             crate::menu::MenuAction::Redo => redo_active_file(app),
@@ -2638,6 +2661,12 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     }
                 });
                 ui.separator();
+                let close_text = ui.ctx().format_shortcut(&CLOSE_TAB);
+                if ui.add(egui::Button::new(hxy_i18n::t("menu-file-close")).shortcut_text(close_text)).clicked() {
+                    ui.close();
+                    request_close_active_tab(app);
+                }
+                ui.separator();
                 if ui.button(hxy_i18n::t("menu-file-quit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -2763,6 +2792,126 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
             });
         });
     });
+}
+
+/// Close a specific File tab by id, no questions asked. Removes
+/// the tab from the dock, drops the `OpenFile` from `app.files`,
+/// and clears the matching persisted `OpenTabState` so the tab
+/// doesn't reappear on next launch. Callers responsible for
+/// gating on dirtiness -- this helper is the unconditional path
+/// the modal's "Don't Save" branch uses.
+fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
+    if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
+        let _ = app.dock.remove_tab(path);
+    }
+    if let Some(removed) = app.files.remove(&id)
+        && let Some(source) = removed.source_kind
+    {
+        let mut state = app.state.write();
+        state.open_tabs.retain(|t| t.source != source);
+    }
+    if app.last_active_file == Some(id) {
+        app.last_active_file = None;
+    }
+}
+
+/// Cmd+W entry point. Closes the currently focused tab. For File
+/// tabs the dirty-check is the same one `on_close` uses: when the
+/// editor has uncommitted edits the modal is staged instead of
+/// dropping. Non-File tabs (Console, Inspector, Plugins, ...)
+/// close immediately -- they have no save state.
+#[cfg(not(target_arch = "wasm32"))]
+fn request_close_active_tab(app: &mut HxyApp) {
+    let Some((_, tab)) = app.dock.find_active_focused() else { return };
+    let tab = *tab;
+    match tab {
+        Tab::File(id) => {
+            if let Some(file) = app.files.get(&id)
+                && file.editor.is_dirty()
+            {
+                app.pending_close_tab =
+                    Some(PendingCloseTab { file_id: id, display_name: file.display_name.clone() });
+                return;
+            }
+            close_file_tab_by_id(app, id);
+        }
+        Tab::Welcome | Tab::Settings => {
+            // These two are non-closeable in the TabViewer
+            // (`closeable` returns false), so Cmd+W matches.
+        }
+        Tab::Console | Tab::Inspector | Tab::Plugins => {
+            if let Some(path) = app.dock.find_tab(&tab) {
+                let _ = app.dock.remove_tab(path);
+            }
+        }
+    }
+}
+
+/// Cmd+W shortcut dispatcher. Sits next to the other shortcut
+/// dispatchers in [`HxyApp::ui`]; runs after the palette/picker so
+/// they can claim the keypress first if either is open.
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    if ctx.input_mut(|i| i.consume_shortcut(&CLOSE_TAB)) {
+        request_close_active_tab(app);
+    }
+}
+
+/// Render the "Save before closing?" modal when a close request
+/// is staged in `pending_close_tab`. Three terminal actions: Save
+/// -> save then close (only if save actually wrote bytes; a
+/// cancelled save dialog leaves the tab open and the staged
+/// request is cleared so the user starts fresh next press),
+/// Don't Save -> close immediately, Cancel -> do nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(pending) = app.pending_close_tab.as_ref().cloned() else { return };
+
+    let mut action: Option<CloseTabAction> = None;
+    let mut open = true;
+    egui::Window::new(hxy_i18n::t("close-prompt-title"))
+        .id(egui::Id::new("hxy_close_tab_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(hxy_i18n::t_args("close-prompt-body", &[("name", &pending.display_name)]));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("close-prompt-save")).clicked() {
+                    action = Some(CloseTabAction::Save);
+                }
+                if ui.button(hxy_i18n::t("close-prompt-discard")).clicked() {
+                    action = Some(CloseTabAction::Discard);
+                }
+                if ui.button(hxy_i18n::t("close-prompt-cancel")).clicked() {
+                    action = Some(CloseTabAction::Cancel);
+                }
+            });
+        });
+    if !open && action.is_none() {
+        action = Some(CloseTabAction::Cancel);
+    }
+
+    let Some(action) = action else { return };
+    app.pending_close_tab = None;
+    match action {
+        CloseTabAction::Save => {
+            if save_file_by_id(app, pending.file_id, false) {
+                close_file_tab_by_id(app, pending.file_id);
+            }
+        }
+        CloseTabAction::Discard => close_file_tab_by_id(app, pending.file_id),
+        CloseTabAction::Cancel => {}
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum CloseTabAction {
+    Save,
+    Discard,
+    Cancel,
 }
 
 /// Stage a visual pane-pick session. Resolves the source leaf the
@@ -3884,7 +4033,18 @@ fn handle_new_file(app: &mut HxyApp) {
 #[cfg(not(target_arch = "wasm32"))]
 fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
     let Some(id) = active_file_id(app) else { return };
-    let Some(file) = app.files.get(&id) else { return };
+    let _ = save_file_by_id(app, id, force_dialog);
+}
+
+/// Save a specific file tab by id. Returns `true` when the bytes
+/// actually hit disk; `false` when the user dismissed the dialog or
+/// the write itself failed (the latter is also surfaced via the
+/// console log). Used by [`save_active_file`] for the Save / Save
+/// As shortcut path and by the close-tab-with-unsaved-changes
+/// modal, which conditions the tab close on the save succeeding.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool {
+    let Some(file) = app.files.get(&id) else { return false };
     let display = file.display_name.clone();
     let target = if force_dialog {
         let mut dialog = rfd::FileDialog::new().set_file_name(&display);
@@ -3898,7 +4058,7 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
             None => rfd::FileDialog::new().set_file_name(&display).save_file(),
         }
     };
-    let Some(path) = target else { return };
+    let Some(path) = target else { return false };
 
     let ctx = format!("Save {}", path.display());
     let len = file.editor.source().len().get();
@@ -3908,12 +4068,12 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
         Ok(b) => b,
         Err(e) => {
             app.console_log(ConsoleSeverity::Error, &ctx, format!("read patched bytes: {e}"));
-            return;
+            return false;
         }
     };
     if let Err(e) = write_atomic(&path, &bytes) {
         app.console_log(ConsoleSeverity::Error, &ctx, format!("write: {e}"));
-        return;
+        return false;
     }
 
     // Successful write -- swap the tab's byte source over to the
@@ -3958,6 +4118,7 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
         }
     }
     app.console_log(ConsoleSeverity::Info, &ctx, "saved");
+    true
 }
 
 /// Write `bytes` to `path` atomically: stage in a sibling tempfile,
@@ -4003,6 +4164,10 @@ struct HxyTabViewer<'a> {
     /// end of frame by [`HxyApp::ui`].
     #[cfg(not(target_arch = "wasm32"))]
     plugin_rescan: &'a mut bool,
+    /// Slot the dock's `on_close` handler writes to when the user
+    /// X-clicks a dirty File tab. The app drains this after the
+    /// dock pass and renders the save-prompt modal next frame.
+    pending_close_tab: &'a mut Option<PendingCloseTab>,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -4100,11 +4265,25 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
-        if let Tab::File(id) = tab
-            && let Some(removed) = self.files.remove(id)
-            && let Some(source) = removed.source_kind
-        {
-            self.state.open_tabs.retain(|t| t.source != source);
+        if let Tab::File(id) = tab {
+            // Stage the close in the pending-modal slot when the
+            // editor has uncommitted edits. The dock keeps the tab
+            // (Ignore response) and we let the modal next frame
+            // decide: Save -> close, Don't Save -> close, Cancel ->
+            // do nothing. Without this gate, the X button silently
+            // discards unsaved bytes.
+            if let Some(file) = self.files.get(id)
+                && file.editor.is_dirty()
+            {
+                *self.pending_close_tab =
+                    Some(PendingCloseTab { file_id: *id, display_name: file.display_name.clone() });
+                return OnCloseResponse::Ignore;
+            }
+            if let Some(removed) = self.files.remove(id)
+                && let Some(source) = removed.source_kind
+            {
+                self.state.open_tabs.retain(|t| t.source != source);
+            }
         }
         OnCloseResponse::Close
     }
@@ -4257,6 +4436,7 @@ const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Mod
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
 const NEW_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
+const CLOSE_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
 const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);

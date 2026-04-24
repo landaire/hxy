@@ -126,6 +126,13 @@ duplicate-open-focus = Go to existing tab
 duplicate-open-new-tab = Open in new tab
 duplicate-open-cancel = Cancel
 
+# Close-with-unsaved-changes dialog
+close-prompt-title = Save before closing?
+close-prompt-body = { $name } has unsaved changes. Your changes will be lost if you don't save them.
+close-prompt-save = Save
+close-prompt-discard = Don't Save
+close-prompt-cancel = Cancel
+
 # Status bar
 status-lock-readonly-tooltip = Read-only -- click to enable edits
 status-lock-mutable-tooltip = Editable -- click to lock

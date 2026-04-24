@@ -33,6 +33,9 @@ pub enum MenuAction {
     /// tab has no path backing it.
     Save,
     SaveAs,
+    /// Close the focused tab. File tabs with unsaved edits trigger
+    /// the "Save before closing?" modal; others close immediately.
+    CloseTab,
     /// Flip the active tab between read-only and mutable.
     ToggleEditMode,
     Undo,
@@ -121,6 +124,10 @@ impl MenuState {
         actions.insert(save.id().0.clone(), MenuAction::Save);
         actions.insert(save_as.id().0.clone(), MenuAction::SaveAs);
         let save_items = vec![save, save_as];
+        file_menu.append(&PredefinedMenuItem::separator()).expect("append separator");
+        let close_tab = MenuItem::new("Close", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyW)));
+        file_menu.append(&close_tab).expect("append close tab");
+        actions.insert(close_tab.id().0.clone(), MenuAction::CloseTab);
 
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
