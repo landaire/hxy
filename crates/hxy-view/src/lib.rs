@@ -1417,7 +1417,9 @@ fn paint_row_marks(
     // visible target. It sits in the column immediately after the
     // last real byte (or column 0 for an empty source), as a thin
     // I-beam rather than a full cell outline -- there's no byte to
-    // frame.
+    // frame. When the view is editable (nibble cursor is painted),
+    // also render dim placeholder glyphs inside the cell so the user
+    // sees "you can type here" instead of a bare I-beam.
     let eof_offset = ctx.source_len.get();
     if ctx.cursor_offset == Some(ByteOffset::new(eof_offset)) {
         let eof_row_first = row_first_offset.get();
@@ -1429,6 +1431,23 @@ fn paint_row_marks(
             let col = col as usize;
             let hex_rect = ctx.layout.hex_cell_rect(row_origin, col.min(cols - 1), ctx.row_height);
             let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, col.min(cols - 1), ctx.row_height);
+            if col < cols && ctx.nibble_cursor.is_some() {
+                let ghost_fg = ctx.colors.weak.gamma_multiply(0.6);
+                painter.text(
+                    hex_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "--",
+                    ctx.font_id.clone(),
+                    ghost_fg,
+                );
+                painter.text(
+                    ascii_rect.center(),
+                    Align2::CENTER_CENTER,
+                    ".",
+                    ctx.font_id.clone(),
+                    ghost_fg,
+                );
+            }
             let hex_x = if col < cols { hex_rect.left() } else { hex_rect.right() };
             let ascii_x = if col < cols { ascii_rect.left() } else { ascii_rect.right() };
             let (hex_stroke, ascii_stroke) = (hex_cursor_stroke, ascii_cursor_stroke);

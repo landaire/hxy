@@ -37,9 +37,12 @@ pub enum WriteError {
     Rejected(String),
 }
 
-/// Single reversible edit: the byte range `[offset, offset+len)`, the
-/// bytes that were there before the edit, and the bytes that replaced
-/// them. Length-preserving, so `old_bytes.len() == new_bytes.len()`.
+/// Single reversible edit: the byte range `[offset, offset+old_len)`
+/// in the patched view at the time of recording, the bytes that were
+/// there, and the bytes that replaced them. `old_bytes.len() == 0`
+/// encodes a pure insert; `new_bytes.is_empty()` would encode a pure
+/// delete (not currently produced by the typing paths but handled by
+/// rebuild).
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EditEntry {
@@ -78,6 +81,8 @@ pub(crate) struct EditState {
     pub(crate) patched_source: Arc<dyn HexSource>,
     /// Shared handle to the patch inside `patched_source`. Exposed
     /// via [`crate::HexEditor::patch`] so consumers can persist it.
+    /// Treated as *derived state*: it's always rebuilt from
+    /// `undo_stack` after any change.
     pub(crate) patch: Arc<RwLock<Patch>>,
     pub(crate) mode: EditMode,
     /// Two-press hex-digit input state. `true` means the next typed
@@ -85,11 +90,15 @@ pub(crate) struct EditState {
     pub(crate) edit_high_nibble: bool,
     pub(crate) undo_stack: Vec<EditEntry>,
     pub(crate) redo_stack: Vec<EditEntry>,
-    /// `true` when the next `request_write` must start a fresh undo
-    /// entry rather than coalesce into the previous one.
+    /// `true` when the next write must start a fresh undo entry
+    /// rather than coalesce into the previous one.
     pub(crate) history_break: bool,
     /// Monotonic instant of the most recent successful write.
     pub(crate) last_edit_at: Option<Instant>,
+    /// Lazily-populated copy of `base_source`'s bytes. Read once on
+    /// first mutation so `rebuild_patch_from_stack` doesn't re-read
+    /// the base on every keystroke. Cleared by [`Self::swap_base`].
+    base_cache: Option<Vec<u8>>,
 }
 
 impl EditState {
@@ -107,6 +116,7 @@ impl EditState {
             redo_stack: Vec::new(),
             history_break: false,
             last_edit_at: None,
+            base_cache: None,
         }
     }
 
@@ -124,6 +134,7 @@ impl EditState {
         self.history_break = true;
         self.last_edit_at = None;
         self.edit_high_nibble = true;
+        self.base_cache = None;
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
@@ -153,12 +164,8 @@ impl EditState {
         for i in 0..bytes.len() {
             old_bytes.push(self.read_byte_at(offset + i as u64)?);
         }
-        self.patch
-            .write()
-            .expect("patch lock poisoned")
-            .write(offset, bytes.clone())
-            .map_err(|e| WriteError::Rejected(e.to_string()))?;
         self.record_entry(EditEntry { offset, old_bytes, new_bytes: bytes });
+        self.rebuild_patch_from_stack();
         Ok(())
     }
 
@@ -173,50 +180,88 @@ impl EditState {
         if offset > source_len {
             return Err(WriteError::OutOfBounds { offset, len: bytes.len() as u64, source_len });
         }
-        self.patch
-            .write()
-            .expect("patch lock poisoned")
-            .insert(offset, bytes.clone())
-            .map_err(|e| WriteError::Rejected(e.to_string()))?;
         self.record_entry(EditEntry { offset, old_bytes: Vec::new(), new_bytes: bytes });
+        self.rebuild_patch_from_stack();
         Ok(())
     }
 
-    /// Common bookkeeping after a successful patch mutation: clear
-    /// redo, coalesce when still on the same logical edit, otherwise
-    /// push fresh and enforce the cap. Entries where old_bytes and
-    /// new_bytes have different lengths (pure inserts / deletes /
-    /// splices) are never coalesced: the merge rules assume a
-    /// length-preserving overwrite.
+    /// Common bookkeeping after capturing a new edit: clear redo,
+    /// coalesce into the previous entry when still on the same
+    /// logical change, otherwise push fresh and enforce the cap.
+    ///
+    /// Three coalescing cases are recognised, all gated on no
+    /// history break and no idle gap:
+    ///   1. Both entries length-preserving and their patched ranges
+    ///      touch -- classic "typing runs into one undo".
+    ///   2. The new entry is length-preserving and sits entirely
+    ///      inside the previous entry's `new_bytes` region. Covers
+    ///      the "insert a zeroed byte at EOF, then overwrite its
+    ///      nibbles" path that anonymous buffers rely on.
+    ///   3. Both entries are pure inserts and adjacent in patched
+    ///      coords. Covers typing past EOF: every new byte extends
+    ///      the single tail insert instead of spawning its own
+    ///      entry.
     fn record_entry(&mut self, entry: EditEntry) {
         self.redo_stack.clear();
         let now = Instant::now();
         let idle_break = self.last_edit_at.is_some_and(|last| now.duration_since(last) >= EDIT_COALESCE_IDLE);
-        let entry_is_length_preserving = entry.old_bytes.len() == entry.new_bytes.len();
+
         if !self.history_break
             && !idle_break
-            && entry_is_length_preserving
             && let Some(last) = self.undo_stack.last_mut()
-            && last.old_bytes.len() == last.new_bytes.len()
-            && ranges_touch(last.offset, last.end(), entry.offset, entry.end())
         {
-            merge_entry(last, &entry);
-        } else {
-            self.undo_stack.push(entry);
-            if self.undo_stack.len() > UNDO_HISTORY_CAP {
-                self.undo_stack.remove(0);
+            let last_lp = last.old_bytes.len() == last.new_bytes.len();
+            let entry_lp = entry.old_bytes.len() == entry.new_bytes.len();
+
+            // Case 1: LP-LP touching -- classic coalesce.
+            if last_lp && entry_lp && ranges_touch(last.offset, last.end(), entry.offset, entry.end()) {
+                merge_entry(last, &entry);
+                self.history_break = false;
+                self.last_edit_at = Some(now);
+                return;
             }
+
+            // Case 2: LP entry contained in previous entry's
+            // new_bytes. In-place overwrite; does not change the
+            // previous entry's patched-coord footprint or old_bytes.
+            let last_new_end = last.offset + last.new_bytes.len() as u64;
+            if entry_lp
+                && entry.offset >= last.offset
+                && entry.offset + entry.new_bytes.len() as u64 <= last_new_end
+            {
+                let rel = (entry.offset - last.offset) as usize;
+                last.new_bytes[rel..rel + entry.new_bytes.len()].copy_from_slice(&entry.new_bytes);
+                self.history_break = false;
+                self.last_edit_at = Some(now);
+                return;
+            }
+
+            // Case 3: adjacent pure inserts -- concatenate.
+            if last.old_bytes.is_empty()
+                && entry.old_bytes.is_empty()
+                && entry.offset == last_new_end
+            {
+                last.new_bytes.extend_from_slice(&entry.new_bytes);
+                self.history_break = false;
+                self.last_edit_at = Some(now);
+                return;
+            }
+        }
+
+        self.undo_stack.push(entry);
+        if self.undo_stack.len() > UNDO_HISTORY_CAP {
+            self.undo_stack.remove(0);
         }
         self.history_break = false;
         self.last_edit_at = Some(now);
     }
 
     pub(crate) fn revert(&mut self) {
-        *self.patch.write().expect("patch lock poisoned") = Patch::new();
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.history_break = true;
         self.last_edit_at = None;
+        self.rebuild_patch_from_stack();
     }
 
     pub(crate) fn undo(&mut self) -> Option<EditEntry> {
@@ -236,34 +281,103 @@ impl EditState {
             return None;
         }
         let entry = self.redo_stack.pop()?;
-        let result = self.patch.write().expect("patch lock poisoned").splice(
-            entry.offset,
-            entry.old_bytes.len() as u64,
-            entry.new_bytes.clone(),
-        );
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "redo splice rejected; restoring redo stack");
-            self.redo_stack.push(entry);
-            return None;
-        }
         self.undo_stack.push(entry.clone());
+        self.rebuild_patch_from_stack();
         self.history_break = true;
         self.edit_high_nibble = true;
         Some(entry)
     }
 
-    fn rebuild_patch_from_stack(&self) {
+    /// Materialise the final patched view by replaying `undo_stack`
+    /// over a mutable copy of the base, then diff against base to
+    /// emit a fresh [`Patch`]. Preserves any existing metadata.
+    ///
+    /// Replaces the previous implementation which appended each
+    /// entry directly to the patch via [`Patch::write`] /
+    /// [`Patch::insert`]. That approach couldn't compose an
+    /// overwrite with a prior insert op (suture rejects overlap
+    /// with non-length-preserving ops), so editing a just-inserted
+    /// byte in an anonymous buffer failed.
+    fn rebuild_patch_from_stack(&mut self) {
+        let base = self.cached_base_bytes().clone();
+        let mut buffer = base.clone();
+
+        for entry in &self.undo_stack {
+            let off = entry.offset as usize;
+            let old_end = off.saturating_add(entry.old_bytes.len());
+            if off > buffer.len() || old_end > buffer.len() {
+                tracing::warn!(
+                    offset = entry.offset,
+                    old_len = entry.old_bytes.len(),
+                    buffer_len = buffer.len(),
+                    "rebuild: entry out of buffer range; skipping"
+                );
+                continue;
+            }
+            buffer.splice(off..old_end, entry.new_bytes.iter().copied());
+        }
+
         let mut patch = self.patch.write().expect("patch lock poisoned");
         let metadata = patch.metadata().cloned();
         *patch = match metadata {
             Some(m) => Patch::with_metadata(m),
             None => Patch::new(),
         };
-        for entry in &self.undo_stack {
-            if let Err(e) = patch.splice(entry.offset, entry.old_bytes.len() as u64, entry.new_bytes.clone()) {
-                tracing::warn!(error = %e, "rebuild_patch_from_stack: entry rejected");
+
+        let base_len = base.len();
+        let compare_end = base_len.min(buffer.len());
+        let mut i = 0;
+        while i < compare_end {
+            if base[i] != buffer[i] {
+                let mut j = i + 1;
+                while j < compare_end && base[j] != buffer[j] {
+                    j += 1;
+                }
+                if let Err(e) = patch.splice(i as u64, (j - i) as u64, buffer[i..j].to_vec()) {
+                    tracing::warn!(error = %e, "rebuild: splice rejected");
+                }
+                i = j;
+            } else {
+                i += 1;
             }
         }
+
+        if buffer.len() < base_len {
+            let del_start = buffer.len() as u64;
+            let del_len = (base_len - buffer.len()) as u64;
+            if let Err(e) = patch.delete(del_start, del_len) {
+                tracing::warn!(error = %e, "rebuild: trailing delete rejected");
+            }
+        } else if buffer.len() > base_len {
+            let tail = buffer[base_len..].to_vec();
+            if let Err(e) = patch.insert(base_len as u64, tail) {
+                tracing::warn!(error = %e, "rebuild: tail insert rejected");
+            }
+        }
+    }
+
+    /// Lazily read the base source into memory on first use so
+    /// diffing against it in `rebuild_patch_from_stack` doesn't hit
+    /// storage on every keystroke. Cleared by [`Self::swap_base`].
+    fn cached_base_bytes(&mut self) -> &Vec<u8> {
+        if self.base_cache.is_none() {
+            let base_len = self.base_source.len().get();
+            let buf = if base_len == 0 {
+                Vec::new()
+            } else {
+                let range = ByteRange::new(ByteOffset::new(0), ByteOffset::new(base_len))
+                    .expect("0..base_len is a valid range");
+                match self.base_source.read(range) {
+                    Ok(b) => b.to_vec(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rebuild: base read failed; treating as empty");
+                        Vec::new()
+                    }
+                }
+            };
+            self.base_cache = Some(buf);
+        }
+        self.base_cache.as_ref().expect("just populated")
     }
 
     pub(crate) fn read_byte_at(&self, offset: u64) -> Result<u8, WriteError> {
@@ -314,6 +428,20 @@ mod tests {
     fn state() -> EditState {
         let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
         EditState::new(base)
+    }
+
+    fn empty_state() -> EditState {
+        let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        EditState::new(base)
+    }
+
+    fn read_all(s: &EditState) -> Vec<u8> {
+        let len = s.patched_source.len().get();
+        if len == 0 {
+            return Vec::new();
+        }
+        let range = ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap();
+        s.patched_source.read(range).unwrap().to_vec()
     }
 
     #[test]
@@ -381,5 +509,53 @@ mod tests {
             s.request_write(0, vec![0x01]).unwrap();
         }
         assert_eq!(s.undo_stack.len(), UNDO_HISTORY_CAP);
+    }
+
+    #[test]
+    fn insert_then_overwrite_in_anonymous_buffer() {
+        // Reproduces the bug: typing two nibbles at EOF of an empty
+        // source. First nibble inserts a zeroed byte; second nibble
+        // overwrites its low half. The previous implementation
+        // rejected the second write as an overlap with the insert
+        // op.
+        let mut s = empty_state();
+        s.insert_at(0, vec![0xA0]).unwrap();
+        s.request_write(0, vec![0xAB]).unwrap();
+        assert_eq!(read_all(&s), vec![0xAB]);
+        // Both edits coalesce into a single insert entry.
+        assert_eq!(s.undo_stack.len(), 1);
+        assert_eq!(s.undo_stack[0].new_bytes, vec![0xAB]);
+        assert!(s.undo_stack[0].old_bytes.is_empty());
+    }
+
+    #[test]
+    fn typing_past_eof_grows_buffer_across_multiple_bytes() {
+        let mut s = empty_state();
+        s.insert_at(0, vec![0xA0]).unwrap();
+        s.request_write(0, vec![0xAB]).unwrap();
+        s.insert_at(1, vec![0xC0]).unwrap();
+        s.request_write(1, vec![0xCD]).unwrap();
+        assert_eq!(read_all(&s), vec![0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn undo_one_step_reverts_anonymous_typing() {
+        let mut s = empty_state();
+        s.insert_at(0, vec![0xA0]).unwrap();
+        s.request_write(0, vec![0xAB]).unwrap();
+        assert!(s.undo().is_some());
+        assert_eq!(read_all(&s), Vec::<u8>::new());
+        assert!(!s.is_dirty());
+    }
+
+    #[test]
+    fn middle_insert_and_overwrite_composes_correctly() {
+        // base [X Y Z], insert A at patched offset 1, then write B
+        // at patched offset 2 (which is the Y that moved right).
+        let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x58, 0x59, 0x5A]));
+        let mut s = EditState::new(base);
+        s.insert_at(1, vec![0x41]).unwrap();
+        s.request_write(2, vec![0x42]).unwrap();
+        assert_eq!(read_all(&s), vec![0x58, 0x41, 0x42, 0x5A]);
     }
 }
