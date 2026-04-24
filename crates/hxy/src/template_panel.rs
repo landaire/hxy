@@ -194,7 +194,13 @@ impl TableDelegate for TemplateTableDelegate<'_> {
         ui.push_id(("hxy-tmpl-row", row_nr), |ui| {
             let row_id = ui.id().with("interact");
             let resp = ui.interact(row_rect, row_id, egui::Sense::click());
-            if resp.hovered()
+            // `resp.hovered()` is blocked by child widgets that
+            // sense hover themselves (every `Label` in a cell does),
+            // so across all but the gaps between cells it reads
+            // false. `rect_contains_pointer` is the raw pointer-in-
+            // rect check that doesn't care about widget layering --
+            // what we actually want for a whole-row highlight.
+            if ui.rect_contains_pointer(row_rect)
                 && let Some(idx) = node_idx
             {
                 *self.any_hover = Some(idx);
