@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "magic",
-            type_name: "uchar",
+            ty: Scalar(
+                U8,
+            ),
             offset: 0,
             length: 1,
             value: Some(
@@ -24,7 +26,9 @@ RunResult {
         },
         NodeOut {
             name: "size",
-            type_name: "uint32",
+            ty: Scalar(
+                U32,
+            ),
             offset: 1,
             length: 4,
             value: Some(
@@ -42,7 +46,9 @@ RunResult {
         },
         NodeOut {
             name: "offset",
-            type_name: "uint64",
+            ty: Scalar(
+                U64,
+            ),
             offset: 5,
             length: 8,
             value: Some(

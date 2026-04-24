@@ -27,7 +27,9 @@ use crate::source::HexSource;
 use crate::source::SourceError;
 use crate::value::Endian;
 use crate::value::PrimClass;
+use crate::value::NodeType;
 use crate::value::PrimKind;
+use crate::value::ScalarKind;
 use crate::value::Value;
 
 #[derive(Debug, Error)]
@@ -72,7 +74,7 @@ pub enum Severity {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeOut {
     pub name: String,
-    pub type_name: String,
+    pub ty: NodeType,
     pub offset: u64,
     pub length: u64,
     pub value: Option<Value>,
@@ -201,7 +203,6 @@ impl<S: HexSource> Interpreter<S> {
         RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: exit_value }
     }
 
-    // ---- primitives table ----
 
     fn register_primitives(&mut self) {
         use PrimKind as P;
@@ -268,7 +269,6 @@ impl<S: HexSource> Interpreter<S> {
         Err(RuntimeError::UnknownType { name: ty.name.clone() })
     }
 
-    // ---- statements ----
 
     fn exec_stmt(&mut self, stmt: &Stmt, parent: Option<u32>) -> Result<Flow, RuntimeError> {
         self.steps = self.steps.saturating_add(1);
@@ -377,7 +377,6 @@ impl<S: HexSource> Interpreter<S> {
         Ok(flow)
     }
 
-    // ---- field / variable declarations ----
 
     fn exec_field_decl(&mut self, stmt: &Stmt, parent: Option<u32>) -> Result<(), RuntimeError> {
         let Stmt::FieldDecl { modifier, ty, name, array_size, init, attrs, .. } = stmt else {
@@ -436,7 +435,7 @@ impl<S: HexSource> Interpreter<S> {
                 let idx = self.nodes.len() as u32;
                 self.nodes.push(NodeOut {
                     name: name.to_owned(),
-                    type_name: ty.name.clone(),
+                    ty: NodeType::Scalar(ScalarKind::from_prim(p)),
                     offset,
                     length: p.width as u64,
                     value: Some(value.clone()),
@@ -470,7 +469,7 @@ impl<S: HexSource> Interpreter<S> {
                 let value = Value::Str(display);
                 self.nodes.push(NodeOut {
                     name: name.to_owned(),
-                    type_name: ty.name.clone(),
+                    ty: NodeType::EnumType(ty.name.clone()),
                     offset,
                     length: pk.width as u64,
                     value: Some(value.clone()),
@@ -484,7 +483,7 @@ impl<S: HexSource> Interpreter<S> {
                 let idx = self.nodes.len() as u32;
                 self.nodes.push(NodeOut {
                     name: name.to_owned(),
-                    type_name: ty.name.clone(),
+                    ty: NodeType::StructType(ty.name.clone()),
                     offset,
                     length: 0,
                     value: None,
@@ -537,7 +536,7 @@ impl<S: HexSource> Interpreter<S> {
                 let value = Value::Str(s);
                 self.nodes.push(NodeOut {
                     name: name.to_owned(),
-                    type_name: format!("{}[{}]", ty.name, count),
+                    ty: NodeType::ScalarArray(ScalarKind::from_prim(p), count),
                     offset,
                     length: count,
                     value: Some(value.clone()),
@@ -546,11 +545,17 @@ impl<S: HexSource> Interpreter<S> {
                 });
                 return Ok(value);
             }
+        let array_ty = match &def {
+            TypeDef::Primitive(p) => NodeType::ScalarArray(ScalarKind::from_prim(*p), count),
+            TypeDef::Enum(_) => NodeType::EnumArray(ty.name.clone(), count),
+            TypeDef::Struct(_) => NodeType::StructArray(ty.name.clone(), count),
+            TypeDef::Alias(_) => NodeType::Unknown(format!("{}[{}]", ty.name, count)),
+        };
         let offset = self.cursor.tell();
         let idx = self.nodes.len() as u32;
         self.nodes.push(NodeOut {
             name: name.to_owned(),
-            type_name: format!("{}[{}]", ty.name, count),
+            ty: array_ty,
             offset,
             length: 0,
             value: None,
@@ -568,7 +573,6 @@ impl<S: HexSource> Interpreter<S> {
         Ok(Value::Void)
     }
 
-    // ---- expressions ----
 
     fn eval(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
@@ -660,7 +664,6 @@ impl<S: HexSource> Interpreter<S> {
         Ok(())
     }
 
-    // ---- calls ----
 
     fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, args)? {
@@ -823,7 +826,6 @@ impl<S: HexSource> Interpreter<S> {
     }
 }
 
-// ---- primitive decoding ----
 
 fn decode_prim(bytes: &[u8], kind: PrimKind, endian: Endian) -> Result<Value, RuntimeError> {
     if bytes.len() as u8 != kind.width {
@@ -882,7 +884,6 @@ fn decode_prim(bytes: &[u8], kind: PrimKind, endian: Endian) -> Result<Value, Ru
     })
 }
 
-// ---- operator evaluation ----
 
 fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // Float path: if either side is a float, coerce both to f64.

@@ -5,12 +5,13 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
-pub mod interp;
-pub mod lexer;
-pub mod parser;
-pub mod source;
-pub mod token;
-pub mod value;
+
+pub(crate) mod interp;
+pub(crate) mod lexer;
+pub(crate) mod parser;
+pub(crate) mod source;
+pub(crate) mod token;
+pub(crate) mod value;
 
 #[cfg(feature = "arbitrary")]
 pub mod fuzz;
@@ -28,10 +29,6 @@ pub use parser::parse;
 pub use source::HexSource;
 pub use source::MemorySource;
 pub use source::SourceError;
-pub use token::Keyword;
-pub use token::Span;
-pub use token::Token;
-pub use token::TokenKind;
-pub use value::Endian;
-pub use value::PrimKind;
+pub use value::NodeType;
+pub use value::ScalarKind;
 pub use value::Value;

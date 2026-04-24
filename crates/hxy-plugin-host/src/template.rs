@@ -23,8 +23,45 @@ use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::host::HostState;
 
 pub use crate::bindings::template_world::exports::hxy::vfs::template::{
-    Arg, ArgValue, DeferredArray, Diagnostic, DisplayHint, Node, ResultTree, Severity, Span, Value,
+    Arg, ArgValue, DeferredArray, Diagnostic, DisplayHint, Node, NodeType, ResultTree, ScalarKind,
+    Severity, Span, Value,
 };
+
+/// Canonical display name for a [`ScalarKind`] — matches 010 Editor
+/// spelling (uchar / uint32 / float) since that's the template language
+/// most hxy users will have typed for themselves. Plugins emit the
+/// typed enum; this decides what shows up in the UI column.
+pub fn scalar_kind_name(k: ScalarKind) -> &'static str {
+    match k {
+        ScalarKind::U8K => "uchar",
+        ScalarKind::U16K => "ushort",
+        ScalarKind::U32K => "uint32",
+        ScalarKind::U64K => "uint64",
+        ScalarKind::S8K => "char",
+        ScalarKind::S16K => "int16",
+        ScalarKind::S32K => "int32",
+        ScalarKind::S64K => "int64",
+        ScalarKind::F32K => "float",
+        ScalarKind::F64K => "double",
+        ScalarKind::BoolK => "bool",
+        ScalarKind::BytesK => "bytes",
+        ScalarKind::StringK => "string",
+    }
+}
+
+/// Format a [`NodeType`] for UI display. Scalars use [`scalar_kind_name`];
+/// user-defined kinds print their declared name; arrays append `[count]`.
+pub fn node_type_label(ty: &NodeType) -> String {
+    match ty {
+        NodeType::Scalar(k) => scalar_kind_name(*k).to_owned(),
+        NodeType::ScalarArray((k, n)) => format!("{}[{n}]", scalar_kind_name(*k)),
+        NodeType::StructType(name) => name.clone(),
+        NodeType::StructArray((name, n)) => format!("{name}[{n}]"),
+        NodeType::EnumType(name) => name.clone(),
+        NodeType::EnumArray((name, n)) => format!("{name}[{n}]"),
+        NodeType::Unknown(name) => name.clone(),
+    }
+}
 
 /// A template-language runtime. Callers don't care whether the impl
 /// is native Rust or a sandboxed WASM plugin — both answer the same
@@ -60,7 +97,6 @@ pub trait ParsedTemplate: Send + Sync {
     fn expand_array(&self, array_id: u64, start: u64, end: u64) -> Result<Vec<Node>, HandlerError>;
 }
 
-// ---- WASM implementation --------------------------------------------------
 
 /// WASM-component-backed runtime — the sandboxed path for user-installed
 /// template plugins loaded off disk.
@@ -124,7 +160,7 @@ impl TemplateRuntime for WasmTemplateRuntime {
 /// Live parsed-template resource on the WASM side. Held behind a
 /// [`Mutex`] because wasmtime stores need `&mut` access while the
 /// trait takes `&self`.
-pub struct WasmParsedTemplate {
+pub(crate) struct WasmParsedTemplate {
     inner: Mutex<ParsedInner>,
 }
 

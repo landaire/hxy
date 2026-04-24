@@ -9,7 +9,7 @@ use std::sync::Arc;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_plugin_host::TemplateRuntime as _;
-use hxy_plugin_host::Value;
+use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

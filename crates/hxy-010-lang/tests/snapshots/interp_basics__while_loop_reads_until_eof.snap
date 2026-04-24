@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "b",
-            type_name: "uchar",
+            ty: Scalar(
+                U8,
+            ),
             offset: 0,
             length: 1,
             value: Some(
@@ -24,7 +26,9 @@ RunResult {
         },
         NodeOut {
             name: "b",
-            type_name: "uchar",
+            ty: Scalar(
+                U8,
+            ),
             offset: 1,
             length: 1,
             value: Some(
@@ -42,7 +46,9 @@ RunResult {
         },
         NodeOut {
             name: "b",
-            type_name: "uchar",
+            ty: Scalar(
+                U8,
+            ),
             offset: 2,
             length: 1,
             value: Some(

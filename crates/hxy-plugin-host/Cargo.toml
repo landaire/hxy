@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+description = "Wasmtime-based host for hxy plugins (byte source, VFS handler, template runtime)."
 
 [dependencies]
 hxy-core = { workspace = true }

@@ -54,7 +54,6 @@ struct Parser {
 }
 
 impl Parser {
-    // ---- cursor helpers ----
 
     fn at_eof(&self) -> bool {
         self.pos >= self.tokens.len()
@@ -131,7 +130,6 @@ impl Parser {
         }
     }
 
-    // ---- top level ----
 
     fn parse_top_item(&mut self) -> Result<TopItem, ParseError> {
         // Function defs are hard to distinguish from variable decls
@@ -190,7 +188,6 @@ impl Parser {
         Ok(Param { ty, is_ref, name, span })
     }
 
-    // ---- statements ----
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let Some(tok) = self.peek() else {
@@ -345,7 +342,6 @@ impl Parser {
         Ok(Stmt::Expr { expr, span })
     }
 
-    // ---- typedefs and field declarations ----
 
     fn parse_typedef(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().unwrap(); // `typedef`
@@ -601,7 +597,6 @@ impl Parser {
         Ok(TypeRef { name, span })
     }
 
-    // ---- expressions (Pratt) ----
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_expr_bp(0)
@@ -816,7 +811,6 @@ impl Parser {
     }
 }
 
-// ---- precedence table ----
 
 /// Binding power of a prefix operator like unary `-` / `!` — higher
 /// than any infix so `-a * b` parses as `(-a) * b`.

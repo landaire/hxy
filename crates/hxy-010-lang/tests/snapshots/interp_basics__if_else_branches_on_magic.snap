@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "magic",
-            type_name: "uint32",
+            ty: Scalar(
+                U32,
+            ),
             offset: 0,
             length: 4,
             value: Some(
@@ -24,7 +26,9 @@ RunResult {
         },
         NodeOut {
             name: "payload",
-            type_name: "uint32",
+            ty: Scalar(
+                U32,
+            ),
             offset: 4,
             length: 4,
             value: Some(

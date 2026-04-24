@@ -78,10 +78,6 @@ impl<S: HexSource> Cursor<S> {
         self.source.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.source.is_empty()
-    }
-
     pub fn tell(&self) -> u64 {
         *self.pos.borrow()
     }

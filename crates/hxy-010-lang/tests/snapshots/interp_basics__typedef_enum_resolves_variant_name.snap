@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "which",
-            type_name: "KIND",
+            ty: EnumType(
+                "KIND",
+            ),
             offset: 0,
             length: 1,
             value: Some(

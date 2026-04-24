@@ -21,17 +21,9 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hxy_plugin_api::template::Arg;
-use hxy_plugin_api::template::DeferredArray;
-use hxy_plugin_api::template::Diagnostic;
-use hxy_plugin_api::template::Guest;
-use hxy_plugin_api::template::GuestParsedTemplate;
-use hxy_plugin_api::template::Node;
-use hxy_plugin_api::template::ResultTree;
-use hxy_plugin_api::template::Severity;
-use hxy_plugin_api::template::Span;
-use hxy_plugin_api::template::Value;
+use hxy_plugin_api::template;
 use hxy_plugin_api::template::source;
+use hxy_plugin_api::template::{Guest, GuestParsedTemplate};
 
 struct Runtime;
 
@@ -48,7 +40,6 @@ impl Guest for Runtime {
 }
 
 struct ParsedTemplate {
-    // Ignored — we parse the *data* source, not the template source.
     _source: String,
 }
 
@@ -57,17 +48,18 @@ impl GuestParsedTemplate for ParsedTemplate {
         Self { _source: source }
     }
 
-    fn execute(&self, _args: Vec<Arg>) -> ResultTree {
+    fn execute(&self, _args: Vec<template::Arg>) -> template::ResultTree {
         let len = source::len();
         if len < 12 {
-            return ResultTree {
+            return template::ResultTree {
                 nodes: vec![],
-                diagnostics: vec![Diagnostic {
+                diagnostics: vec![template::Diagnostic {
                     message: format!("source too small: need 12 bytes, got {len}"),
-                    severity: Severity::Error,
+                    severity: template::Severity::Error,
                     file_offset: Some(0),
                     template_line: None,
                 }],
+                byte_palette: None,
             };
         }
         let magic_bytes = match source::read(0, 4) {
@@ -85,44 +77,40 @@ impl GuestParsedTemplate for ParsedTemplate {
         ]);
 
         let mut nodes = Vec::with_capacity(4);
-        // 0: root
-        nodes.push(Node {
+        nodes.push(template::Node {
             name: "File".to_string(),
-            type_name: "struct".to_string(),
-            span: Span { offset: 0, length: len },
+            type_name: template::NodeType::StructType("File".to_string()),
+            span: template::Span { offset: 0, length: len },
             value: None,
             parent: None,
             array: None,
             display: None,
         });
-        // 1: magic
-        nodes.push(Node {
+        nodes.push(template::Node {
             name: "magic".to_string(),
-            type_name: "u32".to_string(),
-            span: Span { offset: 0, length: 4 },
-            value: Some(Value::U32Val(magic)),
+            type_name: template::NodeType::Scalar(template::ScalarKind::U32K),
+            span: template::Span { offset: 0, length: 4 },
+            value: Some(template::Value::U32Val(magic)),
             parent: Some(0),
             array: None,
-            display: Some(hxy_plugin_api::template::DisplayHint::Hex),
+            display: Some(template::DisplayHint::Hex),
         });
-        // 2: count
-        nodes.push(Node {
+        nodes.push(template::Node {
             name: "count".to_string(),
-            type_name: "u64".to_string(),
-            span: Span { offset: 4, length: 8 },
-            value: Some(Value::U64Val(count)),
+            type_name: template::NodeType::Scalar(template::ScalarKind::U64K),
+            span: template::Span { offset: 4, length: 8 },
+            value: Some(template::Value::U64Val(count)),
             parent: Some(0),
             array: None,
-            display: Some(hxy_plugin_api::template::DisplayHint::Decimal),
+            display: Some(template::DisplayHint::Decimal),
         });
-        // 3: deferred data array
-        nodes.push(Node {
+        nodes.push(template::Node {
             name: "data".to_string(),
-            type_name: "u32[]".to_string(),
-            span: Span { offset: 12, length: count.saturating_mul(4) },
+            type_name: template::NodeType::ScalarArray((template::ScalarKind::U32K, count)),
+            span: template::Span { offset: 12, length: count.saturating_mul(4) },
             value: None,
             parent: Some(0),
-            array: Some(DeferredArray {
+            array: Some(template::DeferredArray {
                 id: 1,
                 element_type: "u32".to_string(),
                 count,
@@ -132,14 +120,19 @@ impl GuestParsedTemplate for ParsedTemplate {
             display: None,
         });
 
-        ResultTree { nodes, diagnostics: vec![] }
+        template::ResultTree { nodes, diagnostics: vec![], byte_palette: None }
     }
 
-    fn expand_array(&self, array_id: u64, start: u64, end: u64) -> Result<Vec<Node>, Diagnostic> {
+    fn expand_array(
+        &self,
+        array_id: u64,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<template::Node>, template::Diagnostic> {
         if array_id != 1 {
-            return Err(Diagnostic {
+            return Err(template::Diagnostic {
                 message: format!("unknown array id {array_id}"),
-                severity: Severity::Error,
+                severity: template::Severity::Error,
                 file_offset: None,
                 template_line: None,
             });
@@ -147,31 +140,37 @@ impl GuestParsedTemplate for ParsedTemplate {
         let mut out = Vec::with_capacity((end - start) as usize);
         for i in start..end {
             let offset = 12 + i * 4;
-            let bytes = source::read(offset, 4).map_err(|e| Diagnostic {
+            let bytes = source::read(offset, 4).map_err(|e| template::Diagnostic {
                 message: format!("read element {i}: {e}"),
-                severity: Severity::Error,
+                severity: template::Severity::Error,
                 file_offset: Some(offset),
                 template_line: None,
             })?;
             let v = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            out.push(Node {
+            out.push(template::Node {
                 name: format!("[{i}]"),
-                type_name: "u32".to_string(),
-                span: Span { offset, length: 4 },
-                value: Some(Value::U32Val(v)),
+                type_name: template::NodeType::Scalar(template::ScalarKind::U32K),
+                span: template::Span { offset, length: 4 },
+                value: Some(template::Value::U32Val(v)),
                 parent: None,
                 array: None,
-                display: Some(hxy_plugin_api::template::DisplayHint::Hex),
+                display: Some(template::DisplayHint::Hex),
             });
         }
         Ok(out)
     }
 }
 
-fn catastrophic(message: String) -> ResultTree {
-    ResultTree {
+fn catastrophic(message: String) -> template::ResultTree {
+    template::ResultTree {
         nodes: vec![],
-        diagnostics: vec![Diagnostic { message, severity: Severity::Error, file_offset: None, template_line: None }],
+        diagnostics: vec![template::Diagnostic {
+            message,
+            severity: template::Severity::Error,
+            file_offset: None,
+            template_line: None,
+        }],
+        byte_palette: None,
     }
 }
 

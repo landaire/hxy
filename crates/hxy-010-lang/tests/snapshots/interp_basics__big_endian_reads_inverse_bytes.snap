@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "a",
-            type_name: "uint16",
+            ty: Scalar(
+                U16,
+            ),
             offset: 0,
             length: 2,
             value: Some(
@@ -24,7 +26,9 @@ RunResult {
         },
         NodeOut {
             name: "b",
-            type_name: "uint32",
+            ty: Scalar(
+                U32,
+            ),
             offset: 2,
             length: 4,
             value: Some(

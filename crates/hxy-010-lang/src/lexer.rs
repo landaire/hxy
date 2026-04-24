@@ -65,7 +65,6 @@ fn lex_one(input: &mut &str) -> ModalResult<TokenKind> {
     .parse_next(input)
 }
 
-// ---- trivia ----------------------------------------------------------------
 
 fn skip_trivia(input: &mut &str) {
     loop {
@@ -102,7 +101,6 @@ fn block_comment(input: &mut &str) -> ModalResult<()> {
     }
 }
 
-// ---- numbers ---------------------------------------------------------------
 
 fn lex_number(input: &mut &str) -> ModalResult<TokenKind> {
     alt((hex_int, bin_int, float_or_int)).parse_next(input)
@@ -153,7 +151,6 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
     Ok(TokenKind::Float(s.parse::<f64>().unwrap_or(0.0)))
 }
 
-// ---- strings / chars -------------------------------------------------------
 
 fn lex_string(input: &mut &str) -> ModalResult<TokenKind> {
     delimited("\"", string_inner, "\"").map(TokenKind::String).parse_next(input)
@@ -209,7 +206,6 @@ fn decode_escape(c: char) -> char {
     }
 }
 
-// ---- identifiers / keywords ------------------------------------------------
 
 fn lex_ident_or_keyword(input: &mut &str) -> ModalResult<TokenKind> {
     let first = one_of(|c: char| c.is_ascii_alphabetic() || c == '_').parse_next(input)?;
@@ -223,7 +219,6 @@ fn lex_ident_or_keyword(input: &mut &str) -> ModalResult<TokenKind> {
     })
 }
 
-// ---- punctuation & operators -----------------------------------------------
 
 fn lex_punct_or_op(input: &mut &str) -> ModalResult<TokenKind> {
     alt((three_char_op, two_char_op, single_char_op)).parse_next(input)

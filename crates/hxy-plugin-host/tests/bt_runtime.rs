@@ -10,7 +10,7 @@ use std::sync::Arc;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_plugin_host::TemplateRuntime as _;
-use hxy_plugin_host::Value;
+use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,7 +95,10 @@ HEADER header;
     // One parent HEADER node + three field children.
     assert_eq!(tree.nodes.len(), 4);
     assert_eq!(tree.nodes[0].name, "header");
-    assert_eq!(tree.nodes[0].type_name, "HEADER");
+    assert!(matches!(
+        &tree.nodes[0].type_name,
+        hxy_plugin_host::template::NodeType::StructType(n) if n == "HEADER"
+    ));
     assert_eq!(tree.nodes[0].parent, None);
     for child in &tree.nodes[1..] {
         assert_eq!(child.parent, Some(0));

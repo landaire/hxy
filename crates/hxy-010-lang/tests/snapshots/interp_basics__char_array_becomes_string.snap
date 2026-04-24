@@ -6,7 +6,10 @@ RunResult {
     nodes: [
         NodeOut {
             name: "greeting",
-            type_name: "char[5]",
+            ty: ScalarArray(
+                S8,
+                5,
+            ),
             offset: 0,
             length: 5,
             value: Some(

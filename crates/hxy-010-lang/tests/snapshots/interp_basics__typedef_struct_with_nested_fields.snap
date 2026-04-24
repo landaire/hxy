@@ -6,7 +6,9 @@ RunResult {
     nodes: [
         NodeOut {
             name: "header",
-            type_name: "HEADER",
+            ty: StructType(
+                "HEADER",
+            ),
             offset: 0,
             length: 7,
             value: None,
@@ -15,7 +17,9 @@ RunResult {
         },
         NodeOut {
             name: "version",
-            type_name: "uchar",
+            ty: Scalar(
+                U8,
+            ),
             offset: 0,
             length: 1,
             value: Some(
@@ -35,7 +39,9 @@ RunResult {
         },
         NodeOut {
             name: "flags",
-            type_name: "ushort",
+            ty: Scalar(
+                U16,
+            ),
             offset: 1,
             length: 2,
             value: Some(
@@ -55,7 +61,9 @@ RunResult {
         },
         NodeOut {
             name: "crc",
-            type_name: "uint32",
+            ty: Scalar(
+                U32,
+            ),
             offset: 3,
             length: 4,
             value: Some(

@@ -34,6 +34,60 @@ pub enum PrimClass {
     Char,
 }
 
+/// Structured type description for an emitted tree node. Mirrors the
+/// WIT `node-type` variant in `wit/world.wit`; kept in sync manually.
+/// Lives here so `hxy-010-lang` doesn't need to depend on the plugin
+/// host — the adapter in `hxy-app::builtin_runtimes` converts one to
+/// the other.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeType {
+    Scalar(ScalarKind),
+    ScalarArray(ScalarKind, u64),
+    StructType(String),
+    StructArray(String, u64),
+    EnumType(String),
+    EnumArray(String, u64),
+    Unknown(String),
+}
+
+/// Scalar element kind. Matches the WIT `scalar-kind` enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarKind {
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+    F32,
+    F64,
+    Bool,
+    Bytes,
+    Str,
+}
+
+impl ScalarKind {
+    /// Build from a [`PrimKind`]; `char` / `uchar` collapse into
+    /// [`ScalarKind::U8`] / [`ScalarKind::S8`] since the UI picks
+    /// ASCII rendering via `DisplayHint::Ascii`, not the kind.
+    pub fn from_prim(p: PrimKind) -> Self {
+        match (p.class, p.width, p.signed) {
+            (PrimClass::Float, 4, _) => Self::F32,
+            (PrimClass::Float, _, _) => Self::F64,
+            (_, 1, true) => Self::S8,
+            (_, 1, false) => Self::U8,
+            (_, 2, true) => Self::S16,
+            (_, 2, false) => Self::U16,
+            (_, 4, true) => Self::S32,
+            (_, 4, false) => Self::U32,
+            (_, _, true) => Self::S64,
+            (_, _, false) => Self::U64,
+        }
+    }
+}
+
 impl PrimKind {
     pub fn u8() -> Self { Self { class: PrimClass::Int, width: 1, signed: false } }
     pub fn i8() -> Self { Self { class: PrimClass::Int, width: 1, signed: true } }
