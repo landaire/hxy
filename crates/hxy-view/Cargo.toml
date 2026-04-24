@@ -11,6 +11,24 @@ description = "Reusable egui hex-view widget"
 [dependencies]
 egui = "0.34.1"
 hxy-core = { workspace = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+suture = { version = "0.1.0", path = "../../../suture", optional = true }
+thiserror = { version = "2.0.18", optional = true }
+tracing = { version = "0.1.44", optional = true }
+
+[features]
+default = ["editor"]
+# Enables the full HexEditor editing surface: patch overlay, undo/redo,
+# hex/ASCII keystroke input, and the cursor navigation dispatcher.
+# Disabling leaves the lightweight renderer + selection/hover
+# interaction only -- useful for strict read-only viewers that don't
+# want to pull in `suture`.
+editor = ["dep:suture", "dep:thiserror", "dep:tracing"]
+# Implements Serialize/Deserialize on EditEntry (and any other
+# persistent editor types) so consumers can round-trip undo history
+# through their own storage layer. Requires `editor`; pulls `serde`
+# and turns on `suture/serde`.
+serde = ["dep:serde", "editor", "suture?/serde"]
 
 [dev-dependencies]
 egui_kittest = "0.34.1"

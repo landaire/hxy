@@ -2660,6 +2660,10 @@ dependencies = [
  "egui",
  "egui_kittest",
  "hxy-core",
+ "serde",
+ "suture",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

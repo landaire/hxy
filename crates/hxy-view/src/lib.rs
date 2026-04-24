@@ -1,12 +1,30 @@
-//! Reusable egui hex-view widget.
+//! Reusable egui hex-editor widget.
 //!
-//! Renders bytes from a [`HexSource`] in a virtualised scroll view with a
-//! configurable number of hex columns (16 by default), an address column,
-//! and an ASCII sidebar. Supports click, shift-click, and drag across
-//! arbitrary row boundaries to extend the selection. Highlights are
-//! painted as contiguous bars across each row for readability.
+//! The primary type is [`HexEditor`]: a persistent struct that owns
+//! the byte source, selection, scroll state, and (with the `editor`
+//! feature) an editable patch overlay plus undo/redo history.
+//! Consumers keep a [`HexEditor`] on their own struct between
+//! frames and call [`HexEditor::show`] + [`HexEditor::handle_input`]
+//! once per frame.
+//!
+//! Strip the editor bits (patch overlay, undo/redo, hex / ASCII key
+//! input) by building with `default-features = false`; the renderer,
+//! click/drag selection, and arrow-key navigation still work.
 
 #![forbid(unsafe_code)]
+
+#[cfg(feature = "editor")]
+mod editor;
+mod input;
+
+#[cfg(feature = "editor")]
+pub use editor::EditEntry;
+#[cfg(feature = "editor")]
+pub use editor::EditMode;
+#[cfg(feature = "editor")]
+pub use editor::WriteError;
+
+use std::sync::Arc;
 
 use egui::Align2;
 use egui::Color32;
@@ -71,6 +89,347 @@ pub type AddressFormatterFn<'s> = Box<dyn Fn(ByteOffset, usize) -> String + 's>;
 /// Receives the zero-based column index and returns its label. Default
 /// renders an uppercase hex digit.
 pub type ColumnHeaderFormatterFn<'s> = Box<dyn Fn(usize) -> String + 's>;
+
+/// Persistent hex-editor widget. Consumers keep one on their tab /
+/// document struct between frames and call [`Self::show`] +
+/// [`Self::handle_input`] once per frame.
+///
+/// Owns the byte source, selection, scroll state, and -- with the
+/// `editor` feature enabled -- a writable patch overlay plus
+/// undo/redo history. Strip the editor bits by building with
+/// `default-features = false` if you only need a read-only viewer.
+pub struct HexEditor {
+    /// Source exposed to renders. When the `editor` feature is on
+    /// this is the patched view (base + patch overlay) from
+    /// [`editor::EditState`]; otherwise it is the base source the
+    /// caller supplied.
+    source: Arc<dyn HexSource>,
+    selection: Option<Selection>,
+    active_pane: Pane,
+    /// Cursor offset observed at the end of the previous frame.
+    /// Compared each frame to detect cursor moves originating
+    /// outside the input dispatcher (mouse click, programmatic
+    /// jumps) so the nibble pointer can reset cleanly.
+    last_cursor_offset: Option<u64>,
+    /// Scroll offset (content pixels) at the end of the previous
+    /// frame. Exposed via [`Self::scroll_offset`] so consumers can
+    /// persist it across sessions.
+    scroll_offset: f32,
+    pending_scroll: Option<f32>,
+    pending_scroll_to_byte: Option<ByteOffset>,
+    /// Columns rendered by the most recent [`Self::show`]. The
+    /// input dispatcher uses this for Up/Down arrow navigation; if
+    /// `show` hasn't run yet we fall back to
+    /// [`ColumnCount::DEFAULT`].
+    last_columns: Option<ColumnCount>,
+    #[cfg(feature = "editor")]
+    edit: editor::EditState,
+}
+
+impl HexEditor {
+    /// Build a fresh editor wrapping `source`. With the `editor`
+    /// feature on, reads flow through a newly-allocated
+    /// [`suture::Patch`] overlay so subsequent writes accumulate
+    /// there without mutating the caller's source.
+    pub fn new(source: Arc<dyn HexSource>) -> Self {
+        #[cfg(feature = "editor")]
+        {
+            let edit = editor::EditState::new(source);
+            Self {
+                source: edit.patched_source.clone(),
+                selection: None,
+                active_pane: Pane::Hex,
+                last_cursor_offset: None,
+                scroll_offset: 0.0,
+                pending_scroll: None,
+                pending_scroll_to_byte: None,
+                last_columns: None,
+                edit,
+            }
+        }
+        #[cfg(not(feature = "editor"))]
+        {
+            Self {
+                source,
+                selection: None,
+                active_pane: Pane::Hex,
+                last_cursor_offset: None,
+                scroll_offset: 0.0,
+                pending_scroll: None,
+                pending_scroll_to_byte: None,
+                last_columns: None,
+            }
+        }
+    }
+
+    /// The user-visible source. With the `editor` feature this is
+    /// the patched view; without, it is the caller's original
+    /// source.
+    pub fn source(&self) -> &Arc<dyn HexSource> {
+        &self.source
+    }
+
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection
+    }
+
+    pub fn set_selection(&mut self, selection: Option<Selection>) {
+        self.selection = selection;
+        self.last_cursor_offset = selection.map(|s| s.cursor.get());
+        #[cfg(feature = "editor")]
+        {
+            self.edit.edit_high_nibble = true;
+            self.edit.history_break = true;
+        }
+    }
+
+    pub fn active_pane(&self) -> Pane {
+        self.active_pane
+    }
+
+    pub fn set_active_pane(&mut self, pane: Pane) {
+        if self.active_pane != pane {
+            self.active_pane = pane;
+            #[cfg(feature = "editor")]
+            {
+                self.edit.edit_high_nibble = true;
+                self.edit.history_break = true;
+            }
+        }
+    }
+
+    pub fn scroll_offset(&self) -> f32 {
+        self.scroll_offset
+    }
+
+    pub fn set_scroll_to(&mut self, offset: f32) {
+        self.pending_scroll = Some(offset);
+    }
+
+    pub fn set_scroll_to_byte(&mut self, byte: ByteOffset) {
+        self.pending_scroll_to_byte = Some(byte);
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn base_source(&self) -> &Arc<dyn HexSource> {
+        &self.edit.base_source
+    }
+
+    /// Swap in a fresh base source and clear all history. Used
+    /// after a successful save so reads reflect the just-written
+    /// bytes instead of the stale pre-save buffer.
+    #[cfg(feature = "editor")]
+    pub fn swap_source(&mut self, base: Arc<dyn HexSource>) {
+        self.edit.swap_base(base);
+        self.source = self.edit.patched_source.clone();
+    }
+
+    /// Shared handle into the editor's patch. Callers can clone
+    /// this to persist unsaved edits in their own storage layer.
+    #[cfg(feature = "editor")]
+    pub fn patch(&self) -> &Arc<std::sync::RwLock<suture::Patch>> {
+        &self.edit.patch
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn edit_mode(&self) -> EditMode {
+        self.edit.mode
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn set_edit_mode(&mut self, mode: EditMode) {
+        self.edit.mode = mode;
+        self.edit.edit_high_nibble = true;
+        self.edit.history_break = true;
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn is_readonly(&self) -> bool {
+        matches!(self.edit.mode, EditMode::Readonly)
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn is_dirty(&self) -> bool {
+        self.edit.is_dirty()
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn modified_ranges(&self) -> Vec<(u64, u64)> {
+        self.edit.modified_ranges()
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn undo_stack(&self) -> &[EditEntry] {
+        &self.edit.undo_stack
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn redo_stack(&self) -> &[EditEntry] {
+        &self.edit.redo_stack
+    }
+
+    /// Replace the editor's undo stack wholesale. Used by
+    /// persistence layers that restore a saved session's history.
+    #[cfg(feature = "editor")]
+    pub fn set_undo_stack(&mut self, stack: Vec<EditEntry>) {
+        self.edit.undo_stack = stack;
+        self.edit.history_break = true;
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn set_redo_stack(&mut self, stack: Vec<EditEntry>) {
+        self.edit.redo_stack = stack;
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn can_undo(&self) -> bool {
+        !self.edit.undo_stack.is_empty()
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn can_redo(&self) -> bool {
+        !self.edit.redo_stack.is_empty()
+    }
+
+    /// Reset the two-press nibble cursor to "expecting high
+    /// nibble". Called automatically on navigation; exposed so
+    /// consumers can cancel a half-typed byte from a menu action.
+    #[cfg(feature = "editor")]
+    pub fn reset_edit_nibble(&mut self) {
+        self.edit.edit_high_nibble = true;
+    }
+
+    /// Force the next write to start a fresh undo entry rather
+    /// than coalesce into the previous one. Handy for menu actions
+    /// that shouldn't merge with typing (e.g. paste).
+    #[cfg(feature = "editor")]
+    pub fn push_history_boundary(&mut self) {
+        self.edit.history_break = true;
+    }
+
+    #[cfg(not(feature = "editor"))]
+    pub(crate) fn push_history_boundary(&mut self) {}
+
+    /// Record a length-preserving write at `offset`. Gated by the
+    /// editor's [`EditMode`]; writes past EOF are rejected.
+    #[cfg(feature = "editor")]
+    pub fn request_write(&mut self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
+        self.edit.request_write(offset, bytes)
+    }
+
+    /// Apply one hex-digit keystroke at the current cursor offset.
+    /// Two presses compose one byte: the first overwrites the
+    /// high nibble, the second the low. Returns `true` when a
+    /// full byte has been completed so callers can advance the
+    /// cursor.
+    #[cfg(feature = "editor")]
+    pub fn type_hex_digit(&mut self, nibble: u8) -> Result<bool, WriteError> {
+        if self.edit.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let nibble = nibble & 0xF;
+        let Some(sel) = self.selection else { return Ok(false) };
+        let offset = sel.cursor.get();
+        let source_len = self.source.len().get();
+        if offset >= source_len {
+            return Ok(false);
+        }
+        let current = self.edit.read_byte_at(offset)?;
+        let new_byte = if self.edit.edit_high_nibble {
+            (nibble << 4) | (current & 0x0F)
+        } else {
+            (current & 0xF0) | nibble
+        };
+        self.edit.request_write(offset, vec![new_byte])?;
+        let advanced = !self.edit.edit_high_nibble;
+        self.edit.edit_high_nibble = !self.edit.edit_high_nibble;
+        Ok(advanced)
+    }
+
+    /// Write one ASCII byte at the cursor. Returns `true` when a
+    /// write was issued so the caller can advance the cursor.
+    #[cfg(feature = "editor")]
+    pub fn type_ascii_byte(&mut self, byte: u8) -> Result<bool, WriteError> {
+        if self.edit.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let Some(sel) = self.selection else { return Ok(false) };
+        let offset = sel.cursor.get();
+        if offset >= self.source.len().get() {
+            return Ok(false);
+        }
+        self.edit.request_write(offset, vec![byte])?;
+        Ok(true)
+    }
+
+    /// Pop the most recent undo entry, revert the patch to match
+    /// the remaining stack, and push the popped entry onto redo.
+    /// Returns the reverted entry so callers can realign UI state
+    /// (e.g. scroll the cursor back to the change site).
+    #[cfg(feature = "editor")]
+    pub fn undo(&mut self) -> Option<EditEntry> {
+        self.edit.undo()
+    }
+
+    #[cfg(feature = "editor")]
+    pub fn redo(&mut self) -> Option<EditEntry> {
+        self.edit.redo()
+    }
+
+    /// Drop all pending edits and both history stacks.
+    #[cfg(feature = "editor")]
+    pub fn revert(&mut self) {
+        self.edit.revert();
+    }
+
+    /// Drain egui keyboard events and apply navigation / editing
+    /// updates. Skips when another widget has keyboard focus.
+    pub fn handle_input(&mut self, ctx: &egui::Context) {
+        input::dispatch(self, ctx);
+    }
+
+    /// Open a per-frame [`HexView`] configured with this editor's
+    /// source, selection, active pane, nibble cursor, and any
+    /// pending scroll requests. Callers chain the standard
+    /// [`HexView`] builder methods (columns, palette, byte_styler,
+    /// field highlights, etc.) and call `.show(ui)`.
+    ///
+    /// After `show` returns, pass the [`HexViewResponse`] to
+    /// [`Self::on_response`] so the editor can latch scroll
+    /// position, pane switches, and the last-seen column count for
+    /// keyboard navigation.
+    pub fn view(&mut self) -> HexView<'_, dyn HexSource> {
+        let pane = Some(self.active_pane);
+        #[cfg(feature = "editor")]
+        let nibble = (self.edit.mode == EditMode::Mutable)
+            .then_some(if self.edit.edit_high_nibble { NibbleSide::High } else { NibbleSide::Low });
+        #[cfg(not(feature = "editor"))]
+        let nibble: Option<NibbleSide> = None;
+        let pending_scroll = self.pending_scroll.take();
+        let pending_scroll_to_byte = self.pending_scroll_to_byte.take();
+        let source = self.source.as_ref();
+        let mut view = HexView::new(source, &mut self.selection).active_pane(pane).nibble_cursor(nibble);
+        if let Some(s) = pending_scroll {
+            view = view.scroll_to(s);
+        }
+        if let Some(b) = pending_scroll_to_byte {
+            view = view.scroll_to_byte(b);
+        }
+        view
+    }
+
+    /// Latch a just-rendered frame's response into persistent
+    /// editor state: scroll offset, interacted pane, and the
+    /// column count the next [`Self::handle_input`] call will use
+    /// for Up/Down arrow navigation.
+    pub fn on_response(&mut self, response: &HexViewResponse, columns: ColumnCount) {
+        self.scroll_offset = response.scroll_offset;
+        self.last_columns = Some(columns);
+        if let Some(pane) = response.interacted_pane {
+            self.set_active_pane(pane);
+        }
+    }
+}
 
 pub struct HexView<'s, S: HexSource + ?Sized> {
     source: &'s S,
