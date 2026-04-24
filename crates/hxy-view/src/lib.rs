@@ -314,6 +314,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 hex_out.state.offset.y,
                 hex_out.inner_rect.height(),
                 total_rows,
+                hover_span,
             );
         }
 
@@ -1126,6 +1127,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
     current_offset: f32,
     viewport_height: f32,
     total_rows: usize,
+    hover_span: Option<ByteRange>,
 ) {
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
@@ -1211,6 +1213,24 @@ fn draw_minimap<S: HexSource + ?Sized>(
     let bracket = Rect::from_min_max(indicator.left_top(), Pos2::new(indicator.left() + 4.0, indicator.bottom()));
     painter.rect_filled(bracket, 0.0, accent);
 
+    // Hover-span marker: mirrors the secondary highlight the hex view
+    // draws when the template panel is pointing at a field. When the
+    // span is outside the currently-shown minimap window, draw a
+    // small caret at the top/bottom edge so the user still has a
+    // direction to scroll.
+    if let Some(span) = hover_span {
+        paint_hover_span_on_minimap(
+            &painter,
+            minimap_rect,
+            span,
+            cols as u64,
+            cell_h,
+            window_top_row,
+            shown_rows as u64,
+            accent,
+        );
+    }
+
     // Click/drag maps pointer y to a position in the *whole file* so a
     // top→bottom drag on the minimap scrolls from file start to end in
     // one motion, regardless of how much content the fixed-zoom window
@@ -1225,6 +1245,67 @@ fn draw_minimap<S: HexSource + ?Sized>(
         ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target_scroll));
         ui.ctx().request_repaint();
     }
+}
+
+/// Paint the template-panel's hover span on the minimap. Splits into
+/// two cases: the span intersects the currently-visible minimap
+/// window (→ highlight the matching rows), or the span is off-screen
+/// (→ small caret at the top or bottom edge pointing toward it).
+#[allow(clippy::too_many_arguments)]
+fn paint_hover_span_on_minimap(
+    painter: &egui::Painter,
+    minimap_rect: Rect,
+    span: ByteRange,
+    cols: u64,
+    cell_h: f32,
+    window_top_row: u64,
+    shown_rows: u64,
+    accent: Color32,
+) {
+    let start = span.start().get();
+    let end_exclusive = span.end().get();
+    if end_exclusive <= start || cols == 0 {
+        return;
+    }
+    let span_first_row = start / cols;
+    let span_last_row_inclusive = (end_exclusive - 1) / cols;
+    let window_end_row = window_top_row.saturating_add(shown_rows);
+
+    // Out-of-window markers: draw a thin caret at the edge the span
+    // lies beyond so the user knows which way to scroll.
+    if span_last_row_inclusive < window_top_row {
+        let top = minimap_rect.top();
+        let caret = Rect::from_min_size(
+            Pos2::new(minimap_rect.right() - 6.0, top),
+            Vec2::new(6.0, 4.0),
+        );
+        painter.rect_filled(caret, 0.0, accent);
+        return;
+    }
+    if span_first_row >= window_end_row {
+        let bottom = minimap_rect.bottom();
+        let caret = Rect::from_min_size(
+            Pos2::new(minimap_rect.right() - 6.0, bottom - 4.0),
+            Vec2::new(6.0, 4.0),
+        );
+        painter.rect_filled(caret, 0.0, accent);
+        return;
+    }
+
+    // Span intersects the window — shade the overlap rows.
+    let shaded_top_row = span_first_row.max(window_top_row);
+    let shaded_bot_row_inclusive = span_last_row_inclusive.min(window_end_row.saturating_sub(1));
+    let rel_top = (shaded_top_row - window_top_row) as f32 * cell_h;
+    let rel_bot = ((shaded_bot_row_inclusive + 1) - window_top_row) as f32 * cell_h;
+    let rect = Rect::from_min_max(
+        Pos2::new(minimap_rect.left(), minimap_rect.top() + rel_top),
+        Pos2::new(minimap_rect.right(), minimap_rect.top() + rel_bot),
+    );
+    // Translucent fill on top of the minimap cells, plus an accent
+    // line along the left edge so single-row spans still register.
+    painter.rect_filled(rect, 0.0, accent.gamma_multiply(0.35));
+    let edge = Rect::from_min_size(rect.left_top(), Vec2::new(2.0, rect.height()));
+    painter.rect_filled(edge, 0.0, accent);
 }
 
 /// Custom vertical scrollbar rendered in the strip to the right of the
