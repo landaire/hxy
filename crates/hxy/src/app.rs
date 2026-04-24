@@ -30,6 +30,12 @@ pub struct HxyApp {
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
+    /// Loaded VFS plugin handlers, kept alongside the
+    /// `VfsRegistry` so the palette can ask each one for its
+    /// command contributions without going through the trait-
+    /// object erasure the registry stores.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>>,
 
     #[cfg(not(target_arch = "wasm32"))]
     sink: Option<crate::persist::SaveSink>,
@@ -182,6 +188,9 @@ impl HxyApp {
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let plugin_handlers = register_user_plugins(&mut registry);
+        #[cfg(target_arch = "wasm32")]
         register_user_plugins(&mut registry);
         #[cfg(not(target_arch = "wasm32"))]
         let template_plugins = load_user_template_plugins();
@@ -193,6 +202,8 @@ impl HxyApp {
             registry,
             #[cfg(not(target_arch = "wasm32"))]
             template_plugins,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_handlers,
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
@@ -232,7 +243,7 @@ impl HxyApp {
     pub fn reload_plugins(&mut self) {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
-        register_user_plugins(&mut registry);
+        self.plugin_handlers = register_user_plugins(&mut registry);
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
         self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
@@ -2447,8 +2458,8 @@ fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Res
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn register_user_plugins(registry: &mut VfsRegistry) {
-    let Some(dir) = user_plugins_dir() else { return };
+fn register_user_plugins(registry: &mut VfsRegistry) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
+    let Some(dir) = user_plugins_dir() else { return Vec::new() };
     // Consent storage / UI lands in a follow-up; for now every
     // plugin loads with an empty grants record, which means any
     // permission a manifest requests is treated as denied. Plugins
@@ -2456,19 +2467,25 @@ fn register_user_plugins(registry: &mut VfsRegistry) {
     let grants = hxy_plugin_host::PluginGrants::default();
     let state_store = dirs::data_dir()
         .map(|base| Arc::new(hxy_plugin_host::StateStore::new(base.join(APP_NAME).join("plugin-state"))));
+    let mut out = Vec::new();
     match hxy_plugin_host::load_plugins_from_dir(&dir, &grants, state_store) {
         Ok(handlers) => {
             for h in handlers {
                 tracing::info!(name = h.name(), "loaded wasm plugin");
-                registry.register(Arc::new(h));
+                let arc = Arc::new(h);
+                registry.register(arc.clone());
+                out.push(arc);
             }
         }
         Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load plugins"),
     }
+    out
 }
 
 #[cfg(target_arch = "wasm32")]
-fn register_user_plugins(_registry: &mut VfsRegistry) {}
+fn register_user_plugins(_registry: &mut VfsRegistry) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
+    Vec::new()
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn user_plugins_dir() -> Option<std::path::PathBuf> {
@@ -3552,6 +3569,30 @@ fn build_palette_entries(
                 }
                 out.push(entry);
             }
+            // Plugin-contributed entries. Each loaded plugin is
+            // asked for its current command list (gated host-side
+            // by the `commands` permission); the host prefixes the
+            // displayed label with the plugin's name so duplicates
+            // across plugins stay disambiguated. The `puzzle-piece`
+            // icon is the fallback when the plugin doesn't supply
+            // one of its own.
+            for plugin in &app.plugin_handlers {
+                let plugin_name = plugin.name().to_owned();
+                for cmd in plugin.list_commands() {
+                    let mut entry = egui_palette::Entry::new(
+                        format!("{plugin_name}: {}", cmd.label),
+                        Action::InvokePluginCommand {
+                            plugin_name: plugin_name.clone(),
+                            command_id: cmd.id,
+                        },
+                    );
+                    if let Some(s) = cmd.subtitle {
+                        entry = entry.with_subtitle(s);
+                    }
+                    entry = entry.with_icon(cmd.icon.unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
+                    out.push(entry);
+                }
+            }
         }
         Mode::Templates => {
             let ranked =
@@ -3947,6 +3988,50 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 }
                 ColumnScope::Global => {
                     app.state.write().app.hex_columns = count;
+                }
+            }
+        }
+        crate::command_palette::Action::InvokePluginCommand { plugin_name, command_id } => {
+            // Look up the plugin by its self-reported name. The
+            // entry was built from the same source so a missing
+            // hit means the plugin list reshuffled (rescan, hot-
+            // reload) between palette open and activation -- log
+            // and bail rather than guess.
+            let Some(plugin) = app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() else {
+                tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin invoke target missing");
+                app.palette.close();
+                return;
+            };
+            match plugin.invoke_command(&command_id) {
+                Some(hxy_plugin_host::InvokeOutcome::Done) => app.palette.close(),
+                Some(hxy_plugin_host::InvokeOutcome::Cascade(_)) => {
+                    // Cascading sub-palettes for plugin commands
+                    // require the palette state to carry plugin-
+                    // owned entry lists, which is its own slice
+                    // (involves loosening Mode from Copy + Eq).
+                    // For now we surface a console line so the
+                    // user knows the call ran but nothing followed.
+                    tracing::warn!(plugin = %plugin_name, command = %command_id, "Cascade outcome not yet implemented");
+                    app.palette.close();
+                }
+                Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
+                    // Mount requests need a token-backed VFS source
+                    // -- a separate design slice. Log so we can see
+                    // when a plugin tries to use it.
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        command = %command_id,
+                        token = %req.token,
+                        title = %req.title,
+                        "Mount outcome not yet implemented"
+                    );
+                    app.palette.close();
+                }
+                None => {
+                    // Plugin couldn't be invoked (commands grant
+                    // off, or an internal trap). PluginHandler
+                    // already logged; just close.
+                    app.palette.close();
                 }
             }
         }

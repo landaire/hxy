@@ -187,6 +187,14 @@ pub enum Action {
     /// non-zero `u16` before the action is emitted, so the dispatch
     /// can take the value verbatim.
     SetColumns { scope: ColumnScope, count: hxy_core::ColumnCount },
+    /// Activate a plugin-contributed palette command. The dispatcher
+    /// looks the plugin up by `plugin_name` (matched against
+    /// `PluginHandler::name()`), forwards `command_id` through
+    /// `PluginHandler::invoke_command`, and acts on the returned
+    /// outcome. `plugin_name` is captured at entry-build time so
+    /// the action stays self-contained even if the plugin list
+    /// reshuffles before activation.
+    InvokePluginCommand { plugin_name: String, command_id: String },
     /// Intentionally does nothing. Used for non-actionable
     /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
     /// when the query doesn't parse).
