@@ -111,6 +111,9 @@ palette-move-tab-right = Move tab right
 palette-move-tab-left = Move tab left
 palette-move-tab-up = Move tab up
 palette-move-tab-down = Move tab down
+palette-move-tab-visual = Move tab to pane…
+palette-merge-visual = Merge pane into…
+palette-pane-pick-subtitle = Press the highlighted letter on the target pane
 
 # Errors
 error-open-failed = Failed to open file

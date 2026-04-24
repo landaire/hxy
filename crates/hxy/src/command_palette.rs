@@ -141,6 +141,12 @@ pub enum PaletteCommand {
     MoveTabLeft,
     MoveTabUp,
     MoveTabDown,
+    /// Visual pickers: close the palette and overlay each candidate
+    /// pane with a single uppercase letter; pressing the matching
+    /// letter executes the move/merge against that pane. See
+    /// `pane_pick` module.
+    MoveTabVisual,
+    MergeVisual,
     ToggleEditMode,
     /// Copy the active tab's caret offset as a formatted number.
     CopyCaretOffset,

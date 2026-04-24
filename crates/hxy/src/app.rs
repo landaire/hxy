@@ -95,6 +95,13 @@ pub struct HxyApp {
     /// explicitly when switching modes.
     #[cfg(not(target_arch = "wasm32"))]
     palette: crate::command_palette::PaletteState,
+    /// Visual pane picker session. `Some` after the user activates
+    /// the visual move/merge palette commands and before they
+    /// either press a target letter (op fires) or Escape (cancel).
+    /// Mutually exclusive with `palette` -- entering the picker
+    /// closes the palette, opening the palette cancels the picker.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_pane_pick: Option<crate::pane_pick::PendingPanePick>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -181,6 +188,8 @@ impl HxyApp {
             templates: crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref()),
             #[cfg(not(target_arch = "wasm32"))]
             palette: crate::command_palette::PaletteState::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_pane_pick: None,
         }
     }
 
@@ -635,6 +644,13 @@ impl eframe::App for HxyApp {
         drain_pending_vfs_opens(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_template_runs(ui.ctx(), self);
+        // Visual pane picker takes priority over the palette and
+        // any other keyboard consumer: while a pick is staged it
+        // owns Escape (cancel) and a..z (target letters). It runs
+        // after the dock has rendered so leaf rects are this
+        // frame's, not last frame's.
+        #[cfg(not(target_arch = "wasm32"))]
+        handle_pane_pick(ui.ctx(), self);
         // Palette runs first so it gets first crack at keyboard
         // events. egui clears focus on plain Escape during its own
         // event preprocessing, so egui_wants_keyboard_input() reads
@@ -1422,27 +1438,35 @@ fn dock_split_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
 fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
     let Some(path) = resolve_target_leaf(app) else { return };
     let tree = &app.dock[path.surface];
-    let Some(target) = find_neighbor_leaf(tree, path.node, dir) else { return };
-    if target == path.node {
+    let Some(neighbor_node) = find_neighbor_leaf(tree, path.node, dir) else { return };
+    let target = egui_dock::NodePath { surface: path.surface, node: neighbor_node };
+    dock_merge_to(app, path, target);
+}
+
+/// Pour every tab from `source` into `target`, then remove `source`
+/// so the parent split collapses. Operations across surfaces are
+/// supported -- each surface's tree is mutated independently. No-op
+/// when source equals target or source has no tabs.
+fn dock_merge_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_dock::NodePath) {
+    if source == target {
         return;
     }
-    let tree = &mut app.dock[path.surface];
-    let tabs: Vec<_> = match &mut tree[path.node] {
+    let tabs: Vec<_> = match &mut app.dock[source.surface][source.node] {
         egui_dock::Node::Leaf(leaf) => std::mem::take(&mut leaf.tabs),
         _ => return,
     };
     if tabs.is_empty() {
         return;
     }
-    // Stash one of the tabs we're about to move so we can find
-    // the destination leaf again after remove_leaf -- it rewires
-    // node indices, so `target` is not safe to index into the tree
+    // Stash one of the tabs we're about to move so we can find the
+    // destination leaf again after remove_leaf -- it rewires node
+    // indices, so `target` is not safe to index into the tree
     // after the remove. Looking it up by tab is robust.
     let refocus_tab = tabs[0];
     for tab in tabs {
-        tree[target].append_tab(tab);
+        app.dock[target.surface][target.node].append_tab(tab);
     }
-    tree.remove_leaf(path.node);
+    app.dock[source.surface].remove_leaf(source.node);
     if let Some(found) = app.dock.find_tab(&refocus_tab) {
         app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
     }
@@ -1456,12 +1480,20 @@ fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
 fn dock_move_focused_tab(app: &mut HxyApp, dir: crate::commands::DockDir) {
     let Some(path) = resolve_target_leaf(app) else { return };
     let tree = &app.dock[path.surface];
-    let Some(target) = find_neighbor_leaf(tree, path.node, dir) else { return };
-    if target == path.node {
+    let Some(neighbor_node) = find_neighbor_leaf(tree, path.node, dir) else { return };
+    let target = egui_dock::NodePath { surface: path.surface, node: neighbor_node };
+    dock_move_tab_to(app, path, target);
+}
+
+/// Move just the source leaf's active tab into `target`. Sibling
+/// tabs stay put. If the source leaf ends up empty it's removed so
+/// the parent split collapses, the same way [`dock_merge_to`] does
+/// when the merge drains the leaf. Cross-surface moves are supported.
+fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_dock::NodePath) {
+    if source == target {
         return;
     }
-    let tree = &mut app.dock[path.surface];
-    let moved_tab = match &mut tree[path.node] {
+    let moved_tab = match &mut app.dock[source.surface][source.node] {
         egui_dock::Node::Leaf(leaf) => {
             if leaf.tabs.is_empty() {
                 return;
@@ -1480,10 +1512,11 @@ fn dock_move_focused_tab(app: &mut HxyApp, dir: crate::commands::DockDir) {
         _ => return,
     };
     let refocus_tab = moved_tab;
-    tree[target].append_tab(moved_tab);
-    let source_empty = matches!(&tree[path.node], egui_dock::Node::Leaf(leaf) if leaf.tabs.is_empty());
+    app.dock[target.surface][target.node].append_tab(moved_tab);
+    let source_empty =
+        matches!(&app.dock[source.surface][source.node], egui_dock::Node::Leaf(leaf) if leaf.tabs.is_empty());
     if source_empty {
-        tree.remove_leaf(path.node);
+        app.dock[source.surface].remove_leaf(source.node);
     }
     // Refocus on the moved tab. `target` may have been rewired by
     // remove_leaf, so look it up by the moved tab itself.
@@ -2732,6 +2765,42 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     });
 }
 
+/// Stage a visual pane-pick session. Resolves the source leaf the
+/// same way the directional commands do (focused leaf, falling back
+/// to the active file's leaf), closes the palette so the overlay
+/// owns the screen, and records the op for `handle_pane_pick` to
+/// drive next frame. No-op when there's no resolvable source.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_pane_pick(app: &mut HxyApp, op: crate::pane_pick::PaneOp) {
+    let Some(source) = resolve_target_leaf(app) else { return };
+    app.palette.close();
+    app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick { op, source });
+}
+
+/// Drive one frame of the visual pane picker. Reads layout from the
+/// dock (no mutation), then applies the chosen op via the same
+/// helpers the directional commands use. Closes the palette as a
+/// side effect of entering the pick (handled at command dispatch);
+/// here we just consume input and execute when a target is hit.
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(pending) = app.pending_pane_pick else { return };
+    let outcome = crate::pane_pick::tick(ctx, &app.dock, pending);
+    match outcome {
+        crate::pane_pick::TickOutcome::Continue => {}
+        crate::pane_pick::TickOutcome::Cancel => {
+            app.pending_pane_pick = None;
+        }
+        crate::pane_pick::TickOutcome::Picked { source, target, op } => {
+            app.pending_pane_pick = None;
+            match op {
+                crate::pane_pick::PaneOp::MoveTab => dock_move_tab_to(app, source, target),
+                crate::pane_pick::PaneOp::Merge => dock_merge_to(app, source, target),
+            }
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     let toggle = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::P);
@@ -2739,6 +2808,10 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
         if app.palette.is_open() {
             app.palette.close();
         } else {
+            // The palette and the visual pane picker can't coexist:
+            // both want full-screen keyboard ownership. Opening the
+            // palette implicitly cancels any staged pick.
+            app.pending_pane_pick = None;
             app.palette.open_at(crate::command_palette::Mode::Main);
         }
     }
@@ -3203,6 +3276,22 @@ fn build_palette_entries(
                 egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabUp))
                     .with_icon(icon::ARROW_FAT_UP),
             );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-move-tab-visual"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabVisual),
+                )
+                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
+            );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-merge-visual"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeVisual),
+                )
+                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
+            );
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
@@ -3537,6 +3626,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::MoveTabLeft => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Left)),
                     PaletteCommand::MoveTabUp => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Up)),
                     PaletteCommand::MoveTabDown => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down)),
+                    PaletteCommand::MoveTabVisual => start_pane_pick(app, crate::pane_pick::PaneOp::MoveTab),
+                    PaletteCommand::MergeVisual => start_pane_pick(app, crate::pane_pick::PaneOp::Merge),
                     PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
                     PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),

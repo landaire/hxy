@@ -29,6 +29,8 @@ pub mod plugins_tab;
 pub mod template_library;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod template_panel;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pane_pick;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod patch_persist;
