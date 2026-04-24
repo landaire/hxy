@@ -210,6 +210,16 @@ impl HxyApp {
         self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Plugins]);
     }
 
+    /// Close the Plugins tab if present; otherwise show it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn toggle_plugins(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Plugins) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_plugins();
+        }
+    }
+
     /// Open the data inspector as a right-side split of the main
     /// dock area, matching 010 Editor's layout. If already docked
     /// anywhere (including after the user drags it elsewhere),
@@ -223,6 +233,16 @@ impl HxyApp {
             return;
         }
         self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Inspector]);
+    }
+
+    /// Close the Inspector tab if present; otherwise show it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn toggle_inspector(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Inspector) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_inspector();
+        }
     }
 
     /// Append a message to the Console tab. Caps the buffer at
@@ -265,6 +285,15 @@ impl HxyApp {
         // at the bottom regardless of whatever layout the user is
         // running with.
         self.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.75, vec![Tab::Console]);
+    }
+
+    /// Close the Console tab if present; otherwise show it.
+    pub fn toggle_console(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Console) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_console();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2141,9 +2170,9 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
-            crate::menu::MenuAction::ShowConsole => app.show_console(),
-            crate::menu::MenuAction::ShowInspector => app.show_inspector(),
-            crate::menu::MenuAction::ShowPlugins => app.show_plugins(),
+            crate::menu::MenuAction::ToggleConsole => app.toggle_console(),
+            crate::menu::MenuAction::ToggleInspector => app.toggle_inspector(),
+            crate::menu::MenuAction::TogglePlugins => app.toggle_plugins(),
         }
     }
 }
@@ -2401,15 +2430,15 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
             });
             ui.menu_button(hxy_i18n::t("menu-view"), |ui| {
                 if ui.button(hxy_i18n::t("menu-view-console")).clicked() {
-                    app.show_console();
+                    app.toggle_console();
                     ui.close();
                 }
                 if ui.button(hxy_i18n::t("menu-view-inspector")).clicked() {
-                    app.show_inspector();
+                    app.toggle_inspector();
                     ui.close();
                 }
-                if ui.button("Plugins").clicked() {
-                    app.show_plugins();
+                if ui.button(hxy_i18n::t("menu-view-plugins")).clicked() {
+                    app.toggle_plugins();
                     ui.close();
                 }
             });
@@ -2567,17 +2596,39 @@ fn build_palette_entries(
                 )
                 .with_icon(icon::TREE_STRUCTURE),
             );
+            // Toggle entries for the side panels. Subtitle flips
+            // between "Show" / "Hide" so the user knows which
+            // direction activation will take them without having
+            // to peek at the dock.
+            let panel_subtitle = |visible: bool| -> String {
+                hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" })
+            };
+            let console_visible = app.dock.find_tab(&Tab::Console).is_some();
+            let inspector_visible = app.dock.find_tab(&Tab::Inspector).is_some();
+            let plugins_visible = app.dock.find_tab(&Tab::Plugins).is_some();
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-view-console"), Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowConsole))
-                    .with_icon(icon::TERMINAL),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-view-console"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleConsole),
+                )
+                .with_icon(icon::TERMINAL)
+                .with_subtitle(panel_subtitle(console_visible)),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-view-inspector"), Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowInspector))
-                    .with_icon(icon::EYE),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-view-inspector"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleInspector),
+                )
+                .with_icon(icon::EYE)
+                .with_subtitle(panel_subtitle(inspector_visible)),
             );
             out.push(
-                egui_palette::Entry::new("Plugins", Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowPlugins))
-                    .with_icon(icon::PUZZLE_PIECE),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-view-plugins"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::TogglePlugins),
+                )
+                .with_icon(icon::PUZZLE_PIECE)
+                .with_subtitle(panel_subtitle(plugins_visible)),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -2780,9 +2831,9 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::NewFile => handle_new_file(app),
                     PaletteCommand::OpenFile => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
                     PaletteCommand::BrowseArchive => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
-                    PaletteCommand::ShowConsole => app.show_console(),
-                    PaletteCommand::ShowInspector => app.show_inspector(),
-                    PaletteCommand::ShowPlugins => app.show_plugins(),
+                    PaletteCommand::ToggleConsole => app.toggle_console(),
+                    PaletteCommand::ToggleInspector => app.toggle_inspector(),
+                    PaletteCommand::TogglePlugins => app.toggle_plugins(),
                     PaletteCommand::Undo => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
                     PaletteCommand::Redo => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
                     PaletteCommand::Paste => paste_active_file(app, false),

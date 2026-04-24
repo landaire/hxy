@@ -44,9 +44,9 @@ pub enum MenuAction {
     Paste,
     /// Paste clipboard text interpreted as hex bytes at the cursor.
     PasteAsHex,
-    ShowConsole,
-    ShowInspector,
-    ShowPlugins,
+    ToggleConsole,
+    ToggleInspector,
+    TogglePlugins,
 }
 
 /// Owns the muda [`Menu`] (dropping it tears down the `NSMenu`) and
@@ -192,15 +192,15 @@ impl MenuState {
 
         let view_menu = Submenu::new("View", true);
         menu.append(&view_menu).expect("append view menu");
-        let console = MenuItem::new("Console", true, None);
-        let inspector = MenuItem::new("Inspector", true, None);
-        let plugins = MenuItem::new("Plugins", true, None);
+        let console = MenuItem::new("Toggle Console", true, None);
+        let inspector = MenuItem::new("Toggle Inspector", true, None);
+        let plugins = MenuItem::new("Toggle Plugins", true, None);
         view_menu.append(&console).expect("append console");
         view_menu.append(&inspector).expect("append inspector");
         view_menu.append(&plugins).expect("append plugins");
-        actions.insert(console.id().0.clone(), MenuAction::ShowConsole);
-        actions.insert(inspector.id().0.clone(), MenuAction::ShowInspector);
-        actions.insert(plugins.id().0.clone(), MenuAction::ShowPlugins);
+        actions.insert(console.id().0.clone(), MenuAction::ToggleConsole);
+        actions.insert(inspector.id().0.clone(), MenuAction::ToggleInspector);
+        actions.insert(plugins.id().0.clone(), MenuAction::TogglePlugins);
 
         menu.init_for_nsapp();
 

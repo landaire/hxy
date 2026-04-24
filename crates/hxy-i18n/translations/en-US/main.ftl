@@ -20,8 +20,11 @@ menu-edit-copy-hex = Copy hex string
 menu-edit-paste = Paste
 menu-edit-paste-as-hex = Paste as hex
 menu-view = View
-menu-view-console = Show Console
-menu-view-inspector = Show Inspector
+menu-view-console = Toggle Console
+menu-view-inspector = Toggle Inspector
+menu-view-plugins = Toggle Plugins
+palette-subtitle-show = Show
+palette-subtitle-hide = Hide
 menu-help = Help
 menu-help-about = About
 
