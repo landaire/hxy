@@ -31,6 +31,8 @@ pub enum MenuAction {
     /// tab has no path backing it.
     Save,
     SaveAs,
+    /// Flip the active tab between read-only and mutable.
+    ToggleEditMode,
     CopyBytes,
     CopyHex,
     CopyAs(CopyKind),
@@ -49,6 +51,8 @@ pub struct MenuState {
     /// Save and Save As; greyed out unless the active tab is dirty
     /// or has a path to write to.
     save_items: Vec<MenuItem>,
+    /// Toggle Edit Mode entries; greyed out when no file is active.
+    edit_mode_items: Vec<MenuItem>,
     _menu: Menu,
 }
 
@@ -104,6 +108,13 @@ impl MenuState {
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
 
+        let toggle_edit =
+            MenuItem::new("Toggle Edit Mode", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyE)));
+        edit_menu.append(&toggle_edit).expect("append toggle edit");
+        actions.insert(toggle_edit.id().0.clone(), MenuAction::ToggleEditMode);
+        let edit_mode_items = vec![toggle_edit];
+        edit_menu.append(&PredefinedMenuItem::separator()).expect("append separator");
+
         let copy_bytes = MenuItem::new("Copy bytes", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)));
         let copy_hex = MenuItem::new(
             "Copy hex",
@@ -149,12 +160,18 @@ impl MenuState {
 
         menu.init_for_nsapp();
 
-        Self { actions, bytes_items, scalar_items, save_items, _menu: menu }
+        Self { actions, bytes_items, scalar_items, save_items, edit_mode_items, _menu: menu }
     }
 
     /// Toggle the Save / Save As entries' enabled state.
     pub fn set_save_enabled(&self, enabled: bool) {
         for item in &self.save_items {
+            item.set_enabled(enabled);
+        }
+    }
+
+    pub fn set_edit_mode_enabled(&self, enabled: bool) {
+        for item in &self.edit_mode_items {
             item.set_enabled(enabled);
         }
     }

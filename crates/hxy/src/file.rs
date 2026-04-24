@@ -67,6 +67,16 @@ pub struct OpenFile {
     /// indicator and the save path.
     pub patch: Arc<RwLock<Patch>>,
     pub edit_mode: EditMode,
+    /// Two-press hex-digit input state. `true` means the next typed
+    /// digit overwrites the high nibble of the byte at the cursor;
+    /// `false` means the low nibble. Reset to `true` on any cursor
+    /// move, mode toggle, or new tab.
+    pub edit_high_nibble: bool,
+    /// Cursor offset observed at the end of the previous frame.
+    /// Compared each frame to detect cursor moves and reset the
+    /// nibble pointer; otherwise typing after an arrow-key move
+    /// would land on the wrong nibble.
+    pub last_cursor_offset: Option<u64>,
     pub selection: Option<Selection>,
     /// Last-hovered byte offset reported by the hex view -- surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
@@ -225,6 +235,8 @@ impl OpenFile {
             source: Arc::new(patched),
             patch,
             edit_mode: EditMode::default(),
+            edit_high_nibble: true,
+            last_cursor_offset: None,
             selection: None,
             hovered: None,
             scroll_offset: 0.0,
@@ -276,6 +288,48 @@ impl OpenFile {
     /// Drop all pending edits.
     pub fn revert(&self) {
         *self.patch.write().expect("patch lock poisoned") = Patch::new();
+    }
+
+    /// Apply one hex-digit keystroke at the current cursor offset.
+    /// Returns `true` if a write was actually issued (so the caller
+    /// can advance the cursor on a low-nibble press). Silent no-op
+    /// when the tab is read-only or the cursor isn't set.
+    pub fn type_hex_digit(&mut self, nibble: u8) -> Result<bool, WriteError> {
+        if self.edit_mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let nibble = nibble & 0xF;
+        let Some(selection) = self.selection else { return Ok(false) };
+        let offset = selection.cursor.get();
+        let source_len = self.source.len().get();
+        if offset >= source_len {
+            return Ok(false);
+        }
+        let current = self.read_byte_at(offset)?;
+        let new_byte = if self.edit_high_nibble {
+            (nibble << 4) | (current & 0x0F)
+        } else {
+            (current & 0xF0) | nibble
+        };
+        self.request_write(offset, vec![new_byte])?;
+        let advanced = !self.edit_high_nibble;
+        self.edit_high_nibble = !self.edit_high_nibble;
+        Ok(advanced)
+    }
+
+    /// Reset the two-press nibble cursor to "expecting high nibble".
+    /// Call when the cursor moves, when the file enters edit mode,
+    /// or when the user explicitly cancels a half-typed byte.
+    pub fn reset_edit_nibble(&mut self) {
+        self.edit_high_nibble = true;
+    }
+
+    fn read_byte_at(&self, offset: u64) -> Result<u8, WriteError> {
+        use hxy_core::ByteOffset;
+        use hxy_core::ByteRange;
+        let range = ByteRange::new(ByteOffset::new(offset), ByteOffset::new(offset + 1))
+            .map_err(|e| WriteError::Rejected(format!("invalid range: {e}")))?;
+        self.source.read(range).map(|b| b[0]).map_err(|e| WriteError::Rejected(format!("read: {e}")))
     }
 
     /// Snapshot the current patch as a sorted list of `(start, end)`

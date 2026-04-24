@@ -547,6 +547,7 @@ impl eframe::App for HxyApp {
         drain_template_runs(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
         dispatch_save_shortcut(ui.ctx(), self);
+        dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -622,14 +623,114 @@ enum DuplicateAction {
     Cancel,
 }
 
+/// App-level keypress -> nibble write dispatcher. Runs late in the
+/// frame so other widgets (palette text input, settings fields,
+/// dialogs) get first crack at typed keys via egui's normal focus
+/// path; only un-consumed presses reach the active hex-edit cursor.
+fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
+    // A focused text input owns the keyboard; never steal from it.
+    if ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+
+    // Detect cursor moves between frames and reset the nibble cursor
+    // so the next press starts on the high nibble of the new byte.
+    let current_cursor = file.selection.as_ref().map(|s| s.cursor.get());
+    if current_cursor != file.last_cursor_offset {
+        file.reset_edit_nibble();
+        file.last_cursor_offset = current_cursor;
+    }
+
+    if file.edit_mode != crate::file::EditMode::Mutable || file.selection.is_none() {
+        return;
+    }
+
+    // Snapshot pressed hex-digit keys (and a few editing keys) in one
+    // go so we can advance the cursor between them without holding
+    // the input lock.
+    let presses: Vec<EditPress> = ctx.input_mut(|i| {
+        let mut out = Vec::new();
+        i.events.retain(|event| {
+            let egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } = event else {
+                return true;
+            };
+            if modifiers.command || modifiers.alt {
+                return true;
+            }
+            if let Some(nibble) = key_to_hex_nibble(*key) {
+                out.push(EditPress::Hex(nibble));
+                return false;
+            }
+            match key {
+                egui::Key::Escape => {
+                    out.push(EditPress::ResetNibble);
+                    false
+                }
+                _ => true,
+            }
+        });
+        out
+    });
+
+    for press in presses {
+        match press {
+            EditPress::Hex(nibble) => match file.type_hex_digit(nibble) {
+                Ok(true) => {
+                    if let Some(sel) = file.selection.as_mut() {
+                        let next = sel.cursor.get().saturating_add(1).min(file.source.len().get());
+                        sel.cursor = hxy_core::ByteOffset::new(next);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "hex edit"),
+            },
+            EditPress::ResetNibble => file.reset_edit_nibble(),
+        }
+    }
+}
+
+enum EditPress {
+    Hex(u8),
+    ResetNibble,
+}
+
+fn key_to_hex_nibble(key: egui::Key) -> Option<u8> {
+    use egui::Key as K;
+    Some(match key {
+        K::Num0 => 0,
+        K::Num1 => 1,
+        K::Num2 => 2,
+        K::Num3 => 3,
+        K::Num4 => 4,
+        K::Num5 => 5,
+        K::Num6 => 6,
+        K::Num7 => 7,
+        K::Num8 => 8,
+        K::Num9 => 9,
+        K::A => 0xA,
+        K::B => 0xB,
+        K::C => 0xC,
+        K::D => 0xD,
+        K::E => 0xE,
+        K::F => 0xF,
+        _ => return None,
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    let (save, save_as) =
-        ctx.input_mut(|i| (i.consume_shortcut(&SAVE_FILE), i.consume_shortcut(&SAVE_FILE_AS)));
+    let (save, save_as, toggle) = ctx.input_mut(|i| {
+        (i.consume_shortcut(&SAVE_FILE), i.consume_shortcut(&SAVE_FILE_AS), i.consume_shortcut(&TOGGLE_EDIT_MODE))
+    });
     if save_as {
         save_active_file(app, true);
     } else if save {
         save_active_file(app, false);
+    }
+    if toggle {
+        toggle_active_edit_mode(app);
     }
 }
 
@@ -1556,6 +1657,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::OpenFile => handle_open_file(app),
             crate::menu::MenuAction::Save => save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => save_active_file(app, true),
+            crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
@@ -1580,7 +1682,19 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         menu.set_file_open(has_file);
         menu.set_scalar_selection(has_scalar);
         menu.set_save_enabled(can_save);
+        menu.set_edit_mode_enabled(has_file);
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn toggle_active_edit_mode(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.edit_mode = match file.edit_mode {
+        crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
+        crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
+    };
+    file.reset_edit_nibble();
 }
 
 #[cfg(target_os = "macos")]
@@ -1626,7 +1740,22 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
             ui.menu_button(hxy_i18n::t("menu-edit"), |ui| {
                 let copy_bytes_text = ui.ctx().format_shortcut(&COPY_BYTES);
                 let copy_hex_text = ui.ctx().format_shortcut(&COPY_HEX);
+                let toggle_text = ui.ctx().format_shortcut(&TOGGLE_EDIT_MODE);
                 let active_file = active_file_id(app);
+                let mode_label = active_file
+                    .and_then(|id| app.files.get(&id))
+                    .map(|f| match f.edit_mode {
+                        crate::file::EditMode::Readonly => hxy_i18n::t("menu-edit-enter-edit-mode"),
+                        crate::file::EditMode::Mutable => hxy_i18n::t("menu-edit-leave-edit-mode"),
+                    })
+                    .unwrap_or_else(|| hxy_i18n::t("menu-edit-enter-edit-mode"));
+                ui.add_enabled_ui(active_file.is_some(), |ui| {
+                    if ui.add(egui::Button::new(mode_label).shortcut_text(toggle_text)).clicked() {
+                        ui.close();
+                        toggle_active_edit_mode(app);
+                    }
+                });
+                ui.separator();
                 ui.add_enabled_ui(active_file.is_some(), |ui| {
                     // Keep the two most common targets as top-level
                     // items so the keyboard shortcuts have an
@@ -2295,6 +2424,7 @@ const COPY_HEX: egui::KeyboardShortcut =
 const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
+const TOGGLE_EDIT_MODE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
 
 /// Background tint painted over patched bytes in the hex view. A warm
 /// orange that reads on both light and dark themes; gamma-muted so it
