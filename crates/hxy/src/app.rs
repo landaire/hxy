@@ -3323,8 +3323,14 @@ fn copyable_status_label(
     if r.clicked() {
         *new_base = base.toggle();
     }
+    // Raw pointer-in-rect; `r.hovered()` can read false when a
+    // tooltip overlay or neighbouring widget counts as covering the
+    // label, which meant the Cmd+C consume here never fired and
+    // the hex-view's selection copy handler got the event instead.
+    let over_label = ui.rect_contains_pointer(r.rect);
     let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
-    if r.hovered() && ui.ctx().input_mut(consume_copy_event) {
+    let _ = r;
+    if over_label && ui.ctx().input_mut(consume_copy_event) {
         ui.ctx().copy_text(copy.to_string());
     }
 }
