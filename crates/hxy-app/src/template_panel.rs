@@ -39,20 +39,7 @@ pub enum TemplateEvent {
     SaveBytes(TemplateNodeIdx),
 }
 
-/// Every format the context menu offers. Bytes variants work on any
-/// node; value variants only show up for scalar nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CopyKind {
-    BytesHexSpaced,    // "50 4B 03 04"
-    BytesHexCompact,   // "504B0304"
-    BytesDecimalCsv,   // "80, 75, 3, 4"
-    BytesOctalCsv,     // "0o120, 0o113, 0o003, 0o004"
-    BytesCArray,       // "uint8_t data[4] = { 0x50, 0x4B, 0x03, 0x04 };"
-    BytesRustArray,    // "let data: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];"
-    ValueHex,
-    ValueDecimal,
-    ValueOctal,
-}
+pub use crate::copy_format::CopyKind;
 
 const INDENT_STEP: f32 = 14.0;
 
@@ -245,36 +232,9 @@ impl TemplateTableDelegate<'_> {
         ui.label(egui::RichText::new(format!("{}  ({} bytes)", node.name, node.span.length)).strong());
         ui.separator();
 
-        if is_scalar {
-            ui.menu_button("Copy value as", |ui| {
-                for (label, kind) in [
-                    ("Hex", CopyKind::ValueHex),
-                    ("Decimal", CopyKind::ValueDecimal),
-                    ("Octal", CopyKind::ValueOctal),
-                ] {
-                    if ui.button(label).clicked() {
-                        self.events.push(TemplateEvent::Copy { idx, kind });
-                        ui.close();
-                    }
-                }
-            });
+        if let Some(kind) = crate::copy_format::copy_as_menu(ui, is_scalar) {
+            self.events.push(TemplateEvent::Copy { idx, kind });
         }
-
-        ui.menu_button("Copy bytes as", |ui| {
-            for (label, kind) in [
-                ("Hex (spaced)", CopyKind::BytesHexSpaced),
-                ("Hex (compact)", CopyKind::BytesHexCompact),
-                ("Decimal (CSV)", CopyKind::BytesDecimalCsv),
-                ("Octal (CSV)", CopyKind::BytesOctalCsv),
-                ("C array", CopyKind::BytesCArray),
-                ("Rust array", CopyKind::BytesRustArray),
-            ] {
-                if ui.button(label).clicked() {
-                    self.events.push(TemplateEvent::Copy { idx, kind });
-                    ui.close();
-                }
-            }
-        });
 
         ui.separator();
         if ui.button("Save bytes to file…").clicked() {

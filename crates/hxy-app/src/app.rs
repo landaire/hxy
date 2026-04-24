@@ -560,9 +560,9 @@ enum DuplicateAction {
 fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     let kind = ctx.input_mut(|i| {
         if i.consume_shortcut(&COPY_HEX) {
-            Some(CopyKind::Hex)
+            Some(CopyKind::BytesHexSpaced)
         } else if consume_copy_event(i) {
-            Some(CopyKind::Bytes)
+            Some(CopyKind::BytesLossyUtf8)
         } else {
             None
         }
@@ -1120,66 +1120,17 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
 fn format_template_copy(
     source: &std::sync::Arc<dyn hxy_core::HexSource>,
     node: &hxy_plugin_host::Node,
-    kind: crate::template_panel::CopyKind,
+    kind: CopyKind,
 ) -> Option<String> {
-    use crate::template_panel::CopyKind;
-    use std::fmt::Write as _;
-
-    // Value-kind copies need only the already-decoded scalar.
-    match kind {
-        CopyKind::ValueHex | CopyKind::ValueDecimal | CopyKind::ValueOctal => {
-            let raw = scalar_value_u64(node.value.as_ref()?)?;
-            return Some(match kind {
-                CopyKind::ValueHex => format!("0x{raw:X}"),
-                CopyKind::ValueDecimal => format!("{raw}"),
-                CopyKind::ValueOctal => format!("0o{raw:o}"),
-                _ => unreachable!(),
-            });
-        }
-        _ => {}
+    if kind.is_value() {
+        let raw = scalar_value_u64(node.value.as_ref()?)?;
+        return crate::copy_format::format_scalar(kind, raw);
     }
-
-    // Bytes-kind copies need the raw span.
     let start = hxy_core::ByteOffset::new(node.span.offset);
     let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
     let range = hxy_core::ByteRange::new(start, end).ok()?;
     let bytes = source.read(range).ok()?;
-    let ty = node.type_name.as_str();
-    let name = sanitize_ident(&node.name);
-
-    Some(match kind {
-        CopyKind::BytesHexSpaced => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
-        CopyKind::BytesHexCompact => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""),
-        CopyKind::BytesDecimalCsv => bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "),
-        CopyKind::BytesOctalCsv => bytes.iter().map(|b| format!("0o{b:o}")).collect::<Vec<_>>().join(", "),
-        CopyKind::BytesCArray => {
-            let mut out = String::new();
-            let _ = write!(out, "uint8_t {name}[{}] = {{ ", bytes.len());
-            for (i, b) in bytes.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                let _ = write!(out, "0x{b:02X}");
-            }
-            out.push_str(" }; /* ");
-            out.push_str(ty);
-            out.push_str(" */");
-            out
-        }
-        CopyKind::BytesRustArray => {
-            let mut out = String::new();
-            let _ = write!(out, "let {name}: [u8; {}] = [", bytes.len());
-            for (i, b) in bytes.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                let _ = write!(out, "0x{b:02X}");
-            }
-            let _ = write!(out, "]; // {ty}");
-            out
-        }
-        CopyKind::ValueHex | CopyKind::ValueDecimal | CopyKind::ValueOctal => unreachable!(),
-    })
+    crate::copy_format::format_bytes(kind, &bytes, &node.name, &node.type_name)
 }
 
 /// Extract a u64 bit pattern from a scalar [`hxy_plugin_host::Value`],
@@ -1202,26 +1153,6 @@ fn scalar_value_u64(v: &hxy_plugin_host::Value) -> Option<u64> {
     })
 }
 
-/// Replace anything that isn't a valid C / Rust identifier character
-/// with `_`, so copying a template field named `frCrc <format=hex>`
-/// produces compilable declarations.
-#[cfg(not(target_arch = "wasm32"))]
-fn sanitize_ident(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for (i, c) in raw.chars().enumerate() {
-        let keep = c.is_ascii_alphanumeric() || c == '_';
-        if i == 0 && c.is_ascii_digit() {
-            out.push('_');
-            out.push(c);
-        } else if keep {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() { "data".to_owned() } else { out }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &hxy_plugin_host::Node) {
     let start = hxy_core::ByteOffset::new(node.span.offset);
@@ -1234,7 +1165,7 @@ fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &
             return;
         }
     };
-    let default_name = format!("{}.bin", sanitize_ident(&node.name));
+    let default_name = format!("{}.bin", crate::copy_format::sanitize_ident(&node.name));
     let Some(path) = rfd::FileDialog::new().set_file_name(&default_name).save_file() else { return };
     if let Err(e) = std::fs::write(&path, &bytes) {
         tracing::warn!(error = %e, path = %path.display(), "write template bytes");
@@ -1276,6 +1207,14 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
     let palette = build_palette(ui.visuals().dark_mode, &state.app, highlight);
     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
+    // Pre-compute "is the selection a scalar integer width?" before
+    // taking the mutable borrow HexView needs; the `ui.selection`
+    // can't be read inside the context menu closure once HexView
+    // holds it.
+    let show_scalar_submenu = file
+        .selection
+        .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
+        .unwrap_or(false);
     let pending_scroll = file.pending_scroll.take();
     let pending_scroll_to_byte = file.pending_scroll_to_byte.take();
 
@@ -1309,13 +1248,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let response = view
         .context_menu(|ui| {
             ui.add_enabled_ui(has_sel, |ui| {
-                if ui.button("Copy bytes").clicked() {
-                    copy_request = Some(CopyKind::Bytes);
-                    ui.close();
-                }
-                if ui.button("Copy hex string").clicked() {
-                    copy_request = Some(CopyKind::Hex);
-                    ui.close();
+                if let Some(kind) = crate::copy_format::copy_as_menu(ui, show_scalar_submenu) {
+                    copy_request = Some(kind);
                 }
             });
         })
@@ -1431,6 +1365,9 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 let copy_hex_text = ui.ctx().format_shortcut(&COPY_HEX);
                 let active_file = active_file_id(app);
                 ui.add_enabled_ui(active_file.is_some(), |ui| {
+                    // Keep the two most common targets as top-level
+                    // items so the keyboard shortcuts have an
+                    // obvious visual anchor.
                     if ui
                         .add(egui::Button::new(hxy_i18n::t("menu-edit-copy-bytes")).shortcut_text(copy_bytes_text))
                         .clicked()
@@ -1438,7 +1375,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                         if let Some(id) = active_file
                             && let Some(file) = app.files.get(&id)
                         {
-                            do_copy(ui.ctx(), file, CopyKind::Bytes);
+                            do_copy(ui.ctx(), file, CopyKind::BytesLossyUtf8);
                         }
                         ui.close();
                     }
@@ -1449,8 +1386,24 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                         if let Some(id) = active_file
                             && let Some(file) = app.files.get(&id)
                         {
-                            do_copy(ui.ctx(), file, CopyKind::Hex);
+                            do_copy(ui.ctx(), file, CopyKind::BytesHexSpaced);
                         }
+                        ui.close();
+                    }
+                    ui.separator();
+                    // …and the long tail in a submenu, same layout as
+                    // the hex view's right-click and the template
+                    // panel's row menu.
+                    let show_scalar = active_file
+                        .and_then(|id| app.files.get(&id))
+                        .and_then(|f| f.selection)
+                        .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
+                        .unwrap_or(false);
+                    if let Some(kind) = crate::copy_format::copy_as_menu(ui, show_scalar)
+                        && let Some(id) = active_file
+                        && let Some(file) = app.files.get(&id)
+                    {
+                        do_copy(ui.ctx(), file, kind);
                         ui.close();
                     }
                 });
@@ -1727,22 +1680,24 @@ fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CopyKind {
-    Bytes,
-    Hex,
-}
+use crate::copy_format::CopyKind;
 
 const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
 
+/// Read the active selection's bytes from `file` and copy them to
+/// the clipboard formatted per `kind`. Value-kind variants read the
+/// first `selection.len()` bytes as a LE integer (0–8 bytes) — the
+/// hex view has no type context, so this is the best we can do
+/// without a template supplying sign + endianness.
 fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
     let Some(selection) = file.selection else { return };
     let range = selection.range();
     if range.is_empty() {
         return;
     }
+    let offset = range.start().get();
     let bytes = match file.source.read(range) {
         Ok(b) => b,
         Err(e) => {
@@ -1750,23 +1705,27 @@ fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
             return;
         }
     };
-    let text = match kind {
-        CopyKind::Bytes => String::from_utf8_lossy(&bytes).into_owned(),
-        CopyKind::Hex => format_hex_string(&bytes),
+
+    let text = if kind.is_value() {
+        if bytes.is_empty() || bytes.len() > 8 {
+            return;
+        }
+        let mut arr = [0u8; 8];
+        arr[..bytes.len()].copy_from_slice(&bytes);
+        let raw = u64::from_le_bytes(arr);
+        match crate::copy_format::format_scalar(kind, raw) {
+            Some(s) => s,
+            None => return,
+        }
+    } else {
+        let ident = format!("data_{:X}", offset);
+        let type_hint = format!("u8[{}]", bytes.len());
+        match crate::copy_format::format_bytes(kind, &bytes, &ident, &type_hint) {
+            Some(s) => s,
+            None => return,
+        }
     };
     ctx.copy_text(text);
-}
-
-fn format_hex_string(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        use std::fmt::Write;
-        let _ = write!(out, "{b:02X}");
-    }
-    out
 }
 
 const WELCOME_OPEN_RECENT: &str = "hxy_welcome_open_recent";
