@@ -488,18 +488,14 @@ impl HxyApp {
         }
 
         self.files.insert(id, file);
-        // Replace the Welcome placeholder when opening the first
-        // file: focus its leaf, push the new tab into that same
-        // leaf, then remove Welcome. Doing it in this order keeps
-        // the leaf populated throughout, so egui_dock doesn't
-        // collapse it between the two ops.
-        let welcome_path = self.dock.find_tab(&Tab::Welcome);
-        if let Some(path) = welcome_path.as_ref() {
-            self.dock.set_focused_node_and_surface(path.node_path());
-        }
         self.dock.push_to_focused_leaf(Tab::File(id));
-        if let Some(path) = welcome_path {
-            let _ = self.dock.remove_tab(path);
+        // If the focused leaf had a Welcome placeholder, replace it
+        // -- the new file is what the user actually wanted in this
+        // pane. Welcome tabs in *other* panes stay put, so a user
+        // who split a Welcome off into its own pane keeps it as a
+        // launcher for additional files.
+        if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+            remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
         }
 
         // Look for an unsaved-edits sidecar from a previous session
@@ -1467,23 +1463,21 @@ fn resolve_target_leaf(app: &mut HxyApp) -> Option<egui_dock::NodePath> {
     Some(egui_dock::NodePath { surface: tab.surface, node: tab.node })
 }
 
-/// Split the target leaf in `dir`, duplicating the focused tab into
-/// the new pane. The new leaf becomes focused so follow-up commands
-/// (navigation, another split) target it.
+/// Split the target leaf in `dir` and seed the new pane with a
+/// fresh Welcome placeholder. The new leaf becomes focused so the
+/// next file the user opens (or tab they drag in) lands there and
+/// replaces the placeholder. Duplicating the focused tab instead
+/// would clone its identity (e.g. two `Tab::File(id)` pointing at
+/// the same underlying file) and break close-tab semantics.
 fn dock_split_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
     use crate::commands::DockDir;
     let Some(path) = resolve_target_leaf(app) else { return };
-    let tab = match &app.dock[path.surface][path.node] {
-        egui_dock::Node::Leaf(leaf) => leaf.tabs.first().cloned(),
-        _ => None,
-    };
-    let Some(tab) = tab else { return };
     let tree = &mut app.dock[path.surface];
     let [_, new_node] = match dir {
-        DockDir::Right => tree.split_right(path.node, 0.5, vec![tab]),
-        DockDir::Left => tree.split_left(path.node, 0.5, vec![tab]),
-        DockDir::Up => tree.split_above(path.node, 0.5, vec![tab]),
-        DockDir::Down => tree.split_below(path.node, 0.5, vec![tab]),
+        DockDir::Right => tree.split_right(path.node, 0.5, vec![Tab::Welcome]),
+        DockDir::Left => tree.split_left(path.node, 0.5, vec![Tab::Welcome]),
+        DockDir::Up => tree.split_above(path.node, 0.5, vec![Tab::Welcome]),
+        DockDir::Down => tree.split_below(path.node, 0.5, vec![Tab::Welcome]),
     };
     app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: path.surface, node: new_node });
 }
@@ -1515,6 +1509,7 @@ fn dock_merge_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_doc
     if tabs.is_empty() {
         return;
     }
+    let moved_real_tab = tabs.iter().any(|t| !matches!(t, Tab::Welcome));
     // Stash one of the tabs we're about to move so we can find the
     // destination leaf again after remove_leaf -- it rewires node
     // indices, so `target` is not safe to index into the tree
@@ -1522,6 +1517,9 @@ fn dock_merge_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_doc
     let refocus_tab = tabs[0];
     for tab in tabs {
         app.dock[target.surface][target.node].append_tab(tab);
+    }
+    if moved_real_tab {
+        remove_welcome_from_leaf(&mut app.dock, target.surface, target.node);
     }
     app.dock[source.surface].remove_leaf(source.node);
     if let Some(found) = app.dock.find_tab(&refocus_tab) {
@@ -1569,7 +1567,11 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
         _ => return,
     };
     let refocus_tab = moved_tab;
+    let moved_real_tab = !matches!(moved_tab, Tab::Welcome);
     app.dock[target.surface][target.node].append_tab(moved_tab);
+    if moved_real_tab {
+        remove_welcome_from_leaf(&mut app.dock, target.surface, target.node);
+    }
     let source_empty =
         matches!(&app.dock[source.surface][source.node], egui_dock::Node::Leaf(leaf) if leaf.tabs.is_empty());
     if source_empty {
@@ -1579,6 +1581,27 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
     // remove_leaf, so look it up by the moved tab itself.
     if let Some(found) = app.dock.find_tab(&refocus_tab) {
         app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
+    }
+}
+
+/// Remove any [`Tab::Welcome`] entry from the given leaf. Used by
+/// the file-open and tab-move paths so the Welcome placeholder
+/// quietly steps aside whenever a real tab takes over its pane.
+fn remove_welcome_from_leaf(
+    dock: &mut egui_dock::DockState<Tab>,
+    surface: egui_dock::SurfaceIndex,
+    node: egui_dock::NodeIndex,
+) {
+    let welcome_idx = match &dock[surface][node] {
+        egui_dock::Node::Leaf(leaf) => leaf.tabs.iter().position(|t| matches!(t, Tab::Welcome)),
+        _ => None,
+    };
+    if let Some(idx) = welcome_idx {
+        let _ = dock.remove_tab(egui_dock::TabPath {
+            surface,
+            node,
+            tab: egui_dock::TabIndex(idx),
+        });
     }
 }
 
