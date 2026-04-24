@@ -3230,11 +3230,16 @@ fn build_palette_entries(
             // input. Build a single dynamic entry that's actionable
             // only when the query parses; invalid queries show an
             // Invalid row that picks to a no-op (no dispatch arm).
-            if !offset_ctx.available {
-                return out;
-            }
             let query = app.palette.inner.query.trim();
-            build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
+            if !offset_ctx.available {
+                // Surface the failure mode instead of returning an
+                // empty list -- otherwise the user just sees the
+                // generic "No matches." panel and has no idea why
+                // their range didn't take.
+                invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
+            } else {
+                build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
+            }
         }
     }
     out

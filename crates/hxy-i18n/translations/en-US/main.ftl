@@ -79,6 +79,7 @@ palette-go-to-offset-fmt = Go to offset { $offset }
 palette-select-from-offset-fmt = Select { $count } bytes from { $start }
 palette-select-range-fmt = Select { $start } .. { $end } ({ $count } bytes)
 palette-invalid-fmt = Invalid: { $reason }
+palette-invalid-no-active-file = no active file
 palette-copy-caret-offset = Copy caret offset
 palette-copy-selection-range = Copy selection range
 palette-copy-selection-length = Copy selection length
