@@ -8,6 +8,7 @@
 
 mod error;
 mod geometry;
+mod patched;
 mod selection;
 mod source;
 
@@ -18,6 +19,7 @@ pub use geometry::ByteOffset;
 pub use geometry::ByteRange;
 pub use geometry::ColumnCount;
 pub use geometry::RowIndex;
+pub use patched::PatchedSource;
 pub use selection::Selection;
 pub use source::HexSource;
 pub use source::MemorySource;
