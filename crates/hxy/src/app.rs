@@ -2500,7 +2500,7 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     }
     let copy_ctx = copy_palette_context(app);
     let history_ctx = history_palette_context(app);
-    let entries = build_palette_entries(app, copy_ctx, history_ctx);
+    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx);
     let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::command_palette::Outcome::Closed => app.palette.close(),
@@ -2553,6 +2553,7 @@ struct HistoryPaletteContext {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn build_palette_entries(
+    ctx: &egui::Context,
     app: &HxyApp,
     copy_ctx: Option<CopyPaletteContext>,
     history_ctx: HistoryPaletteContext,
@@ -2561,6 +2562,7 @@ fn build_palette_entries(
     use crate::command_palette::Mode;
     use egui_phosphor::regular as icon;
 
+    let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
     let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
     match app.palette.mode {
         Mode::Main => {
@@ -2604,36 +2606,44 @@ fn build_palette_entries(
             if history_ctx.can_undo {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand("undo"))
-                        .with_icon(icon::ARROW_COUNTER_CLOCKWISE),
+                        .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
+                        .with_shortcut(fmt(&UNDO)),
                 );
             }
             if history_ctx.can_redo {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand("redo"))
-                        .with_icon(icon::ARROW_CLOCKWISE),
+                        .with_icon(icon::ARROW_CLOCKWISE)
+                        .with_shortcut(fmt(&REDO)),
                 );
             }
             if history_ctx.can_paste {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-paste"), Action::InvokeCommand("paste"))
-                        .with_icon(icon::CLIPBOARD_TEXT),
+                        .with_icon(icon::CLIPBOARD_TEXT)
+                        .with_shortcut(fmt(&PASTE)),
                 );
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t("menu-edit-paste-as-hex"),
                         Action::InvokeCommand("paste-as-hex"),
                     )
-                    .with_icon(icon::CLIPBOARD_TEXT),
+                    .with_icon(icon::CLIPBOARD_TEXT)
+                    .with_shortcut(fmt(&PASTE_AS_HEX)),
                 );
             }
-            if let Some(ctx) = copy_ctx {
+            if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
-                    out.push(
-                        egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
-                            .with_icon(icon::COPY),
-                    );
+                    let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
+                        .with_icon(icon::COPY);
+                    if matches!(kind, CopyKind::BytesLossyUtf8) {
+                        entry = entry.with_shortcut(fmt(&COPY_BYTES));
+                    } else if matches!(kind, CopyKind::BytesHexSpaced) {
+                        entry = entry.with_shortcut(fmt(&COPY_HEX));
+                    }
+                    out.push(entry);
                 }
-                if ctx.scalar_width {
+                if copy.scalar_width {
                     for (label, kind) in crate::copy_format::VALUE_MENU {
                         out.push(
                             egui_palette::Entry::new(format!("Copy value: {label}"), Action::Copy(*kind))

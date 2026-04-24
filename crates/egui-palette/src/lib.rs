@@ -90,12 +90,18 @@ pub struct Entry<A> {
     /// Optional leading icon (single glyph / short string). Rendered
     /// in a fixed-width gutter on the left of the row.
     pub icon: Option<String>,
+    /// Optional keyboard-shortcut hint rendered right-aligned in a
+    /// muted colour (e.g. `cmd-z`, `ctrl-shift-v`). Consumers
+    /// typically pass [`egui::Context::format_shortcut`]'s output
+    /// here so the palette advertises the same keys that trigger the
+    /// action outside the palette.
+    pub shortcut: Option<String>,
     pub data: A,
 }
 
 impl<A> Entry<A> {
     pub fn new(title: impl Into<String>, data: A) -> Self {
-        Self { title: title.into(), subtitle: None, icon: None, data }
+        Self { title: title.into(), subtitle: None, icon: None, shortcut: None, data }
     }
 
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
@@ -105,6 +111,11 @@ impl<A> Entry<A> {
 
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 }
@@ -499,6 +510,18 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     let icon_color = style.icon_color.unwrap_or(text_color);
     let sub_color = style.subtitle_color.unwrap_or_else(|| ui.visuals().weak_text_color());
 
+    // Lay out the shortcut hint first so we can reserve its width on
+    // the right edge and trim the title / subtitle budget to match.
+    // Rendered in the subtitle font + colour to match Zed's muted
+    // cmd-binding style.
+    let shortcut_galley = entry
+        .shortcut
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| layout_truncated(ui, s.to_owned(), subtitle_font.clone(), sub_color, inner.width() * 0.5));
+    let shortcut_reserved = shortcut_galley.as_ref().map(|g| g.size().x + style.subtitle_spacing).unwrap_or(0.0);
+    let content_right = inner.right() - shortcut_reserved;
+
     let title_x = if let Some(icon) = entry.icon.as_deref() {
         let galley =
             ui.painter().layout_no_wrap(icon.to_owned(), egui::FontId::proportional(style.icon_size), icon_color);
@@ -509,7 +532,7 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
         inner.left()
     };
 
-    let title_width_budget = inner.right() - title_x;
+    let title_width_budget = content_right - title_x;
     let title_galley = layout_truncated(ui, entry.title.clone(), body.clone(), text_color, title_width_budget);
     let title_pos = egui::pos2(title_x, inner.center().y - title_galley.size().y * 0.5);
     let title_size = title_galley.size();
@@ -517,12 +540,18 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
 
     if let Some(sub) = entry.subtitle.as_deref() {
         let sub_x = title_x + title_size.x + style.subtitle_spacing;
-        let sub_budget = inner.right() - sub_x;
+        let sub_budget = content_right - sub_x;
         if sub_budget > 0.0 {
             let sub_galley = layout_truncated(ui, sub.to_owned(), subtitle_font, sub_color, sub_budget);
             let sub_pos = egui::pos2(sub_x, inner.center().y - sub_galley.size().y * 0.5);
             ui.painter().galley(sub_pos, sub_galley, sub_color);
         }
+    }
+
+    if let Some(galley) = shortcut_galley {
+        let size = galley.size();
+        let pos = egui::pos2(inner.right() - size.x, inner.center().y - size.y * 0.5);
+        ui.painter().galley(pos, galley, sub_color);
     }
     resp
 }
