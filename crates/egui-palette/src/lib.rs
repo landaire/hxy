@@ -39,6 +39,12 @@ use egui::Stroke;
 
 pub mod fuzzy;
 
+/// Re-exports so callers can configure the matcher without pulling
+/// `nucleo_matcher` into their own `Cargo.toml`.
+pub use nucleo_matcher::Config as MatcherConfig;
+pub use nucleo_matcher::pattern::CaseMatching;
+pub use nucleo_matcher::pattern::Normalization;
+
 /// Persistent palette state held by the host between frames.
 /// Cleared / re-opened explicitly by the host (via [`State::open`]
 /// / [`State::close`]); the widget itself mutates only `query`,
@@ -196,6 +202,19 @@ pub struct Style {
     /// Default `true`; turn off if you're composing with something
     /// that needs those keys.
     pub consume_nav_keys: bool,
+
+    /// Scoring weights passed to [`nucleo_matcher::Matcher::new`].
+    /// Defaults to [`MatcherConfig::DEFAULT`] (VS Code / Helix);
+    /// swap in `MatcherConfig::DEFAULT.match_paths()` for path-style
+    /// candidates, for instance.
+    pub matcher: MatcherConfig,
+    /// How the pattern's capitalisation should affect matching.
+    /// Default [`CaseMatching::Smart`]: lowercase query ->
+    /// case-insensitive, any uppercase -> case-sensitive.
+    pub case_matching: CaseMatching,
+    /// Unicode normalisation applied to both the pattern and each
+    /// haystack. Default [`Normalization::Smart`].
+    pub normalization: Normalization,
 }
 
 impl Default for Style {
@@ -224,6 +243,9 @@ impl Default for Style {
             icon_color: None,
             close_on_backdrop_click: true,
             consume_nav_keys: true,
+            matcher: MatcherConfig::DEFAULT,
+            case_matching: CaseMatching::Smart,
+            normalization: Normalization::Smart,
         }
     }
 }
@@ -282,10 +304,17 @@ pub fn show_with_style<A: Clone>(
         return Some(Outcome::Closed);
     }
 
-    let filtered = fuzzy::filter_and_sort(&state.query, entries, |e| match &e.subtitle {
-        Some(sub) => format!("{} {}", e.title, sub),
-        None => e.title.clone(),
-    });
+    let filtered = fuzzy::filter_and_sort(
+        &state.query,
+        entries,
+        &style.matcher,
+        style.case_matching,
+        style.normalization,
+        |e| match &e.subtitle {
+            Some(sub) => format!("{} {}", e.title, sub),
+            None => e.title.clone(),
+        },
+    );
     if state.query != state.last_query {
         // The top-scoring result almost always moved on a query
         // change, so drop the user back to row 0 instead of leaving
