@@ -911,6 +911,16 @@ impl<S: HexSource> Interpreter<S> {
             // One tree node for the whole array so the hex view
             // paints it as a single contiguous region, matching
             // 010's rendering.
+            // Tag the endian so the UI tooltip can re-decode each
+            // element on hover without re-running the interpreter.
+            let mut rendered_attrs = attrs_to_pairs(attrs);
+            rendered_attrs.push((
+                "hxy_endian".to_owned(),
+                match self.endian {
+                    Endian::Little => "little".to_owned(),
+                    Endian::Big => "big".to_owned(),
+                },
+            ));
             self.nodes.push(NodeOut {
                 name: name.to_owned(),
                 ty: NodeType::ScalarArray(ScalarKind::from_prim(p), count),
@@ -918,7 +928,7 @@ impl<S: HexSource> Interpreter<S> {
                 length: total_bytes,
                 value: if matches!(value, Value::Void) { None } else { Some(value.clone()) },
                 parent,
-                attrs: attrs_to_pairs(attrs),
+                attrs: rendered_attrs,
             });
             self.store_field(name, value.clone());
             // Storage only (no tree node) for each element so

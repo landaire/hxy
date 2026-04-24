@@ -1399,7 +1399,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     // the full parent chain down to the containing field.
     if let Some(offset) = response.hovered_offset
         && let Some(template) = file.template.as_ref()
-        && let Some(path) = crate::template_panel::breadcrumb_for_offset(&template.tree, offset.get())
+        && let Some(path) =
+            crate::template_panel::breadcrumb_for_offset(&template.tree, file.source.as_ref(), offset.get())
     {
         let layer = ui.layer_id();
         egui::Tooltip::always_open(

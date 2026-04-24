@@ -119,6 +119,11 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
             None
         }
     });
+    // Every attribute the interpreter recorded flows through so the
+    // UI (and other hosts) can act on them — notably `hxy_endian` on
+    // primitive arrays, which the hex-view tooltip uses to decode
+    // individual elements on hover.
+    let attributes: Vec<(String, String)> = n.attrs.clone();
     wit::Node {
         name: n.name.clone(),
         type_name: convert_node_type(&n.ty),
@@ -127,6 +132,7 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
         parent: n.parent.map(|p| p.as_u32()),
         array: None,
         display,
+        attributes,
     }
 }
 

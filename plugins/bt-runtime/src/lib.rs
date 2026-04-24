@@ -142,9 +142,10 @@ fn convert_node(node: &NodeOut) -> template::Node {
         type_name: convert_node_type(&node.ty),
         span: template::Span { offset: node.offset, length: node.length },
         value: node.value.as_ref().map(convert_value),
-        parent: node.parent,
+        parent: node.parent.map(|p| p.as_u32()),
         array: None as Option<template::DeferredArray>,
         display,
+        attributes: node.attrs.clone(),
     }
 }
 

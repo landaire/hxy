@@ -581,7 +581,18 @@ fn generate_leaf_colors(n: usize) -> Vec<egui::Color32> {
 /// Walk `tree` to find the deepest node whose span contains `byte`
 /// and return a top-down path of "{type} {name}[ = {value}]" strings.
 /// `None` when no template field covers the offset.
-pub fn breadcrumb_for_offset(tree: &hxy_plugin_host::template::ResultTree, byte: u64) -> Option<Vec<String>> {
+///
+/// When the deepest node is a primitive `ScalarArray`, the breadcrumb
+/// gets an extra leaf row showing the specific element under the
+/// cursor — e.g. `uchar [77] = 120` — decoded on the fly from
+/// `source`. That's the reason the source is taken as an argument:
+/// primitive arrays are emitted as a single contiguous node, so
+/// individual element values aren't in the tree.
+pub fn breadcrumb_for_offset(
+    tree: &hxy_plugin_host::template::ResultTree,
+    source: &dyn hxy_core::HexSource,
+    byte: u64,
+) -> Option<Vec<String>> {
     // Find the deepest containing node by scanning once; later (more
     // specific) nodes in the flat pre-order list win over ancestors.
     let mut deepest: Option<u32> = None;
@@ -603,21 +614,137 @@ pub fn breadcrumb_for_offset(tree: &hxy_plugin_host::template::ResultTree, byte:
     }
     chain.reverse();
 
-    Some(
-        chain
-            .iter()
-            .map(|idx| {
-                let node = &tree.nodes[*idx as usize];
-                let is_leaf = *idx == leaf;
-                let ty = hxy_plugin_host::node_type_label(&node.type_name);
-                let value_str = if is_leaf { format_node_value(node) } else { None };
-                match value_str {
-                    Some(v) => format!("{} {} = {}", ty, node.name, v),
-                    None => format!("{} {}", ty, node.name),
-                }
-            })
-            .collect(),
+    let mut lines: Vec<String> = chain
+        .iter()
+        .map(|idx| {
+            let node = &tree.nodes[*idx as usize];
+            let is_leaf = *idx == leaf;
+            let ty = hxy_plugin_host::node_type_label(&node.type_name);
+            let value_str = if is_leaf { format_node_value(node) } else { None };
+            match value_str {
+                Some(v) => format!("{} {} = {}", ty, node.name, v),
+                None => format!("{} {}", ty, node.name),
+            }
+        })
+        .collect();
+
+    if let Some(row) = array_element_row(&tree.nodes[leaf as usize], source, byte) {
+        lines.push(row);
+    }
+    Some(lines)
+}
+
+/// Produce the per-element breadcrumb row for a primitive scalar
+/// array. Returns `None` when the leaf isn't a scalar array, the
+/// byte lands in the array's padding, or the source read fails.
+fn array_element_row(
+    leaf: &hxy_plugin_host::template::Node,
+    source: &dyn hxy_core::HexSource,
+    byte: u64,
+) -> Option<String> {
+    use hxy_plugin_host::template::NodeType;
+
+    let (kind, count) = match &leaf.type_name {
+        NodeType::ScalarArray((k, n)) => (*k, *n),
+        _ => return None,
+    };
+    let elem_width = scalar_kind_width(kind)?;
+    if elem_width == 0 || count == 0 {
+        return None;
+    }
+    let array_start = leaf.span.offset;
+    let relative = byte.checked_sub(array_start)?;
+    let index = relative / elem_width;
+    if index >= count {
+        return None;
+    }
+    let elem_offset = array_start + index * elem_width;
+    let range = hxy_core::ByteRange::new(
+        hxy_core::ByteOffset::new(elem_offset),
+        hxy_core::ByteOffset::new(elem_offset + elem_width),
     )
+    .ok()?;
+    let bytes = source.read(range).ok()?;
+    let endian = leaf
+        .attributes
+        .iter()
+        .find_map(|(k, v)| (k == "hxy_endian").then(|| v.as_str()))
+        .unwrap_or("little");
+    let value = decode_scalar_bytes(kind, &bytes, endian)?;
+    let type_label = scalar_kind_name(kind);
+    Some(format!("{type_label} [{index}] = {value}"))
+}
+
+fn scalar_kind_width(kind: hxy_plugin_host::template::ScalarKind) -> Option<u64> {
+    use hxy_plugin_host::template::ScalarKind as K;
+    Some(match kind {
+        K::U8K | K::S8K | K::BoolK => 1,
+        K::U16K | K::S16K => 2,
+        K::U32K | K::S32K | K::F32K => 4,
+        K::U64K | K::S64K | K::F64K => 8,
+        K::BytesK | K::StringK => return None,
+    })
+}
+
+fn scalar_kind_name(kind: hxy_plugin_host::template::ScalarKind) -> &'static str {
+    use hxy_plugin_host::template::ScalarKind as K;
+    match kind {
+        K::U8K => "uchar",
+        K::S8K => "char",
+        K::U16K => "uint16",
+        K::S16K => "int16",
+        K::U32K => "uint32",
+        K::S32K => "int32",
+        K::U64K => "uint64",
+        K::S64K => "int64",
+        K::F32K => "float",
+        K::F64K => "double",
+        K::BoolK => "bool",
+        K::BytesK => "bytes",
+        K::StringK => "string",
+    }
+}
+
+fn decode_scalar_bytes(
+    kind: hxy_plugin_host::template::ScalarKind,
+    bytes: &[u8],
+    endian: &str,
+) -> Option<String> {
+    use hxy_plugin_host::template::ScalarKind as K;
+    let big = endian == "big";
+    let read_u = |b: &[u8]| -> u64 {
+        let mut buf = [0u8; 8];
+        if big {
+            buf[8 - b.len()..].copy_from_slice(b);
+            u64::from_be_bytes(buf)
+        } else {
+            buf[..b.len()].copy_from_slice(b);
+            u64::from_le_bytes(buf)
+        }
+    };
+    let read_i = |b: &[u8]| -> i64 {
+        let raw = read_u(b);
+        let shift = 64 - (b.len() as u32) * 8;
+        ((raw << shift) as i64) >> shift
+    };
+    Some(match kind {
+        K::U8K => format!("{}", bytes.first()?),
+        K::S8K => format!("{}", *bytes.first()? as i8),
+        K::U16K | K::U32K | K::U64K => format!("{}", read_u(bytes)),
+        K::S16K | K::S32K | K::S64K => format!("{}", read_i(bytes)),
+        K::F32K => {
+            let arr: [u8; 4] = bytes.try_into().ok()?;
+            let v = if big { f32::from_be_bytes(arr) } else { f32::from_le_bytes(arr) };
+            format!("{v}")
+        }
+        K::F64K => {
+            let arr: [u8; 8] = bytes.try_into().ok()?;
+            let v = if big { f64::from_be_bytes(arr) } else { f64::from_le_bytes(arr) };
+            format!("{v}")
+        }
+        K::BoolK => format!("{}", bytes.first()? != &0),
+        K::BytesK | K::StringK => return None,
+    })
 }
 
 fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {

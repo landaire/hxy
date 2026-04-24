@@ -73,6 +73,7 @@ impl GuestParsedTemplate for PngParsed {
             parent: None,
             array: None,
             display: None,
+            attributes: Vec::new(),
         });
         let root: u32 = 0;
 
@@ -84,6 +85,7 @@ impl GuestParsedTemplate for PngParsed {
             parent: Some(root),
             array: None,
             display: Some(template::DisplayHint::Hex),
+            attributes: Vec::new(),
         });
 
         let mut off: u64 = 8;
@@ -126,6 +128,7 @@ impl GuestParsedTemplate for PngParsed {
                 parent: Some(root),
                 array: None,
                 display: None,
+                attributes: Vec::new(),
             });
 
             nodes.push(template::Node {
@@ -136,6 +139,7 @@ impl GuestParsedTemplate for PngParsed {
                 parent: Some(chunk_idx),
                 array: None,
                 display: Some(template::DisplayHint::Decimal),
+                attributes: Vec::new(),
             });
             nodes.push(template::Node {
                 name: "type".to_string(),
@@ -145,6 +149,7 @@ impl GuestParsedTemplate for PngParsed {
                 parent: Some(chunk_idx),
                 array: None,
                 display: Some(template::DisplayHint::Ascii),
+                attributes: Vec::new(),
             });
 
             if ty == "IHDR" && data_len == 13 {
@@ -227,6 +232,7 @@ impl GuestParsedTemplate for PngParsed {
                     parent: Some(chunk_idx),
                     array: None,
                     display: None,
+                    attributes: Vec::new(),
                 });
             }
 
@@ -295,6 +301,7 @@ fn push_scalar(
         parent: Some(parent),
         array: None,
         display: None,
+        attributes: Vec::new(),
     });
 }
 

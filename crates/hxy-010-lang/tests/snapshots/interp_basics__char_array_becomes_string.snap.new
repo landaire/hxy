@@ -1,5 +1,6 @@
 ---
 source: crates/hxy-010-lang/tests/interp_basics.rs
+assertion_line: 53
 expression: result
 ---
 RunResult {

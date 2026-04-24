@@ -85,6 +85,7 @@ impl GuestParsedTemplate for ParsedTemplate {
             parent: None,
             array: None,
             display: None,
+            attributes: Vec::new(),
         });
         nodes.push(template::Node {
             name: "magic".to_string(),
@@ -94,6 +95,7 @@ impl GuestParsedTemplate for ParsedTemplate {
             parent: Some(0),
             array: None,
             display: Some(template::DisplayHint::Hex),
+            attributes: Vec::new(),
         });
         nodes.push(template::Node {
             name: "count".to_string(),
@@ -103,6 +105,7 @@ impl GuestParsedTemplate for ParsedTemplate {
             parent: Some(0),
             array: None,
             display: Some(template::DisplayHint::Decimal),
+            attributes: Vec::new(),
         });
         nodes.push(template::Node {
             name: "data".to_string(),
@@ -118,6 +121,7 @@ impl GuestParsedTemplate for ParsedTemplate {
                 first_offset: 12,
             }),
             display: None,
+            attributes: Vec::new(),
         });
 
         template::ResultTree { nodes, diagnostics: vec![], byte_palette: None }
@@ -155,6 +159,7 @@ impl GuestParsedTemplate for ParsedTemplate {
                 parent: None,
                 array: None,
                 display: Some(template::DisplayHint::Hex),
+                attributes: Vec::new(),
             });
         }
         Ok(out)

@@ -193,6 +193,12 @@ interface template {
         parent: option<u32>,
         array: option<deferred-array>,
         display: option<display-hint>,
+        /// Free-form `(key, value)` pairs carried alongside the
+        /// structured fields. Runtimes use this to forward template
+        /// attributes (`<comment="...">`) and out-of-band hints the
+        /// host needs at render time — currently `hxy_endian` so
+        /// tooltips can re-decode array elements on hover.
+        attributes: list<tuple<string, string>>,
     }
 
     enum severity {
