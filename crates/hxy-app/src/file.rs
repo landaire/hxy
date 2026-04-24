@@ -84,7 +84,7 @@ pub struct TemplateRun {
 #[cfg(not(target_arch = "wasm32"))]
 pub enum TemplateRunOutcome {
     Ok {
-        parsed: std::sync::Arc<hxy_plugin_host::ParsedTemplate>,
+        parsed: std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>,
         tree: hxy_plugin_host::ResultTree,
     },
     Err(String),
@@ -114,7 +114,7 @@ pub struct TemplateState {
     /// (e.g. missing runtime, parse failure) — in that case
     /// `expand_array` can't be called and the panel renders only the
     /// diagnostics header.
-    pub parsed: Option<std::sync::Arc<hxy_plugin_host::ParsedTemplate>>,
+    pub parsed: Option<std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>>,
     pub tree: hxy_plugin_host::ResultTree,
     /// Show the panel in the file tab. User can toggle via the tree
     /// panel's close button.

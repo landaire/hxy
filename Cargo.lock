@@ -2242,6 +2242,7 @@ dependencies = [
  "egui_ltreeview",
  "egui_table",
  "egui_taffy",
+ "hxy-010-lang",
  "hxy-core",
  "hxy-i18n",
  "hxy-plugin-host",

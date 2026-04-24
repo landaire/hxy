@@ -502,7 +502,7 @@ pub fn toggle_collapse(state: &mut TemplateState, idx: TemplateNodeIdx) {
     }
 }
 
-pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
+pub fn new_state(parsed: std::sync::Arc<dyn ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
     let tree = parsed.execute(&[])?;
     Ok(new_state_from(parsed, tree))
 }
@@ -511,7 +511,7 @@ pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState
 /// the background-run path where the worker thread executes the
 /// template and sends the result back to the UI.
 pub fn new_state_from(
-    parsed: std::sync::Arc<ParsedTemplate>,
+    parsed: std::sync::Arc<dyn ParsedTemplate>,
     tree: hxy_plugin_host::ResultTree,
 ) -> TemplateState {
     TemplateState {

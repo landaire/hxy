@@ -8,6 +8,7 @@ use egui_dock::DockState;
 use egui_dock::Style;
 use egui_dock::TabViewer;
 use egui_dock::tab_viewer::OnCloseResponse;
+use hxy_plugin_host::TemplateRuntime as _;
 use hxy_vfs::TabSource;
 use hxy_vfs::VfsHandler;
 use hxy_vfs::VfsRegistry;
@@ -29,7 +30,7 @@ pub struct HxyApp {
     next_file_id: u64,
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
-    template_runtimes: Vec<Arc<hxy_plugin_host::TemplateRuntime>>,
+    template_runtimes: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
     commands: Vec<Box<dyn crate::commands::ToolbarCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -164,7 +165,7 @@ impl HxyApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<hxy_plugin_host::TemplateRuntime>> {
+    pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
         self.template_runtimes
             .iter()
             .find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension)))
@@ -824,13 +825,10 @@ fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
     std::thread::spawn(move || {
         let outcome = match runtime.parse(source, &template_source) {
-            Ok(parsed) => {
-                let parsed = Arc::new(parsed);
-                match parsed.execute(&[]) {
-                    Ok(tree) => crate::file::TemplateRunOutcome::Ok { parsed, tree },
-                    Err(e) => crate::file::TemplateRunOutcome::Err(format!("Execute failed: {e}")),
-                }
-            }
+            Ok(parsed) => match parsed.execute(&[]) {
+                Ok(tree) => crate::file::TemplateRunOutcome::Ok { parsed, tree },
+                Err(e) => crate::file::TemplateRunOutcome::Err(format!("Execute failed: {e}")),
+            },
             Err(e) => crate::file::TemplateRunOutcome::Err(format!("Parse failed: {e}")),
         };
         // Best-effort — if the tab closed first the sender's inbox is
@@ -1329,32 +1327,25 @@ fn user_template_runtimes_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_user_template_runtimes() -> Vec<Arc<hxy_plugin_host::TemplateRuntime>> {
-    let mut out: Vec<Arc<hxy_plugin_host::TemplateRuntime>> = Vec::new();
+fn load_user_template_runtimes() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
+    let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
 
-    // Built-in runtimes ship with the binary so the common template
-    // languages work out of the box. They're registered before the
-    // user's plugin directory so user-installed overrides can shadow
-    // them (lookup prefers the later match? — actually we scan
-    // sequentially and pick the first hit, so put user plugins LAST
-    // to allow override; we put builtins last here so user ones win).
-    for (label, bytes) in BUILTIN_TEMPLATE_RUNTIMES {
-        match hxy_plugin_host::load_template_runtime_from_bytes(bytes, label) {
-            Ok(r) => {
-                tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = true, "loaded template runtime");
-                out.push(Arc::new(r));
-            }
-            Err(e) => tracing::warn!(error = %e, label = label, "load builtin template runtime"),
-        }
+    // Native builtin runtimes link as regular Rust — no WASM wrap,
+    // no separate rebuild cycle. A change to hxy-010-lang reaches
+    // the user's next `cargo run` automatically.
+    for rt in crate::builtin_runtimes::builtins() {
+        tracing::info!(name = rt.name(), exts = ?rt.extensions(), builtin = true, "loaded template runtime");
+        out.push(rt);
     }
 
+    // User-installed WASM components can still override a builtin
+    // for the same extension — they get prepended so `find()` picks
+    // them first.
     if let Some(dir) = user_template_runtimes_dir() {
         match hxy_plugin_host::load_template_runtimes_from_dir(&dir) {
             Ok(runtimes) => {
                 for r in runtimes {
                     tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = false, "loaded template runtime");
-                    // Prepend user runtimes so they take precedence
-                    // over builtins with the same extension.
                     out.insert(0, Arc::new(r));
                 }
             }
@@ -1364,15 +1355,6 @@ fn load_user_template_runtimes() -> Vec<Arc<hxy_plugin_host::TemplateRuntime>> {
 
     out
 }
-
-/// Components embedded in the binary so common template languages
-/// are usable without the user having to install anything. Each
-/// entry is `(label, bytes)` — `label` is only used in error reports.
-#[cfg(not(target_arch = "wasm32"))]
-const BUILTIN_TEMPLATE_RUNTIMES: &[(&str, &[u8])] = &[(
-    "builtin:010-bt",
-    include_bytes!("../assets/bt-runtime.component.wasm"),
-)];
 
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();

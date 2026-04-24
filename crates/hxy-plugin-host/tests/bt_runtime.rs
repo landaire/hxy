@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_plugin_host::TemplateRuntime as _;
 use hxy_plugin_host::Value;
 
 fn component_path() -> PathBuf {

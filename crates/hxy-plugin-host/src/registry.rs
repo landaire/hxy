@@ -15,7 +15,7 @@ use crate::bindings::handler_world::Plugin;
 use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::handler::PluginHandler;
 use crate::host::HostState;
-use crate::template::TemplateRuntime;
+use crate::template::WasmTemplateRuntime;
 
 #[derive(Debug, Error)]
 pub enum PluginLoadError {
@@ -98,7 +98,7 @@ fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> 
 /// `template-runtime` world. Components that don't match the world
 /// are reported as errors rather than silently skipped — the caller
 /// should split template and handler plugin directories.
-pub fn load_template_runtimes_from_dir(dir: &Path) -> Result<Vec<TemplateRuntime>, PluginLoadError> {
+pub fn load_template_runtimes_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRuntime>, PluginLoadError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -132,21 +132,21 @@ fn load_template_single(
     engine: &Engine,
     linker: Arc<Linker<HostState>>,
     path: &Path,
-) -> Result<TemplateRuntime, PluginLoadError> {
+) -> Result<WasmTemplateRuntime, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
     let component =
         Component::new(engine, &bytes).map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
-    TemplateRuntime::new(engine.clone(), component, linker)
+    WasmTemplateRuntime::new(engine.clone(), component, linker)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
 
-/// Compile an already-in-memory component into a [`TemplateRuntime`].
+/// Compile an already-in-memory component into a [`WasmTemplateRuntime`].
 /// The `label` is only used for error reporting — typically a short
 /// identifier like `"builtin:010-bt"`.
 pub fn load_template_runtime_from_bytes(
     bytes: &[u8],
     label: &str,
-) -> Result<TemplateRuntime, PluginLoadError> {
+) -> Result<WasmTemplateRuntime, PluginLoadError> {
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
@@ -159,6 +159,6 @@ pub fn load_template_runtime_from_bytes(
     let label_path = PathBuf::from(label);
     let component = Component::new(&engine, bytes)
         .map_err(|source| PluginLoadError::Compile { path: label_path.clone(), source })?;
-    TemplateRuntime::new(engine, component, linker)
+    WasmTemplateRuntime::new(engine, component, linker)
         .map_err(|source| PluginLoadError::Probe { path: label_path, source })
 }

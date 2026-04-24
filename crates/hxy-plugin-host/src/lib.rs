@@ -33,3 +33,5 @@ pub use template::Severity;
 pub use template::Span;
 pub use template::TemplateRuntime;
 pub use template::Value;
+pub use template::WasmParsedTemplate;
+pub use template::WasmTemplateRuntime;
