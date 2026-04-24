@@ -3,6 +3,8 @@
 //! consecutive-match bonuses, SIMD-accelerated scoring -- the
 //! bits you'd have to hand-roll otherwise.
 
+use std::borrow::Cow;
+
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
 use nucleo_matcher::pattern::Pattern;
@@ -16,11 +18,13 @@ use crate::Normalization;
 /// Returns indices into `entries` ordered best match first. An empty
 /// query yields every index in declaration order.
 ///
-/// `haystack_of` builds the string to score against -- typically
-/// `title + " " + subtitle` so both participate in matching. The
-/// scoring / case / normalisation knobs come straight from the
-/// matching nucleo types; see [`MatcherConfig`], [`CaseMatching`],
-/// and [`Normalization`].
+/// `haystack_of` builds the string to score against. It returns a
+/// [`Cow<str>`] so callers can return a borrowed reference to an
+/// existing field (the common case: `Cow::Borrowed(&entry.title)`)
+/// and only pay for an allocation when they genuinely need to
+/// concatenate, e.g. `title + " " + subtitle`. The scoring / case /
+/// normalisation knobs come straight from the matching nucleo types;
+/// see [`MatcherConfig`], [`CaseMatching`], and [`Normalization`].
 pub fn filter_and_sort<A, F>(
     query: &str,
     entries: &[Entry<A>],
@@ -30,7 +34,7 @@ pub fn filter_and_sort<A, F>(
     haystack_of: F,
 ) -> Vec<usize>
 where
-    F: Fn(&Entry<A>) -> String,
+    F: for<'e> Fn(&'e Entry<A>) -> Cow<'e, str>,
 {
     if query.is_empty() {
         return (0..entries.len()).collect();
@@ -44,7 +48,7 @@ where
         .filter_map(|(idx, e)| {
             buf.clear();
             let haystack = haystack_of(e);
-            let utf32 = Utf32Str::new(&haystack, &mut buf);
+            let utf32 = Utf32Str::new(haystack.as_ref(), &mut buf);
             pattern.score(utf32, &mut matcher).map(|s| (s, idx))
         })
         .collect();
@@ -64,7 +68,7 @@ mod tests {
     fn subsequence_match() {
         let entries: Vec<Entry<()>> = vec![Entry::new("open-template-file", ()), Entry::new("some-other-thing", ())];
         let (m, c, n) = defaults();
-        let hits = filter_and_sort("otf", &entries, &m, c, n, |e| e.title.clone());
+        let hits = filter_and_sort("otf", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str()));
         assert_eq!(hits.first(), Some(&0));
     }
 
@@ -72,7 +76,7 @@ mod tests {
     fn prefix_beats_middle() {
         let entries: Vec<Entry<usize>> = vec![Entry::new("xoopens", 0), Entry::new("open template", 1)];
         let (m, c, n) = defaults();
-        let hits = filter_and_sort("opn", &entries, &m, c, n, |e| e.title.clone());
+        let hits = filter_and_sort("opn", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str()));
         assert_eq!(hits.first(), Some(&1));
     }
 
@@ -80,14 +84,17 @@ mod tests {
     fn empty_query_matches_all() {
         let entries: Vec<Entry<usize>> = vec![Entry::new("a", 0), Entry::new("b", 1)];
         let (m, c, n) = defaults();
-        assert_eq!(filter_and_sort("", &entries, &m, c, n, |e| e.title.clone()), vec![0, 1]);
+        assert_eq!(
+            filter_and_sort("", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str())),
+            vec![0, 1]
+        );
     }
 
     #[test]
     fn non_matching_entries_dropped() {
         let entries: Vec<Entry<usize>> = vec![Entry::new("zzzzzzz", 0), Entry::new("keep", 1)];
         let (m, c, n) = defaults();
-        let hits = filter_and_sort("keep", &entries, &m, c, n, |e| e.title.clone());
+        let hits = filter_and_sort("keep", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str()));
         assert_eq!(hits, vec![1]);
     }
 }

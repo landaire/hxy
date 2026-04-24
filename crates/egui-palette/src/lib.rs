@@ -311,8 +311,8 @@ pub fn show_with_style<A: Clone>(
         style.case_matching,
         style.normalization,
         |e| match &e.subtitle {
-            Some(sub) => format!("{} {}", e.title, sub),
-            None => e.title.clone(),
+            Some(sub) => std::borrow::Cow::Owned(format!("{} {}", e.title, sub)),
+            None => std::borrow::Cow::Borrowed(e.title.as_str()),
         },
     );
     if state.query != state.last_query {
@@ -321,7 +321,11 @@ pub fn show_with_style<A: Clone>(
         // selection on whatever row a stale index happened to point
         // at.
         state.selected = 0;
-        state.last_query = state.query.clone();
+        // Reuse the `last_query` buffer instead of allocating a
+        // fresh String every time the query changes; the typical
+        // edit tacks on or deletes a handful of bytes, so the
+        // existing capacity will fit.
+        state.last_query.clone_from(&state.query);
     } else if !filtered.is_empty() {
         state.selected = state.selected.min(filtered.len() - 1);
     } else {
