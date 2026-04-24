@@ -3401,9 +3401,14 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 && let Some(file) = app.files.get_mut(&id)
             {
                 let max = file.editor.source().len().get().saturating_sub(1);
-                let clamped = target.min(max);
-                file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));
-                file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(clamped));
+                let clamped = hxy_core::ByteOffset::new(target.min(max));
+                file.editor.set_selection(Some(hxy_core::Selection::caret(clamped)));
+                // Only snap the viewport when the target isn't already
+                // on screen; a nearby jump within the visible range
+                // should leave scroll exactly where it is.
+                if !file.editor.is_offset_visible(clamped) {
+                    file.editor.set_scroll_to_byte(clamped);
+                }
             }
         }
         crate::command_palette::Action::SetSelection { start, end_exclusive } => {
@@ -3416,12 +3421,11 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     return;
                 }
                 let last = end_exclusive.saturating_sub(1).min(source_len.saturating_sub(1));
-                let anchor = start.min(source_len.saturating_sub(1));
-                file.editor.set_selection(Some(hxy_core::Selection {
-                    anchor: hxy_core::ByteOffset::new(anchor),
-                    cursor: hxy_core::ByteOffset::new(last),
-                }));
-                file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(anchor));
+                let anchor = hxy_core::ByteOffset::new(start.min(source_len.saturating_sub(1)));
+                file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor: hxy_core::ByteOffset::new(last) }));
+                if !file.editor.is_offset_visible(anchor) {
+                    file.editor.set_scroll_to_byte(anchor);
+                }
             }
         }
         crate::command_palette::Action::NoOp => {

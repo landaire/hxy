@@ -122,6 +122,12 @@ pub struct HexEditor {
     /// `show` hasn't run yet we fall back to
     /// [`ColumnCount::DEFAULT`].
     last_columns: Option<ColumnCount>,
+    /// Byte range actually rendered last frame (after clipping).
+    /// Lets callers check whether a target offset is already on
+    /// screen before issuing a `scroll_to_byte` -- e.g. the command
+    /// palette's Go-To uses it to skip a disorienting snap when the
+    /// user jumps to a nearby offset that's already visible.
+    last_visible_range: Option<ByteRange>,
     #[cfg(feature = "editor")]
     edit: editor::EditState,
 }
@@ -144,6 +150,7 @@ impl HexEditor {
                 pending_scroll: None,
                 pending_scroll_to_byte: None,
                 last_columns: None,
+                last_visible_range: None,
                 edit,
             }
         }
@@ -158,6 +165,7 @@ impl HexEditor {
                 pending_scroll: None,
                 pending_scroll_to_byte: None,
                 last_columns: None,
+                last_visible_range: None,
             }
         }
     }
@@ -455,9 +463,20 @@ impl HexEditor {
     pub fn on_response(&mut self, response: &HexViewResponse, columns: ColumnCount) {
         self.scroll_offset = response.scroll_offset;
         self.last_columns = Some(columns);
+        self.last_visible_range = response.visible_range;
         if let Some(pane) = response.interacted_pane {
             self.set_active_pane(pane);
         }
+    }
+
+    /// `true` when `offset` lies inside the byte range the last
+    /// rendered frame actually painted (after scroll-area clipping).
+    /// Returns `false` if no frame has been rendered yet. Callers
+    /// use this to skip a disorienting scroll snap when a navigation
+    /// target is already on screen.
+    pub fn is_offset_visible(&self, offset: ByteOffset) -> bool {
+        let Some(range) = self.last_visible_range else { return false };
+        offset.get() >= range.start().get() && offset.get() < range.end().get()
     }
 }
 

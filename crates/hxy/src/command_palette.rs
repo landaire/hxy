@@ -149,6 +149,13 @@ pub fn show(
         Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),
         Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),
     };
+    // Argument-style modes build a single dynamic entry from the
+    // query itself; fuzzy-filtering that entry against the raw
+    // argument text would hide it the moment the argument isn't a
+    // subsequence of the human-readable row label (e.g. hex args
+    // with `0x` + commas that don't appear in the `Select .. ..`
+    // output format).
+    state.inner.bypass_filter = matches!(state.mode, Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange);
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Closed => Some(Outcome::Closed),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),

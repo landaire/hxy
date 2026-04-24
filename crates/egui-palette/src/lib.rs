@@ -59,6 +59,15 @@ pub struct State {
     /// Set by [`State::open`]; consumed by the widget to
     /// `request_focus` on the text input on its first frame.
     pub pending_focus: bool,
+    /// When `true`, the widget passes entries through unchanged
+    /// instead of fuzzy-matching against `query`. Host-supplied
+    /// entries are already the thing the user will activate --
+    /// useful for "query is the argument" modes (e.g. Go to offset)
+    /// where the entry list is a single dynamically-built row and
+    /// any attempt to fuzzy-filter by the raw argument string would
+    /// hide the entry the moment it didn't happen to be a subsequence
+    /// of the entry's human-readable title.
+    pub bypass_filter: bool,
     /// Snapshot of `query` from the previous frame. When the
     /// palette detects `query != last_query` it snaps `selected`
     /// back to the top (best match), matching VS Code / Zed UX.
@@ -75,10 +84,12 @@ impl State {
         self.last_query.clear();
         self.selected = 0;
         self.pending_focus = true;
+        self.bypass_filter = false;
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.bypass_filter = false;
     }
 }
 
@@ -354,13 +365,20 @@ pub fn show_with_style<A: Clone>(
         return Some(Outcome::Closed);
     }
 
-    let filtered =
+    let filtered = if state.bypass_filter {
+        // Host wants every entry shown in declaration order; the
+        // query is an argument being typed, not a filter. Each
+        // result has empty `match_indices` so `layout_highlighted`
+        // won't paint spurious highlights on non-matching chars.
+        (0..entries.len()).map(|index| fuzzy::MatchResult { index, match_indices: Vec::new() }).collect()
+    } else {
         fuzzy::filter_and_sort(&state.query, entries, &style.matcher, style.case_matching, style.normalization, |e| {
             match &e.subtitle {
                 Some(sub) => std::borrow::Cow::Owned(format!("{} {}", e.title, sub)),
                 None => std::borrow::Cow::Borrowed(e.title.as_str()),
             }
-        });
+        })
+    };
     if state.query != state.last_query {
         // The top-scoring result almost always moved on a query
         // change, so drop the user back to row 0 instead of leaving
