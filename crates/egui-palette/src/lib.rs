@@ -367,6 +367,14 @@ pub fn show_with_style<A: Clone>(
     // The first matching key wins -- callers get its identity in
     // `DismissReason::Key` so they can distinguish bindings if they
     // configured more than one.
+    //
+    // Don't return early here even if a dismiss key fired: the host
+    // might react by switching to a sibling mode (cascade pop-back)
+    // and then re-render the palette next frame. If we skipped
+    // painting *this* frame the user would see one frame of
+    // background showing through -- a visible flash. Painting the
+    // current state and returning the outcome at the end of `show`
+    // keeps the panel on screen continuously across mode swaps.
     let dismissed_key = ctx.input_mut(|i| {
         let mut found: Option<egui::Key> = None;
         i.events.retain(|event| {
@@ -381,9 +389,6 @@ pub fn show_with_style<A: Clone>(
         });
         found
     });
-    if let Some(key) = dismissed_key {
-        return Some(Outcome::Dismissed(DismissReason::Key(key)));
-    }
 
     let filtered = if state.bypass_filter {
         // Host wants every entry shown in declaration order; the
@@ -535,10 +540,16 @@ pub fn show_with_style<A: Clone>(
             });
         });
 
+    // Pick wins over dismiss: hitting Enter on a row already
+    // commits the action, even if some unrelated dismiss key was in
+    // the same input batch (rare in practice but cheap to specify).
     if let Some(row) = picked_idx
         && let Some(hit) = filtered.get(row)
     {
         return Some(Outcome::Picked(entries[hit.index].data.clone()));
+    }
+    if let Some(key) = dismissed_key {
+        return Some(Outcome::Dismissed(DismissReason::Key(key)));
     }
     None
 }
