@@ -1010,10 +1010,10 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
     if !show_ready && !show_running {
         return;
     }
-    egui::Panel::right(egui::Id::new(("hxy-template-panel", id.get())))
+    egui::Panel::bottom(egui::Id::new(("hxy-template-panel", id.get())))
         .resizable(true)
-        .default_size(320.0)
-        .min_size(240.0)
+        .default_size(300.0)
+        .min_size(160.0)
         .show_inside(ui, |ui| {
             if let Some(run) = file.template_running.as_ref() {
                 render_template_running(ui, run);
