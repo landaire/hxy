@@ -4,6 +4,8 @@
 fn main() -> eframe::Result<()> {
     use std::sync::Arc;
 
+    use hxy_lib::cli::Cli;
+    use hxy_lib::ipc;
     use hxy_lib::persist;
     use hxy_lib::persist::SaveSink;
     use hxy_lib::state::PersistedState;
@@ -18,6 +20,26 @@ fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     hxy_i18n::init_from_system_locale();
+
+    let cli = Cli::parse_args();
+    let cli_files = cli.resolved_files();
+    // Single-instance: if another hxy is already running, hand off
+    // the file list and exit so the user sees their tabs in the
+    // window they already had open instead of a brand-new copy of
+    // the app stealing focus. A failed connect is the normal
+    // "we're the first instance" path -- keep going and start the
+    // GUI ourselves.
+    if !cli_files.is_empty() {
+        match ipc::try_send_to_running_instance(&cli_files) {
+            Ok(()) => {
+                tracing::info!(count = cli_files.len(), "forwarded to running instance");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "no running instance; starting our own");
+            }
+        }
+    }
 
     let loaded_window = match persist::load_window_settings_sync() {
         Ok(v) => v,
@@ -78,6 +100,16 @@ fn main() -> eframe::Result<()> {
             let mut app = hxy_lib::HxyApp::new(cc, state_for_app);
             if let Some(sink) = sink {
                 app = app.with_sink(sink);
+            }
+            // The IPC inbox needs the egui Context to schedule
+            // repaints when a forwarded batch arrives, so spin up
+            // the listener here -- after `cc` is available -- and
+            // hand the inbox to the app.
+            if let Some(inbox) = ipc::start_server(&cc.egui_ctx) {
+                app = app.with_ipc_inbox(inbox);
+            }
+            if !cli_files.is_empty() {
+                app = app.with_cli_paths(cli_files);
             }
             Ok(Box::new(app))
         }),

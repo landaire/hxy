@@ -107,6 +107,19 @@ pub struct HxyApp {
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
     pending_close_tab: Option<PendingCloseTab>,
+    /// File paths from the launch's command line. Drained on the
+    /// first frame and turned into open-file requests, so a
+    /// `hxy a.bin b.bin` invocation lands two tabs as soon as the
+    /// window comes up.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_cli_paths: Vec<std::path::PathBuf>,
+    /// Inbox carrying path batches forwarded from second-instance
+    /// invocations over the local IPC socket. `None` when the
+    /// listener failed to bind (the GUI still works -- it just
+    /// can't accept forwarded opens until next launch). Drained
+    /// every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    ipc_inbox: Option<egui_inbox::UiInbox<Vec<std::path::PathBuf>>>,
 }
 
 /// One tab the user has asked to close, gated on its dirty buffer.
@@ -205,6 +218,10 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
             pending_close_tab: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_cli_paths: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            ipc_inbox: None,
         }
     }
 
@@ -333,6 +350,28 @@ impl HxyApp {
     pub fn with_sink(mut self, sink: crate::persist::SaveSink) -> Self {
         self.sink = Some(sink);
         self.restore_open_tabs();
+        self
+    }
+
+    /// Stash file paths captured from the process command line so
+    /// the first frame opens them. Resolution to absolute form
+    /// happens in [`crate::cli::Cli::resolved_files`] before this
+    /// is called -- we don't want to re-resolve against the
+    /// running instance's CWD on the receiving end of an IPC
+    /// forward.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_cli_paths(mut self, paths: Vec<std::path::PathBuf>) -> Self {
+        self.pending_cli_paths = paths;
+        self
+    }
+
+    /// Hand off the IPC listener's inbox so the running instance
+    /// can pick up forwarded paths from later `hxy <file>...`
+    /// invocations. `None` is fine: the GUI just won't accept
+    /// forwarded opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_ipc_inbox(mut self, inbox: egui_inbox::UiInbox<Vec<std::path::PathBuf>>) -> Self {
+        self.ipc_inbox = Some(inbox);
         self
     }
 
@@ -657,6 +696,8 @@ impl eframe::App for HxyApp {
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_external_open_requests(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_template_runs(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
@@ -1212,6 +1253,41 @@ fn paint_drop_overlay(ctx: &egui::Context) {
         egui::TextStyle::Heading.resolve(&ctx.global_style()),
         egui::Color32::WHITE,
     );
+}
+
+/// Drain CLI paths captured at launch and any path batches forwarded
+/// by second-instance invocations over the IPC socket. Both routes
+/// land here so the open path is identical -- read bytes, hand the
+/// file off to the same `request_open_filesystem` the file dialog
+/// uses (which dedupes via the existing duplicate-open modal).
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
+    let mut batch = std::mem::take(&mut app.pending_cli_paths);
+    if let Some(inbox) = app.ipc_inbox.as_ref() {
+        for forwarded in inbox.read(ctx) {
+            // A second-instance invocation may try to raise the
+            // running window to the front. eframe doesn't expose a
+            // direct "focus the OS window" call we can rely on
+            // cross-platform, but a request_repaint is cheap and
+            // ensures the new tab paints right away.
+            ctx.request_repaint();
+            batch.extend(forwarded);
+        }
+    }
+    for path in batch {
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                app.request_open_filesystem(name, path, bytes);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "open external path");
+            }
+        }
+    }
 }
 
 fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {

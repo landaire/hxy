@@ -31,6 +31,10 @@ pub mod template_library;
 pub mod template_panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pane_pick;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ipc;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod patch_persist;
