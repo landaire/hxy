@@ -2707,8 +2707,28 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx, &offset_ctx);
     let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
-        crate::command_palette::Outcome::Closed => app.palette.close(),
+        crate::command_palette::Outcome::Dismissed(reason) => dismiss_palette(app, reason),
         crate::command_palette::Outcome::Picked(action) => apply_palette_action(ctx, app, action),
+    }
+}
+
+/// Decide what to do when the palette is dismissed without a pick.
+/// Backdrop clicks always fully close. A dismiss key (Escape by
+/// default) pops back to the parent cascade level when the user
+/// has opted into that behaviour and we're in a sub-mode; otherwise
+/// it closes outright.
+#[cfg(not(target_arch = "wasm32"))]
+fn dismiss_palette(app: &mut HxyApp, reason: crate::command_palette::DismissReason) {
+    use crate::command_palette::DismissReason;
+    match reason {
+        DismissReason::Backdrop => app.palette.close(),
+        DismissReason::Key(_) => {
+            let pop = app.state.read().app.palette_escape_pops_to_parent;
+            match (pop, app.palette.mode.parent()) {
+                (true, Some(parent)) => app.palette.open_at(parent),
+                _ => app.palette.close(),
+            }
+        }
     }
 }
 

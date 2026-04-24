@@ -64,6 +64,25 @@ pub enum Mode {
     SelectRange,
 }
 
+impl Mode {
+    /// One level up the cascade, or `None` if already at the root.
+    /// Used by the Escape-pops-back behaviour in
+    /// `apply_palette_action`. All sub-modes today are reached
+    /// directly from `Main`, so this collapses to a single `Main`
+    /// parent for everything except `Main` itself.
+    pub fn parent(self) -> Option<Self> {
+        match self {
+            Mode::Main => None,
+            Mode::Templates
+            | Mode::Uninstall
+            | Mode::Recent
+            | Mode::GoToOffset
+            | Mode::SelectFromOffset
+            | Mode::SelectRange => Some(Mode::Main),
+        }
+    }
+}
+
 /// Activation payload the app hands back to itself when the user
 /// picks an entry. Cloneable so it can ride back through
 /// [`egui_palette::Outcome::Picked`].
@@ -157,12 +176,17 @@ pub fn show(
     // output format).
     state.inner.bypass_filter = matches!(state.mode, Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange);
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
-        egui_palette::Outcome::Closed => Some(Outcome::Closed),
+        egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),
     }
 }
 
+pub use egui_palette::DismissReason;
+
 pub enum Outcome {
     Picked(Action),
-    Closed,
+    /// User dismissed without picking. The reason lets the host
+    /// pop a cascade level on Escape but always close on backdrop
+    /// click (see `app.rs` `handle_command_palette` dispatch).
+    Dismissed(DismissReason),
 }

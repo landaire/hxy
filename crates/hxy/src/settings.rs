@@ -111,6 +111,20 @@ pub struct AppSettings {
     /// [`MAX_RECENT_FILES`]. Surfaced on the welcome screen.
     #[serde(default)]
     pub recent_files: Vec<RecentFile>,
+
+    /// When `true` (default), pressing Escape inside a palette
+    /// sub-mode (Templates, GoToOffset, SelectRange, ...) pops back
+    /// to `Mode::Main` instead of closing the palette outright.
+    /// Escape from `Main` always closes. Backdrop clicks always
+    /// close regardless of this setting -- they're an explicit
+    /// "dismiss the whole thing" gesture. Set to `false` to restore
+    /// the simpler one-press-closes behaviour.
+    #[serde(default = "default_palette_escape_pops_to_parent")]
+    pub palette_escape_pops_to_parent: bool,
+}
+
+fn default_palette_escape_pops_to_parent() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -127,6 +141,7 @@ impl Default for AppSettings {
             show_minimap: true,
             minimap_colored: true,
             recent_files: Vec::new(),
+            palette_escape_pops_to_parent: true,
         }
     }
 }

@@ -136,7 +136,24 @@ impl<A> Entry<A> {
 /// or a click on the backdrop.
 pub enum Outcome<A> {
     Picked(A),
-    Closed,
+    /// The user dismissed the palette without picking an entry.
+    /// Carries the cause so hosts can make context-aware decisions
+    /// (e.g. pop one cascade level on Escape, fully close on
+    /// backdrop click).
+    Dismissed(DismissReason),
+}
+
+/// What caused the palette to dismiss without a pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DismissReason {
+    /// One of [`Style::dismiss_keys`] was pressed (defaults to
+    /// `Escape`). Hosts running cascade-style modes typically
+    /// intercept this to pop back one level instead of closing.
+    Key(egui::Key),
+    /// The user clicked outside the panel onto the dimmed backdrop.
+    /// Usually treated as an explicit "fully close" intent regardless
+    /// of cascade depth.
+    Backdrop,
 }
 
 /// Where the panel sits inside the content rect.
@@ -347,22 +364,25 @@ pub fn show_with_style<A: Clone>(
     // Drain matching key-press events so downstream handlers don't
     // also react to the same press (e.g. clearing a hex-editor
     // selection when the user hit Esc only to dismiss the palette).
-    let dismissed = ctx.input_mut(|i| {
-        let mut found = false;
+    // The first matching key wins -- callers get its identity in
+    // `DismissReason::Key` so they can distinguish bindings if they
+    // configured more than one.
+    let dismissed_key = ctx.input_mut(|i| {
+        let mut found: Option<egui::Key> = None;
         i.events.retain(|event| {
             let egui::Event::Key { key, pressed: true, repeat: false, .. } = event else {
                 return true;
             };
-            if style.dismiss_keys.iter().any(|k| k == key) {
-                found = true;
+            if found.is_none() && style.dismiss_keys.iter().any(|k| k == key) {
+                found = Some(*key);
                 return false;
             }
             true
         });
         found
     });
-    if dismissed {
-        return Some(Outcome::Closed);
+    if let Some(key) = dismissed_key {
+        return Some(Outcome::Dismissed(DismissReason::Key(key)));
     }
 
     let filtered = if state.bypass_filter {
@@ -427,7 +447,7 @@ pub fn show_with_style<A: Clone>(
                 }
             });
         if backdrop_click && style.close_on_backdrop_click {
-            return Some(Outcome::Closed);
+            return Some(Outcome::Dismissed(DismissReason::Backdrop));
         }
     }
 
