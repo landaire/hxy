@@ -52,6 +52,13 @@ pub struct HxyApp {
     /// existing tab or open a second copy. `None` outside that window.
     pending_duplicate: Option<PendingDuplicate>,
 
+    /// Set when an open hit a sidecar from a previous session that
+    /// still matches the file on disk. The modal asks the user
+    /// whether to restore the saved patch or discard it; rendering
+    /// happens in `update()` next to the duplicate-open dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_patch_restore: Option<PendingPatchRestore>,
+
     /// Bounded ring buffer of plugin / template log entries. Rendered
     /// by the Console dock tab when it's open; entries accumulate
     /// regardless so opening the tab later reveals back-scroll.
@@ -118,6 +125,15 @@ struct PendingDuplicate {
     existing: FileId,
 }
 
+/// A sidecar patch found on open that the user hasn't decided what
+/// to do with yet. The modal renders next frame; either side resets
+/// `pending_patch_restore` to `None`.
+#[cfg(not(target_arch = "wasm32"))]
+struct PendingPatchRestore {
+    file_id: FileId,
+    sidecar: crate::patch_persist::PatchSidecar,
+}
+
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
@@ -147,6 +163,8 @@ impl HxyApp {
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
             pending_duplicate: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_patch_restore: None,
             console: std::collections::VecDeque::new(),
             #[cfg(not(target_arch = "wasm32"))]
             inspector: crate::inspector::InspectorState::default(),
@@ -381,6 +399,28 @@ impl HxyApp {
         self.files.insert(id, file);
         self.dock.push_to_focused_leaf(Tab::File(id));
 
+        // Look for an unsaved-edits sidecar from a previous session
+        // and offer it back to the user. The actual restore happens
+        // after the modal returns; this just stages the prompt.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(TabSource::Filesystem(path)) = source_kind.as_ref()
+            && let Some(dir) = unsaved_edits_dir()
+        {
+            match crate::patch_persist::load(&dir, path) {
+                Ok(Some(sidecar)) if sidecar.matches_disk() => {
+                    self.pending_patch_restore = Some(PendingPatchRestore { file_id: id, sidecar });
+                }
+                Ok(Some(_)) => {
+                    // Source on disk has changed since we wrote the
+                    // sidecar -- silently drop it; restoring against
+                    // a different file would corrupt unrelated bytes.
+                    let _ = crate::patch_persist::discard(&dir, path);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, path = %path.display(), "load patch sidecar"),
+            }
+        }
+
         if let Some(source) = source_kind {
             let mut g = self.state.write();
             if let TabSource::Filesystem(p) = &source {
@@ -549,11 +589,38 @@ impl eframe::App for HxyApp {
         dispatch_save_shortcut(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        render_patch_restore_dialog(ui.ctx(), self);
 
         #[cfg(not(target_arch = "wasm32"))]
         handle_command_palette(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn on_exit(&mut self) {
+        // Persist every dirty tab's patch to a sidecar so restart
+        // can offer to restore it. Best-effort: errors only log.
+        let Some(dir) = unsaved_edits_dir() else { return };
+        for file in self.files.values() {
+            let Some(path) = file.root_path().cloned() else { continue };
+            if !file.is_dirty() {
+                // Clear any lingering sidecar from a previous session
+                // -- the in-memory state for this file is clean now.
+                let _ = crate::patch_persist::discard(&dir, &path);
+                continue;
+            }
+            let patch = file.patch.read().expect("patch lock poisoned").clone();
+            let Some(sidecar) = crate::patch_persist::snapshot(path.clone(), file.source.as_ref(), patch) else {
+                continue;
+            };
+            if let Err(e) = crate::patch_persist::store(&dir, &sidecar) {
+                tracing::warn!(error = %e, path = %path.display(), "store patch sidecar");
+            } else {
+                tracing::info!(path = %path.display(), "saved unsaved-edits sidecar");
+            }
+        }
     }
 }
 
@@ -621,6 +688,91 @@ enum DuplicateAction {
     Focus,
     OpenNewTab,
     Cancel,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pending_patch_restore.is_none() {
+        return;
+    }
+    let (path_display, op_count) = {
+        let p = app.pending_patch_restore.as_ref().unwrap();
+        (p.sidecar.source_path.display().to_string(), p.sidecar.patch.len())
+    };
+
+    let mut action: Option<RestoreAction> = None;
+    let mut open = true;
+    egui::Window::new(hxy_i18n::t("restore-patch-title"))
+        .id(egui::Id::new("hxy_restore_patch_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(hxy_i18n::t_args("restore-patch-body", &[("ops", &op_count.to_string())]));
+            ui.label(egui::RichText::new(&path_display).weak());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("restore-patch-restore")).clicked() {
+                    action = Some(RestoreAction::Restore);
+                }
+                if ui.button(hxy_i18n::t("restore-patch-discard")).clicked() {
+                    action = Some(RestoreAction::Discard);
+                }
+            });
+        });
+    // Closing via the X is "decide later": leave the patch on disk
+    // and re-prompt next time the file is opened.
+    if !open {
+        app.pending_patch_restore = None;
+        return;
+    }
+    let Some(action) = action else { return };
+
+    let pending = app.pending_patch_restore.take().unwrap();
+    let path = pending.sidecar.source_path.clone();
+    let dir = unsaved_edits_dir();
+    match action {
+        RestoreAction::Restore => {
+            if let Some(file) = app.files.get_mut(&pending.file_id) {
+                let len = file.source.len().get();
+                let read = file.source.read(
+                    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+                        .expect("range valid"),
+                );
+                let ctx_label = format!("Restore {}", path.display());
+                match read {
+                    Ok(bytes) => match pending.sidecar.metadata.verify(&bytes) {
+                        Ok(()) => {
+                            *file.patch.write().expect("patch lock poisoned") = pending.sidecar.patch;
+                            file.edit_mode = crate::file::EditMode::Mutable;
+                            app.console_log(ConsoleSeverity::Info, &ctx_label, "restored unsaved edits");
+                        }
+                        Err(e) => app.console_log(
+                            ConsoleSeverity::Warning,
+                            &ctx_label,
+                            format!("source verification failed; not restoring: {e}"),
+                        ),
+                    },
+                    Err(e) => app.console_log(ConsoleSeverity::Error, &ctx_label, format!("re-read source: {e}")),
+                }
+            }
+            if let Some(dir) = dir {
+                let _ = crate::patch_persist::discard(&dir, &path);
+            }
+        }
+        RestoreAction::Discard => {
+            if let Some(dir) = dir {
+                let _ = crate::patch_persist::discard(&dir, &path);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum RestoreAction {
+    Restore,
+    Discard,
 }
 
 /// App-level keypress -> nibble write dispatcher. Runs late in the
@@ -1612,6 +1764,15 @@ fn user_templates_dir() -> Option<std::path::PathBuf> {
     Some(base.join(APP_NAME).join("templates"))
 }
 
+/// Per-tab unsaved-patch sidecars live here; one JSON file per
+/// source path, named by BLAKE3 of the canonical path. Read on
+/// open, written on quit, removed on successful save.
+#[cfg(not(target_arch = "wasm32"))]
+fn unsaved_edits_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::data_dir()?;
+    Some(base.join(APP_NAME).join("edits"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
     let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
@@ -2149,6 +2310,12 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();
         }
+    }
+    // Drop any sidecar patch from a previous session; the file on
+    // disk is now the source of truth and re-prompting on next
+    // launch would be confusing.
+    if let Some(dir) = unsaved_edits_dir() {
+        let _ = crate::patch_persist::discard(&dir, &path);
     }
     app.console_log(ConsoleSeverity::Info, &ctx, "saved");
 }

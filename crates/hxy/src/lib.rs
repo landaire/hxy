@@ -27,6 +27,9 @@ pub mod template_library;
 pub mod template_panel;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod patch_persist;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 
 #[cfg(target_os = "macos")]

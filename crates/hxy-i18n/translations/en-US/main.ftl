@@ -76,3 +76,9 @@ duplicate-open-body = This file is already open in another tab.
 duplicate-open-focus = Go to existing tab
 duplicate-open-new-tab = Open in new tab
 duplicate-open-cancel = Cancel
+
+# Restore-unsaved-edits dialog
+restore-patch-title = Restore unsaved edits?
+restore-patch-body = { $ops } unsaved edit(s) from a previous session were saved alongside this file.
+restore-patch-restore = Restore
+restore-patch-discard = Discard
