@@ -845,33 +845,36 @@ enum RestoreAction {
     Discard,
 }
 
-/// App-level keypress -> nibble write dispatcher. Runs late in the
-/// frame so other widgets (palette text input, settings fields,
-/// dialogs) get first crack at typed keys via egui's normal focus
-/// path; only un-consumed presses reach the active hex-edit cursor.
+/// App-level keypress -> nibble write + arrow-key cursor navigation
+/// dispatcher. Runs late in the frame so other widgets (palette
+/// text input, settings fields, dialogs) get first crack at typed
+/// keys via egui's normal focus path; only un-consumed presses
+/// reach the active hex-edit cursor.
 fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
     // A focused text input owns the keyboard; never steal from it.
     if ctx.egui_wants_keyboard_input() {
         return;
     }
+    let columns = app.state.read().app.hex_columns.get() as u64;
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
 
-    // Detect cursor moves between frames and reset the nibble cursor
-    // so the next press starts on the high nibble of the new byte.
+    // Detect cursor moves that came from outside this dispatcher
+    // (mouse click in the hex view, template panel "jump to span")
+    // and reset the nibble cursor so the next press lands on the
+    // high nibble of the new byte. Arrow-key moves below update
+    // `last_cursor_offset` themselves, so they don't flap the flag.
     let current_cursor = file.selection.as_ref().map(|s| s.cursor.get());
     if current_cursor != file.last_cursor_offset {
         file.reset_edit_nibble();
         file.last_cursor_offset = current_cursor;
     }
 
-    if file.edit_mode != crate::file::EditMode::Mutable || file.selection.is_none() {
-        return;
-    }
+    let mutable = file.edit_mode == crate::file::EditMode::Mutable;
 
-    // Snapshot pressed hex-digit keys (and a few editing keys) in one
-    // go so we can advance the cursor between them without holding
-    // the input lock.
+    // Snapshot pressed keys up front so arrow-driven cursor moves
+    // in the middle of this loop don't see their own updates
+    // mid-stream.
     let presses: Vec<EditPress> = ctx.input_mut(|i| {
         let mut out = Vec::new();
         i.events.retain(|event| {
@@ -881,11 +884,29 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
             if modifiers.command || modifiers.alt {
                 return true;
             }
-            if let Some(nibble) = key_to_hex_nibble(*key) {
+            if mutable
+                && let Some(nibble) = key_to_hex_nibble(*key)
+            {
                 out.push(EditPress::Hex(nibble));
                 return false;
             }
             match key {
+                egui::Key::ArrowLeft => {
+                    out.push(EditPress::NavLeft);
+                    false
+                }
+                egui::Key::ArrowRight => {
+                    out.push(EditPress::NavRight);
+                    false
+                }
+                egui::Key::ArrowUp => {
+                    out.push(EditPress::NavUp);
+                    false
+                }
+                egui::Key::ArrowDown => {
+                    out.push(EditPress::NavDown);
+                    false
+                }
                 egui::Key::Escape => {
                     out.push(EditPress::ResetNibble);
                     false
@@ -895,27 +916,112 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
         });
         out
     });
+    if presses.is_empty() {
+        return;
+    }
+
+    let source_len = file.source.len().get();
+    // Arrow navigation works without a selection too: pretend the
+    // caret was at byte 0 so the first key press takes effect.
+    if file.selection.is_none() && presses.iter().any(|p| p.is_navigation()) {
+        file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
+        file.reset_edit_nibble();
+    }
 
     for press in presses {
         match press {
             EditPress::Hex(nibble) => match file.type_hex_digit(nibble) {
                 Ok(true) => {
-                    if let Some(sel) = file.selection.as_mut() {
-                        let next = sel.cursor.get().saturating_add(1).min(file.source.len().get());
-                        sel.cursor = hxy_core::ByteOffset::new(next);
-                    }
+                    advance_cursor_byte(file);
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "hex edit"),
             },
+            EditPress::NavLeft => nav_nibble(file, -1),
+            EditPress::NavRight => nav_nibble(file, 1),
+            EditPress::NavUp => nav_row(file, -1, columns, source_len),
+            EditPress::NavDown => nav_row(file, 1, columns, source_len),
             EditPress::ResetNibble => file.reset_edit_nibble(),
+        }
+    }
+    file.last_cursor_offset = file.selection.as_ref().map(|s| s.cursor.get());
+}
+
+/// Advance the cursor by one whole byte (wrap at EOF). Used after a
+/// complete byte's worth of hex input (high + low) and by nibble
+/// navigation crossing a byte boundary.
+fn advance_cursor_byte(file: &mut OpenFile) {
+    if let Some(sel) = file.selection.as_mut() {
+        let next = sel.cursor.get().saturating_add(1).min(file.source.len().get());
+        sel.cursor = hxy_core::ByteOffset::new(next);
+    }
+}
+
+/// Move the cursor one nibble in `direction` (-1 left, +1 right).
+/// Left/right steps flip `edit_high_nibble`; crossing a byte
+/// boundary moves the byte cursor and lands on the correct half
+/// (low when coming from the right, high when coming from the
+/// left).
+fn nav_nibble(file: &mut OpenFile, direction: i32) {
+    let Some(sel) = file.selection.as_mut() else { return };
+    let source_len = file.source.len().get();
+    if direction > 0 {
+        // Right: high -> low (same byte), low -> high of next byte.
+        if file.edit_high_nibble {
+            file.edit_high_nibble = false;
+        } else {
+            let next = sel.cursor.get().saturating_add(1).min(source_len);
+            sel.cursor = hxy_core::ByteOffset::new(next);
+            file.edit_high_nibble = true;
+        }
+    } else {
+        // Left: low -> high (same byte), high -> low of previous
+        // byte. Clamp at byte 0 so the cursor stops at the start.
+        if !file.edit_high_nibble {
+            file.edit_high_nibble = true;
+        } else {
+            let cur = sel.cursor.get();
+            if cur > 0 {
+                sel.cursor = hxy_core::ByteOffset::new(cur - 1);
+                file.edit_high_nibble = false;
+            }
         }
     }
 }
 
+/// Move the cursor one row in `direction`. Lands on the high nibble
+/// of the new byte and clamps to the last byte (`source_len - 1`)
+/// when moving down past EOF; up at row 0 is a no-op.
+fn nav_row(file: &mut OpenFile, direction: i32, columns: u64, source_len: u64) {
+    if columns == 0 {
+        return;
+    }
+    let Some(sel) = file.selection.as_mut() else { return };
+    let cur = sel.cursor.get();
+    let new = if direction > 0 {
+        let candidate = cur.saturating_add(columns);
+        let last = source_len.saturating_sub(1);
+        candidate.min(last)
+    } else {
+        cur.saturating_sub(columns)
+    };
+    sel.cursor = hxy_core::ByteOffset::new(new);
+    file.edit_high_nibble = true;
+}
+
 enum EditPress {
     Hex(u8),
+    NavLeft,
+    NavRight,
+    NavUp,
+    NavDown,
     ResetNibble,
+}
+
+impl EditPress {
+    fn is_navigation(&self) -> bool {
+        matches!(self, EditPress::NavLeft | EditPress::NavRight | EditPress::NavUp | EditPress::NavDown)
+    }
 }
 
 fn key_to_hex_nibble(key: egui::Key) -> Option<u8> {
@@ -1676,6 +1782,11 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .map(|t| (t.leaf_boundaries.as_slice(), t.leaf_colors.as_slice()));
 
     let modified_ranges = file.modified_ranges();
+    // Only surface the nibble indicator when the tab is actually
+    // accepting edits; read-only tabs keep the plain byte cursor.
+    let nibble_cursor = (file.edit_mode == crate::file::EditMode::Mutable).then_some(
+        if file.edit_high_nibble { hxy_view::NibbleSide::High } else { hxy_view::NibbleSide::Low },
+    );
     let mut view = HexView::new(&*file.source, &mut file.selection)
         .id_salt(("hxy-hex-view", file.id.get()))
         .columns(state.app.hex_columns)
@@ -1683,7 +1794,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .minimap(state.app.show_minimap)
         .minimap_colored(state.app.minimap_colored)
         .hover_span(hover_span)
-        .field_boundaries(field_boundaries);
+        .field_boundaries(field_boundaries)
+        .nibble_cursor(nibble_cursor);
     if let Some((_, colors)) = field_colors {
         view = view.field_colors(colors);
     }

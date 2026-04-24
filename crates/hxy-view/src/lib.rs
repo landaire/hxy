@@ -106,6 +106,21 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     field_colors: &'s [Color32],
     /// Optional caller-supplied id salt; see [`HexView::id_salt`].
     id_salt: Option<egui::Id>,
+    /// When set, draws an underline under one of the two nibble
+    /// glyphs of the cursor byte to show which half the next
+    /// hex-digit keystroke will overwrite. `None` keeps the byte
+    /// cursor's plain rounded-rect outline and leaves the glyphs
+    /// unmarked.
+    nibble_cursor: Option<NibbleSide>,
+}
+
+/// Which half of a byte cell the nibble-edit cursor sits on.
+/// `High` is the more significant nibble (left glyph), `Low` the
+/// less significant (right glyph). Used by [`HexView::nibble_cursor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NibbleSide {
+    High,
+    Low,
 }
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
@@ -128,7 +143,17 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             field_boundaries: &[],
             field_colors: &[],
             id_salt: None,
+            nibble_cursor: None,
         }
+    }
+
+    /// Paint a nibble-granular cursor indicator beneath the cursor
+    /// byte. Callers drive this from their editor state (hex-digit
+    /// typing, left/right arrow nav); passing `None` hides the
+    /// underline without affecting the byte-level cursor outline.
+    pub fn nibble_cursor(mut self, side: Option<NibbleSide>) -> Self {
+        self.nibble_cursor = side;
+        self
     }
 
     /// Supply leaf-field byte ranges from a template. The view paints
@@ -270,6 +295,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             field_boundaries,
             field_colors,
             id_salt,
+            nibble_cursor,
         } = self;
         let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
         ui.push_id(salt, |ui| {
@@ -346,6 +372,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                             context_menu,
                             hover_span,
                             field_boundaries,
+                            nibble_cursor,
                             &mut response,
                         );
                     })
@@ -619,6 +646,7 @@ struct PaintCtx<'a> {
     colors: RowColors,
     selected_range: Option<ByteRange>,
     cursor_offset: Option<ByteOffset>,
+    nibble_cursor: Option<NibbleSide>,
     hover_offset: Option<ByteOffset>,
     hover_span: Option<ByteRange>,
     field_boundaries: &'a [(ByteOffset, ByteLen)],
@@ -662,6 +690,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     context_menu: Option<ContextMenuFn<'_>>,
     hover_span: Option<ByteRange>,
     field_boundaries: &[(ByteOffset, ByteLen)],
+    nibble_cursor: Option<NibbleSide>,
     response_out: &mut HexViewResponse,
 ) {
     let cols = usize::from(columns.get());
@@ -725,6 +754,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         colors,
         selected_range,
         cursor_offset,
+        nibble_cursor,
         hover_offset,
         hover_span,
         field_boundaries,
@@ -898,6 +928,19 @@ fn paint_row_marks(
         if ctx.cursor_offset == Some(byte_offset) {
             painter.rect_stroke(hex_mark, 2.0, ctx.colors.cursor_stroke, StrokeKind::Middle);
             painter.rect_stroke(ascii_mark, 2.0, ctx.colors.cursor_stroke, StrokeKind::Middle);
+            // A two-pixel underline under the active nibble shows
+            // the next hex-digit keystroke's landing half without
+            // obscuring the glyph.
+            if let Some(side) = ctx.nibble_cursor {
+                let stroke = ctx.colors.cursor_stroke;
+                let mid_x = hex_rect.center().x;
+                let (left, right) = match side {
+                    NibbleSide::High => (hex_rect.left(), mid_x),
+                    NibbleSide::Low => (mid_x, hex_rect.right()),
+                };
+                let y = hex_rect.bottom() - 0.5;
+                painter.line_segment([Pos2::new(left, y), Pos2::new(right, y)], stroke);
+            }
         } else if ctx.hover_offset == Some(byte_offset) {
             painter.rect_stroke(hex_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
             painter.rect_stroke(ascii_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
