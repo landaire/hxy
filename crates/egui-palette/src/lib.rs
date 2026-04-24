@@ -435,13 +435,16 @@ pub fn show_with_style<A: Clone>(
     }
 
     let mut picked_idx: Option<usize> = None;
+    let mut selection_changed_by_kbd = false;
     if style.consume_nav_keys {
         ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) && !filtered.is_empty() {
                 state.selected = (state.selected + 1) % filtered.len();
+                selection_changed_by_kbd = true;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) && !filtered.is_empty() {
                 state.selected = (state.selected + filtered.len() - 1) % filtered.len();
+                selection_changed_by_kbd = true;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) && !filtered.is_empty() {
                 picked_idx = Some(state.selected);
@@ -480,33 +483,41 @@ pub fn show_with_style<A: Clone>(
     let list_max_height =
         (screen_rect.height() - panel_y - style.row_reserve).clamp(style.list_min_height, style.list_max_height);
 
-    // Decide scroll vs shrink-to-fit before opening the Area so
-    // we can pick a per-mode Area id. egui's `Area` caches
-    // `AreaState::size` across frames and uses it as the inner
-    // Ui's `max_rect` on the next frame; a single id would trap
-    // us at the smaller shrink-mode size when the user widens the
-    // filter back to a scroll-mode result set. Two stable ids keep
-    // each mode's cached size on its own track.
-    let row_stride = style.row_height + ctx.global_style().spacing.item_spacing.y;
-    let content_height = if filtered.is_empty() {
-        // "No matches." block: two 16 px spacers around a body-
-        // text line. Over-estimating by a few pixels just nudges
-        // the mode boundary; it stays visually correct either way.
-        48.0
-    } else {
-        filtered.len() as f32 * row_stride
-    };
-    let scroll_needed = !style.list_shrink_to_fit || content_height > list_max_height;
-    let area_id = if scroll_needed {
-        egui::Id::new("egui_palette_scroll")
-    } else {
-        egui::Id::new("egui_palette_shrink")
-    };
-
-    egui::Area::new(area_id)
-        .fixed_pos(egui::pos2(panel_x, panel_y))
+    // Use `egui::Area` (single, stable id) so the layer is
+    // registered with an `AreaState` -- input hit-testing
+    // (`layer_id_at`) skips layers that have no AreaState, which
+    // breaks `ScrollArea`'s wheel-event check (it calls
+    // `ui.rect_contains_pointer`, which goes through `layer_id_at`).
+    //
+    // The trap with `Area` is that it caches `state.size =
+    // content_ui.min_size()` across frames and uses it as the next
+    // frame's `max_rect`. If the result list shrinks to a few rows
+    // and the user clears the filter, the cached small `max_rect`
+    // pins the inner `ScrollArea` viewport to a tiny height even
+    // though the row count exploded. Calling `ui.set_max_height`
+    // first thing inside the closure overrides that cached height
+    // for the current frame, so the inner `ScrollArea` always sees
+    // enough room to claim its full viewport. The Area's *visual*
+    // size still shrinks with content because `ScrollArea` is set
+    // to `auto_shrink([false, true])`.
+    let palette_id = egui::Id::new("egui_palette_panel");
+    let area_inner_height = list_max_height + style.row_reserve;
+    let area_response = egui::Area::new(palette_id)
         .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(panel_x, panel_y))
+        .interactable(true)
+        .default_size(egui::vec2(panel_width, area_inner_height))
         .show(ctx, |ui| {
+            // Break the cached-size trap: even if last frame's content
+            // was tiny, give the inner layout enough vertical room to
+            // re-grow this frame.
+            ui.set_max_height(area_inner_height);
+            // Reserve a gutter for the scrollbar so it doesn't
+            // overlay row text. Keep `floating = true` (the default)
+            // so the bar stays invisible when dormant and only fades
+            // in on hover; the allocated width just carves out the
+            // space in advance. Scoped to this Ui -- doesn't leak.
+            ui.spacing_mut().scroll.floating_allocated_width = ui.spacing().scroll.bar_width;
             let frame = match (style.panel_fill, style.panel_stroke) {
                 (Some(fill), Some(stroke)) => egui::Frame::new()
                     .fill(fill)
@@ -521,9 +532,9 @@ pub fn show_with_style<A: Clone>(
                     .stroke(stroke)
                     .inner_margin(style.inner_margin)
                     .corner_radius(style.corner_radius),
-                (None, None) => {
-                    egui::Frame::popup(ui.style()).inner_margin(style.inner_margin).corner_radius(style.corner_radius)
-                }
+                (None, None) => egui::Frame::popup(ui.style())
+                    .inner_margin(style.inner_margin)
+                    .corner_radius(style.corner_radius),
             };
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_width);
@@ -532,12 +543,6 @@ pub fn show_with_style<A: Clone>(
                 let text_edit =
                     egui::TextEdit::singleline(&mut state.query).hint_text(hint).desired_width(f32::INFINITY);
                 let resp = ui.add(text_edit);
-                // Keep focus glued to the query field the whole time
-                // the palette is open, so arrow-key list navigation
-                // doesn't steal typing focus and Left/Right still
-                // drive the text cursor. `pending_focus` is the
-                // first-frame trigger; after that we simply refuse
-                // to let focus drift.
                 if state.pending_focus {
                     resp.request_focus();
                     state.pending_focus = false;
@@ -546,20 +551,20 @@ pub fn show_with_style<A: Clone>(
                 }
 
                 ui.add_space(6.0);
-                // Sync selection from hover only while the pointer
-                // is actually moving. Without this gate, opening the
+                // Sync selection from hover only while the pointer is
+                // actually moving. Without this gate, opening the
                 // palette with the cursor already over the list area
                 // would slam `selected` to whatever row it started on
                 // -- often the bottom row the user was hovering when
                 // they hit Cmd+P -- instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                // Row-rendering body, hoisted so both the direct and
-                // scrolled branches can call it. Captures
-                // `filtered`, `entries`, `style`, `pointer_moving`,
-                // `picked_idx`, and `state` -- closures are easier
-                // here than threading every reference through an
-                // explicit helper fn.
-                let mut render_rows = |ui: &mut egui::Ui| {
+                // One ScrollArea handles both shrink and scroll
+                // cases: `auto_shrink([false, true])` shrinks the
+                // viewport vertically to content size when it fits,
+                // and caps at `list_max_height` (showing a scrollbar)
+                // when it doesn't.
+                let max_h = if style.list_shrink_to_fit { list_max_height } else { f32::INFINITY };
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
                     for (row, hit) in filtered.iter().enumerate() {
                         let entry = &entries[hit.index];
                         let selected = row == state.selected;
@@ -570,6 +575,14 @@ pub fn show_with_style<A: Clone>(
                         if resp.hovered() && pointer_moving {
                             state.selected = row;
                         }
+                        // Keep the keyboard-driven selection on screen.
+                        // Skip on hover-driven changes -- those are
+                        // already inside the viewport by definition,
+                        // and triggering scroll on hover causes the
+                        // list to drift under the cursor.
+                        if selected && selection_changed_by_kbd {
+                            resp.scroll_to_me(Some(egui::Align::Center));
+                        }
                     }
                     if filtered.is_empty() {
                         ui.add_space(16.0);
@@ -578,24 +591,10 @@ pub fn show_with_style<A: Clone>(
                         });
                         ui.add_space(16.0);
                     }
-                };
-                // `scroll_needed` was computed up-front so we could
-                // pick a per-mode Area id; reuse it here to choose
-                // the rendering path. Skipping the ScrollArea
-                // entirely in shrink mode lets the parent Ui
-                // re-measure to the rows' actual height each frame,
-                // which combined with the per-mode Area id keeps
-                // shrink-mode growth tracking the filter cleanly.
-                if scroll_needed {
-                    egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(
-                        ui,
-                        |ui| render_rows(ui),
-                    );
-                } else {
-                    render_rows(ui);
-                }
+                });
             });
         });
+    let _ = area_response;
 
     // Pick wins over dismiss: hitting Enter on a row already
     // commits the action, even if some unrelated dismiss key was in
