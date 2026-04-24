@@ -30,7 +30,7 @@ pub enum CommandEffect {
     MountActiveFile,
     OpenRecent(std::path::PathBuf),
     RunTemplateDialog,
-    /// Run a specific template file without prompting — pushed when
+    /// Run a specific template file without prompting -- pushed when
     /// the auto-detected library has matched the active file.
     RunTemplateDirect(std::path::PathBuf),
 }

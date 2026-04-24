@@ -46,7 +46,7 @@ impl App {
                 .with_icon("📁"),
             Entry::new("Close", Action::Close).with_icon("✖"),
         ];
-        match egui_palette::show(ctx, &mut self.palette, &entries, "Search…") {
+        match egui_palette::show(ctx, &mut self.palette, &entries, "Search...") {
             Some(Outcome::Picked(Action::OpenFile)) => { /* ... */ }
             Some(Outcome::Picked(Action::Close)) => self.palette.close(),
             Some(Outcome::Closed) => self.palette.close(),
@@ -69,7 +69,7 @@ let style = Style::default()
     .anchored_at(Anchor::Center)
     .width_range(320.0, 480.0)
     .backdrop_fill(None);  // disable the darkened overlay
-egui_palette::show_with_style(ctx, &mut state, &entries, "Search…", &style);
+egui_palette::show_with_style(ctx, &mut state, &entries, "Search...", &style);
 ```
 
 ## License

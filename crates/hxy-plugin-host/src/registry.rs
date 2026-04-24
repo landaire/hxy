@@ -54,7 +54,7 @@ pub enum PluginLoadError {
 }
 
 /// Load every `*.wasm` component in `dir` into a [`PluginHandler`].
-/// Silently tolerates an absent directory (returns empty) — hosts may
+/// Silently tolerates an absent directory (returns empty) -- hosts may
 /// call this with a user-config path that doesn't exist yet.
 pub fn load_plugins_from_dir(dir: &Path) -> Result<Vec<PluginHandler>, PluginLoadError> {
     if !dir.exists() {
@@ -96,7 +96,7 @@ fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> 
 
 /// Load every `*.wasm` component in `dir` that implements the
 /// `template-runtime` world. Components that don't match the world
-/// are reported as errors rather than silently skipped — the caller
+/// are reported as errors rather than silently skipped -- the caller
 /// should split template and handler plugin directories.
 pub fn load_template_plugins_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRuntime>, PluginLoadError> {
     if !dir.exists() {
@@ -141,7 +141,7 @@ fn load_template_single(
 }
 
 /// Compile an already-in-memory component into a [`WasmTemplateRuntime`].
-/// The `label` is only used for error reporting — typically a short
+/// The `label` is only used for error reporting -- typically a short
 /// identifier like `"builtin:010-bt"`.
 pub fn load_template_runtime_from_bytes(bytes: &[u8], label: &str) -> Result<WasmTemplateRuntime, PluginLoadError> {
     let mut config = Config::new();

@@ -1,5 +1,5 @@
 //! `vfs::FileSystem` implementation that routes calls through a
-//! plugin's `mount` resource. Read-only — writes and metadata setters
+//! plugin's `mount` resource. Read-only -- writes and metadata setters
 //! return `NotSupported`.
 
 use std::fmt;

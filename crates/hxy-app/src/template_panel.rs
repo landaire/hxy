@@ -31,7 +31,7 @@ pub enum TemplateEvent {
     /// The pointer is currently over a row. `None` fires on the first
     /// frame the pointer leaves the table.
     Hover(Option<TemplateNodeIdx>),
-    /// User clicked the row — jump the hex view to this node's span
+    /// User clicked the row -- jump the hex view to this node's span
     /// and select it.
     Select(TemplateNodeIdx),
     /// User picked a copy option from the row's context menu. `kind`
@@ -40,7 +40,7 @@ pub enum TemplateEvent {
         idx: TemplateNodeIdx,
         kind: CopyKind,
     },
-    /// User picked "Save bytes to file…". App should pop up a save
+    /// User picked "Save bytes to file...". App should pop up a save
     /// dialog and write this node's byte span.
     SaveBytes(TemplateNodeIdx),
     /// User toggled per-field byte tinting in the hex view.
@@ -127,7 +127,7 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
     events
 }
 
-/// One visible row in the flattened table — either a real node or a
+/// One visible row in the flattened table -- either a real node or a
 /// placeholder row inside an expanded deferred array. Array elements
 /// don't live in `tree.nodes`, so they get a distinct row kind.
 #[derive(Clone)]
@@ -138,7 +138,7 @@ enum RowKind {
         is_parent: bool,
         collapsed: bool,
     },
-    /// "[N × type, stride bytes each]" placeholder with an Expand button.
+    /// "[N x type, stride bytes each]" placeholder with an Expand button.
     DeferredArray {
         array_id: TemplateArrayId,
         count: u64,
@@ -261,7 +261,7 @@ impl TemplateTableDelegate<'_> {
         }
 
         ui.separator();
-        if ui.button("Save bytes to file…").clicked() {
+        if ui.button("Save bytes to file...").clicked() {
             self.events.push(TemplateEvent::SaveBytes(idx));
             ui.close();
         }
@@ -326,7 +326,7 @@ impl TemplateTableDelegate<'_> {
         match col_nr {
             0 => {
                 ui.add_space((depth as f32) * INDENT_STEP + 14.0);
-                ui.weak(format!("[{count} × {element_type}]"));
+                ui.weak(format!("[{count} x {element_type}]"));
                 if ui.small_button("Expand").clicked() {
                     self.events.push(TemplateEvent::ExpandArray { array_id, count });
                 }
@@ -439,12 +439,12 @@ fn emit_node(
 }
 
 /// Character budget for rendering a template field's string / bytes
-/// value. Fields wider than this collapse to `… (N bytes)` so a
+/// value. Fields wider than this collapse to `... (N bytes)` so a
 /// multi-megabyte `uchar[N] data` doesn't blow up the row or tooltip.
 const STRING_VALUE_PREVIEW_BUDGET: usize = 64;
 
 fn summarise_string(s: &str) -> String {
-    if s.len() <= STRING_VALUE_PREVIEW_BUDGET { s.to_owned() } else { format!("… ({} bytes)", s.len()) }
+    if s.len() <= STRING_VALUE_PREVIEW_BUDGET { s.to_owned() } else { format!("... ({} bytes)", s.len()) }
 }
 
 fn format_value(node: &Node) -> String {
@@ -521,7 +521,7 @@ pub fn new_state_from(
 }
 
 /// Unpack the runtime's optional 256-entry `0xAARRGGBB` table into an
-/// `Arc<[Color32; 256]>`. Any length other than 256 is rejected — we
+/// `Arc<[Color32; 256]>`. Any length other than 256 is rejected -- we
 /// keep the contract tight so the hex view can index without bounds
 /// checks. Returns `None` when the runtime didn't supply a palette.
 fn build_byte_palette_override(palette: Option<&[u32]>) -> Option<std::sync::Arc<[egui::Color32; 256]>> {
@@ -584,7 +584,7 @@ fn generate_leaf_colors(n: usize) -> Vec<egui::Color32> {
 ///
 /// When the deepest node is a primitive `ScalarArray`, the breadcrumb
 /// gets an extra leaf row showing the specific element under the
-/// cursor — e.g. `uchar [77] = 120` — decoded on the fly from
+/// cursor -- e.g. `uchar [77] = 120` -- decoded on the fly from
 /// `source`. That's the reason the source is taken as an argument:
 /// primitive arrays are emitted as a single contiguous node, so
 /// individual element values aren't in the tree.
@@ -605,7 +605,7 @@ pub fn breadcrumb_for_offset(
     }
     let leaf = deepest?;
 
-    // Walk parent chain leaf → root.
+    // Walk parent chain leaf -> root.
     let mut chain: Vec<u32> = Vec::new();
     let mut cursor = Some(leaf);
     while let Some(idx) = cursor {
@@ -665,11 +665,8 @@ fn array_element_row(
     )
     .ok()?;
     let bytes = source.read(range).ok()?;
-    let endian = leaf
-        .attributes
-        .iter()
-        .find_map(|(k, v)| (k == "hxy_endian").then(|| v.as_str()))
-        .unwrap_or("little");
+    let endian =
+        leaf.attributes.iter().find_map(|(k, v)| (k == "hxy_endian").then_some(v.as_str())).unwrap_or("little");
     let value = decode_scalar_bytes(kind, &bytes, endian)?;
     let type_label = scalar_kind_name(kind);
     Some(format!("{type_label} [{index}] = {value}"))
@@ -705,11 +702,7 @@ fn scalar_kind_name(kind: hxy_plugin_host::template::ScalarKind) -> &'static str
     }
 }
 
-fn decode_scalar_bytes(
-    kind: hxy_plugin_host::template::ScalarKind,
-    bytes: &[u8],
-    endian: &str,
-) -> Option<String> {
+fn decode_scalar_bytes(kind: hxy_plugin_host::template::ScalarKind, bytes: &[u8], endian: &str) -> Option<String> {
     use hxy_plugin_host::template::ScalarKind as K;
     let big = endian == "big";
     let read_u = |b: &[u8]| -> u64 {
@@ -767,8 +760,8 @@ fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
     })
 }
 
-/// Collect (offset, length) for every leaf node — one with no
-/// children and no deferred array — and sort by offset. This is the
+/// Collect (offset, length) for every leaf node -- one with no
+/// children and no deferred array -- and sort by offset. This is the
 /// list the hex view uses to draw per-field outlines.
 fn collect_leaf_boundaries(
     tree: &hxy_plugin_host::template::ResultTree,

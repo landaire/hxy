@@ -1,4 +1,4 @@
-//! [`PluginHandler`] — a loaded WASM component wrapped as a native
+//! [`PluginHandler`] -- a loaded WASM component wrapped as a native
 //! [`VfsHandler`]. Detection spins up a short-lived store; mounting
 //! produces a long-lived [`PluginFileSystem`] that keeps the store and
 //! the plugin's `mount` resource alive for the duration of the VFS.

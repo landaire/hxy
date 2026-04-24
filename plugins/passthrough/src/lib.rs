@@ -1,5 +1,5 @@
 //! Sample VFS plugin. Matches any source and exposes it as a single
-//! file at `/data.bin` — proves the bidirectional interface works
+//! file at `/data.bin` -- proves the bidirectional interface works
 //! (host-imported `source.read` is called on every `read_file`).
 
 #![no_std]

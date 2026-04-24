@@ -30,7 +30,7 @@ hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
 hxy-view = { workspace = true }
 
-# UI — eframe configured with default-features = false so we can opt into
+# UI -- eframe configured with default-features = false so we can opt into
 # wayland only on desktop (wayland can't be linked on wasm).
 eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 egui = "0.34.1"
@@ -54,7 +54,7 @@ egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
 egui-palette = { workspace = true }
 
-# Built-in 010 Editor Binary Template runtime — linked as regular
+# Built-in 010 Editor Binary Template runtime -- linked as regular
 # Rust instead of being wrapped in a WASM component. User-supplied
 # template runtimes still go through wasmtime via hxy-plugin-host.
 hxy-010-lang = { workspace = true }

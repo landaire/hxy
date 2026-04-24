@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 /// Every format the app knows how to render a selection / field as.
 /// The Value-prefixed variants only make sense for scalar nodes
-/// (known integer width + signedness) — the byte variants work on
+/// (known integer width + signedness) -- the byte variants work on
 /// any span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyKind {

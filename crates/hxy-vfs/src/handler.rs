@@ -10,7 +10,7 @@ use crate::error::HandlerError;
 /// by native handlers today and by wasm plugins once that machinery is
 /// in place.
 pub trait VfsHandler: Send + Sync {
-    /// Stable short name for the plugin — used in logs / UI badges.
+    /// Stable short name for the plugin -- used in logs / UI badges.
     fn name(&self) -> &str;
 
     /// Fast format check against the source's first few bytes. Called

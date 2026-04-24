@@ -3,7 +3,7 @@
 //! Every node carries a [`Span`] pointing back into the original
 //! source so diagnostics and the interpreter-emitted tree can refer
 //! to the offending text. The AST stays close to the surface syntax
-//! — semantic distinctions like "is this a type name or a variable"
+//! -- semantic distinctions like "is this a type name or a variable"
 //! are deferred to later passes.
 
 use crate::token::Span;
@@ -17,7 +17,7 @@ pub struct Program {
 /// Top-level item in a template: either a statement (including decls)
 /// or a function definition. Templates execute their top-level
 /// statements sequentially, so the split exists only to keep function
-/// definitions — which don't execute inline — out of the main stream.
+/// definitions -- which don't execute inline -- out of the main stream.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TopItem {
     Stmt(Stmt),
@@ -34,7 +34,7 @@ pub struct TypeRef {
 
 /// Trailing `<key=expr, ...>` attribute list on a declaration or
 /// type. The keys are arbitrary identifiers; we don't validate them
-/// at parse time because 010 doesn't either — unknown attributes are
+/// at parse time because 010 doesn't either -- unknown attributes are
 /// harmless, they just don't drive any display behaviour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attrs(pub Vec<Attr>);
@@ -65,8 +65,8 @@ pub struct EnumVariant {
 
 /// `typedef struct { body } Name <attrs>;` or an inline `struct Name { body }`.
 ///
-/// `params` is populated for parameterised structs — the form
-/// `struct Name (int32 len) { ... }` — and empty otherwise. Each field
+/// `params` is populated for parameterised structs -- the form
+/// `struct Name (int32 len) { ... }` -- and empty otherwise. Each field
 /// declaration that references a parameterised struct must pass a
 /// matching positional arg list; see [`FieldDecl::args`].
 #[derive(Clone, Debug, PartialEq)]
@@ -114,10 +114,10 @@ pub enum Stmt {
     /// A variable-or-field declaration, e.g. `uint x;`, `char buf[N];`,
     /// `local int i = 0;`, `const uint MAX = 10;`. Whether this reads
     /// bytes from the source or allocates an ephemeral variable is
-    /// decided by `modifier` — the interpreter's job, not the parser's.
+    /// decided by `modifier` -- the interpreter's job, not the parser's.
     ///
     /// `args` carries the positional arguments to a parameterised
-    /// struct: `PNG_CHUNK_PLTE plte(length);` → `args = [length]`.
+    /// struct: `PNG_CHUNK_PLTE plte(length);` -> `args = [length]`.
     /// `bit_width` is set when the declaration uses C-style bitfield
     /// syntax: `DWORD flag : 1;` packs successive fields into the
     /// same underlying integer.
@@ -203,11 +203,11 @@ pub struct SwitchArm {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclModifier {
-    /// Normal field — reads from the byte source and emits a node.
+    /// Normal field -- reads from the byte source and emits a node.
     Field,
-    /// `local` — ephemeral variable, not materialised in the tree.
+    /// `local` -- ephemeral variable, not materialised in the tree.
     Local,
-    /// `const` — like `local` but immutable after init.
+    /// `const` -- like `local` but immutable after init.
     Const,
 }
 

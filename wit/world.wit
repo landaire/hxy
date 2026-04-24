@@ -97,7 +97,7 @@ interface template {
     /// Typed description of a tree node. Runtimes emit one of these
     /// instead of a freeform string so the UI can group, colour, and
     /// copy-format uniformly. Arrays carry their element kind inline;
-    /// nested arrays and arrays of arrays aren't supported — emit the
+    /// nested arrays and arrays of arrays aren't supported -- emit the
     /// outer node as a struct with array children.
     variant node-type {
         /// Bare scalar field (uchar, uint32, float, ...).
@@ -196,7 +196,7 @@ interface template {
         /// Free-form `(key, value)` pairs carried alongside the
         /// structured fields. Runtimes use this to forward template
         /// attributes (`<comment="...">`) and out-of-band hints the
-        /// host needs at render time — currently `hxy_endian` so
+        /// host needs at render time -- currently `hxy_endian` so
         /// tooltips can re-decode array elements on hover.
         attributes: list<tuple<string, string>>,
     }
@@ -231,7 +231,7 @@ interface template {
         byte-palette: option<list<u32>>,
     }
 
-    /// Parsed template — holds the AST / bytecode / whatever internal
+    /// Parsed template -- holds the AST / bytecode / whatever internal
     /// form the runtime uses so repeat executes and array expansions
     /// don't re-parse.
     resource parsed-template {

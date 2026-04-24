@@ -2,9 +2,9 @@
 //!
 //! Each submodule exposes one wit-bindgen-generated world:
 //!
-//! * [`handler`] — `hxy:vfs/plugin` — exports the [`handler`] interface
+//! * [`handler`] -- `hxy:vfs/plugin` -- exports the [`handler`] interface
 //!   (VFS format detection + mount) and imports [`source`](handler::source).
-//! * [`template`] — `hxy:vfs/template-runtime` — exports the [`template`]
+//! * [`template`] -- `hxy:vfs/template-runtime` -- exports the [`template`]
 //!   interface (parse + execute .bt / .hexpat-style templates) and imports
 //!   the same [`source`](template::source).
 //!

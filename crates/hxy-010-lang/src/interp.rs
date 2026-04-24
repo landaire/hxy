@@ -3,7 +3,7 @@
 //! Entry point: [`Interpreter::run`]. The interpreter walks the AST
 //! sequentially, reading bytes from the supplied [`HexSource`] as it
 //! encounters field declarations. Output is a flat pre-order list of
-//! [`NodeOut`] records that mirrors the WIT `node` layout — so the
+//! [`NodeOut`] records that mirrors the WIT `node` layout -- so the
 //! plugin wrapper (phase 2j) is a straight translation, no further
 //! restructuring.
 
@@ -59,7 +59,7 @@ pub enum RuntimeError {
     #[error("unresolved member `.{field}` (looked up `{path}` under prefix `{prefix}`)")]
     UnresolvedMember { field: String, path: String, prefix: String },
 
-    /// Array index on a value the interpreter can't route — either
+    /// Array index on a value the interpreter can't route -- either
     /// the base isn't a known array, or its indexed children never
     /// got stored.
     #[error("unresolved array index on `{target}`")]
@@ -124,7 +124,7 @@ pub struct NodeOut {
 }
 
 /// Output of running a template. Non-empty even when fatal errors
-/// occur — the interpreter emits as much as it can before bailing.
+/// occur -- the interpreter emits as much as it can before bailing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunResult {
     pub nodes: Vec<NodeOut>,
@@ -160,12 +160,12 @@ pub struct Interpreter<S: HexSource> {
     field_storage: HashMap<String, Value>,
     /// Current path prefix for [`field_storage`] writes. Segments
     /// accrete as the interpreter descends into struct bodies and
-    /// array elements — e.g. while reading `DirectoryEntries[2].Key`
+    /// array elements -- e.g. while reading `DirectoryEntries[2].Key`
     /// the path is `["DirectoryEntries[2]", "Key"]`.
     path: Vec<String>,
     /// Occurrence count of each (prefix, name) pair across the
-    /// entire run — used to index `PNG_CHUNK chunk;` declarations
-    /// inside a loop as `chunk[0]`, `chunk[1]`, …. The counter lives
+    /// entire run -- used to index `PNG_CHUNK chunk;` declarations
+    /// inside a loop as `chunk[0]`, `chunk[1]`, .... The counter lives
     /// on the interpreter (not on a scope) because the loop body's
     /// block scope is pushed and popped every iteration, but the
     /// conceptual array all the iterations build together belongs to
@@ -214,7 +214,7 @@ pub const DEFAULT_STEP_LIMIT: u64 = 10_000_000;
 #[derive(Clone, Debug)]
 enum TypeDef {
     Primitive(PrimKind),
-    /// Aliased to another type name — resolved on lookup.
+    /// Aliased to another type name -- resolved on lookup.
     Alias(String),
     Enum(EnumDecl),
     Struct(StructDecl),
@@ -257,7 +257,7 @@ impl<S: HexSource> Interpreter<S> {
         me
     }
 
-    /// Seed the root scope with 010's built-in constants — colour
+    /// Seed the root scope with 010's built-in constants -- colour
     /// names, `CHECKSUM_*` algorithm IDs, `cNone`, etc. The values
     /// aren't byte-for-byte identical to 010's (our palette is
     /// symbolic anyway), but every template that references them
@@ -269,7 +269,7 @@ impl<S: HexSource> Interpreter<S> {
             scope.vars.insert(name.to_owned(), Value::UInt { value: value as u128, kind: PrimKind::u32() });
         };
         // Colour constants. Values are 010's convention but we don't
-        // render them — any non-negative integer is fine.
+        // render them -- any non-negative integer is fine.
         bind("cNone", 0xFFFF_FFFF);
         bind("cBlack", 0x00_000000);
         bind("cRed", 0x00_0000FF);
@@ -295,7 +295,7 @@ impl<S: HexSource> Interpreter<S> {
         bind("cLtGray", 0x00_C0C0C0);
         bind("cSilver", 0x00_C0C0C0);
         bind("cWhite", 0x00_FFFFFF);
-        // Checksum / hash algorithm IDs — these drive
+        // Checksum / hash algorithm IDs -- these drive
         // [`Interpreter::checksum_builtin`].
         bind("CHECKSUM_BYTE", 0);
         bind("CHECKSUM_SHORT_LE", 1);
@@ -324,7 +324,7 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     /// Record a primitive / enum value at the current path plus `name`.
-    /// Silent if the key already exists — the last write wins, which
+    /// Silent if the key already exists -- the last write wins, which
     /// matches 010's "redeclaring the same name at the same scope
     /// overwrites" behaviour for loops like
     /// `while (!FEof()) { PNG_CHUNK chunk; }`.
@@ -333,9 +333,9 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     /// Insert `value` at `key` in [`field_storage`]. Lookups handle
-    /// the `[0]` ↔ bare-name alias by trying
+    /// the `[0]` <-> bare-name alias by trying
     /// [`strip_zero_indices`]-normalised keys, so stores don't need
-    /// to mirror — one write, one key.
+    /// to mirror -- one write, one key.
     fn store_at_path(&mut self, key: String, value: Value) {
         self.field_storage.insert(key, value);
     }
@@ -448,7 +448,7 @@ impl<S: HexSource> Interpreter<S> {
             ("time64_t", P::i64()),
             ("FILETIME", P::u64()),
             ("OLETIME", P::f64()),
-            ("hfloat", P::u16()), // half-float — read as raw u16 for now
+            ("hfloat", P::u16()), // half-float -- read as raw u16 for now
             ("HFLOAT", P::u16()),
         ];
         for (name, kind) in table {
@@ -471,7 +471,7 @@ impl<S: HexSource> Interpreter<S> {
     fn exec_stmt(&mut self, stmt: &Stmt, parent: Option<NodeIdx>) -> Result<Flow, RuntimeError> {
         self.steps = self.steps.saturating_add(1);
         if self.steps > self.step_limit {
-            return Err(RuntimeError::Type(format!("exceeded step limit ({}) — template aborted", self.step_limit)));
+            return Err(RuntimeError::Type(format!("exceeded step limit ({}) -- template aborted", self.step_limit)));
         }
         match stmt {
             Stmt::Block { stmts, .. } => self.exec_block(stmts, parent),
@@ -636,7 +636,7 @@ impl<S: HexSource> Interpreter<S> {
         // Any non-bitfield read closes an open slot.
         self.bitfield_slot = None;
 
-        // Normal field read — resolve the type, read bytes, emit nodes,
+        // Normal field read -- resolve the type, read bytes, emit nodes,
         // bind the value into the current scope.
         let count = match array_size {
             Some(expr) => {
@@ -770,7 +770,7 @@ impl<S: HexSource> Interpreter<S> {
                 let bytes = self.cursor.read_advance(pk.width as u64)?;
                 let raw = decode_prim(&bytes, pk, self.endian)?;
                 let raw_u = raw.to_i128().unwrap_or(0) as u64;
-                // Find matching variant — but don't require one; 010
+                // Find matching variant -- but don't require one; 010
                 // templates can read arbitrary values into an enum
                 // field and just render them numerically.
                 let variant = e
@@ -790,8 +790,8 @@ impl<S: HexSource> Interpreter<S> {
                     attrs: attrs_to_pairs(attrs),
                 });
                 // The tree node carries the display string for the
-                // UI. For arithmetic / comparisons — e.g.
-                // `if (type.Format == 1)` — callers want the raw
+                // UI. For arithmetic / comparisons -- e.g.
+                // `if (type.Format == 1)` -- callers want the raw
                 // numeric, so that's what we return and store. The
                 // Str display stays only on the node.
                 let raw_value = Value::UInt { value: raw_u as u128, kind: PrimKind::u64() };
@@ -818,8 +818,8 @@ impl<S: HexSource> Interpreter<S> {
                 // Descend: push a path segment for field_storage keys
                 // and a scope so parameterised-struct args don't leak
                 // into the caller. Repeated declarations of the same
-                // name in the same scope — `PNG_CHUNK chunk;` in a
-                // loop — pick up an `[i]` suffix so
+                // name in the same scope -- `PNG_CHUNK chunk;` in a
+                // loop -- pick up an `[i]` suffix so
                 // `chunk[CHUNK_CNT-1].type.cname` resolves.
                 let segment = self.next_struct_segment(name);
                 self.path.push(segment);
@@ -889,7 +889,7 @@ impl<S: HexSource> Interpreter<S> {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let def = self.resolve_type(ty)?;
-        // Primitive arrays are emitted as a single contiguous node —
+        // Primitive arrays are emitted as a single contiguous node --
         // `char[N]` / `uchar[N]` become a Str value, other numeric
         // primitives carry the raw byte range. Rendering a 500-byte
         // `uchar data[...]` as one coloured region matches 010's
@@ -902,7 +902,7 @@ impl<S: HexSource> Interpreter<S> {
             let value = if matches!(p.class, PrimClass::Char) {
                 Value::Str(String::from_utf8_lossy(&bytes).into_owned())
             } else {
-                // No Value variant for raw byte arrays yet — emit
+                // No Value variant for raw byte arrays yet -- emit
                 // Void so the UI knows the node has a span but no
                 // inline scalar value. The renderer already falls
                 // back to a hex dump for Void-valued arrays.
@@ -1041,7 +1041,7 @@ impl<S: HexSource> Interpreter<S> {
             }
             Expr::Unary { op, operand, .. } => {
                 // Pre/post inc/dec mutate the operand in place when
-                // it's a name — otherwise fall back to the pure-value
+                // it's a name -- otherwise fall back to the pure-value
                 // eval for `-x`, `~x`, `!x`, etc.
                 if matches!(op, UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec)
                     && let Expr::Ident { name, .. } = &**operand
@@ -1068,7 +1068,7 @@ impl<S: HexSource> Interpreter<S> {
                 let Expr::Ident { name, .. } = &**callee else {
                     return Err(RuntimeError::Type("call target must be an identifier".into()));
                 };
-                // `sizeof(TypeName)` takes a type name, not a value —
+                // `sizeof(TypeName)` takes a type name, not a value --
                 // evaluating the argument as an expression would try
                 // to look up `TypeName` as a variable. Intercept
                 // before the generic arg eval.
@@ -1165,11 +1165,8 @@ impl<S: HexSource> Interpreter<S> {
                 && let Some(v) = e.variants.iter().find(|v| v.name == name)
             {
                 let raw = match &v.value {
-                    Some(expr) => match expr {
-                        Expr::IntLit { value, .. } => *value as i128,
-                        _ => 0,
-                    },
-                    None => 0,
+                    Some(Expr::IntLit { value, .. }) => *value as i128,
+                    _ => 0,
                 };
                 return Ok(Value::UInt { value: raw as u128, kind: PrimKind::u64() });
             }
@@ -1301,7 +1298,7 @@ impl<S: HexSource> Interpreter<S> {
                     file_offset: Some(self.cursor.tell()),
                     template_line: None,
                 });
-                // Raise by returning "exit value" via Ok(None)? No —
+                // Raise by returning "exit value" via Ok(None)? No --
                 // we want to halt. Model as an error so `run` bails.
                 Err(RuntimeError::Type(format!("template exited with {code}")))
             }
@@ -1311,7 +1308,7 @@ impl<S: HexSource> Interpreter<S> {
             }
             "RequiresVersion" => Ok(Some(Value::Void)),
             "FindFirst" => Ok(Some(self.find_first(args)?)),
-            // Layout / display settings are presentational — the
+            // Layout / display settings are presentational -- the
             // lexer+parser already preserves the setting, but the
             // renderer takes cues from field attrs rather than global
             // flags. No-ops are fine for all of these.
@@ -1375,7 +1372,7 @@ impl<S: HexSource> Interpreter<S> {
 
     /// Static size of `name`, walking aliases and summing struct
     /// field widths. Returns 0 for unknown types (matches 010's
-    /// forgiving semantics — templates sometimes take `sizeof` of a
+    /// forgiving semantics -- templates sometimes take `sizeof` of a
     /// conditionally-defined type).
     fn sizeof_type(&self, name: &str) -> Result<u64, RuntimeError> {
         let mut cur = name.to_owned();
@@ -1401,15 +1398,11 @@ impl<S: HexSource> Interpreter<S> {
                             let elem = self.sizeof_type(&ty.name).unwrap_or(0);
                             if bit_width.is_some() {
                                 // Bitfields pack into their underlying
-                                // storage — charge only the first
-                                // bitfield of a run, approximated as
-                                // a single underlying word. Tight but
-                                // good enough for template dispatch.
-                                if is_union {
-                                    total = total.max(elem);
-                                } else {
-                                    total = total.max(elem);
-                                }
+                                // storage. Charge one underlying word
+                                // per run instead of one per field --
+                                // tight, but good enough for the only
+                                // caller (template dispatch).
+                                total = total.max(elem);
                                 continue;
                             }
                             let len = match array_size {
@@ -1431,7 +1424,7 @@ impl<S: HexSource> Interpreter<S> {
         Ok(0)
     }
 
-    /// `Checksum(algo, start, size, ...)` — read `size` bytes from
+    /// `Checksum(algo, start, size, ...)` -- read `size` bytes from
     /// `start` and checksum them with the requested algorithm. Only
     /// `CHECKSUM_CRC32` (enum value 5 in 010) is implemented; other
     /// algorithms return 0 with an Info diagnostic so templates don't
@@ -1439,7 +1432,7 @@ impl<S: HexSource> Interpreter<S> {
     fn checksum_builtin(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
         let algo_raw = args.first().and_then(|v| v.to_i128()).unwrap_or(-1);
         // CHECKSUM_CRC32 is the value 010 hands to templates. Real
-        // 010 uses the enum tag `CHECKSUM_CRC32` — our `lookup_ident`
+        // 010 uses the enum tag `CHECKSUM_CRC32` -- our `lookup_ident`
         // resolves that to a u64; templates that pass the constant
         // directly come through as the same numeric. The value is 5
         // in 010's public header; be liberal and also accept callers
@@ -1478,8 +1471,8 @@ impl<S: HexSource> Interpreter<S> {
     /// `FindFirst(data, matchcase, wholeword, method, tolerance, dir,
     /// start, size, wildcardMatch) -> int64`
     ///
-    /// Only the common path — integer needle, optional `start`/`size`
-    /// — is implemented. Other args are accepted and ignored so
+    /// Only the common path -- integer needle, optional `start`/`size`
+    /// -- is implemented. Other args are accepted and ignored so
     /// templates that pass the full 010 argument vector work.
     /// Returns -1 when the needle isn't found.
     fn find_first(&self, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1656,7 +1649,7 @@ fn eval_unary(op: UnaryOp, v: &Value) -> Result<Value, RuntimeError> {
         }
         UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec => {
             // We don't track lvalues well enough to update in place
-            // yet — return the computed value without storing.
+            // yet -- return the computed value without storing.
             let i = v.to_i128().ok_or_else(|| RuntimeError::Type(format!("not numeric: {v:?}")))?;
             let delta = match op {
                 UnaryOp::PreInc | UnaryOp::PostInc => 1,
@@ -1671,7 +1664,7 @@ fn eval_unary(op: UnaryOp, v: &Value) -> Result<Value, RuntimeError> {
 fn compound_to_bin(op: crate::ast::AssignOp) -> BinOp {
     use crate::ast::AssignOp as A;
     match op {
-        A::Assign => BinOp::Add, // unreachable — callers filter this
+        A::Assign => BinOp::Add, // unreachable -- callers filter this
         A::AddAssign => BinOp::Add,
         A::SubAssign => BinOp::Sub,
         A::MulAssign => BinOp::Mul,
@@ -1720,7 +1713,7 @@ const CHECKSUM_CRC32_ID: u64 = 5;
 /// `Member`/`Index` lookup. Starts with the most specific match
 /// (path exactly as the user typed it), falls back to scoping under
 /// the current struct-body prefix, then to forms where `[0]`
-/// subscripts are stripped — since single-occurrence fields are
+/// subscripts are stripped -- since single-occurrence fields are
 /// stored without a `[0]` suffix.
 fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
     let mut out = Vec::with_capacity(4);
@@ -1737,7 +1730,7 @@ fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
     out
 }
 
-/// Strip `[0]` subscripts —
+/// Strip `[0]` subscripts --
 /// used at lookup time so a query like `sig.btPngSignature[0]`
 /// matches the natural storage key for the first (and only)
 /// occurrence of a field, which we store without the `[0]` suffix.
@@ -1746,14 +1739,12 @@ fn strip_zero_indices(path: &str) -> String {
     let bytes = path.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' {
-            if let Some(rel) = path[i..].find(']') {
-                let inner = &path[i + 1..i + rel];
-                if inner == "0" {
-                    i += rel + 1;
-                    continue;
-                }
-            }
+        if bytes[i] == b'['
+            && let Some(rel) = path[i..].find(']')
+            && &path[i + 1..i + rel] == "0"
+        {
+            i += rel + 1;
+            continue;
         }
         out.push(bytes[i] as char);
         i += 1;
@@ -1801,7 +1792,7 @@ fn format_printf(fmt: &str, args: &[&Value]) -> String {
             continue;
         }
         // Consume flags / width / precision / length modifiers in a
-        // best-effort fashion — we don't honour padding but accept
+        // best-effort fashion -- we don't honour padding but accept
         // the full spec so formats like `%08X` don't confuse us.
         let mut spec = String::from("%");
         while let Some(&peek) = chars.peek() {
@@ -1854,7 +1845,7 @@ fn format_printf(fmt: &str, args: &[&Value]) -> String {
     out
 }
 
-/// Standard CRC-32/IEEE 802.3 — PNG, zlib, et al. Polynomial
+/// Standard CRC-32/IEEE 802.3 -- PNG, zlib, et al. Polynomial
 /// 0xEDB88320, initial 0xFFFFFFFF, final xor 0xFFFFFFFF.
 fn crc32_ieee(bytes: &[u8]) -> u32 {
     const POLY: u32 = 0xEDB88320;

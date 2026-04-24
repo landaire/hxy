@@ -64,7 +64,7 @@ fn render_section(
     });
 
     ui.horizontal(|ui| {
-        if ui.button("Install…").clicked()
+        if ui.button("Install...").clicked()
             && let Some(picked) = rfd::FileDialog::new().add_filter("WASM component", &["wasm"]).pick_file()
             && install_to(dir, &picked).is_ok()
         {

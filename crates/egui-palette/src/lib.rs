@@ -1,4 +1,4 @@
-//! A command-palette widget for egui — the Cmd+P / Ctrl+Shift+P
+//! A command-palette widget for egui -- the Cmd+P / Ctrl+Shift+P
 //! control familiar from VS Code, Zed, and Sublime.
 //!
 //! The crate owns the UI, keyboard navigation, and fuzzy-match
@@ -12,7 +12,7 @@
 //!     Entry::new("Open file", MyAction::Open),
 //!     Entry::new("Close file", MyAction::Close).with_subtitle("Cmd+W"),
 //! ];
-//! if let Some(Outcome::Picked(action)) = egui_palette::show(ctx, &mut state, &entries, "Search…") {
+//! if let Some(Outcome::Picked(action)) = egui_palette::show(ctx, &mut state, &entries, "Search...") {
 //!     dispatch(action);
 //! }
 //! ```
@@ -23,11 +23,11 @@
 //! let style = Style::default()
 //!     .anchored_at(Anchor::Center)
 //!     .width_range(320.0, 480.0);
-//! egui_palette::show_with_style(ctx, &mut state, &entries, "Search…", &style);
+//! egui_palette::show_with_style(ctx, &mut state, &entries, "Search...", &style);
 //! ```
 //!
 //! Cascading / modes / keyboard-shortcut binding are all out of
-//! scope — the host decides when to call `show`, rebuilds the
+//! scope -- the host decides when to call `show`, rebuilds the
 //! entry list as state changes, and re-opens `state` on a new mode
 //! by clearing it between frames.
 
@@ -387,8 +387,8 @@ pub fn show_with_style<A: Clone>(
                 // is actually moving. Without this gate, opening the
                 // palette with the cursor already over the list area
                 // would slam `selected` to whatever row it started on
-                // — often the bottom row the user was hovering when
-                // they hit Cmd+P — instead of the intended row 0.
+                // -- often the bottom row the user was hovering when
+                // they hit Cmd+P -- instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
                 egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(ui, |ui| {
                     for (row, idx) in filtered.iter().enumerate() {

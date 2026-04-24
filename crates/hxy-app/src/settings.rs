@@ -60,7 +60,7 @@ impl ByteHighlightMode {
 /// Colour scheme used when byte highlighting is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ByteHighlightScheme {
-    /// Group bytes into coarse classes (null, whitespace, printable, …).
+    /// Group bytes into coarse classes (null, whitespace, printable, ...).
     #[default]
     Class,
     /// Give every byte value 0x00..0xFF its own colour.
@@ -81,7 +81,7 @@ pub struct AppSettings {
     /// Number of hex columns per row in the hex view.
     pub hex_columns: ColumnCount,
 
-    /// Whether the app should check for updates on launch (placeholder —
+    /// Whether the app should check for updates on launch (placeholder --
     /// wired up when we actually implement update checks).
     pub check_for_updates: bool,
 

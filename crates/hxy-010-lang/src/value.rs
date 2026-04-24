@@ -30,14 +30,14 @@ pub struct PrimKind {
 pub enum PrimClass {
     Int,
     Float,
-    /// `char` / `uchar` — same byte width as Int but rendered as ASCII.
+    /// `char` / `uchar` -- same byte width as Int but rendered as ASCII.
     Char,
 }
 
 /// Structured type description for an emitted tree node. Mirrors the
 /// WIT `node-type` variant in `wit/world.wit`; kept in sync manually.
 /// Lives here so `hxy-010-lang` doesn't need to depend on the plugin
-/// host — the adapter in `hxy-app::builtin_runtimes` converts one to
+/// host -- the adapter in `hxy-app::builtin_runtimes` converts one to
 /// the other.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeType {
@@ -148,7 +148,7 @@ pub enum Value {
         value: f64,
         kind: PrimKind,
     },
-    /// A single character — 010 uses this for `char` and `uchar` field
+    /// A single character -- 010 uses this for `char` and `uchar` field
     /// reads, and for character literals in expressions.
     Char {
         value: u32,

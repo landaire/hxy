@@ -84,7 +84,7 @@ pub fn t_in(lang: &LanguageIdentifier, key: &str) -> String {
     LOCALES.lookup(lang, key)
 }
 
-/// Translate `key` with Fluent variable interpolation — e.g.
+/// Translate `key` with Fluent variable interpolation -- e.g.
 /// `t_args("palette-delete-template", &[("name", "PNG.bt")])`
 /// against an entry like `palette-delete-template = Delete { $name }`.
 pub fn t_args(key: &str, args: &[(&str, &str)]) -> String {

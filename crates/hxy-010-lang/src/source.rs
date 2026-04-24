@@ -3,7 +3,7 @@
 //! The real integration talks to WIT's `source` interface via
 //! wasmtime, but the interpreter itself is language-agnostic and
 //! doesn't know about that. Any implementation of [`HexSource`] will
-//! do — including an in-memory `Vec<u8>` for tests.
+//! do -- including an in-memory `Vec<u8>` for tests.
 
 use std::cell::RefCell;
 
@@ -27,7 +27,7 @@ pub trait HexSource {
     }
 
     /// Read `length` bytes at `offset`. Out-of-range reads return
-    /// [`SourceError::OutOfBounds`] — the interpreter turns this into
+    /// [`SourceError::OutOfBounds`] -- the interpreter turns this into
     /// a diagnostic rather than a trap.
     fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, SourceError>;
 }

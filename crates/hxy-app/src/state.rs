@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::settings::AppSettings;
 use crate::window::WindowSettings;
 
-/// State for a single tab's open file — enough to reopen it on launch
+/// State for a single tab's open file -- enough to reopen it on launch
 /// with the same selection and scroll position. `source` may refer to a
 /// plain filesystem file or an entry inside a parent tab's mounted VFS;
 /// restore logic topologically sorts parents before children.

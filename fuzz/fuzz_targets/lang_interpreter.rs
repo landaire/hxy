@@ -2,7 +2,7 @@
 
 //! Interpreter fuzzer: split input into (template, data), parse,
 //! execute. Bounds execution to keep libFuzzer from stalling on
-//! pathological templates — interpreter loops can legitimately run
+//! pathological templates -- interpreter loops can legitimately run
 //! forever on valid programs (e.g. `while (1) {}`).
 
 use arbitrary::Arbitrary;

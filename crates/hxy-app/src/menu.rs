@@ -48,7 +48,7 @@ pub struct MenuState {
 impl MenuState {
     /// Build the menu bar and install it as the NSApp main menu. Must
     /// be called on the main thread *after* `NSApplication` has been
-    /// initialised — call from `HxyApp::new`, which runs on eframe's
+    /// initialised -- call from `HxyApp::new`, which runs on eframe's
     /// `CreationContext` (window already created).
     pub fn install() -> Self {
         disable_automatic_window_tabbing();
@@ -78,7 +78,7 @@ impl MenuState {
 
         let file_menu = Submenu::new("File", true);
         menu.append(&file_menu).expect("append file menu");
-        let open = MenuItem::new("Open…", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)));
+        let open = MenuItem::new("Open...", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)));
         file_menu.append(&open).expect("append open");
         actions.insert(open.id().0.clone(), MenuAction::OpenFile);
 
@@ -150,7 +150,7 @@ impl MenuState {
     }
 
     /// Drain any pending `muda` events and return the mapped actions.
-    /// Unknown ids are silently dropped — they belong to predefined
+    /// Unknown ids are silently dropped -- they belong to predefined
     /// items (Quit, Hide, Undo, ...) that the OS handles itself.
     pub fn drain_actions(&self) -> Vec<MenuAction> {
         let mut out = Vec::new();
@@ -165,7 +165,7 @@ impl MenuState {
 
 /// Kill AppKit's automatic window tabbing. If left at the default
 /// `automatic` mode, AppKit injects "Show Tab Bar" and "Merge All
-/// Windows" into whichever menu it thinks is the window menu — which
+/// Windows" into whichever menu it thinks is the window menu -- which
 /// is noise for a single-window app.
 #[allow(unsafe_code)]
 fn disable_automatic_window_tabbing() {

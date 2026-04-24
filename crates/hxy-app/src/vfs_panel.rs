@@ -2,7 +2,7 @@
 //!
 //! Lives inside the file tab when the tab has an active mount. Emits a
 //! [`VfsPanelEvent::OpenEntry`] when the user activates (double-click
-//! or Enter) a file entry — the app then opens that entry as a new
+//! or Enter) a file entry -- the app then opens that entry as a new
 //! file tab with its [`TabSource`](hxy_vfs::TabSource) stored as a
 //! `VfsEntry` referencing the current tab's source.
 

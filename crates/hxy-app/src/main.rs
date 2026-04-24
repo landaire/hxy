@@ -22,7 +22,7 @@ fn main() -> eframe::Result<()> {
     let loaded_window = match persist::load_window_settings_sync() {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "load window settings — using defaults");
+            tracing::warn!(error = %e, "load window settings -- using defaults");
             None
         }
     };
@@ -35,14 +35,14 @@ fn main() -> eframe::Result<()> {
                 let app_settings = match runtime.block_on(persist::load_app_settings(&pool)) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(error = %e, "load app settings — using defaults");
+                        tracing::warn!(error = %e, "load app settings -- using defaults");
                         None
                     }
                 };
                 let tabs = match runtime.block_on(persist::load_open_tabs(&pool)) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(error = %e, "load open tabs — starting empty");
+                        tracing::warn!(error = %e, "load open tabs -- starting empty");
                         None
                     }
                 };

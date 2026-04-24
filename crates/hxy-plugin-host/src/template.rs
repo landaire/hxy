@@ -1,6 +1,6 @@
 //! Template runtime abstraction. [`TemplateRuntime`] and
 //! [`ParsedTemplate`] are traits so the app can mix native in-process
-//! runtimes (no sandboxing — we trust our own code) with
+//! runtimes (no sandboxing -- we trust our own code) with
 //! user-installed WASM component plugins (sandboxed via wasmtime).
 //!
 //! The WASM impls ([`WasmTemplateRuntime`] / [`WasmParsedTemplate`])
@@ -35,7 +35,7 @@ pub use crate::bindings::template_world::exports::hxy::vfs::template::Severity;
 pub use crate::bindings::template_world::exports::hxy::vfs::template::Span;
 pub use crate::bindings::template_world::exports::hxy::vfs::template::Value;
 
-/// Canonical display name for a [`ScalarKind`] — matches 010 Editor
+/// Canonical display name for a [`ScalarKind`] -- matches 010 Editor
 /// spelling (uchar / uint32 / float) since that's the template language
 /// most hxy users will have typed for themselves. Plugins emit the
 /// typed enum; this decides what shows up in the UI column.
@@ -72,7 +72,7 @@ pub fn node_type_label(ty: &NodeType) -> String {
 }
 
 /// A template-language runtime. Callers don't care whether the impl
-/// is native Rust or a sandboxed WASM plugin — both answer the same
+/// is native Rust or a sandboxed WASM plugin -- both answer the same
 /// tokenize + parse + execute lifecycle.
 pub trait TemplateRuntime: Send + Sync {
     /// Short identifier for logs / UI (e.g. `"010-bt"`).
@@ -102,7 +102,7 @@ pub trait ParsedTemplate: Send + Sync {
     fn expand_array(&self, array_id: u64, start: u64, end: u64) -> Result<Vec<Node>, HandlerError>;
 }
 
-/// WASM-component-backed runtime — the sandboxed path for user-installed
+/// WASM-component-backed runtime -- the sandboxed path for user-installed
 /// template plugins loaded off disk.
 pub struct WasmTemplateRuntime {
     name: String,

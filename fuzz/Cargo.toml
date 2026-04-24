@@ -43,7 +43,7 @@ test = false
 doc = false
 bench = false
 
-# Keep the fuzz project out of the main workspace — cargo-fuzz wants
+# Keep the fuzz project out of the main workspace -- cargo-fuzz wants
 # its own target dir and nightly toolchain, which shouldn't bleed
 # into normal `cargo build` runs.
 [workspace]

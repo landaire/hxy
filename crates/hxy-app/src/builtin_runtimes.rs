@@ -26,7 +26,7 @@ pub fn builtins() -> Vec<Arc<dyn TemplateRuntime>> {
     vec![Arc::new(Bt010Runtime::new())]
 }
 
-/// 010 Editor Binary Template runtime — the lexer+parser+interpreter
+/// 010 Editor Binary Template runtime -- the lexer+parser+interpreter
 /// from `hxy-010-lang`, wrapped as a [`TemplateRuntime`].
 struct Bt010Runtime {
     extensions: Vec<String>,
@@ -99,7 +99,7 @@ impl hxy_010_lang::HexSource for HexSourceShim {
 fn to_result_tree(r: hxy_010_lang::RunResult) -> wit::ResultTree {
     let nodes = r.nodes.iter().map(convert_node).collect();
     let diagnostics = r.diagnostics.iter().map(convert_diagnostic).collect();
-    // The 010 language has no syntax for declaring a byte palette —
+    // The 010 language has no syntax for declaring a byte palette --
     // leave the override empty and the app falls back to the user's
     // chosen highlight scheme.
     wit::ResultTree { nodes, diagnostics, byte_palette: None }
@@ -120,7 +120,7 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
         }
     });
     // Every attribute the interpreter recorded flows through so the
-    // UI (and other hosts) can act on them — notably `hxy_endian` on
+    // UI (and other hosts) can act on them -- notably `hxy_endian` on
     // primitive arrays, which the hex-view tooltip uses to decode
     // individual elements on hover.
     let attributes: Vec<(String, String)> = n.attrs.clone();

@@ -2,7 +2,7 @@
 //!
 //! The generic crate handles rendering, fuzzy-matching, and keyboard
 //! nav. This module defines hxy's entry / action vocabulary and the
-//! cascade mode (Main → Templates → …).
+//! cascade mode (Main -> Templates -> ...).
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -41,15 +41,15 @@ impl PaletteState {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Everything — commands + files + the `Run Template…` entry
+    /// Everything -- commands + files + the `Run Template...` entry
     /// that cascades into [`Mode::Templates`].
     Main,
-    /// Second-level cascade shown after the user picks `Run Template…`
+    /// Second-level cascade shown after the user picks `Run Template...`
     /// from the main list. Registered templates + an install entry.
     Templates,
     /// Third-level cascade: list installed templates to remove.
     /// Picking one deletes its `.bt` file (and any siblings we added
-    /// for it). Reached from `Main` via "Uninstall template…".
+    /// for it). Reached from `Main` via "Uninstall template...".
     Uninstall,
 }
 

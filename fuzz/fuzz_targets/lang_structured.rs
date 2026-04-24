@@ -2,7 +2,7 @@
 
 //! Structured fuzzer: draws a valid-ish 010 program from the
 //! `FuzzProgram` schema in `hxy_010_lang::fuzz`, emits it to source,
-//! and runs the full tokenize → parse → interpret pipeline. Covers
+//! and runs the full tokenize -> parse -> interpret pipeline. Covers
 //! interpreter paths random bytes can't reach cheaply (most random
 //! inputs don't produce a keyword, let alone a typedef).
 

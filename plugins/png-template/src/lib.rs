@@ -4,7 +4,7 @@
 //! the plugin hardcodes PNG's structure in Rust, compiles to a
 //! component, and is dropped straight into the user's
 //! `template-plugins/` directory. There's no text template, no
-//! language runtime — the `.wasm` file is the entire template.
+//! language runtime -- the `.wasm` file is the entire template.
 //!
 //! Contrast with `plugins/bt-runtime`: that ships an interpreter for
 //! 010 Editor's Binary Template DSL, so one runtime parses many
@@ -40,7 +40,7 @@ impl Guest for PngPlugin {
     }
 }
 
-/// Per-template plugins don't have a template source to parse — the
+/// Per-template plugins don't have a template source to parse -- the
 /// WASM binary is the template. `new` becomes a no-op constructor.
 pub struct PngParsed;
 
@@ -259,7 +259,7 @@ impl GuestParsedTemplate for PngParsed {
 
         if !saw_iend {
             diagnostics.push(template::Diagnostic {
-                message: "no IEND chunk found — file may be truncated".into(),
+                message: "no IEND chunk found -- file may be truncated".into(),
                 severity: template::Severity::Warning,
                 file_offset: Some(off),
                 template_line: None,

@@ -92,7 +92,7 @@ pub struct HxyApp {
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
-/// that produced the message — typically `<data-file> / <template-file>`.
+/// that produced the message -- typically `<data-file> / <template-file>`.
 #[derive(Clone, Debug)]
 pub struct ConsoleEntry {
     pub timestamp: jiff::Timestamp,
@@ -288,7 +288,7 @@ impl HxyApp {
     /// the request and show a "focus existing vs open duplicate"
     /// modal on the next frame. Otherwise opens straight away.
     ///
-    /// Restore paths deliberately bypass this — reopening a file
+    /// Restore paths deliberately bypass this -- reopening a file
     /// across restarts shouldn't prompt.
     pub fn request_open_filesystem(
         &mut self,
@@ -315,7 +315,7 @@ impl HxyApp {
     fn focus_file_tab(&mut self, file_id: FileId) {
         let Some(path) = self.dock.find_tab(&Tab::File(file_id)) else { return };
         let node_path = path.node_path();
-        // Ignore errors — the worst case is the tab isn't focused.
+        // Ignore errors -- the worst case is the tab isn't focused.
         let _ = self.dock.set_active_tab(path);
         self.dock.set_focused_node_and_surface(node_path);
     }
@@ -325,7 +325,7 @@ impl HxyApp {
     /// against the source's first bytes and caches the matching handler
     /// (if any) on the tab so the toolbar command can enable itself.
     /// When `restore_show_vfs_tree` is true and a handler matches, the
-    /// source is mounted and the tree panel opens immediately — used by
+    /// source is mounted and the tree panel opens immediately -- used by
     /// restore-on-launch so children of mounted archives can find their
     /// parent mount.
     pub fn open(
@@ -737,8 +737,8 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
 }
 
 /// Two-way sync between `settings.zoom_factor` and egui's own zoom.
-/// The user can change zoom from the Settings slider (settings →
-/// context) or via Cmd+= / Cmd+- / Cmd+0 (context → settings). The
+/// The user can change zoom from the Settings slider (settings ->
+/// context) or via Cmd+= / Cmd+- / Cmd+0 (context -> settings). The
 /// direction is determined by comparing both against `applied`, the
 /// value we last pushed in either direction.
 fn apply_zoom_change(ctx: &egui::Context, state: &SharedPersistedState, applied: &mut f32) {
@@ -826,7 +826,7 @@ fn render_toolbar_and_apply(ui: &mut egui::Ui, app: &mut HxyApp) {
 
     // Snapshot the command list off `app` so we can borrow other fields
     // of `app` through `ToolbarCtx`. Commands are `Send + Sync` and are
-    // owned trait objects — moving them out and back is cheap (they're
+    // owned trait objects -- moving them out and back is cheap (they're
     // zero-size types in practice).
     let commands = std::mem::take(&mut app.commands);
 
@@ -970,7 +970,7 @@ fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, pat
     };
 
     // Spawn parse+execute on a worker. UI thread keeps rendering
-    // while the template runs — a big file can take seconds, which
+    // while the template runs -- a big file can take seconds, which
     // would otherwise freeze pan / scroll / input. The `UiInbox`
     // triggers a repaint when the worker sends, so we don't poll.
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -988,12 +988,12 @@ fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, pat
             },
             Err(e) => crate::file::TemplateRunOutcome::Err(format!("Parse failed: {e}")),
         };
-        // Best-effort — if the tab closed first the sender's inbox is
+        // Best-effort -- if the tab closed first the sender's inbox is
         // dropped and this returns Err, which is fine.
         let _ = sender.send(outcome);
     });
 
-    app.console_log(ConsoleSeverity::Info, &console_ctx, format!("running template `{tpl_name}`…"));
+    app.console_log(ConsoleSeverity::Info, &console_ctx, format!("running template `{tpl_name}`..."));
 }
 
 /// Pop completed template-run results off each file's inbox and
@@ -1212,7 +1212,7 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
 
 /// Read `node`'s byte span from `source` and format it according to
 /// `kind`. Returns `None` when the bytes can't be read (out of
-/// bounds, I/O error) — the caller silently drops the copy.
+/// bounds, I/O error) -- the caller silently drops the copy.
 #[cfg(not(target_arch = "wasm32"))]
 fn format_template_copy(
     source: &std::sync::Arc<dyn hxy_core::HexSource>,
@@ -1278,7 +1278,7 @@ fn render_template_running(ui: &mut egui::Ui, run: &crate::file::TemplateRun) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(format!("Running `{}`…", run.template_name));
+            ui.label(format!("Running `{}`...", run.template_name));
         });
         let elapsed_ms = jiff::Timestamp::now().duration_since(run.started).as_millis().max(0);
         ui.add_space(4.0);
@@ -1462,7 +1462,7 @@ fn register_user_plugins(_registry: &mut VfsRegistry) {}
 #[cfg(not(target_arch = "wasm32"))]
 fn user_plugins_dir() -> Option<std::path::PathBuf> {
     // Plugins are installed artefacts (binaries + metadata), not user
-    // settings — they belong under the data dir, not the config dir.
+    // settings -- they belong under the data dir, not the config dir.
     // On Linux this resolves to `$XDG_DATA_HOME/hxy/plugins` (i.e.
     // ~/.local/share/hxy/plugins); on macOS to `~/Library/Application
     // Support/hxy/plugins`.
@@ -1489,7 +1489,7 @@ fn user_templates_dir() -> Option<std::path::PathBuf> {
 fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
     let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
 
-    // Native builtin runtimes link as regular Rust — no WASM wrap,
+    // Native builtin runtimes link as regular Rust -- no WASM wrap,
     // no separate rebuild cycle. A change to hxy-010-lang reaches
     // the user's next `cargo run` automatically.
     for rt in crate::builtin_runtimes::builtins() {
@@ -1498,7 +1498,7 @@ fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>
     }
 
     // User-installed WASM components can still override a builtin
-    // for the same extension — they get prepended so `find()` picks
+    // for the same extension -- they get prepended so `find()` picks
     // them first.
     if let Some(dir) = user_template_plugins_dir() {
         match hxy_plugin_host::load_template_plugins_from_dir(&dir) {
@@ -1605,7 +1605,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                         ui.close();
                     }
                     ui.separator();
-                    // …and the long tail in a submenu, same layout as
+                    // ...and the long tail in a submenu, same layout as
                     // the hex view's right-click and the template
                     // panel's row menu.
                     let show_scalar = active_file
@@ -1666,13 +1666,13 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
 }
 
 /// Snapshot of the active selection used by the palette to decide
-/// which `Copy as…` entries to expose. `None` when no file is
+/// which `Copy as...` entries to expose. `None` when no file is
 /// focused or the selection is empty.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 struct CopyPaletteContext {
     /// True when the selection width is a scalar integer width
-    /// (1/2/4/8 bytes), meaning the `Copy value as…` options apply.
+    /// (1/2/4/8 bytes), meaning the `Copy value as...` options apply.
     scalar_width: bool,
 }
 
@@ -1724,12 +1724,18 @@ fn build_palette_entries(
                     .with_icon(icon::PUZZLE_PIECE),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-run-template-entry"), Action::SwitchMode(Mode::Templates))
-                    .with_icon(icon::SCROLL),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-run-template-entry"),
+                    Action::SwitchMode(Mode::Templates),
+                )
+                .with_icon(icon::SCROLL),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-uninstall-template"), Action::SwitchMode(Mode::Uninstall))
-                    .with_icon(icon::TRASH),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-uninstall-template"),
+                    Action::SwitchMode(Mode::Uninstall),
+                )
+                .with_icon(icon::TRASH),
             );
             if let Some(ctx) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
@@ -1773,8 +1779,11 @@ fn build_palette_entries(
                     .with_icon(icon::DOWNLOAD),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-uninstall-template"), Action::SwitchMode(Mode::Uninstall))
-                    .with_icon(icon::TRASH),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-uninstall-template"),
+                    Action::SwitchMode(Mode::Uninstall),
+                )
+                .with_icon(icon::TRASH),
             );
         }
         Mode::Uninstall => {
@@ -2087,7 +2096,7 @@ fn status_bar_ui(
                 base,
             );
         } else {
-            ui.label("Hover: —");
+            ui.label("Hover: --");
         }
         ui.separator();
         if let Some(sel) = file.selection {
@@ -2100,9 +2109,9 @@ fn status_bar_ui(
                 let start = format_offset(range.start().get(), base);
                 let end = format_offset(last_inclusive, base);
                 let len = range.len().get();
-                let copy_value = format!("{start}–{end} ({len} bytes)");
+                let copy_value = format!("{start}-{end} ({len} bytes)");
                 let tooltip = format!(
-                    "{}–{}",
+                    "{}-{}",
                     format_offset(range.start().get(), base.toggle()),
                     format_offset(last_inclusive, base.toggle()),
                 );
@@ -2110,7 +2119,7 @@ fn status_bar_ui(
             };
             copyable_status_label(ui, &display, &copy, Some(tooltip), new_base, base);
         } else {
-            ui.label("Sel: —");
+            ui.label("Sel: --");
         }
 
         let size = file.source.len().get();
@@ -2129,7 +2138,7 @@ fn status_bar_ui(
 }
 
 /// Click to toggle offset base, hover for the alternate-base tooltip,
-/// and — while hovered — consume Cmd/Ctrl+C to copy the label's text.
+/// and -- while hovered -- consume Cmd/Ctrl+C to copy the label's text.
 /// Consuming the shortcut keeps the hex-view selection copy handler
 /// from also firing in the same frame.
 fn copyable_status_label(
@@ -2165,7 +2174,7 @@ const COPY_HEX: egui::KeyboardShortcut =
 
 /// Read the active selection's bytes from `file` and copy them to
 /// the clipboard formatted per `kind`. Value-kind variants read the
-/// first `selection.len()` bytes as a LE integer (0–8 bytes) — the
+/// first `selection.len()` bytes as a LE integer (0-8 bytes) -- the
 /// hex view has no type context, so this is the best we can do
 /// without a template supplying sign + endianness.
 fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
@@ -2241,7 +2250,7 @@ fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEnt
 }
 
 fn format_console_time(ts: jiff::Timestamp) -> String {
-    // Keep the display compact — HH:MM:SS.mmm, user-local.
+    // Keep the display compact -- HH:MM:SS.mmm, user-local.
     let zoned = ts.in_tz("UTC").unwrap_or_else(|_| ts.to_zoned(jiff::tz::TimeZone::UTC));
     format!("{:02}:{:02}:{:02}", zoned.hour(), zoned.minute(), zoned.second())
 }

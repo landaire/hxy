@@ -6,8 +6,8 @@ use serde::Serialize;
 /// plugins simply leave `write` and `grow` as false.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VfsCapabilities {
-    /// Plugin can read entry contents. Always true in practice — a
-    /// handler that can't read wouldn't be useful — but kept explicit
+    /// Plugin can read entry contents. Always true in practice -- a
+    /// handler that can't read wouldn't be useful -- but kept explicit
     /// so the struct is future-proof for formats that distinguish
     /// readable vs. metadata-only.
     pub read: bool,

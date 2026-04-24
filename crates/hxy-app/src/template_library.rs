@@ -12,7 +12,7 @@
 //! Matching an opened file against these fields is enough to suggest
 //! (or auto-run) the right template without a manual picker.
 //!
-//! Only `.bt` is recognised today — the comment style is idiomatic to
+//! Only `.bt` is recognised today -- the comment style is idiomatic to
 //! 010 templates. Other runtimes can ship their own detectors later.
 //!
 //! Only the header is parsed; the body is handed verbatim to the
@@ -42,7 +42,7 @@ pub struct TemplateEntry {
     /// Short display name (`ZIP.bt`). Used for the "Run ZIP.bt" toolbar
     /// label when this template is the best match for a file.
     pub name: String,
-    /// Extension globs declared in the header (`*.zip` → `zip`). Lower-
+    /// Extension globs declared in the header (`*.zip` -> `zip`). Lower-
     /// cased; leading `*.` stripped.
     pub extensions: Vec<String>,
     /// One or more magic byte prefixes. Each entry is the raw bytes
@@ -82,7 +82,7 @@ impl TemplateLibrary {
 
     /// Best match for a file characterised by `extension` and its
     /// leading `head_bytes`. Magic-byte matches beat extension
-    /// matches — a `.zip` extension on a file that starts with `PK`
+    /// matches -- a `.zip` extension on a file that starts with `PK`
     /// wins over a `.zip`-declared template that requires a different
     /// magic.
     pub fn suggest(&self, extension: Option<&str>, head_bytes: &[u8]) -> Option<&TemplateEntry> {
@@ -126,7 +126,7 @@ fn parse_template(path: &Path) -> Option<TemplateEntry> {
     Some(TemplateEntry { path: path.to_path_buf(), name, extensions, magic })
 }
 
-/// `"File Mask: *.zip"` → `Some("*.zip")` for a given field name.
+/// `"File Mask: *.zip"` -> `Some("*.zip")` for a given field name.
 /// Case-insensitive, tolerates extra internal whitespace from the
 /// way 010 templates align the colon column.
 fn header_value<'a>(body: &'a str, field: &str) -> Option<&'a str> {
@@ -141,7 +141,7 @@ fn header_value<'a>(body: &'a str, field: &str) -> Option<&'a str> {
     Some(rest)
 }
 
-/// `"*.zip,*.jar"` → `["zip", "jar"]`. Strips trailing inline `//...`
+/// `"*.zip,*.jar"` -> `["zip", "jar"]`. Strips trailing inline `//...`
 /// comment if the template author left one.
 fn parse_extensions(raw: &str) -> Vec<String> {
     strip_inline_comment(raw)
@@ -155,7 +155,7 @@ fn parse_extensions(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// `"50 4B //PK"` → `[[0x50, 0x4B]]`. Multiple magic sequences
+/// `"50 4B //PK"` -> `[[0x50, 0x4B]]`. Multiple magic sequences
 /// separated by commas yield separate byte vectors.
 fn parse_id_bytes(raw: &str) -> Vec<Vec<u8>> {
     let trimmed = strip_inline_comment(raw);
@@ -203,7 +203,7 @@ pub fn parse_include_directives(text: &str) -> Vec<String> {
 fn extract_include_target(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("#include")?;
-    // Must be followed by whitespace or an opening quote — don't match
+    // Must be followed by whitespace or an opening quote -- don't match
     // `#includeextra`.
     if !rest.starts_with(|c: char| c.is_whitespace() || c == '"' || c == '<') {
         return None;
@@ -225,7 +225,7 @@ pub struct IncludeClosure {
     /// Absolute, canonicalised paths of every reachable include,
     /// excluding the root entry itself. Ordered by discovery.
     pub resolved: Vec<PathBuf>,
-    /// Directives that failed to resolve — the raw target string and
+    /// Directives that failed to resolve -- the raw target string and
     /// the file that referenced it, in discovery order.
     pub missing: Vec<(PathBuf, String)>,
 }
@@ -276,7 +276,7 @@ pub fn collect_include_closure(entry: &Path, base_dir: &Path) -> IncludeClosure 
 /// canonicalised result exists and is inside `canonical_base`. Any
 /// attempt to escape via absolute paths, `..`, or symlinks fails.
 fn resolve_within(target: &str, parent: &Path, canonical_base: &Path) -> Option<PathBuf> {
-    // Absolute paths always escape the sandbox — real 010 templates
+    // Absolute paths always escape the sandbox -- real 010 templates
     // don't use them.
     let target_path = Path::new(target);
     if target_path.is_absolute() {
@@ -304,7 +304,7 @@ pub struct InstallReport {
 
 /// Copy `src` into `dest_dir`, along with every template it `#include`s
 /// from under `src.parent()`. Pre-existing destination files are kept,
-/// not overwritten — rerunning install on the same template is a
+/// not overwritten -- rerunning install on the same template is a
 /// no-op. Returns a report describing what happened, including any
 /// includes that failed to resolve.
 pub fn install_template_with_deps(src: &Path, dest_dir: &Path) -> InstallReport {
@@ -336,7 +336,7 @@ pub fn install_template_with_deps(src: &Path, dest_dir: &Path) -> InstallReport 
 /// sandboxed to `base_dir`. Targets that escape the sandbox (absolute
 /// paths, `..` above the base, symlinks elsewhere) and references to
 /// missing files are replaced with a commented-out marker so the
-/// caller — and the template runtime — can see what happened without
+/// caller -- and the template runtime -- can see what happened without
 /// a hard failure.
 ///
 /// Cycles terminate on first re-entry; each file is inlined at most
@@ -386,7 +386,7 @@ fn expand_into(
 }
 
 /// List every `.bt` file currently installed in `dir`, sorted by name.
-/// Used by the "Uninstall template…" palette mode.
+/// Used by the "Uninstall template..." palette mode.
 pub fn list_installed_templates(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<PathBuf> =
@@ -443,7 +443,7 @@ mod tests {
     fn parse_includes_tolerates_leading_whitespace_and_quotes() {
         let text = "  #include \"A.bt\"\n#include\t\"B.bt\"\n#include <C.bt>\n#includeoops\n// #include \"D.bt\"\n";
         // Only comment-free preprocessor lines count; the leading `//` form
-        // is stripped by `trim_start`, so it gets scanned. Accept that — a
+        // is stripped by `trim_start`, so it gets scanned. Accept that -- a
         // commented-out include is rare and the caller still copies a
         // physical file, not an AST.
         let got = parse_include_directives(text);

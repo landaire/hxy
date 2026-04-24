@@ -1,6 +1,6 @@
 #![no_main]
 
-//! Parser fuzzer: arbitrary UTF-8 → tokenize → parse. Either result
+//! Parser fuzzer: arbitrary UTF-8 -> tokenize -> parse. Either result
 //! is acceptable; we're hunting for panics (unwrap on bad tokens,
 //! arithmetic overflow on span math, etc.).
 

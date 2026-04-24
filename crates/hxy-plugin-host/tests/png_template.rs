@@ -1,6 +1,6 @@
 //! Validates the per-template WASM workflow end-to-end: the
 //! `plugins/png-template` component parses a tiny hand-crafted PNG
-//! (signature + IHDR + IEND) with no text template involved —
+//! (signature + IHDR + IEND) with no text template involved --
 //! `parse("")` is effectively a no-op since the wasm *is* the template.
 
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ fn component_path() -> PathBuf {
 }
 
 /// Build a minimal valid PNG: 8-byte signature + IHDR (13 bytes of
-/// payload) + IEND (0 bytes of payload). CRCs are set to zero — the
+/// payload) + IEND (0 bytes of payload). CRCs are set to zero -- the
 /// plugin reads them but doesn't validate.
 fn tiny_png() -> Vec<u8> {
     let mut out = Vec::new();
@@ -28,7 +28,7 @@ fn tiny_png() -> Vec<u8> {
     out.extend_from_slice(&320u32.to_be_bytes()); // width
     out.extend_from_slice(&240u32.to_be_bytes()); // height
     out.push(8); // bit depth
-    out.push(2); // color type — truecolor
+    out.push(2); // color type -- truecolor
     out.push(0); // compression
     out.push(0); // filter
     out.push(0); // interlace
@@ -56,7 +56,7 @@ fn png_template_parses_signature_ihdr_and_iend() {
     assert_eq!(plugin.extensions(), ["png".to_string()]);
 
     let data: Arc<dyn HexSource> = Arc::new(MemorySource::new(tiny_png()));
-    // The "template source" is empty — this plugin ignores it;
+    // The "template source" is empty -- this plugin ignores it;
     // its parsing logic is all Rust baked into the wasm.
     let parsed = plugin.parse(data, "").expect("parse");
     let tree = parsed.execute(&[]).expect("execute");

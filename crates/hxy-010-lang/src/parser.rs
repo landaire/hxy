@@ -176,7 +176,7 @@ impl Parser {
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
         // 010 lets function params carry a `local` / `const` qualifier
-        // ahead of the type — e.g. `string readFoo(local CTYPE &t)`.
+        // ahead of the type -- e.g. `string readFoo(local CTYPE &t)`.
         // The qualifier is semantic sugar for us; accept and discard
         // either one.
         let _ = self.eat_keyword(Keyword::Local) || self.eat_keyword(Keyword::Const);
@@ -213,17 +213,17 @@ impl Parser {
             TokenKind::Keyword(Keyword::Union) => self.parse_struct_stmt(),
             TokenKind::Keyword(Keyword::Local) | TokenKind::Keyword(Keyword::Const) => self.parse_field_decl(None),
             TokenKind::Semi => {
-                // Empty statement — consume and treat as a no-op block.
+                // Empty statement -- consume and treat as a no-op block.
                 let t = self.bump().unwrap();
                 Ok(Stmt::Block { stmts: Vec::new(), span: t.span })
             }
             TokenKind::Keyword(Keyword::Struct) => self.parse_struct_stmt(),
             TokenKind::Keyword(Keyword::Enum) => {
                 // Bare `enum` outside a typedef has three shapes:
-                //   1. `enum Name { ... };` — pure type declaration
-                //   2. `enum <backing>? Name? { ... } ident;` — inline
+                //   1. `enum Name { ... };` -- pure type declaration
+                //   2. `enum <backing>? Name? { ... } ident;` -- inline
                 //       enum used as a field type
-                //   3. `enum Name field;` — field whose type is a
+                //   3. `enum Name field;` -- field whose type is a
                 //       previously-declared enum
                 //
                 // Peek past the optional tag: if the next significant
@@ -263,7 +263,7 @@ impl Parser {
         // identifier, and check for `{`.
         let mut offset = 1;
         if matches!(self.peek_at(offset).map(|t| &t.kind), Some(TokenKind::Lt)) {
-            // Scan to the matching `>` — backing type refs are simple
+            // Scan to the matching `>` -- backing type refs are simple
             // (one identifier), so the next-next token is the closer.
             offset += 1;
             while let Some(t) = self.peek_at(offset) {
@@ -290,8 +290,8 @@ impl Parser {
         ) {
             return false;
         }
-        // `Type ident ...` — normal declaration.
-        // `Type : N;`     — anonymous bitfield padding.
+        // `Type ident ...` -- normal declaration.
+        // `Type : N;`     -- anonymous bitfield padding.
         matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_) | TokenKind::Colon))
     }
 
@@ -474,7 +474,7 @@ impl Parser {
         // `typedef SourceType NewName [array_size]? <attrs>?;`
         //
         // 010 allows a typedef alias to carry an optional array size
-        // and / or attribute list — e.g.
+        // and / or attribute list -- e.g.
         // `typedef CHAR DIGEST[20] <read=formatDigest>;`. We parse
         // and discard both because our alias model is shallow; a
         // template that depends on the array semantics of an alias
@@ -629,10 +629,10 @@ impl Parser {
 
     /// Handle the `struct` / `union` keywords outside a `typedef`.
     /// Four shapes:
-    ///   1. `struct Name { body };` — type declaration
-    ///   2. `struct Name (params) { body };` — parameterised type decl
-    ///   3. `struct { body } field_name;` — anonymous struct as a field type
-    ///   4. `struct Name field_name;` — field whose type is an already-declared struct
+    ///   1. `struct Name { body };` -- type declaration
+    ///   2. `struct Name (params) { body };` -- parameterised type decl
+    ///   3. `struct { body } field_name;` -- anonymous struct as a field type
+    ///   4. `struct Name field_name;` -- field whose type is an already-declared struct
     fn parse_struct_stmt(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().unwrap(); // `struct` or `union`
         let is_union = matches!(kw.kind, TokenKind::Keyword(Keyword::Union));
@@ -643,7 +643,7 @@ impl Parser {
             Some(TokenKind::Ident(_)) => {
                 let (name, name_span) = self.expect_ident()?;
                 // A `(` after the name is always a param list on a
-                // definition — field decls can't take args on a bare
+                // definition -- field decls can't take args on a bare
                 // `struct Name x(args)` form because the struct type
                 // itself would already need to have been parsed.
                 if matches!(self.peek_kind(), Some(TokenKind::LParen)) {
@@ -664,7 +664,7 @@ impl Parser {
                 if matches!(self.peek_kind(), Some(TokenKind::LBrace)) {
                     // Form 1: `struct Name { body } [<attrs>];`
                     // Form 1b: `struct Name { body } field [array] [<attrs>];`
-                    //          — inline def + instance (common in
+                    //          -- inline def + instance (common in
                     //          XEX2Headers.bt).
                     let body_block = self.parse_block()?;
                     let Stmt::Block { stmts, span: body_span } = body_block else { unreachable!() };
@@ -809,7 +809,7 @@ impl Parser {
     /// nested-struct use).
     ///
     /// Supports parameterised struct instantiation:
-    /// `PNG_CHUNK_PLTE plte(length);` — the args after the field name
+    /// `PNG_CHUNK_PLTE plte(length);` -- the args after the field name
     /// are bound to the struct's declared params at execute time.
     fn parse_field_decl(&mut self, ty_override: Option<TypeRef>) -> Result<Stmt, ParseError> {
         let start = self.peek().map(|t| t.span.start).unwrap_or(0);
@@ -1104,7 +1104,7 @@ impl Parser {
                 self.bump();
                 let inner = self.parse_expr()?;
                 let close = self.expect_kind(&TokenKind::RParen, ")")?;
-                // Discard the parens — the AST doesn't need them,
+                // Discard the parens -- the AST doesn't need them,
                 // precedence is already captured. But widen the span.
                 Ok(with_span(inner, Span::new(tok.span.start, close.span.end)))
             }
@@ -1152,7 +1152,7 @@ impl Parser {
     }
 }
 
-/// Binding power of a prefix operator like unary `-` / `!` — higher
+/// Binding power of a prefix operator like unary `-` / `!` -- higher
 /// than any infix so `-a * b` parses as `(-a) * b`.
 const PREFIX_BP: u8 = 30;
 

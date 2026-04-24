@@ -1,4 +1,4 @@
-//! 010 Editor Binary Template language implementation — lexer, parser,
+//! 010 Editor Binary Template language implementation -- lexer, parser,
 //! and tree-walking interpreter. Built incrementally: the lexer lands
 //! first, with snapshot tests exercising real templates.
 

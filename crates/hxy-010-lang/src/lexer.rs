@@ -2,7 +2,7 @@
 //!
 //! Built on `winnow` combinators. Input is `&str` and we derive byte
 //! offsets from the remaining-length delta against the original source
-//! — simpler than wrapping in `LocatingSlice` and sufficient because
+//! -- simpler than wrapping in `LocatingSlice` and sufficient because
 //! the lexer only ever consumes from the front.
 
 use thiserror::Error;
@@ -78,7 +78,7 @@ fn block_comment(input: &mut &str) -> ModalResult<()> {
     "/*".parse_next(input)?;
     loop {
         let Some(idx) = input.find('*') else {
-            // no more `*` — consume everything and bail. We treat an
+            // no more `*` -- consume everything and bail. We treat an
             // unterminated block comment as "comment to end of file"
             // for robustness; the parser will flag missing `;` later.
             *input = "";

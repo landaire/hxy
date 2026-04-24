@@ -7,7 +7,7 @@ use crate::geometry::ByteRange;
 /// A byte selection with an anchor (the byte that didn't move when the
 /// selection was last extended) and a cursor (the byte that did). The
 /// range returned by [`Selection::range`] covers every byte from the
-/// lower endpoint up to and including the upper one — a caret (anchor
+/// lower endpoint up to and including the upper one -- a caret (anchor
 /// == cursor) is therefore a one-byte range, not an empty one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {

@@ -1,6 +1,6 @@
 //! Fuzzy matching, backed by [`nucleo_matcher`] (same engine
 //! Helix uses). Handles Unicode case folding, word-boundary and
-//! consecutive-match bonuses, SIMD-accelerated scoring — the
+//! consecutive-match bonuses, SIMD-accelerated scoring -- the
 //! bits you'd have to hand-roll otherwise.
 
 use nucleo_matcher::Matcher;
@@ -15,10 +15,10 @@ use crate::Entry;
 /// Returns indices into `entries` ordered best match first. An empty
 /// query yields every index in declaration order.
 ///
-/// `haystack_of` builds the string to score against — typically
+/// `haystack_of` builds the string to score against -- typically
 /// `title + " " + subtitle` so both participate in matching. Case is
-/// handled via `CaseMatching::Smart` (lowercase query → case-
-/// insensitive; mixed-case query → case-sensitive).
+/// handled via `CaseMatching::Smart` (lowercase query -> case-
+/// insensitive; mixed-case query -> case-sensitive).
 pub fn filter_and_sort<A, F>(query: &str, entries: &[Entry<A>], haystack_of: F) -> Vec<usize>
 where
     F: Fn(&Entry<A>) -> String,

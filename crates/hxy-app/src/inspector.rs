@@ -3,7 +3,7 @@
 //! common time encodings, colour channels) and renders them in a
 //! dock tab.
 //!
-//! User-registered decoders aren't wired yet — the trait is public
+//! User-registered decoders aren't wired yet -- the trait is public
 //! so a future plugin-management hook can add new ones without
 //! touching this module.
 
@@ -62,8 +62,8 @@ pub trait Decoder: Send + Sync {
     fn bytes_needed(&self) -> Option<usize>;
 
     /// Decode the bytes the caller has already read. Returns `None`
-    /// if decoding fails (too few bytes, NaN-ish float, etc.) — the
-    /// row renders as "—".
+    /// if decoding fails (too few bytes, NaN-ish float, etc.) -- the
+    /// row renders as "--".
     fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<Decoded>;
 }
 
@@ -163,7 +163,7 @@ impl Decoder for FixedInt {
 }
 
 /// 3-byte integer (i24 / u24). Not a standard width so it gets its
-/// own impl — handles sign extension and byte-order manually.
+/// own impl -- handles sign extension and byte-order manually.
 struct Int24 {
     signed: bool,
 }
@@ -193,7 +193,7 @@ impl Decoder for Int24 {
     }
 }
 
-/// i128 / u128 — the 16-byte span the inspector already prefetches.
+/// i128 / u128 -- the 16-byte span the inspector already prefetches.
 struct Int128 {
     signed: bool,
 }
@@ -312,13 +312,13 @@ enum TimeDecoder {
     UnixSec32,
     /// 64-bit Unix epoch seconds, signed.
     UnixSec64,
-    /// Windows FILETIME — 100-ns intervals since 1601-01-01 UTC.
+    /// Windows FILETIME -- 100-ns intervals since 1601-01-01 UTC.
     FileTime,
-    /// DOS date — 16-bit packed year/month/day.
+    /// DOS date -- 16-bit packed year/month/day.
     DosDate,
-    /// DOS time — 16-bit packed hour/min/sec×2.
+    /// DOS time -- 16-bit packed hour/min/sec×2.
     DosTime,
-    /// OLE automation date — f64 days since 1899-12-30.
+    /// OLE automation date -- f64 days since 1899-12-30.
     OleTime,
 }
 
@@ -493,7 +493,7 @@ fn format_signed(value: i128, width: usize, radix: IntRadix) -> String {
         IntRadix::Hex => {
             // Show hex representation of the underlying bit pattern
             // (two's-complement in `width` bytes), not of the abstract
-            // integer value — matches what a reader would see in the
+            // integer value -- matches what a reader would see in the
             // raw file.
             let mask = if width >= 16 { u128::MAX } else { (1u128 << (width * 8)) - 1 };
             let raw = (value as u128) & mask;
@@ -532,7 +532,7 @@ pub fn show(
     ui.separator();
 
     if caret_offset.is_none() {
-        ui.weak("No caret — click a byte in the hex view.");
+        ui.weak("No caret -- click a byte in the hex view.");
         return;
     }
     ui.add_space(4.0);
@@ -564,7 +564,7 @@ pub fn show(
                         });
                     }
                     None => {
-                        ui.weak("—");
+                        ui.weak("--");
                     }
                 }
                 ui.end_row();

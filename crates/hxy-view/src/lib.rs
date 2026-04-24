@@ -37,7 +37,7 @@ pub enum ValueHighlight {
     Text,
 }
 
-/// Callback type for context menu rendering — invoked on right-click
+/// Callback type for context menu rendering -- invoked on right-click
 /// anywhere in the hex or ASCII pane.
 pub type ContextMenuFn<'s> = Box<dyn FnOnce(&mut egui::Ui) + 's>;
 
@@ -85,11 +85,11 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     minimap: bool,
     minimap_colored: bool,
     initial_scroll: Option<f32>,
-    /// When set, overrides `initial_scroll` — resolved at render
+    /// When set, overrides `initial_scroll` -- resolved at render
     /// time to place the row containing this byte near the top.
     scroll_to_byte: Option<ByteOffset>,
     /// Transient highlight for a byte range the consumer wants to
-    /// draw attention to — e.g. the template panel reflecting which
+    /// draw attention to -- e.g. the template panel reflecting which
     /// field the pointer is over. Painted as a secondary fill that
     /// co-exists with the primary selection.
     hover_span: Option<ByteRange>,
@@ -151,7 +151,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
     /// Stable seed for this view's internal widget ids. egui runs two
     /// layout passes; without a stable salt the hex body and column
-    /// header — both giant `allocate_exact_size` widgets — get auto-
+    /// header -- both giant `allocate_exact_size` widgets -- get auto-
     /// ids derived from call-site position, which drifts under
     /// egui_dock's tab shuffling and triggers "Widget rect changed id
     /// between passes" warnings. Callers should pass something tied
@@ -429,7 +429,7 @@ impl HexViewLayout {
 
     /// Screen rect of the hex cell for the given byte offset, if the
     /// offset is within the source. The rect may fall outside the
-    /// currently-visible viewport — callers doing overlay painting
+    /// currently-visible viewport -- callers doing overlay painting
     /// should intersect with the viewport clip.
     pub fn hex_cell_rect(&self, offset: ByteOffset) -> Option<Rect> {
         let (row_origin, col) = self.row_origin_and_col(offset)?;
@@ -760,7 +760,7 @@ fn visible_rows(block_rect: &Rect, row_height: f32, total_rows: usize, clip: Rec
 }
 
 /// Paint in two passes so marker strokes (cursor/hover) end up on top of
-/// every neighboring row's tint — otherwise the cell to the right of the
+/// every neighboring row's tint -- otherwise the cell to the right of the
 /// cursor can paint its tint *over* the cursor stroke.
 fn paint_rows(painter: &egui::Painter, ctx: &PaintCtx<'_>, block_rect: Rect, first_visible: usize, bytes: &[u8]) {
     let cols = usize::from(ctx.columns.get());
@@ -868,7 +868,7 @@ fn paint_row_backs_and_glyphs(
         } else if let Some(f) = fg_override {
             f
         } else if let Some(color) = bg {
-            // Styler supplied a bg but no fg — pick a contrast color.
+            // Styler supplied a bg but no fg -- pick a contrast color.
             contrast_text_color(color, ctx.colors.text)
         } else {
             palette_fg
@@ -959,7 +959,7 @@ fn paint_row_field_outlines(
 }
 
 /// Rect covering hex columns `[first_col..=last_col]` with each side
-/// bleeding halfway into the adjacent inter-cell gap — matches the
+/// bleeding halfway into the adjacent inter-cell gap -- matches the
 /// tint-rect geometry so outlines and field tints coincide exactly.
 /// First / last columns of the row clamp to the pane edges so two
 /// rows' worth of outlines don't step sideways at the wrap.
@@ -980,7 +980,7 @@ fn hex_outline_rect(
 }
 
 /// ASCII cells already sit edge-to-edge, so the span rect needs no
-/// gap fudging — the tint-rect math is just `cell_rect` union.
+/// gap fudging -- the tint-rect math is just `cell_rect` union.
 fn ascii_outline_rect(
     layout: &RowLayout,
     row_origin: Pos2,
@@ -1342,8 +1342,8 @@ fn draw_minimap<S: HexSource + ?Sized>(
 
     // Map the minimap window's top row linearly to the file's scroll
     // fraction. That way the viewport indicator travels the full height
-    // of the minimap as you scroll from start to end — like a regular
-    // scrollbar — instead of pinning itself to the middle.
+    // of the minimap as you scroll from start to end -- like a regular
+    // scrollbar -- instead of pinning itself to the middle.
     let viewport_top_row_f = (current_offset / row_height).max(0.0);
     let viewport_rows_f = (viewport_height / row_height).max(1.0);
     let capacity_f = minimap_capacity_rows as f32;
@@ -1428,7 +1428,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
     }
 
     // Click/drag maps pointer y to a position in the *whole file* so a
-    // top→bottom drag on the minimap scrolls from file start to end in
+    // top->bottom drag on the minimap scrolls from file start to end in
     // one motion, regardless of how much content the fixed-zoom window
     // happens to be showing right now.
     let pointer = response
@@ -1445,8 +1445,8 @@ fn draw_minimap<S: HexSource + ?Sized>(
 
 /// Paint the template-panel's hover span on the minimap. Splits into
 /// two cases: the span intersects the currently-visible minimap
-/// window (→ highlight the matching rows), or the span is off-screen
-/// (→ small caret at the top or bottom edge pointing toward it).
+/// window (-> highlight the matching rows), or the span is off-screen
+/// (-> small caret at the top or bottom edge pointing toward it).
 #[allow(clippy::too_many_arguments)]
 fn paint_hover_span_on_minimap(
     painter: &egui::Painter,
@@ -1482,7 +1482,7 @@ fn paint_hover_span_on_minimap(
         return;
     }
 
-    // Span intersects the window — shade the overlap rows.
+    // Span intersects the window -- shade the overlap rows.
     let shaded_top_row = span_first_row.max(window_top_row);
     let shaded_bot_row_inclusive = span_last_row_inclusive.min(window_end_row.saturating_sub(1));
     let rel_top = (shaded_top_row - window_top_row) as f32 * cell_h;

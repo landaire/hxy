@@ -113,7 +113,7 @@ fn sample_bt_full_file() {
     insta::assert_debug_snapshot!(tokens);
 }
 
-/// Real-world template from landaire/wows-toolkit — MIT licensed.
+/// Real-world template from landaire/wows-toolkit -- MIT licensed.
 /// Covers: LittleEndian() at top level, typedef struct without
 /// attributes, nested structs declared inline, and for-loops with
 /// compound bodies.
@@ -124,7 +124,7 @@ fn assets_bin_bt() {
     insta::assert_debug_snapshot!(tokens);
 }
 
-/// Real-world template from emoose/xbox-reversing — BSD 3-Clause.
+/// Real-world template from emoose/xbox-reversing -- BSD 3-Clause.
 /// Covers: typedef aliases for capitalised primitives (QWORD, DWORD,
 /// FILETIME), struct with local vars and internal while-loop,
 /// top-level for-loops, function definitions, `&` reference params,

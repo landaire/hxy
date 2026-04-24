@@ -34,7 +34,7 @@ pub struct OpenFile {
     pub source_kind: Option<TabSource>,
     pub source: Arc<dyn HexSource>,
     pub selection: Option<Selection>,
-    /// Last-hovered byte offset reported by the hex view — surfaced in
+    /// Last-hovered byte offset reported by the hex view -- surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
     pub hovered: Option<ByteOffset>,
     /// Most recent scroll offset reported by the hex view.
@@ -64,7 +64,7 @@ pub struct OpenFile {
     #[cfg(not(target_arch = "wasm32"))]
     pub template: Option<TemplateState>,
     /// Background parse+execute in flight. Mutually exclusive with
-    /// `template` in practice — when a run starts we clear the old
+    /// `template` in practice -- when a run starts we clear the old
     /// tree; when the run finishes we swap the result in here.
     #[cfg(not(target_arch = "wasm32"))]
     pub template_running: Option<TemplateRun>,
@@ -114,7 +114,7 @@ pub struct TemplateNodeIdx(pub u32);
 
 /// Opaque identifier for a deferred array, handed back to the plugin
 /// when the UI wants to materialise more elements. Distinct from
-/// [`TemplateNodeIdx`] — same `u64` width as the WIT record but
+/// [`TemplateNodeIdx`] -- same `u64` width as the WIT record but
 /// typed so we can't pass a node index where an array id is wanted.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -123,7 +123,7 @@ pub struct TemplateArrayId(pub u64);
 #[cfg(not(target_arch = "wasm32"))]
 pub struct TemplateState {
     /// `None` when the state was built as a diagnostics-only surface
-    /// (e.g. missing runtime, parse failure) — in that case
+    /// (e.g. missing runtime, parse failure) -- in that case
     /// `expand_array` can't be called and the panel renders only the
     /// diagnostics header.
     pub parsed: Option<std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>>,
@@ -161,7 +161,7 @@ pub struct TemplateState {
 }
 
 impl OpenFile {
-    /// Construct from an in-memory buffer — used for initial load of
+    /// Construct from an in-memory buffer -- used for initial load of
     /// small files before we have a streaming reader.
     pub fn from_bytes(
         id: FileId,

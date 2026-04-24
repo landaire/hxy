@@ -2,7 +2,7 @@
 //!
 //! The lexer is language-aware only in so far as it distinguishes
 //! keywords from identifiers. Primitive type names (`uchar`, `int`,
-//! etc.) are plain identifiers — the parser decides at bind time
+//! etc.) are plain identifiers -- the parser decides at bind time
 //! whether a name refers to a built-in type, a typedef, a variable,
 //! or a function.
 
@@ -71,7 +71,7 @@ pub enum TokenKind {
     Question,
     Arrow, // `->`
 
-    // Operators — arithmetic / unary
+    // Operators -- arithmetic / unary
     Plus,
     Minus,
     Star,
@@ -82,14 +82,14 @@ pub enum TokenKind {
     Tilde, // bitwise not
     Bang,  // logical not
 
-    // Operators — bitwise
+    // Operators -- bitwise
     Amp,
     Pipe,
     Caret,
     Shl,
     Shr,
 
-    // Operators — comparison / logical
+    // Operators -- comparison / logical
     EqEq,
     NotEq,
     Lt,
@@ -99,7 +99,7 @@ pub enum TokenKind {
     AmpAmp,
     PipePipe,
 
-    // Operators — assignment
+    // Operators -- assignment
     Eq,
     PlusEq,
     MinusEq,
@@ -113,7 +113,7 @@ pub enum TokenKind {
     ShrEq,
 }
 
-/// Reserved words. Primitive type names are *not* included — see the
+/// Reserved words. Primitive type names are *not* included -- see the
 /// module comment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]

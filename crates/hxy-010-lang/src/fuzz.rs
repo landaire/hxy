@@ -3,7 +3,7 @@
 //!
 //! [`FuzzProgram`] derives [`arbitrary::Arbitrary`] and emits valid
 //! 010 source via [`FuzzProgram::emit`]. Fuzz targets feed the
-//! emitted string through tokenize / parse / interpret — this
+//! emitted string through tokenize / parse / interpret -- this
 //! explores interpreter paths a byte-oriented fuzzer can't reach in
 //! reasonable time (most random inputs don't even tokenize into
 //! valid keywords).
@@ -208,7 +208,7 @@ fn indent(out: &mut String, depth: usize) {
 }
 
 /// `FuzzProgram` with a ready-to-consume `Arbitrary` bridge for
-/// libFuzzer — useful when the caller wants a one-liner.
+/// libFuzzer -- useful when the caller wants a one-liner.
 pub fn program_from_unstructured(u: &mut Unstructured<'_>) -> arbitrary::Result<FuzzProgram> {
     FuzzProgram::arbitrary(u)
 }
