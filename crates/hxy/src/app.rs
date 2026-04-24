@@ -132,6 +132,9 @@ struct PendingDuplicate {
 struct PendingPatchRestore {
     file_id: FileId,
     sidecar: crate::patch_persist::PatchSidecar,
+    /// Classification captured at open time so the modal can reuse
+    /// the reason string without re-stating the filesystem.
+    integrity: crate::patch_persist::RestoreIntegrity,
 }
 
 impl HxyApp {
@@ -407,14 +410,13 @@ impl HxyApp {
             && let Some(dir) = unsaved_edits_dir()
         {
             match crate::patch_persist::load(&dir, path) {
-                Ok(Some(sidecar)) if sidecar.matches_disk() => {
-                    self.pending_patch_restore = Some(PendingPatchRestore { file_id: id, sidecar });
-                }
-                Ok(Some(_)) => {
-                    // Source on disk has changed since we wrote the
-                    // sidecar -- silently drop it; restoring against
-                    // a different file would corrupt unrelated bytes.
-                    let _ = crate::patch_persist::discard(&dir, path);
+                Ok(Some(sidecar)) => {
+                    // Surface every sidecar; the modal reports the
+                    // integrity status so the user can decide to
+                    // restore, restore-anyway, or discard.
+                    let integrity = sidecar.integrity();
+                    self.pending_patch_restore =
+                        Some(PendingPatchRestore { file_id: id, sidecar, integrity });
                 }
                 Ok(None) => {}
                 Err(e) => tracing::warn!(error = %e, path = %path.display(), "load patch sidecar"),
@@ -692,12 +694,14 @@ enum DuplicateAction {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    use crate::patch_persist::RestoreIntegrity;
+
     if app.pending_patch_restore.is_none() {
         return;
     }
-    let (path_display, op_count) = {
+    let (path_display, op_count, integrity) = {
         let p = app.pending_patch_restore.as_ref().unwrap();
-        (p.sidecar.source_path.display().to_string(), p.sidecar.patch.len())
+        (p.sidecar.source_path.display().to_string(), p.sidecar.patch.len(), p.integrity.clone())
     };
 
     let mut action: Option<RestoreAction> = None;
@@ -711,9 +715,41 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
         .show(ctx, |ui| {
             ui.label(hxy_i18n::t_args("restore-patch-body", &[("ops", &op_count.to_string())]));
             ui.label(egui::RichText::new(&path_display).weak());
+
+            // Warning banner for anything other than a clean match.
+            // Clean sidecars get the short path; modified / unknown
+            // ones get a yellow-highlighted reason plus a worded
+            // "restore anyway" button so the user can't miss the
+            // risk they're taking.
+            match &integrity {
+                RestoreIntegrity::Clean => {}
+                RestoreIntegrity::Modified { reason } => {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(hxy_i18n::t("restore-patch-warn-modified"))
+                            .color(ui.visuals().warn_fg_color)
+                            .strong(),
+                    );
+                    ui.label(egui::RichText::new(reason).weak());
+                }
+                RestoreIntegrity::Unknown { reason } => {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(hxy_i18n::t("restore-patch-warn-unknown"))
+                            .color(ui.visuals().warn_fg_color)
+                            .strong(),
+                    );
+                    ui.label(egui::RichText::new(reason).weak());
+                }
+            }
+
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("restore-patch-restore")).clicked() {
+                let restore_label = match &integrity {
+                    RestoreIntegrity::Clean => hxy_i18n::t("restore-patch-restore"),
+                    _ => hxy_i18n::t("restore-patch-restore-anyway"),
+                };
+                if ui.button(restore_label).clicked() {
                     action = Some(RestoreAction::Restore);
                 }
                 if ui.button(hxy_i18n::t("restore-patch-discard")).clicked() {
@@ -734,28 +770,62 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let dir = unsaved_edits_dir();
     match action {
         RestoreAction::Restore => {
-            if let Some(file) = app.files.get_mut(&pending.file_id) {
-                let len = file.source.len().get();
-                let read = file.source.read(
-                    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                        .expect("range valid"),
-                );
-                let ctx_label = format!("Restore {}", path.display());
-                match read {
-                    Ok(bytes) => match pending.sidecar.metadata.verify(&bytes) {
-                        Ok(()) => {
-                            *file.patch.write().expect("patch lock poisoned") = pending.sidecar.patch;
-                            file.edit_mode = crate::file::EditMode::Mutable;
-                            app.console_log(ConsoleSeverity::Info, &ctx_label, "restored unsaved edits");
+            let ctx_label = format!("Restore {}", path.display());
+            let integrity_clean = matches!(pending.integrity, RestoreIntegrity::Clean);
+            // Gather the decision + any log lines without holding a
+            // live borrow on `app`, so we can hand the patch to
+            // `file` and then fire `console_log` (which also
+            // borrows `app`) in sequence.
+            let mut log_lines: Vec<(ConsoleSeverity, String)> = Vec::new();
+            let accept = if let Some(file) = app.files.get_mut(&pending.file_id) {
+                // Clean sidecar: re-verify the full SourceMetadata
+                // (including BLAKE3 digest if recorded) so a subtle
+                // tamper still aborts.  Modified / Unknown: user
+                // already opted in, skip verification and adopt.
+                let verified = if integrity_clean {
+                    let len = file.source.len().get();
+                    match file.source.read(
+                        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+                            .expect("range valid"),
+                    ) {
+                        Ok(bytes) => match pending.sidecar.metadata.verify(&bytes) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                log_lines.push((
+                                    ConsoleSeverity::Warning,
+                                    format!("source verification failed; not restoring: {e}"),
+                                ));
+                                false
+                            }
+                        },
+                        Err(e) => {
+                            log_lines.push((ConsoleSeverity::Error, format!("re-read source: {e}")));
+                            false
                         }
-                        Err(e) => app.console_log(
+                    }
+                } else {
+                    true
+                };
+
+                if verified {
+                    *file.patch.write().expect("patch lock poisoned") = pending.sidecar.patch;
+                    file.edit_mode = crate::file::EditMode::Mutable;
+                    if integrity_clean {
+                        log_lines.push((ConsoleSeverity::Info, "restored unsaved edits".to_owned()));
+                    } else {
+                        log_lines.push((
                             ConsoleSeverity::Warning,
-                            &ctx_label,
-                            format!("source verification failed; not restoring: {e}"),
-                        ),
-                    },
-                    Err(e) => app.console_log(ConsoleSeverity::Error, &ctx_label, format!("re-read source: {e}")),
+                            "restored unsaved edits onto a file whose on-disk state has changed".to_owned(),
+                        ));
+                    }
                 }
+                verified
+            } else {
+                false
+            };
+            let _ = accept;
+            for (severity, message) in log_lines {
+                app.console_log(severity, &ctx_label, message);
             }
             if let Some(dir) = dir {
                 let _ = crate::patch_persist::discard(&dir, &path);

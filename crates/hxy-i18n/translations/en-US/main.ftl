@@ -81,4 +81,7 @@ duplicate-open-cancel = Cancel
 restore-patch-title = Restore unsaved edits?
 restore-patch-body = { $ops } unsaved edit(s) from a previous session were saved alongside this file.
 restore-patch-restore = Restore
+restore-patch-restore-anyway = Restore anyway
 restore-patch-discard = Discard
+restore-patch-warn-modified = The file has changed on disk since these edits were saved. Restoring may land them at the wrong offsets.
+restore-patch-warn-unknown = Unable to confirm the file matches what the edits were saved against.
