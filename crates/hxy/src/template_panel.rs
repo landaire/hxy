@@ -320,7 +320,9 @@ impl TemplateTableDelegate<'_> {
                 ui.monospace(node.span.length.to_string());
             }
             4 => {
-                ui.add(egui::Label::new(format_value(node)).truncate());
+                if let Some(text) = format_value(node) {
+                    ui.add(egui::Label::new(text).truncate());
+                }
             }
             _ => {}
         }
@@ -381,7 +383,9 @@ impl TemplateTableDelegate<'_> {
                 ui.monospace(node.span.length.to_string());
             }
             4 => {
-                ui.add(egui::Label::new(format_value(node)).truncate());
+                if let Some(text) = format_value(node) {
+                    ui.add(egui::Label::new(text).truncate());
+                }
             }
             _ => {}
         }
@@ -458,13 +462,31 @@ fn emit_node(
 const STRING_VALUE_PREVIEW_BUDGET: usize = 64;
 
 fn summarise_string(s: &str) -> String {
-    if s.len() <= STRING_VALUE_PREVIEW_BUDGET { s.to_owned() } else { format!("... ({} bytes)", s.len()) }
+    if s.is_empty() {
+        // Render empty strings as `""` so the cell still has visible
+        // glyphs. An empty Label with `.truncate()` produces a galley
+        // of size `(0, line_height)`; the fractional line_height
+        // pulls the enclosing Ui's min_rect off the pixel grid and
+        // trips egui's `show_unaligned` debug overlay.
+        "\"\"".to_owned()
+    } else if s.len() <= STRING_VALUE_PREVIEW_BUDGET {
+        s.to_owned()
+    } else {
+        format!("... ({} bytes)", s.len())
+    }
 }
 
-fn format_value(node: &Node) -> String {
+/// Returns `Some(text)` for a scalar value to render in the Value
+/// column, or `None` for composite rows (struct headers, bitfield
+/// parents) that have no value of their own. Callers must skip the
+/// Label widget on `None` -- adding `Label::new("")` produces a
+/// zero-width galley whose `line_height` is font-dependent and
+/// often sub-pixel, which trips egui's `show_unaligned` debug
+/// overlay on the cell's enclosing `Ui`.
+fn format_value(node: &Node) -> Option<String> {
     use hxy_plugin_host::template::Value;
-    let Some(v) = node.value.as_ref() else { return String::new() };
-    match v {
+    let v = node.value.as_ref()?;
+    Some(match v {
         Value::U8Val(x) => format!("{x}"),
         Value::U16Val(x) => format!("{x}"),
         Value::U32Val(x) => match node.display {
@@ -484,7 +506,7 @@ fn format_value(node: &Node) -> String {
         Value::BytesVal(b) => format!("{} bytes", b.len()),
         Value::StringVal(s) => summarise_string(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
-    }
+    })
 }
 
 pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count: u64) {
