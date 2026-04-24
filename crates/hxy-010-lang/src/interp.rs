@@ -714,6 +714,17 @@ impl<S: HexSource> Interpreter<S> {
         } else {
             Value::UInt { value: field_value as u128, kind: prim }
         };
+        // Tag the emitted node with the actual bit count so the UI
+        // can render `B4` instead of the parent integer type. The
+        // span still covers the whole underlying word (several
+        // fields may share it), and the value carries only the
+        // extracted bits.
+        let mut pairs = attrs_to_pairs(attrs);
+        // Name must match `hxy_plugin_host::BITFIELD_BITS_ATTR`;
+        // this crate doesn't depend on hxy-plugin-host, so the key
+        // is duplicated as a string literal. Update both sides if
+        // the name ever changes.
+        pairs.push(("hxy_bits".to_owned(), width.to_string()));
         self.nodes.push(NodeOut {
             name: name.to_owned(),
             ty: NodeType::Scalar(ScalarKind::from_prim(prim)),
@@ -721,7 +732,7 @@ impl<S: HexSource> Interpreter<S> {
             length: node_length,
             value: Some(value.clone()),
             parent,
-            attrs: attrs_to_pairs(attrs),
+            attrs: pairs,
         });
         self.current_scope_mut().vars.insert(name.to_owned(), value.clone());
         self.store_field(name, value);

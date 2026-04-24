@@ -25,5 +25,7 @@ pub use registry::load_template_runtime_from_bytes;
 pub use template::ParsedTemplate;
 pub use template::TemplateRuntime;
 pub use template::WasmTemplateRuntime;
+pub use template::BITFIELD_BITS_ATTR;
+pub use template::node_display_type;
 pub use template::node_type_label;
 pub use template::scalar_kind_name;

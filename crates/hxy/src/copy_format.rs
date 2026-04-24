@@ -30,11 +30,26 @@ pub enum CopyKind {
     ValueHex,
     ValueDecimal,
     ValueOctal,
+    /// Render a parsed struct node (from the template panel) as a
+    /// Rust struct literal with inline `field: value` initialisers.
+    /// Requires tree context, so it's handled outside
+    /// [`format_bytes`] (see `format_template_struct`).
+    StructRust,
+    /// Same idea, but as a C99 designated initialiser block
+    /// (`.field = value`).
+    StructC,
 }
 
 impl CopyKind {
     pub fn is_value(self) -> bool {
         matches!(self, Self::ValueHex | Self::ValueDecimal | Self::ValueOctal)
+    }
+
+    /// True for the struct-literal variants -- those need the
+    /// template tree and are handled outside [`format_bytes`] /
+    /// [`format_scalar`].
+    pub fn is_struct(self) -> bool {
+        matches!(self, Self::StructRust | Self::StructC)
     }
 }
 
@@ -142,6 +157,14 @@ pub fn sanitize_ident(raw: &str) -> String {
 /// `show_value_submenu` is false (no scalar context), only the
 /// bytes submenu appears.
 pub fn copy_as_menu(ui: &mut egui::Ui, show_value_submenu: bool) -> Option<CopyKind> {
+    copy_as_menu_full(ui, show_value_submenu, false)
+}
+
+/// Same as [`copy_as_menu`] with an additional flag that enables
+/// the `Copy as struct` submenu. Only meaningful for nodes whose
+/// children describe the struct -- the template panel's row
+/// context menu is the one place that knows.
+pub fn copy_as_menu_full(ui: &mut egui::Ui, show_value_submenu: bool, show_struct_submenu: bool) -> Option<CopyKind> {
     let mut picked: Option<CopyKind> = None;
     ui.menu_button("Copy bytes as", |ui| {
         for (label, kind) in BYTES_MENU {
@@ -158,6 +181,18 @@ pub fn copy_as_menu(ui: &mut egui::Ui, show_value_submenu: bool) -> Option<CopyK
                     picked = Some(*kind);
                     ui.close();
                 }
+            }
+        });
+    }
+    if show_struct_submenu {
+        ui.menu_button("Copy struct as", |ui| {
+            if ui.button("Rust struct literal").clicked() {
+                picked = Some(CopyKind::StructRust);
+                ui.close();
+            }
+            if ui.button("C designated initialiser").clicked() {
+                picked = Some(CopyKind::StructC);
+                ui.close();
             }
         });
     }

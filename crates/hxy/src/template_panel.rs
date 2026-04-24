@@ -194,18 +194,21 @@ impl TableDelegate for TemplateTableDelegate<'_> {
         ui.push_id(("hxy-tmpl-row", row_nr), |ui| {
             let row_id = ui.id().with("interact");
             let resp = ui.interact(row_rect, row_id, egui::Sense::click());
-            // `resp.hovered()` is blocked by child widgets that
-            // sense hover themselves (every `Label` in a cell does),
-            // so across all but the gaps between cells it reads
-            // false. `rect_contains_pointer` is the raw pointer-in-
-            // rect check that doesn't care about widget layering --
-            // what we actually want for a whole-row highlight.
-            if ui.rect_contains_pointer(row_rect)
+            // Both the hover highlight and the click-to-select need
+            // to fire on presses that land over cell labels, not
+            // just in the gaps between cells. Labels sense hover
+            // themselves (for tooltips), which blocks the row
+            // interact's `hovered()`/`clicked()`. Fall back to a raw
+            // "pointer in rect + pointer pressed this frame" check
+            // so the whole row behaves like one click target.
+            let over_row = ui.rect_contains_pointer(row_rect);
+            if over_row
                 && let Some(idx) = node_idx
             {
                 *self.any_hover = Some(idx);
             }
-            if resp.clicked()
+            let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
+            if clicked_row
                 && let Some(idx) = node_idx
             {
                 self.events.push(TemplateEvent::Select(idx));
@@ -258,11 +261,16 @@ impl TemplateTableDelegate<'_> {
                     | hxy_plugin_host::template::Value::S64Val(_)
             )
         });
+        let is_struct = matches!(
+            node.type_name,
+            hxy_plugin_host::template::NodeType::StructType(_)
+                | hxy_plugin_host::template::NodeType::StructArray(_)
+        );
 
         ui.label(egui::RichText::new(format!("{}  ({} bytes)", node.name, node.span.length)).strong());
         ui.separator();
 
-        if let Some(kind) = crate::copy_format::copy_as_menu(ui, is_scalar) {
+        if let Some(kind) = crate::copy_format::copy_as_menu_full(ui, is_scalar, is_struct) {
             self.events.push(TemplateEvent::Copy { idx, kind });
         }
 
@@ -302,7 +310,7 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(&node.name).truncate());
             }
             1 => {
-                let label = hxy_plugin_host::node_type_label(&node.type_name);
+                let label = hxy_plugin_host::node_display_type(node);
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
             }
             2 => {
@@ -363,7 +371,7 @@ impl TemplateTableDelegate<'_> {
                 ui.label(format!("[{index}]"));
             }
             1 => {
-                let label = hxy_plugin_host::node_type_label(&node.type_name);
+                let label = hxy_plugin_host::node_display_type(node);
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             2 => {
@@ -625,7 +633,7 @@ pub fn breadcrumb_for_offset(
         .map(|idx| {
             let node = &tree.nodes[*idx as usize];
             let is_leaf = *idx == leaf;
-            let ty = hxy_plugin_host::node_type_label(&node.type_name);
+            let ty = hxy_plugin_host::node_display_type(node);
             let value_str = if is_leaf { format_node_value(node) } else { None };
             match value_str {
                 Some(v) => format!("{} {} = {}", ty, node.name, v),

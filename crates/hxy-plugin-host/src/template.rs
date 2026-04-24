@@ -71,6 +71,23 @@ pub fn node_type_label(ty: &NodeType) -> String {
     }
 }
 
+/// Attribute key a runtime can set to mark a node as a bitfield
+/// extraction. The value is a decimal bit count. Consumers use this
+/// to render bitfields as `B<bits>` rather than the parent integer
+/// type (the underlying storage is usually shared between several
+/// fields, so showing `uint` for all of them erases the distinction).
+pub const BITFIELD_BITS_ATTR: &str = "hxy_bits";
+
+/// UI label for a node, bitfield-aware. Falls back to
+/// [`node_type_label`] when the `hxy_bits` attribute is absent.
+pub fn node_display_type(node: &Node) -> String {
+    if let Some((_, bits)) = node.attributes.iter().find(|(k, _)| k == BITFIELD_BITS_ATTR) {
+        format!("B{bits}")
+    } else {
+        node_type_label(&node.type_name)
+    }
+}
+
 /// A template-language runtime. Callers don't care whether the impl
 /// is native Rust or a sandboxed WASM plugin -- both answer the same
 /// tokenize + parse + execute lifecycle.
