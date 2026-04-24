@@ -49,20 +49,14 @@ mod tests {
 
     #[test]
     fn subsequence_match() {
-        let entries: Vec<Entry<()>> = vec![
-            Entry::new("open-template-file", ()),
-            Entry::new("some-other-thing", ()),
-        ];
+        let entries: Vec<Entry<()>> = vec![Entry::new("open-template-file", ()), Entry::new("some-other-thing", ())];
         let hits = filter_and_sort("otf", &entries, |e| e.title.clone());
         assert_eq!(hits.first(), Some(&0));
     }
 
     #[test]
     fn prefix_beats_middle() {
-        let entries: Vec<Entry<usize>> = vec![
-            Entry::new("xoopens", 0),
-            Entry::new("open template", 1),
-        ];
+        let entries: Vec<Entry<usize>> = vec![Entry::new("xoopens", 0), Entry::new("open template", 1)];
         let hits = filter_and_sort("opn", &entries, |e| e.title.clone());
         assert_eq!(hits.first(), Some(&1));
     }
@@ -75,10 +69,7 @@ mod tests {
 
     #[test]
     fn non_matching_entries_dropped() {
-        let entries: Vec<Entry<usize>> = vec![
-            Entry::new("zzzzzzz", 0),
-            Entry::new("keep", 1),
-        ];
+        let entries: Vec<Entry<usize>> = vec![Entry::new("zzzzzzz", 0), Entry::new("keep", 1)];
         let hits = filter_and_sort("keep", &entries, |e| e.title.clone());
         assert_eq!(hits, vec![1]);
     }

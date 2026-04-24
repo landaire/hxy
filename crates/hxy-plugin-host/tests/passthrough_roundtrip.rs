@@ -19,8 +19,7 @@ use hxy_core::MemorySource;
 use hxy_vfs::VfsHandler;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/passthrough/target/passthrough.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/passthrough/target/passthrough.component.wasm")
 }
 
 #[test]

@@ -98,10 +98,7 @@ pub struct TemplateRun {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub enum TemplateRunOutcome {
-    Ok {
-        parsed: std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>,
-        tree: hxy_plugin_host::template::ResultTree,
-    },
+    Ok { parsed: std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>, tree: hxy_plugin_host::template::ResultTree },
     Err(String),
 }
 

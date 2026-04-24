@@ -158,9 +158,7 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             plugin_rescan: false,
             #[cfg(not(target_arch = "wasm32"))]
-            templates: crate::template_library::TemplateLibrary::load_from(
-                user_templates_dir().as_deref(),
-            ),
+            templates: crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref()),
             #[cfg(not(target_arch = "wasm32"))]
             palette: crate::command_palette::PaletteState::default(),
         }
@@ -176,8 +174,7 @@ impl HxyApp {
         register_user_plugins(&mut registry);
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
-        self.templates =
-            crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
+        self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
     }
 
     /// Show the Plugins tab. Focuses if already open; otherwise splits
@@ -190,11 +187,7 @@ impl HxyApp {
             self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        self.dock.main_surface_mut().split_right(
-            egui_dock::NodeIndex::root(),
-            0.72,
-            vec![Tab::Plugins],
-        );
+        self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Plugins]);
     }
 
     /// Open the data inspector as a right-side split of the main
@@ -209,11 +202,7 @@ impl HxyApp {
             self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        self.dock.main_surface_mut().split_right(
-            egui_dock::NodeIndex::root(),
-            0.72,
-            vec![Tab::Inspector],
-        );
+        self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Inspector]);
     }
 
     /// Append a message to the Console tab. Caps the buffer at
@@ -255,19 +244,12 @@ impl HxyApp {
         // Split the main surface's root so the console always docks
         // at the bottom regardless of whatever layout the user is
         // running with.
-        self.dock.main_surface_mut().split_below(
-            egui_dock::NodeIndex::root(),
-            0.75,
-            vec![Tab::Console],
-        );
+        self.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.75, vec![Tab::Console]);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
-        self.template_plugins
-            .iter()
-            .find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension)))
-            .cloned()
+        self.template_plugins.iter().find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension))).cloned()
     }
 
     pub fn registry(&self) -> &VfsRegistry {
@@ -316,8 +298,7 @@ impl HxyApp {
     ) {
         let display_name = display_name.into();
         if let Some(existing) = self.existing_filesystem_tab(&path) {
-            self.pending_duplicate =
-                Some(PendingDuplicate { display_name, path, bytes, existing });
+            self.pending_duplicate = Some(PendingDuplicate { display_name, path, bytes, existing });
             return;
         }
         self.open_filesystem(display_name, path, bytes, None, None);
@@ -381,19 +362,13 @@ impl HxyApp {
                     .and_then(|p| p.extension())
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_ascii_lowercase());
-                file.suggested_template = self
-                    .templates
-                    .suggest(ext.as_deref(), &head)
-                    .map(|entry| crate::file::SuggestedTemplate {
-                        path: entry.path.clone(),
-                        display_name: entry.name.clone(),
-                    });
+                file.suggested_template = self.templates.suggest(ext.as_deref(), &head).map(|entry| {
+                    crate::file::SuggestedTemplate { path: entry.path.clone(), display_name: entry.name.clone() }
+                });
             }
         }
 
-        if restore_show_vfs_tree
-            && let Some(handler) = file.detected_handler.clone()
-        {
+        if restore_show_vfs_tree && let Some(handler) = file.detected_handler.clone() {
             match handler.mount(file.source.clone()) {
                 Ok(mount) => {
                     file.mount = Some(Arc::new(mount));
@@ -936,20 +911,12 @@ fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run_template_from_path(
-    ctx: &egui::Context,
-    app: &mut HxyApp,
-    id: FileId,
-    path: std::path::PathBuf,
-) {
+fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, path: std::path::PathBuf) {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
 
-    let data_name = app
-        .files
-        .get(&id)
-        .map(|f| f.display_name.clone())
-        .unwrap_or_else(|| format!("file-{}", id.get()));
-    let tpl_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    let data_name = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()));
+    let tpl_name =
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
     let console_ctx = format!("{data_name} / {tpl_name}");
 
     let Some(runtime) = app.template_runtime_for(&ext) else {
@@ -966,16 +933,40 @@ fn run_template_from_path(
         return;
     };
 
-    let template_source = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("Failed to read template source {}: {e}", path.display());
-            app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
-            if let Some(file) = app.files.get_mut(&id) {
-                file.template = Some(crate::template_panel::error_state(msg));
+    // Resolve `#include` textually before handing the source to the
+    // runtime. Sandboxed to the user's templates directory so a
+    // malicious template can't pull in arbitrary files via
+    // `#include "../../..."`. Templates run directly from a path
+    // outside the sandbox (e.g. in-tree fixtures) fall back to the
+    // raw file with no expansion.
+    let sandbox = user_templates_dir();
+    let template_source = match sandbox.as_deref().and_then(|base| {
+        let canonical_base = base.canonicalize().ok()?;
+        let canonical_path = path.canonicalize().ok()?;
+        canonical_path.starts_with(&canonical_base).then_some(canonical_base)
+    }) {
+        Some(base) => match crate::template_library::expand_includes(&path, &base) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("Failed to read template source {}: {e}", path.display());
+                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.template = Some(crate::template_panel::error_state(msg));
+                }
+                return;
             }
-            return;
-        }
+        },
+        None => match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("Failed to read template source {}: {e}", path.display());
+                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.template = Some(crate::template_panel::error_state(msg));
+                }
+                return;
+            }
+        },
     };
 
     // Spawn parse+execute on a worker. UI thread keeps rendering
@@ -986,11 +977,8 @@ fn run_template_from_path(
     let source = file.source.clone();
     file.template = None;
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    file.template_running = Some(crate::file::TemplateRun {
-        inbox,
-        template_name: tpl_name.clone(),
-        started: jiff::Timestamp::now(),
-    });
+    file.template_running =
+        Some(crate::file::TemplateRun { inbox, template_name: tpl_name.clone(), started: jiff::Timestamp::now() });
 
     std::thread::spawn(move || {
         let outcome = match runtime.parse(source, &template_source) {
@@ -1005,11 +993,7 @@ fn run_template_from_path(
         let _ = sender.send(outcome);
     });
 
-    app.console_log(
-        ConsoleSeverity::Info,
-        &console_ctx,
-        format!("running template `{tpl_name}`…"),
-    );
+    app.console_log(ConsoleSeverity::Info, &console_ctx, format!("running template `{tpl_name}`…"));
 }
 
 /// Pop completed template-run results off each file's inbox and
@@ -1038,11 +1022,8 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
     }
 
     for (id, outcome, tpl) in done {
-        let data_name = app
-            .files
-            .get(&id)
-            .map(|f| f.display_name.clone())
-            .unwrap_or_else(|| format!("file-{}", id.get()));
+        let data_name =
+            app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()));
         let console_ctx = format!("{data_name} / {tpl}");
         match outcome {
             crate::file::TemplateRunOutcome::Ok { parsed, tree } => {
@@ -1064,11 +1045,7 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
                     app.console_log(severity, &console_ctx, format!("{}{}", d.message, loc));
                 }
                 if diagnostics.is_empty() {
-                    app.console_log(
-                        ConsoleSeverity::Info,
-                        &console_ctx,
-                        "template executed successfully",
-                    );
+                    app.console_log(ConsoleSeverity::Info, &console_ctx, "template executed successfully");
                 }
             }
             crate::file::TemplateRunOutcome::Err(msg) => {
@@ -1081,7 +1058,6 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
     }
     let _ = ctx;
 }
-
 
 fn mount_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
@@ -1304,10 +1280,7 @@ fn render_template_running(ui: &mut egui::Ui, run: &crate::file::TemplateRun) {
             ui.spinner();
             ui.label(format!("Running `{}`…", run.template_name));
         });
-        let elapsed_ms = jiff::Timestamp::now()
-            .duration_since(run.started)
-            .as_millis()
-            .max(0);
+        let elapsed_ms = jiff::Timestamp::now().duration_since(run.started).as_millis().max(0);
         ui.add_space(4.0);
         ui.weak(format!("{} ms", elapsed_ms));
     });
@@ -1326,18 +1299,12 @@ fn render_tree_panel_header(ui: &mut egui::Ui, show: &mut bool) {
 }
 
 fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut PersistedState) -> Option<CopyKind> {
-    let template_palette_override = file
-        .template
-        .as_ref()
-        .and_then(|t| t.byte_palette_override.clone());
+    let template_palette_override = file.template.as_ref().and_then(|t| t.byte_palette_override.clone());
     // A plugin-supplied palette forces the highlight on (in Background
     // mode by default) so the user actually sees it; otherwise the
     // user's own setting wins.
     let (highlight, palette) = if let Some(table) = template_palette_override {
-        (
-            Some(state.app.byte_highlight_mode.as_view()),
-            Some(hxy_view::HighlightPalette::Custom(table)),
-        )
+        (Some(state.app.byte_highlight_mode.as_view()), Some(hxy_view::HighlightPalette::Custom(table)))
     } else {
         let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
         (highlight, build_palette(ui.visuals().dark_mode, &state.app, highlight))
@@ -1347,10 +1314,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     // taking the mutable borrow HexView needs; the `ui.selection`
     // can't be read inside the context menu closure once HexView
     // holds it.
-    let show_scalar_submenu = file
-        .selection
-        .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
-        .unwrap_or(false);
+    let show_scalar_submenu = file.selection.map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
     let pending_scroll = file.pending_scroll.take();
     let pending_scroll_to_byte = file.pending_scroll_to_byte.take();
 
@@ -1366,11 +1330,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
             hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
         });
 
-    let field_boundaries = file
-        .template
-        .as_ref()
-        .map(|t| t.leaf_boundaries.as_slice())
-        .unwrap_or_default();
+    let field_boundaries = file.template.as_ref().map(|t| t.leaf_boundaries.as_slice()).unwrap_or_default();
     let field_colors = file
         .template
         .as_ref()
@@ -1567,9 +1527,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
     for action in actions {
         match action {
             crate::menu::MenuAction::OpenFile => handle_open_file(app),
-            crate::menu::MenuAction::CopyBytes => {
-                copy_active_file(ctx, app, CopyKind::BytesLossyUtf8)
-            }
+            crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
             crate::menu::MenuAction::ShowConsole => app.show_console(),
@@ -1726,9 +1684,7 @@ fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
     if range.is_empty() {
         return None;
     }
-    Some(CopyPaletteContext {
-        scalar_width: matches!(range.len().get(), 1 | 2 | 4 | 8),
-    })
+    Some(CopyPaletteContext { scalar_width: matches!(range.len().get(), 1 | 2 | 4 | 8) })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1744,11 +1700,8 @@ fn build_palette_entries(
     match app.palette.mode {
         Mode::Main => {
             out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("toolbar-open-file"),
-                    Action::InvokeCommand("open-file"),
-                )
-                .with_icon(icon::FOLDER_OPEN),
+                egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand("open-file"))
+                    .with_icon(icon::FOLDER_OPEN),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -1758,52 +1711,43 @@ fn build_palette_entries(
                 .with_icon(icon::TREE_STRUCTURE),
             );
             out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-console"),
-                    Action::InvokeCommand("show-console"),
-                )
-                .with_icon(icon::TERMINAL),
+                egui_palette::Entry::new(hxy_i18n::t("menu-view-console"), Action::InvokeCommand("show-console"))
+                    .with_icon(icon::TERMINAL),
             );
             out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-inspector"),
-                    Action::InvokeCommand("show-inspector"),
-                )
-                .with_icon(icon::EYE),
+                egui_palette::Entry::new(hxy_i18n::t("menu-view-inspector"), Action::InvokeCommand("show-inspector"))
+                    .with_icon(icon::EYE),
             );
             out.push(
                 egui_palette::Entry::new("Plugins", Action::InvokeCommand("show-plugins"))
                     .with_icon(icon::PUZZLE_PIECE),
             );
             out.push(
-                egui_palette::Entry::new("Run Template…", Action::SwitchMode(Mode::Templates))
-                    .with_icon(icon::SCROLL),
+                egui_palette::Entry::new("Run Template…", Action::SwitchMode(Mode::Templates)).with_icon(icon::SCROLL),
+            );
+            out.push(
+                egui_palette::Entry::new("Uninstall template…", Action::SwitchMode(Mode::Uninstall))
+                    .with_icon(icon::TRASH),
             );
             if let Some(ctx) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     out.push(
-                        egui_palette::Entry::new(
-                            format!("Copy bytes: {label}"),
-                            Action::Copy(*kind),
-                        )
-                        .with_icon(icon::COPY),
+                        egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
+                            .with_icon(icon::COPY),
                     );
                 }
                 if ctx.scalar_width {
                     for (label, kind) in crate::copy_format::VALUE_MENU {
                         out.push(
-                            egui_palette::Entry::new(
-                                format!("Copy value: {label}"),
-                                Action::Copy(*kind),
-                            )
-                            .with_icon(icon::COPY),
+                            egui_palette::Entry::new(format!("Copy value: {label}"), Action::Copy(*kind))
+                                .with_icon(icon::COPY),
                         );
                     }
                 }
             }
             for (id, file) in &app.files {
-                let mut entry = egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
-                    .with_icon(icon::FILE);
+                let mut entry =
+                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon(icon::FILE);
                 if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1813,30 +1757,42 @@ fn build_palette_entries(
         Mode::Templates => {
             for entry in app.templates.entries() {
                 out.push(
-                    egui_palette::Entry::new(
-                        format!("Run {}", entry.name),
-                        Action::RunTemplate(entry.path.clone()),
-                    )
-                    .with_subtitle(entry.path.display().to_string())
-                    .with_icon(icon::SCROLL),
+                    egui_palette::Entry::new(format!("Run {}", entry.name), Action::RunTemplate(entry.path.clone()))
+                        .with_subtitle(entry.path.display().to_string())
+                        .with_icon(icon::SCROLL),
                 );
             }
             out.push(
                 egui_palette::Entry::new("Install template…", Action::InstallTemplate)
-                    .with_subtitle("Pick a .bt file; it's copied into your templates directory.")
+                    .with_subtitle("Pick a .bt file; any #included dependencies come with it.")
                     .with_icon(icon::DOWNLOAD),
             );
+            out.push(
+                egui_palette::Entry::new("Uninstall template…", Action::SwitchMode(Mode::Uninstall))
+                    .with_icon(icon::TRASH),
+            );
+        }
+        Mode::Uninstall => {
+            if let Some(dir) = user_templates_dir() {
+                for path in crate::template_library::list_installed_templates(&dir) {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    out.push(
+                        egui_palette::Entry::new(format!("Delete {name}"), Action::UninstallTemplate(path.clone()))
+                            .with_subtitle(path.display().to_string())
+                            .with_icon(icon::TRASH),
+                    );
+                }
+            }
         }
     }
     out
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_palette_action(
-    ctx: &egui::Context,
-    app: &mut HxyApp,
-    action: crate::command_palette::Action,
-) {
+fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::command_palette::Action) {
     use crate::commands::CommandEffect;
     match action {
         crate::command_palette::Action::InvokeCommand(id) => {
@@ -1867,6 +1823,10 @@ fn apply_palette_action(
             app.palette.close();
             install_template_from_dialog(app);
         }
+        crate::command_palette::Action::UninstallTemplate(path) => {
+            app.palette.close();
+            uninstall_template(app, &path);
+        }
         crate::command_palette::Action::Copy(kind) => {
             app.palette.close();
             if let Some(id) = active_file_id(app)
@@ -1880,10 +1840,7 @@ fn apply_palette_action(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn install_template_from_dialog(app: &mut HxyApp) {
-    let Some(picked) = rfd::FileDialog::new()
-        .add_filter("010 Editor binary template", &["bt"])
-        .pick_file()
-    else {
+    let Some(picked) = rfd::FileDialog::new().add_filter("010 Editor binary template", &["bt"]).pick_file() else {
         return;
     };
     let Some(dir) = user_templates_dir() else {
@@ -1894,14 +1851,39 @@ fn install_template_from_dialog(app: &mut HxyApp) {
         tracing::warn!(error = %e, "create templates dir");
         return;
     }
-    let Some(filename) = picked.file_name() else { return };
-    let dest = dir.join(filename);
-    if let Err(e) = std::fs::copy(&picked, &dest) {
-        tracing::warn!(error = %e, src = %picked.display(), dst = %dest.display(), "install template");
-        return;
+    let report = crate::template_library::install_template_with_deps(&picked, &dir);
+    let ctx = format!("Install {}", picked.display());
+    for copied in &report.copied {
+        app.console_log(ConsoleSeverity::Info, &ctx, format!("installed {}", copied.display()));
+    }
+    for existing in &report.existing {
+        app.console_log(ConsoleSeverity::Info, &ctx, format!("already present: {}", existing.display()));
+    }
+    for (src, target) in &report.missing {
+        app.console_log(
+            ConsoleSeverity::Warning,
+            &ctx,
+            format!("{} references `{target}` but it couldn't be resolved", src.display()),
+        );
+    }
+    for (src, error) in &report.errors {
+        app.console_log(ConsoleSeverity::Error, &ctx, format!("copy {} failed: {error}", src.display()));
     }
     app.reload_plugins();
-    tracing::info!(path = %dest.display(), "installed template");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
+    let ctx = format!("Uninstall {}", path.display());
+    match std::fs::remove_file(path) {
+        Ok(_) => {
+            app.console_log(ConsoleSeverity::Info, &ctx, "deleted");
+            app.reload_plugins();
+        }
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Error, &ctx, format!("delete failed: {e}"));
+        }
+    }
 }
 
 fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
@@ -1976,11 +1958,7 @@ fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
         return Some((caret, Vec::new()));
     }
     let end = caret.saturating_add(16).min(src_len);
-    let range = hxy_core::ByteRange::new(
-        hxy_core::ByteOffset::new(caret),
-        hxy_core::ByteOffset::new(end),
-    )
-    .ok()?;
+    let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(caret), hxy_core::ByteOffset::new(end)).ok()?;
     let bytes = file.source.read(range).ok()?;
     Some((caret, bytes))
 }
@@ -2017,8 +1995,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
                 let templates_dir = user_template_plugins_dir();
-                let events =
-                    crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref());
+                let events = crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref());
                 for e in events {
                     match e {
                         crate::plugins_tab::PluginsEvent::Rescan => *self.plugin_rescan = true,
@@ -2043,11 +2020,7 @@ impl TabViewer for HxyTabViewer<'_> {
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
         // File tabs and the console/inspector manage their own
         // scrolling; outer dock scrollbar off for those.
-        if matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector) {
-            [false, false]
-        } else {
-            [true, true]
-        }
+        if matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector) { [false, false] } else { [true, true] }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
@@ -2236,37 +2209,27 @@ fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEnt
     }
 
     // Newest entries at the bottom, matching the usual log UX.
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            egui::Grid::new("hxy_console_grid")
-                .num_columns(4)
-                .striped(true)
-                .show(ui, |ui| {
-                    for entry in console.iter() {
-                        let (icon, color) = match entry.severity {
-                            ConsoleSeverity::Info => (egui_phosphor::regular::INFO, None),
-                            ConsoleSeverity::Warning => {
-                                (egui_phosphor::regular::WARNING, Some(egui::Color32::YELLOW))
-                            }
-                            ConsoleSeverity::Error => {
-                                (egui_phosphor::regular::X_CIRCLE, Some(egui::Color32::LIGHT_RED))
-                            }
-                        };
-                        let time = format_console_time(entry.timestamp);
-                        ui.label(egui::RichText::new(&time).monospace().weak());
-                        let mut icon_text = egui::RichText::new(icon);
-                        if let Some(c) = color {
-                            icon_text = icon_text.color(c);
-                        }
-                        ui.label(icon_text);
-                        ui.label(egui::RichText::new(&entry.context).weak());
-                        ui.label(&entry.message);
-                        ui.end_row();
-                    }
-                });
+    egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+        egui::Grid::new("hxy_console_grid").num_columns(4).striped(true).show(ui, |ui| {
+            for entry in console.iter() {
+                let (icon, color) = match entry.severity {
+                    ConsoleSeverity::Info => (egui_phosphor::regular::INFO, None),
+                    ConsoleSeverity::Warning => (egui_phosphor::regular::WARNING, Some(egui::Color32::YELLOW)),
+                    ConsoleSeverity::Error => (egui_phosphor::regular::X_CIRCLE, Some(egui::Color32::LIGHT_RED)),
+                };
+                let time = format_console_time(entry.timestamp);
+                ui.label(egui::RichText::new(&time).monospace().weak());
+                let mut icon_text = egui::RichText::new(icon);
+                if let Some(c) = color {
+                    icon_text = icon_text.color(c);
+                }
+                ui.label(icon_text);
+                ui.label(egui::RichText::new(&entry.context).weak());
+                ui.label(&entry.message);
+                ui.end_row();
+            }
         });
+    });
 }
 
 fn format_console_time(ts: jiff::Timestamp) -> String {

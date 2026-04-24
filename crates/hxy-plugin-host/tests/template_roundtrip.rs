@@ -24,8 +24,7 @@ fn fixture_template_execute_and_expand() {
         return;
     }
     let dir = path.parent().unwrap();
-    let mut runtimes =
-        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
+    let mut runtimes = hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
     let runtime = runtimes.pop().expect("at least one runtime");
     assert_eq!(runtime.name(), "fixture");
     assert_eq!(runtime.extensions(), ["fixture".to_string()]);

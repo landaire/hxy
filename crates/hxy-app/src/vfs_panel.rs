@@ -32,14 +32,12 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, fs: &dyn FileSystem) -> Vec<VfsPane
     // Footer first so its height is reserved before the scroll area claims
     // the remaining vertical space.
     let footer_text = egui::Id::new(("hxy_vfs_footer", id_seed));
-    egui::Panel::bottom(egui::Id::new(("hxy_vfs_footer_panel", id_seed)))
-        .resizable(false)
-        .show_inside(ui, |ui| {
-            let text: String = ui.ctx().data(|d| d.get_temp(footer_text)).unwrap_or_default();
-            ui.horizontal(|ui| {
-                ui.weak(text);
-            });
+    egui::Panel::bottom(egui::Id::new(("hxy_vfs_footer_panel", id_seed))).resizable(false).show_inside(ui, |ui| {
+        let text: String = ui.ctx().data(|d| d.get_temp(footer_text)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.weak(text);
         });
+    });
 
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         let tree_id = egui::Id::new(("hxy_vfs_tree", id_seed));
@@ -97,7 +95,12 @@ struct Totals {
     dirs: usize,
 }
 
-fn walk(builder: &mut egui_ltreeview::TreeViewBuilder<'_, String>, fs: &dyn FileSystem, path: &str, totals: &mut Totals) {
+fn walk(
+    builder: &mut egui_ltreeview::TreeViewBuilder<'_, String>,
+    fs: &dyn FileSystem,
+    path: &str,
+    totals: &mut Totals,
+) {
     let Ok(entries) = fs.read_dir(if path.is_empty() { "/" } else { path }) else { return };
     let mut dirs: Vec<String> = Vec::new();
     let mut files: Vec<(String, u64)> = Vec::new();
@@ -150,9 +153,5 @@ fn format_size(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    if unit == 0 {
-        format!("{bytes} {}", UNITS[0])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    if unit == 0 { format!("{bytes} {}", UNITS[0]) } else { format!("{value:.1} {}", UNITS[unit]) }
 }

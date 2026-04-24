@@ -78,29 +78,18 @@ impl MenuState {
 
         let file_menu = Submenu::new("File", true);
         menu.append(&file_menu).expect("append file menu");
-        let open = MenuItem::new(
-            "Open…",
-            true,
-            Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
-        );
+        let open = MenuItem::new("Open…", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)));
         file_menu.append(&open).expect("append open");
         actions.insert(open.id().0.clone(), MenuAction::OpenFile);
 
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
 
-        let copy_bytes = MenuItem::new(
-            "Copy bytes",
-            false,
-            Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
-        );
+        let copy_bytes = MenuItem::new("Copy bytes", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)));
         let copy_hex = MenuItem::new(
             "Copy hex",
             false,
-            Some(Accelerator::new(
-                Some(Modifiers::SUPER | Modifiers::SHIFT),
-                Code::KeyC,
-            )),
+            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyC)),
         );
         edit_menu.append(&copy_bytes).expect("append copy bytes");
         edit_menu.append(&copy_hex).expect("append copy hex");
@@ -122,9 +111,7 @@ impl MenuState {
         let mut scalar_items = Vec::new();
         for (label, kind) in crate::copy_format::VALUE_MENU {
             let item = MenuItem::new(*label, false, None);
-            copy_value_as
-                .append(&item)
-                .expect("append copy-value-as entry");
+            copy_value_as.append(&item).expect("append copy-value-as entry");
             actions.insert(item.id().0.clone(), MenuAction::CopyAs(*kind));
             scalar_items.push(item);
         }
@@ -143,12 +130,7 @@ impl MenuState {
 
         menu.init_for_nsapp();
 
-        Self {
-            actions,
-            bytes_items,
-            scalar_items,
-            _menu: menu,
-        }
+        Self { actions, bytes_items, scalar_items, _menu: menu }
     }
 
     /// Grey out / enable the byte-copy items. Called once per frame

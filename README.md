@@ -29,6 +29,13 @@ Future plans:
 - Proper app bundling
 - OS shell registration
 
+## Goals
+
+- Get to a good point so I can stop paying for a 010 Editor license
+- Add process memory reading / raw disk reading
+- Get working in web out of the box (not tested yet)
+- Most components usable in library form so that people who need a hex view in an application can have one easily
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

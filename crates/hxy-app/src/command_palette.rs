@@ -47,6 +47,10 @@ pub enum Mode {
     /// Second-level cascade shown after the user picks `Run Template…`
     /// from the main list. Registered templates + an install entry.
     Templates,
+    /// Third-level cascade: list installed templates to remove.
+    /// Picking one deletes its `.bt` file (and any siblings we added
+    /// for it). Reached from `Main` via "Uninstall template…".
+    Uninstall,
 }
 
 /// Activation payload the app hands back to itself when the user
@@ -59,6 +63,8 @@ pub enum Action {
     RunTemplate(PathBuf),
     SwitchMode(Mode),
     InstallTemplate,
+    /// Delete the given `.bt` from the user's templates directory.
+    UninstallTemplate(PathBuf),
     /// Copy the active file's current selection using the given
     /// format. Only offered when a non-empty selection exists.
     Copy(crate::copy_format::CopyKind),
@@ -74,6 +80,7 @@ pub fn show(
     let hint = match state.mode {
         Mode::Main => "Search commands, files, templates…",
         Mode::Templates => "Filter templates…",
+        Mode::Uninstall => "Uninstall which template?",
     };
     match egui_palette::show(ctx, &mut state.inner, &entries, hint)? {
         egui_palette::Outcome::Closed => Some(Outcome::Closed),

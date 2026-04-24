@@ -18,6 +18,7 @@ pub mod fuzz;
 
 pub use interp::Diagnostic;
 pub use interp::Interpreter;
+pub use interp::NodeIdx;
 pub use interp::NodeOut;
 pub use interp::RunResult;
 pub use interp::RuntimeError;

@@ -124,11 +124,8 @@ impl ToolbarCommand for RunTemplateCommand {
 
     fn label(&self, cx: &ToolbarCtx<'_, '_>) -> String {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(name) = cx
-            .active_file
-            .as_ref()
-            .and_then(|f| f.suggested_template.as_ref())
-            .map(|s| s.display_name.clone())
+        if let Some(name) =
+            cx.active_file.as_ref().and_then(|f| f.suggested_template.as_ref()).map(|s| s.display_name.clone())
         {
             return format!("Run {name}");
         }
@@ -146,11 +143,7 @@ impl ToolbarCommand for RunTemplateCommand {
 
     fn invoke(&self, cx: &mut ToolbarCtx<'_, '_>) {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(path) = cx
-            .active_file
-            .as_ref()
-            .and_then(|f| f.suggested_template.as_ref())
-            .map(|s| s.path.clone())
+        if let Some(path) = cx.active_file.as_ref().and_then(|f| f.suggested_template.as_ref()).map(|s| s.path.clone())
         {
             cx.effects.push(CommandEffect::RunTemplateDirect(path));
             return;

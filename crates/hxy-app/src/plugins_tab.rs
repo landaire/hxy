@@ -18,11 +18,7 @@ pub enum PluginsEvent {
     Rescan,
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    handlers_dir: Option<&PathBuf>,
-    templates_dir: Option<&PathBuf>,
-) -> Vec<PluginsEvent> {
+pub fn show(ui: &mut egui::Ui, handlers_dir: Option<&PathBuf>, templates_dir: Option<&PathBuf>) -> Vec<PluginsEvent> {
     let mut events = Vec::new();
     ui.heading("Plugins");
     ui.label("Drop compiled WASM components into these directories to load them at startup.");
@@ -69,9 +65,7 @@ fn render_section(
 
     ui.horizontal(|ui| {
         if ui.button("Install…").clicked()
-            && let Some(picked) = rfd::FileDialog::new()
-                .add_filter("WASM component", &["wasm"])
-                .pick_file()
+            && let Some(picked) = rfd::FileDialog::new().add_filter("WASM component", &["wasm"]).pick_file()
             && install_to(dir, &picked).is_ok()
         {
             events.push(PluginsEvent::Rescan);
@@ -86,24 +80,19 @@ fn render_section(
         ui.weak("No plugins installed.");
         return;
     }
-    egui::Grid::new(("hxy-plugins-grid", heading))
-        .num_columns(2)
-        .striped(true)
-        .show(ui, |ui| {
-            for path in files {
-                let name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
-                ui.label(egui::RichText::new(name).monospace());
-                if ui.small_button("Delete").clicked()
-                    && fs::remove_file(&path).is_ok()
-                {
-                    events.push(PluginsEvent::Rescan);
-                }
-                ui.end_row();
+    egui::Grid::new(("hxy-plugins-grid", heading)).num_columns(2).striped(true).show(ui, |ui| {
+        for path in files {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            ui.label(egui::RichText::new(name).monospace());
+            if ui.small_button("Delete").clicked() && fs::remove_file(&path).is_ok() {
+                events.push(PluginsEvent::Rescan);
             }
-        });
+            ui.end_row();
+        }
+    });
 }
 
 fn list_wasm_files(dir: &PathBuf) -> Vec<PathBuf> {

@@ -18,8 +18,7 @@ use std::fmt::Write as _;
 /// program) instead of every name being unique and unused.
 const IDENT_POOL: &[&str] = &["a", "b", "c", "d", "x", "y", "z", "n", "m", "foo", "bar", "baz"];
 
-const TYPE_POOL: &[&str] =
-    &["uchar", "ushort", "uint", "uint64", "char", "short", "int", "int64", "float", "double"];
+const TYPE_POOL: &[&str] = &["uchar", "ushort", "uint", "uint64", "char", "short", "int", "int64", "float", "double"];
 
 const BUILTIN_POOL: &[&str] = &["FTell", "FEof", "FileSize"];
 

@@ -257,12 +257,7 @@ impl Style {
 /// `None` on idle frames (still typing, still moving selection,
 /// still rendering); the host should early-return when the palette
 /// isn't visible by checking `state.open`.
-pub fn show<A: Clone>(
-    ctx: &egui::Context,
-    state: &mut State,
-    entries: &[Entry<A>],
-    hint: &str,
-) -> Option<Outcome<A>> {
+pub fn show<A: Clone>(ctx: &egui::Context, state: &mut State, entries: &[Entry<A>], hint: &str) -> Option<Outcome<A>> {
     show_with_style(ctx, state, entries, hint, &Style::default())
 }
 
@@ -336,17 +331,14 @@ pub fn show_with_style<A: Clone>(
 
     let panel_width = (screen_rect.width() * style.width_fraction).clamp(style.min_width, style.max_width);
     let (panel_x, panel_y) = match style.anchor {
-        Anchor::TopCenter { y_offset } => {
-            (screen_rect.center().x - panel_width * 0.5, screen_rect.top() + y_offset)
+        Anchor::TopCenter { y_offset } => (screen_rect.center().x - panel_width * 0.5, screen_rect.top() + y_offset),
+        Anchor::Center => {
+            (screen_rect.center().x - panel_width * 0.5, screen_rect.center().y - screen_rect.height() * 0.25)
         }
-        Anchor::Center => (
-            screen_rect.center().x - panel_width * 0.5,
-            screen_rect.center().y - screen_rect.height() * 0.25,
-        ),
         Anchor::Manual(pos) => (pos.x, pos.y),
     };
-    let list_max_height = (screen_rect.height() - panel_y - style.row_reserve)
-        .clamp(style.list_min_height, style.list_max_height);
+    let list_max_height =
+        (screen_rect.height() - panel_y - style.row_reserve).clamp(style.list_min_height, style.list_max_height);
 
     egui::Area::new(egui::Id::new("egui_palette"))
         .fixed_pos(egui::pos2(panel_x, panel_y))
@@ -366,17 +358,16 @@ pub fn show_with_style<A: Clone>(
                     .stroke(stroke)
                     .inner_margin(style.inner_margin)
                     .corner_radius(style.corner_radius),
-                (None, None) => egui::Frame::popup(ui.style())
-                    .inner_margin(style.inner_margin)
-                    .corner_radius(style.corner_radius),
+                (None, None) => {
+                    egui::Frame::popup(ui.style()).inner_margin(style.inner_margin).corner_radius(style.corner_radius)
+                }
             };
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_width);
                 ui.set_max_width(panel_width);
 
-                let text_edit = egui::TextEdit::singleline(&mut state.query)
-                    .hint_text(hint)
-                    .desired_width(f32::INFINITY);
+                let text_edit =
+                    egui::TextEdit::singleline(&mut state.query).hint_text(hint).desired_width(f32::INFINITY);
                 let resp = ui.add(text_edit);
                 if state.pending_focus {
                     resp.request_focus();
@@ -391,29 +382,26 @@ pub fn show_with_style<A: Clone>(
                 // — often the bottom row the user was hovering when
                 // they hit Cmd+P — instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                egui::ScrollArea::vertical()
-                    .max_height(list_max_height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (row, idx) in filtered.iter().enumerate() {
-                            let entry = &entries[*idx];
-                            let selected = row == state.selected;
-                            let resp = render_row(ui, entry, selected, style);
-                            if resp.clicked() {
-                                picked_idx = Some(row);
-                            }
-                            if resp.hovered() && pointer_moving {
-                                state.selected = row;
-                            }
+                egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(ui, |ui| {
+                    for (row, idx) in filtered.iter().enumerate() {
+                        let entry = &entries[*idx];
+                        let selected = row == state.selected;
+                        let resp = render_row(ui, entry, selected, style);
+                        if resp.clicked() {
+                            picked_idx = Some(row);
                         }
-                        if filtered.is_empty() {
-                            ui.add_space(16.0);
-                            ui.vertical_centered(|ui| {
-                                ui.weak("No matches.");
-                            });
-                            ui.add_space(16.0);
+                        if resp.hovered() && pointer_moving {
+                            state.selected = row;
                         }
-                    });
+                    }
+                    if filtered.is_empty() {
+                        ui.add_space(16.0);
+                        ui.vertical_centered(|ui| {
+                            ui.weak("No matches.");
+                        });
+                        ui.add_space(16.0);
+                    }
+                });
             });
         });
 
@@ -429,9 +417,7 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     let desired = egui::vec2(ui.available_width(), style.row_height);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     if selected {
-        let fill = style
-            .selected_fill
-            .unwrap_or_else(|| ui.visuals().selection.bg_fill.gamma_multiply(0.4));
+        let fill = style.selected_fill.unwrap_or_else(|| ui.visuals().selection.bg_fill.gamma_multiply(0.4));
         ui.painter().rect_filled(rect, 3.0, fill);
     }
     let inner = rect.shrink2(egui::vec2(8.0, 2.0));
@@ -441,11 +427,8 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     let sub_color = style.subtitle_color.unwrap_or_else(|| ui.visuals().weak_text_color());
 
     let title_x = if let Some(icon) = entry.icon.as_deref() {
-        let galley = ui.painter().layout_no_wrap(
-            icon.to_owned(),
-            egui::FontId::proportional(style.icon_size),
-            icon_color,
-        );
+        let galley =
+            ui.painter().layout_no_wrap(icon.to_owned(), egui::FontId::proportional(style.icon_size), icon_color);
         let pos = egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5);
         ui.painter().galley(pos, galley, icon_color);
         inner.left() + style.icon_gutter

@@ -16,13 +16,15 @@ Program {
                 },
                 name: "x",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 0,
-                    end: 8,
+                    end: 7,
                 },
             },
         ),

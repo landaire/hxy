@@ -45,11 +45,8 @@ pub const BYTES_MENU: &[(&str, CopyKind)] = &[
 
 /// Menu items for the scalar-value submenu (only visible for
 /// nodes whose decoded value is a single integer).
-pub const VALUE_MENU: &[(&str, CopyKind)] = &[
-    ("Hex", CopyKind::ValueHex),
-    ("Decimal", CopyKind::ValueDecimal),
-    ("Octal", CopyKind::ValueOctal),
-];
+pub const VALUE_MENU: &[(&str, CopyKind)] =
+    &[("Hex", CopyKind::ValueHex), ("Decimal", CopyKind::ValueDecimal), ("Octal", CopyKind::ValueOctal)];
 
 /// Format `bytes` using `kind`. `ident_hint` becomes the variable
 /// name for the C / Rust array templates; `type_hint` becomes a
@@ -58,18 +55,10 @@ pub const VALUE_MENU: &[(&str, CopyKind)] = &[
 pub fn format_bytes(kind: CopyKind, bytes: &[u8], ident_hint: &str, type_hint: &str) -> Option<String> {
     match kind {
         CopyKind::BytesLossyUtf8 => Some(String::from_utf8_lossy(bytes).into_owned()),
-        CopyKind::BytesHexSpaced => {
-            Some(bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "))
-        }
-        CopyKind::BytesHexCompact => {
-            Some(bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""))
-        }
-        CopyKind::BytesDecimalCsv => {
-            Some(bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "))
-        }
-        CopyKind::BytesOctalCsv => {
-            Some(bytes.iter().map(|b| format!("0o{b:o}")).collect::<Vec<_>>().join(", "))
-        }
+        CopyKind::BytesHexSpaced => Some(bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")),
+        CopyKind::BytesHexCompact => Some(bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join("")),
+        CopyKind::BytesDecimalCsv => Some(bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")),
+        CopyKind::BytesOctalCsv => Some(bytes.iter().map(|b| format!("0o{b:o}")).collect::<Vec<_>>().join(", ")),
         CopyKind::BytesCArray => {
             let ident = sanitize_ident(ident_hint);
             let mut out = String::new();

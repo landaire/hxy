@@ -20,6 +20,16 @@ pub mod handler {
         export_macro_name: "export_handler",
         pub_export_macro: true,
     });
+
+    // Lift the exported handler interface's types and the imported
+    // `source` interface up to the module root so plugins can write
+    // `hxy_plugin_api::handler::FileType` instead of the generated
+    // `...::exports::hxy::vfs::handler::FileType` path.
+    pub use self::hxy::vfs::source;
+    pub use exports::hxy::vfs::handler::FileType;
+    pub use exports::hxy::vfs::handler::Guest;
+    pub use exports::hxy::vfs::handler::GuestMount;
+    pub use exports::hxy::vfs::handler::Metadata;
 }
 
 pub mod template {
@@ -29,4 +39,20 @@ pub mod template {
         export_macro_name: "export_template_runtime",
         pub_export_macro: true,
     });
+
+    pub use self::hxy::vfs::source;
+    pub use exports::hxy::vfs::template::Arg;
+    pub use exports::hxy::vfs::template::ArgValue;
+    pub use exports::hxy::vfs::template::DeferredArray;
+    pub use exports::hxy::vfs::template::Diagnostic;
+    pub use exports::hxy::vfs::template::DisplayHint;
+    pub use exports::hxy::vfs::template::Guest;
+    pub use exports::hxy::vfs::template::GuestParsedTemplate;
+    pub use exports::hxy::vfs::template::Node;
+    pub use exports::hxy::vfs::template::NodeType;
+    pub use exports::hxy::vfs::template::ResultTree;
+    pub use exports::hxy::vfs::template::ScalarKind;
+    pub use exports::hxy::vfs::template::Severity;
+    pub use exports::hxy::vfs::template::Span;
+    pub use exports::hxy::vfs::template::Value;
 }

@@ -22,10 +22,18 @@ use wasmtime::component::ResourceAny;
 use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::host::HostState;
 
-pub use crate::bindings::template_world::exports::hxy::vfs::template::{
-    Arg, ArgValue, DeferredArray, Diagnostic, DisplayHint, Node, NodeType, ResultTree, ScalarKind,
-    Severity, Span, Value,
-};
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Arg;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::ArgValue;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::DeferredArray;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Diagnostic;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::DisplayHint;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Node;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::NodeType;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::ResultTree;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::ScalarKind;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Severity;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Span;
+pub use crate::bindings::template_world::exports::hxy::vfs::template::Value;
 
 /// Canonical display name for a [`ScalarKind`] — matches 010 Editor
 /// spelling (uchar / uint32 / float) since that's the template language
@@ -77,11 +85,8 @@ pub trait TemplateRuntime: Send + Sync {
     /// Parse `template_source` and bind it to `source` (the data
     /// file the template reads from). Repeat `execute` / `expand_array`
     /// calls happen on the returned handle.
-    fn parse(
-        &self,
-        source: Arc<dyn HexSource>,
-        template_source: &str,
-    ) -> Result<Arc<dyn ParsedTemplate>, HandlerError>;
+    fn parse(&self, source: Arc<dyn HexSource>, template_source: &str)
+    -> Result<Arc<dyn ParsedTemplate>, HandlerError>;
 }
 
 /// A parsed template bound to a byte source.
@@ -97,7 +102,6 @@ pub trait ParsedTemplate: Send + Sync {
     fn expand_array(&self, array_id: u64, start: u64, end: u64) -> Result<Vec<Node>, HandlerError>;
 }
 
-
 /// WASM-component-backed runtime — the sandboxed path for user-installed
 /// template plugins loaded off disk.
 pub struct WasmTemplateRuntime {
@@ -109,22 +113,15 @@ pub struct WasmTemplateRuntime {
 }
 
 impl WasmTemplateRuntime {
-    pub fn new(
-        engine: Engine,
-        component: Component,
-        linker: Arc<Linker<HostState>>,
-    ) -> Result<Self, HandlerError> {
+    pub fn new(engine: Engine, component: Component, linker: Arc<Linker<HostState>>) -> Result<Self, HandlerError> {
         let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
         let mut store = Store::new(&engine, HostState::new(placeholder));
         let runtime = WitTemplateRuntime::instantiate(&mut store, &component, &linker)
             .map_err(|e| HandlerError::Internal(format!("instantiate template-runtime: {e}")))?;
         let iface = runtime.hxy_vfs_template();
-        let name = iface
-            .call_name(&mut store)
-            .map_err(|e| HandlerError::Internal(format!("call name: {e}")))?;
-        let extensions = iface
-            .call_extensions(&mut store)
-            .map_err(|e| HandlerError::Internal(format!("call extensions: {e}")))?;
+        let name = iface.call_name(&mut store).map_err(|e| HandlerError::Internal(format!("call name: {e}")))?;
+        let extensions =
+            iface.call_extensions(&mut store).map_err(|e| HandlerError::Internal(format!("call extensions: {e}")))?;
         Ok(Self { name, extensions, engine, component, linker })
     }
 }
@@ -151,9 +148,7 @@ impl TemplateRuntime for WasmTemplateRuntime {
             .parsed_template()
             .call_constructor(&mut store, template_source)
             .map_err(|e| HandlerError::Internal(format!("call parsed-template constructor: {e}")))?;
-        Ok(Arc::new(WasmParsedTemplate {
-            inner: Mutex::new(ParsedInner { store, runtime, resource }),
-        }))
+        Ok(Arc::new(WasmParsedTemplate { inner: Mutex::new(ParsedInner { store, runtime, resource }) }))
     }
 }
 

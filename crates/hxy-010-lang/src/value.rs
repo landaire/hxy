@@ -89,18 +89,42 @@ impl ScalarKind {
 }
 
 impl PrimKind {
-    pub fn u8() -> Self { Self { class: PrimClass::Int, width: 1, signed: false } }
-    pub fn i8() -> Self { Self { class: PrimClass::Int, width: 1, signed: true } }
-    pub fn u16() -> Self { Self { class: PrimClass::Int, width: 2, signed: false } }
-    pub fn i16() -> Self { Self { class: PrimClass::Int, width: 2, signed: true } }
-    pub fn u32() -> Self { Self { class: PrimClass::Int, width: 4, signed: false } }
-    pub fn i32() -> Self { Self { class: PrimClass::Int, width: 4, signed: true } }
-    pub fn u64() -> Self { Self { class: PrimClass::Int, width: 8, signed: false } }
-    pub fn i64() -> Self { Self { class: PrimClass::Int, width: 8, signed: true } }
-    pub fn f32() -> Self { Self { class: PrimClass::Float, width: 4, signed: true } }
-    pub fn f64() -> Self { Self { class: PrimClass::Float, width: 8, signed: true } }
-    pub fn char() -> Self { Self { class: PrimClass::Char, width: 1, signed: true } }
-    pub fn uchar() -> Self { Self { class: PrimClass::Char, width: 1, signed: false } }
+    pub fn u8() -> Self {
+        Self { class: PrimClass::Int, width: 1, signed: false }
+    }
+    pub fn i8() -> Self {
+        Self { class: PrimClass::Int, width: 1, signed: true }
+    }
+    pub fn u16() -> Self {
+        Self { class: PrimClass::Int, width: 2, signed: false }
+    }
+    pub fn i16() -> Self {
+        Self { class: PrimClass::Int, width: 2, signed: true }
+    }
+    pub fn u32() -> Self {
+        Self { class: PrimClass::Int, width: 4, signed: false }
+    }
+    pub fn i32() -> Self {
+        Self { class: PrimClass::Int, width: 4, signed: true }
+    }
+    pub fn u64() -> Self {
+        Self { class: PrimClass::Int, width: 8, signed: false }
+    }
+    pub fn i64() -> Self {
+        Self { class: PrimClass::Int, width: 8, signed: true }
+    }
+    pub fn f32() -> Self {
+        Self { class: PrimClass::Float, width: 4, signed: true }
+    }
+    pub fn f64() -> Self {
+        Self { class: PrimClass::Float, width: 8, signed: true }
+    }
+    pub fn char() -> Self {
+        Self { class: PrimClass::Char, width: 1, signed: true }
+    }
+    pub fn uchar() -> Self {
+        Self { class: PrimClass::Char, width: 1, signed: false }
+    }
 }
 
 /// A runtime value produced by evaluating an expression or reading
@@ -111,13 +135,25 @@ pub enum Value {
     /// `void` / no value (statement expressions).
     Void,
     /// Unsigned integer up to 64 bits stored in 128 for arithmetic.
-    UInt { value: u128, kind: PrimKind },
+    UInt {
+        value: u128,
+        kind: PrimKind,
+    },
     /// Signed integer up to 64 bits stored in 128 for arithmetic.
-    SInt { value: i128, kind: PrimKind },
-    Float { value: f64, kind: PrimKind },
+    SInt {
+        value: i128,
+        kind: PrimKind,
+    },
+    Float {
+        value: f64,
+        kind: PrimKind,
+    },
     /// A single character — 010 uses this for `char` and `uchar` field
     /// reads, and for character literals in expressions.
-    Char { value: u32, kind: PrimKind },
+    Char {
+        value: u32,
+        kind: PrimKind,
+    },
     /// Null-terminated or length-prefixed string. The interpreter
     /// decides which based on how the value was produced.
     Str(String),

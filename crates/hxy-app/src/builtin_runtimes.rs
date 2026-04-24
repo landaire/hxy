@@ -52,10 +52,9 @@ impl TemplateRuntime for Bt010Runtime {
         source: Arc<dyn HexSource>,
         template_source: &str,
     ) -> Result<Arc<dyn ParsedTemplate>, HandlerError> {
-        let tokens = hxy_010_lang::tokenize(template_source)
-            .map_err(|e| HandlerError::Malformed(format!("lex: {e}")))?;
-        let program = hxy_010_lang::parse(tokens)
-            .map_err(|e| HandlerError::Malformed(format!("parse: {e}")))?;
+        let tokens =
+            hxy_010_lang::tokenize(template_source).map_err(|e| HandlerError::Malformed(format!("lex: {e}")))?;
+        let program = hxy_010_lang::parse(tokens).map_err(|e| HandlerError::Malformed(format!("parse: {e}")))?;
         Ok(Arc::new(Bt010Parsed { program, source }))
     }
 }
@@ -72,12 +71,7 @@ impl ParsedTemplate for Bt010Parsed {
         Ok(to_result_tree(result))
     }
 
-    fn expand_array(
-        &self,
-        _array_id: u64,
-        _start: u64,
-        _end: u64,
-    ) -> Result<Vec<wit::Node>, HandlerError> {
+    fn expand_array(&self, _array_id: u64, _start: u64, _end: u64) -> Result<Vec<wit::Node>, HandlerError> {
         Err(HandlerError::Unsupported(
             "the built-in 010-bt runtime materialises arrays eagerly; no deferred expansion".into(),
         ))
@@ -96,11 +90,9 @@ impl hxy_010_lang::HexSource for HexSourceShim {
     fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, hxy_010_lang::SourceError> {
         let start = ByteOffset::new(offset);
         let end = ByteOffset::new(offset.saturating_add(length));
-        let range = ByteRange::new(start, end)
-            .map_err(|e| hxy_010_lang::SourceError::Host(format!("invalid range: {e}")))?;
-        self.0
-            .read(range)
-            .map_err(|e| hxy_010_lang::SourceError::Host(format!("{e}")))
+        let range =
+            ByteRange::new(start, end).map_err(|e| hxy_010_lang::SourceError::Host(format!("invalid range: {e}")))?;
+        self.0.read(range).map_err(|e| hxy_010_lang::SourceError::Host(format!("{e}")))
     }
 }
 
@@ -132,7 +124,7 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
         type_name: convert_node_type(&n.ty),
         span: wit::Span { offset: n.offset, length: n.length },
         value: n.value.as_ref().map(convert_value),
-        parent: n.parent,
+        parent: n.parent.map(|p| p.as_u32()),
         array: None,
         display,
     }
@@ -159,9 +151,7 @@ fn convert_scalar(k: hxy_010_lang::ScalarKind) -> wit::ScalarKind {
 fn convert_node_type(t: &hxy_010_lang::NodeType) -> wit::NodeType {
     match t {
         hxy_010_lang::NodeType::Scalar(k) => wit::NodeType::Scalar(convert_scalar(*k)),
-        hxy_010_lang::NodeType::ScalarArray(k, n) => {
-            wit::NodeType::ScalarArray((convert_scalar(*k), *n))
-        }
+        hxy_010_lang::NodeType::ScalarArray(k, n) => wit::NodeType::ScalarArray((convert_scalar(*k), *n)),
         hxy_010_lang::NodeType::StructType(s) => wit::NodeType::StructType(s.clone()),
         hxy_010_lang::NodeType::StructArray(s, n) => wit::NodeType::StructArray((s.clone(), *n)),
         hxy_010_lang::NodeType::EnumType(s) => wit::NodeType::EnumType(s.clone()),

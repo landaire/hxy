@@ -13,8 +13,8 @@ use egui_table::HeaderCellInfo;
 use egui_table::HeaderRow;
 use egui_table::Table;
 use egui_table::TableDelegate;
-use hxy_plugin_host::template::Node;
 use hxy_plugin_host::ParsedTemplate;
+use hxy_plugin_host::template::Node;
 
 use crate::file::TemplateArrayId;
 use crate::file::TemplateNodeIdx;
@@ -23,7 +23,10 @@ use crate::file::TemplateState;
 /// Events the app needs to handle after the panel renders.
 pub enum TemplateEvent {
     Close,
-    ExpandArray { array_id: TemplateArrayId, count: u64 },
+    ExpandArray {
+        array_id: TemplateArrayId,
+        count: u64,
+    },
     ToggleCollapse(TemplateNodeIdx),
     /// The pointer is currently over a row. `None` fires on the first
     /// frame the pointer leaves the table.
@@ -33,7 +36,10 @@ pub enum TemplateEvent {
     Select(TemplateNodeIdx),
     /// User picked a copy option from the row's context menu. `kind`
     /// names what to format and how.
-    Copy { idx: TemplateNodeIdx, kind: CopyKind },
+    Copy {
+        idx: TemplateNodeIdx,
+        kind: CopyKind,
+    },
     /// User picked "Save bytes to file…". App should pop up a save
     /// dialog and write this node's byte span.
     SaveBytes(TemplateNodeIdx),
@@ -51,12 +57,16 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{} Template", egui_phosphor::regular::SCROLL)).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui_phosphor::regular::X).frame(false)).on_hover_text("Hide template").clicked()
+            if ui
+                .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
+                .on_hover_text("Hide template")
+                .clicked()
             {
                 events.push(TemplateEvent::Close);
             }
             let mut colors_on = state.show_colors;
-            let resp = ui.toggle_value(&mut colors_on, egui_phosphor::regular::PAINT_BUCKET)
+            let resp = ui
+                .toggle_value(&mut colors_on, egui_phosphor::regular::PAINT_BUCKET)
                 .on_hover_text("Tint bytes by field");
             if resp.changed() {
                 events.push(TemplateEvent::ToggleColors(colors_on));
@@ -93,13 +103,8 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
     let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut any_hover: Option<TemplateNodeIdx> = None;
 
-    let mut delegate = TemplateTableDelegate {
-        state,
-        visible: &visible,
-        events: &mut events,
-        any_hover: &mut any_hover,
-        row_height,
-    };
+    let mut delegate =
+        TemplateTableDelegate { state, visible: &visible, events: &mut events, any_hover: &mut any_hover, row_height };
 
     Table::new()
         .id_salt(("hxy_tmpl_table", id_seed))
@@ -127,11 +132,26 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
 /// don't live in `tree.nodes`, so they get a distinct row kind.
 #[derive(Clone)]
 enum RowKind {
-    Node { idx: TemplateNodeIdx, depth: usize, is_parent: bool, collapsed: bool },
+    Node {
+        idx: TemplateNodeIdx,
+        depth: usize,
+        is_parent: bool,
+        collapsed: bool,
+    },
     /// "[N × type, stride bytes each]" placeholder with an Expand button.
-    DeferredArray { array_id: TemplateArrayId, count: u64, stride: u64, element_type: String, depth: usize },
+    DeferredArray {
+        array_id: TemplateArrayId,
+        count: u64,
+        stride: u64,
+        element_type: String,
+        depth: usize,
+    },
     /// Materialised element of an expanded deferred array.
-    ArrayElement { array_id: TemplateArrayId, index: usize, depth: usize },
+    ArrayElement {
+        array_id: TemplateArrayId,
+        index: usize,
+        depth: usize,
+    },
 }
 
 struct TemplateTableDelegate<'a> {
@@ -190,11 +210,7 @@ impl TableDelegate for TemplateTableDelegate<'_> {
 
             let this_row_highlighted = node_idx == self.state.hovered_node && node_idx.is_some();
             if this_row_highlighted {
-                ui.painter().rect_filled(
-                    row_rect,
-                    0.0,
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.35),
-                );
+                ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35));
             }
         });
     }
@@ -358,7 +374,6 @@ impl TemplateTableDelegate<'_> {
     }
 }
 
-
 fn children_by_parent(nodes: &[Node]) -> HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> {
     let mut map: HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> = HashMap::new();
     for (idx, node) in nodes.iter().enumerate() {
@@ -423,18 +438,13 @@ fn emit_node(
     }
 }
 
-
 /// Character budget for rendering a template field's string / bytes
 /// value. Fields wider than this collapse to `… (N bytes)` so a
 /// multi-megabyte `uchar[N] data` doesn't blow up the row or tooltip.
 const STRING_VALUE_PREVIEW_BUDGET: usize = 64;
 
 fn summarise_string(s: &str) -> String {
-    if s.len() <= STRING_VALUE_PREVIEW_BUDGET {
-        s.to_owned()
-    } else {
-        format!("… ({} bytes)", s.len())
-    }
+    if s.len() <= STRING_VALUE_PREVIEW_BUDGET { s.to_owned() } else { format!("… ({} bytes)", s.len()) }
 }
 
 fn format_value(node: &Node) -> String {
@@ -462,7 +472,6 @@ fn format_value(node: &Node) -> String {
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
     }
 }
-
 
 pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count: u64) {
     const MAX_INITIAL: u64 = 512;
@@ -515,9 +524,7 @@ pub fn new_state_from(
 /// `Arc<[Color32; 256]>`. Any length other than 256 is rejected — we
 /// keep the contract tight so the hex view can index without bounds
 /// checks. Returns `None` when the runtime didn't supply a palette.
-fn build_byte_palette_override(
-    palette: Option<&[u32]>,
-) -> Option<std::sync::Arc<[egui::Color32; 256]>> {
+fn build_byte_palette_override(palette: Option<&[u32]>) -> Option<std::sync::Arc<[egui::Color32; 256]>> {
     let raw = palette?;
     if raw.len() != 256 {
         return None;
@@ -574,10 +581,7 @@ fn generate_leaf_colors(n: usize) -> Vec<egui::Color32> {
 /// Walk `tree` to find the deepest node whose span contains `byte`
 /// and return a top-down path of "{type} {name}[ = {value}]" strings.
 /// `None` when no template field covers the offset.
-pub fn breadcrumb_for_offset(
-    tree: &hxy_plugin_host::template::ResultTree,
-    byte: u64,
-) -> Option<Vec<String>> {
+pub fn breadcrumb_for_offset(tree: &hxy_plugin_host::template::ResultTree, byte: u64) -> Option<Vec<String>> {
     // Find the deepest containing node by scanning once; later (more
     // specific) nodes in the flat pre-order list win over ancestors.
     let mut deepest: Option<u32> = None;
@@ -654,15 +658,8 @@ fn collect_leaf_boundaries(
         .nodes
         .iter()
         .enumerate()
-        .filter(|(idx, node)| {
-            !has_children[*idx] && node.array.is_none() && node.span.length > 0
-        })
-        .map(|(_, node)| {
-            (
-                hxy_core::ByteOffset::new(node.span.offset),
-                hxy_core::ByteLen::new(node.span.length),
-            )
-        })
+        .filter(|(idx, node)| !has_children[*idx] && node.array.is_none() && node.span.length > 0)
+        .map(|(_, node)| (hxy_core::ByteOffset::new(node.span.offset), hxy_core::ByteLen::new(node.span.length)))
         .collect();
     out.sort_by_key(|(start, _)| start.get());
     out

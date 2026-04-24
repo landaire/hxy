@@ -30,6 +30,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "Header",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -42,13 +43,15 @@ Program {
                             },
                             name: "magic",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 324,
-                                end: 337,
+                                end: 336,
                             },
                         },
                         FieldDecl {
@@ -62,13 +65,15 @@ Program {
                             },
                             name: "version",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 342,
-                                end: 357,
+                                end: 356,
                             },
                         },
                         FieldDecl {
@@ -82,13 +87,15 @@ Program {
                             },
                             name: "checksum",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 362,
-                                end: 378,
+                                end: 377,
                             },
                         },
                         FieldDecl {
@@ -102,13 +109,15 @@ Program {
                             },
                             name: "architecture_bit",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 383,
-                                end: 407,
+                                end: 406,
                             },
                         },
                         FieldDecl {
@@ -122,19 +131,22 @@ Program {
                             },
                             name: "endianness",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 412,
-                                end: 430,
+                                end: 429,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 303,
                         end: 440,
@@ -146,6 +158,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "DatabaseInfo",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -158,13 +171,15 @@ Program {
                             },
                             name: "count",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 463,
-                                end: 476,
+                                end: 475,
                             },
                         },
                         FieldDecl {
@@ -178,19 +193,22 @@ Program {
                             },
                             name: "ptr",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 531,
-                                end: 542,
+                                end: 541,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 442,
                         end: 559,
@@ -210,13 +228,15 @@ Program {
                 },
                 name: "header",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 561,
-                    end: 575,
+                    end: 574,
                 },
             },
         ),
@@ -232,6 +252,8 @@ Program {
                 },
                 name: "resource_off",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     Call {
                         callee: Ident {
@@ -253,7 +275,7 @@ Program {
                 ),
                 span: Span {
                     start: 577,
-                    end: 612,
+                    end: 611,
                 },
             },
         ),
@@ -261,6 +283,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "idk",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -273,13 +296,15 @@ Program {
                             },
                             name: "a",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 632,
-                                end: 641,
+                                end: 640,
                             },
                         },
                         FieldDecl {
@@ -293,19 +318,22 @@ Program {
                             },
                             name: "b",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 642,
-                                end: 651,
+                                end: 650,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 615,
                         end: 658,
@@ -325,13 +353,15 @@ Program {
                 },
                 name: "db",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 660,
-                    end: 676,
+                    end: 675,
                 },
             },
         ),
@@ -347,13 +377,15 @@ Program {
                 },
                 name: "values_ptr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 678,
-                    end: 696,
+                    end: 695,
                 },
             },
         ),
@@ -369,13 +401,15 @@ Program {
                 },
                 name: "string_table_size",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 697,
-                    end: 722,
+                    end: 721,
                 },
             },
         ),
@@ -391,13 +425,15 @@ Program {
                 },
                 name: "strings_ptr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 723,
-                    end: 742,
+                    end: 741,
                 },
             },
         ),
@@ -413,6 +449,8 @@ Program {
                 },
                 name: "unk_offset",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     Call {
                         callee: Ident {
@@ -434,7 +472,7 @@ Program {
                 ),
                 span: Span {
                     start: 744,
-                    end: 777,
+                    end: 776,
                 },
             },
         ),
@@ -450,13 +488,15 @@ Program {
                 },
                 name: "some_count",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 824,
-                    end: 842,
+                    end: 841,
                 },
             },
         ),
@@ -472,13 +512,15 @@ Program {
                 },
                 name: "some_ptr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 843,
-                    end: 859,
+                    end: 858,
                 },
             },
         ),
@@ -494,13 +536,15 @@ Program {
                 },
                 name: "unk_ptr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 893,
-                    end: 908,
+                    end: 907,
                 },
             },
         ),
@@ -516,6 +560,8 @@ Program {
                 },
                 name: "model_table_offset",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     Call {
                         callee: Ident {
@@ -537,7 +583,7 @@ Program {
                 ),
                 span: Span {
                     start: 910,
-                    end: 951,
+                    end: 950,
                 },
             },
         ),
@@ -553,13 +599,15 @@ Program {
                 },
                 name: "model_count",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 952,
-                    end: 971,
+                    end: 970,
                 },
             },
         ),
@@ -575,13 +623,15 @@ Program {
                 },
                 name: "models_offset",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 972,
-                    end: 993,
+                    end: 992,
                 },
             },
         ),
@@ -597,13 +647,15 @@ Program {
                 },
                 name: "databases_count",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 995,
-                    end: 1018,
+                    end: 1017,
                 },
             },
         ),
@@ -619,13 +671,15 @@ Program {
                 },
                 name: "databases_ptr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1019,
-                    end: 1040,
+                    end: 1039,
                 },
             },
         ),
@@ -677,6 +731,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "model_metadata",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -689,13 +744,15 @@ Program {
                             },
                             name: "self_id",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1122,
-                                end: 1137,
+                                end: 1136,
                             },
                         },
                         FieldDecl {
@@ -709,13 +766,15 @@ Program {
                             },
                             name: "parent_id",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1142,
-                                end: 1159,
+                                end: 1158,
                             },
                         },
                         FieldDecl {
@@ -729,6 +788,8 @@ Program {
                             },
                             name: "name_offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -750,7 +811,7 @@ Program {
                             ),
                             span: Span {
                                 start: 1200,
-                                end: 1234,
+                                end: 1233,
                             },
                         },
                         FieldDecl {
@@ -764,13 +825,15 @@ Program {
                             },
                             name: "size",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1239,
-                                end: 1251,
+                                end: 1250,
                             },
                         },
                         FieldDecl {
@@ -784,13 +847,15 @@ Program {
                             },
                             name: "offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1256,
-                                end: 1270,
+                                end: 1269,
                             },
                         },
                         FieldDecl {
@@ -804,6 +869,8 @@ Program {
                             },
                             name: "after_offset_offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -825,7 +892,7 @@ Program {
                             ),
                             span: Span {
                                 start: 1275,
-                                end: 1317,
+                                end: 1316,
                             },
                         },
                         Expr {
@@ -881,13 +948,15 @@ Program {
                             },
                             name: "name",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1356,
-                                end: 1368,
+                                end: 1367,
                             },
                         },
                         Expr {
@@ -922,6 +991,7 @@ Program {
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 1086,
                         end: 1403,
@@ -949,13 +1019,15 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1405,
-                    end: 1449,
+                    end: 1448,
                 },
             },
         ),
@@ -1007,6 +1079,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "idk2",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -1019,13 +1092,15 @@ Program {
                             },
                             name: "id",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1507,
-                                end: 1517,
+                                end: 1516,
                             },
                         },
                         FieldDecl {
@@ -1047,19 +1122,22 @@ Program {
                                     },
                                 },
                             ),
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1522,
-                                end: 1536,
+                                end: 1535,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 1481,
                         end: 1539,
@@ -1087,13 +1165,15 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1541,
-                    end: 1570,
+                    end: 1569,
                 },
             },
         ),
@@ -1175,13 +1255,15 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1602,
-                    end: 1626,
+                    end: 1625,
                 },
             },
         ),
@@ -1249,13 +1331,15 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1674,
-                    end: 1702,
+                    end: 1701,
                 },
             },
         ),
@@ -1307,6 +1391,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "dependency",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Local,
@@ -1319,6 +1404,8 @@ Program {
                             },
                             name: "start",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -1340,7 +1427,7 @@ Program {
                             ),
                             span: Span {
                                 start: 1755,
-                                end: 1783,
+                                end: 1782,
                             },
                         },
                         FieldDecl {
@@ -1354,13 +1441,15 @@ Program {
                             },
                             name: "string_table_offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1788,
-                                end: 1815,
+                                end: 1814,
                             },
                         },
                         FieldDecl {
@@ -1374,6 +1463,8 @@ Program {
                             },
                             name: "reset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -1395,7 +1486,7 @@ Program {
                             ),
                             span: Span {
                                 start: 1816,
-                                end: 1844,
+                                end: 1843,
                             },
                         },
                         Expr {
@@ -1465,13 +1556,15 @@ Program {
                             },
                             name: "name",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1906,
-                                end: 1918,
+                                end: 1917,
                             },
                         },
                         Expr {
@@ -1506,6 +1599,7 @@ Program {
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 1738,
                         end: 1946,
@@ -1540,6 +1634,8 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [
@@ -1561,7 +1657,7 @@ Program {
                 ),
                 span: Span {
                     start: 1947,
-                    end: 1998,
+                    end: 1997,
                 },
             },
         ),
@@ -1569,6 +1665,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "skeleton_prototype",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -1581,13 +1678,15 @@ Program {
                             },
                             name: "count",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2021,
-                                end: 2034,
+                                end: 2033,
                             },
                         },
                         FieldDecl {
@@ -1601,13 +1700,15 @@ Program {
                             },
                             name: "unk",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2039,
-                                end: 2050,
+                                end: 2049,
                             },
                         },
                         FieldDecl {
@@ -1621,19 +1722,22 @@ Program {
                             },
                             name: "items_ptr",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2055,
-                                end: 2072,
+                                end: 2071,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 2000,
                         end: 2094,
@@ -1689,6 +1793,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "database",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Local,
@@ -1701,6 +1806,8 @@ Program {
                             },
                             name: "database_offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -1722,7 +1829,7 @@ Program {
                             ),
                             span: Span {
                                 start: 2150,
-                                end: 2188,
+                                end: 2187,
                             },
                         },
                         FieldDecl {
@@ -1736,13 +1843,15 @@ Program {
                             },
                             name: "prototype_magic",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2193,
-                                end: 2216,
+                                end: 2215,
                             },
                         },
                         FieldDecl {
@@ -1756,13 +1865,15 @@ Program {
                             },
                             name: "prototype_checksum",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2221,
-                                end: 2247,
+                                end: 2246,
                             },
                         },
                         FieldDecl {
@@ -1776,13 +1887,15 @@ Program {
                             },
                             name: "size",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2252,
-                                end: 2264,
+                                end: 2263,
                             },
                         },
                         FieldDecl {
@@ -1796,13 +1909,15 @@ Program {
                             },
                             name: "offset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2269,
-                                end: 2283,
+                                end: 2282,
                             },
                         },
                         FieldDecl {
@@ -1816,6 +1931,8 @@ Program {
                             },
                             name: "reset",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -1837,7 +1954,7 @@ Program {
                             ),
                             span: Span {
                                 start: 2284,
-                                end: 2312,
+                                end: 2311,
                             },
                         },
                         Expr {
@@ -1893,13 +2010,15 @@ Program {
                             },
                             name: "skeleton",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2350,
-                                end: 2378,
+                                end: 2377,
                             },
                         },
                         FieldDecl {
@@ -1950,13 +2069,15 @@ Program {
                                     },
                                 },
                             ),
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 2383,
-                                end: 2428,
+                                end: 2427,
                             },
                         },
                         Expr {
@@ -1991,6 +2112,7 @@ Program {
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 2133,
                         end: 2454,
@@ -2018,6 +2140,8 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [
@@ -2039,7 +2163,7 @@ Program {
                 ),
                 span: Span {
                     start: 2455,
-                    end: 2511,
+                    end: 2510,
                 },
             },
         ),

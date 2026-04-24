@@ -90,40 +90,48 @@ fn typedef_alias() {
 
 #[test]
 fn typedef_enum_with_backing() {
-    let ast = parse_str("\
+    let ast = parse_str(
+        "\
 typedef enum <uchar> {
     KIND_NONE = 0,
     KIND_OTHER = 8
-} KIND;");
+} KIND;",
+    );
     insta::assert_debug_snapshot!(ast);
 }
 
 #[test]
 fn typedef_struct_with_attrs() {
-    let ast = parse_str("\
+    let ast = parse_str(
+        "\
 typedef struct {
     uchar version;
     ushort flags;
     if ( flags > 0 )
         uint extra;
-} HEADER <read=ReadHeader, style=sSection1>;");
+} HEADER <read=ReadHeader, style=sSection1>;",
+    );
     insta::assert_debug_snapshot!(ast);
 }
 
 #[test]
 fn if_else_chain() {
-    let ast = parse_str("\
-if ( tag == 1 ) { a; } else if ( tag == 2 ) { b; } else { c; }");
+    let ast = parse_str(
+        "\
+if ( tag == 1 ) { a; } else if ( tag == 2 ) { b; } else { c; }",
+    );
     insta::assert_debug_snapshot!(ast);
 }
 
 #[test]
 fn while_loop_with_body() {
-    let ast = parse_str("\
+    let ast = parse_str(
+        "\
 while ( !FEof() ) {
     tag = ReadUInt(FTell());
     if ( tag == 0 ) break;
-}");
+}",
+    );
     insta::assert_debug_snapshot!(ast);
 }
 
@@ -135,12 +143,14 @@ fn for_loop() {
 
 #[test]
 fn function_def_with_ref_param() {
-    let ast = parse_str("\
+    let ast = parse_str(
+        "\
 string ReadEntry ( ENTRY &e ) {
     if ( exists(e.name) )
         return e.name;
     return \"\";
-}");
+}",
+    );
     insta::assert_debug_snapshot!(ast);
 }
 
@@ -163,4 +173,76 @@ fn recctrl_bt_fixture() {
     let src = include_str!("../fixtures/recctrl.bt");
     let ast = parse_str(src);
     insta::assert_debug_snapshot!(ast);
+}
+
+#[test]
+#[ignore]
+fn probe_external_template() {
+    let path = std::env::var("PROBE_BT").expect("set PROBE_BT=path/to/file.bt");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let src = match std::env::var("EXPAND_DIR") {
+        Ok(base) => expand_includes_for_probe(std::path::Path::new(&path), std::path::Path::new(&base), &raw),
+        Err(_) => raw,
+    };
+    match hxy_010_lang::tokenize(&src) {
+        Ok(toks) => {
+            eprintln!("tokenized {} tokens", toks.len());
+            match hxy_010_lang::parse(toks) {
+                Ok(p) => eprintln!("parsed {} items", p.items.len()),
+                Err(e) => eprintln!("parse err: {e:#?}"),
+            }
+        }
+        Err(e) => eprintln!("lex err: {e:#?}"),
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_execute_template() {
+    let bt = std::env::var("PROBE_BT").expect("PROBE_BT=/path/to/template.bt");
+    let data = std::env::var("PROBE_DATA").expect("PROBE_DATA=/path/to/data");
+    let raw = std::fs::read_to_string(&bt).unwrap();
+    let src = match std::env::var("EXPAND_DIR") {
+        Ok(base) => expand_includes_for_probe(std::path::Path::new(&bt), std::path::Path::new(&base), &raw),
+        Err(_) => raw,
+    };
+    let bytes = std::fs::read(&data).unwrap();
+    let prog = hxy_010_lang::parse(hxy_010_lang::tokenize(&src).expect("tokenize")).expect("parse");
+    let source = hxy_010_lang::MemorySource::new(bytes);
+    let result = hxy_010_lang::Interpreter::new(source).run(&prog);
+    eprintln!("nodes: {}", result.nodes.len());
+    eprintln!("diagnostics: {}", result.diagnostics.len());
+    for d in result.diagnostics.iter().take(20) {
+        eprintln!("  [{:?}] {}", d.severity, d.message);
+    }
+    for n in result.nodes.iter().take(15) {
+        eprintln!("  @{}+{} {} = {:?}", n.offset, n.length, n.name, n.value);
+    }
+}
+
+fn expand_includes_for_probe(path: &std::path::Path, base_dir: &std::path::Path, raw: &str) -> String {
+    // Ad-hoc expansion so this test doesn't need the app crate; good
+    // enough for a probe.
+    let mut out = String::new();
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start().trim_end_matches(['\r', '\n']);
+        if let Some(rest) = trimmed.strip_prefix("#include")
+            && let Some(q) = rest.trim_start().strip_prefix('"')
+            && let Some(end) = q.find('"')
+        {
+            let target = &q[..end];
+            let candidate = parent.join(target);
+            let resolved = candidate.canonicalize().ok();
+            if let Some(r) = resolved
+                && r.starts_with(base_dir.canonicalize().unwrap_or_default())
+                && let Ok(inner) = std::fs::read_to_string(&r)
+            {
+                out.push_str(&expand_includes_for_probe(&r, base_dir, &inner));
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }

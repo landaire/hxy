@@ -16,6 +16,8 @@ Program {
                 },
                 name: "tag",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     IntLit {
                         value: 0,
@@ -30,7 +32,7 @@ Program {
                 ),
                 span: Span {
                     start: 0,
-                    end: 19,
+                    end: 18,
                 },
             },
         ),

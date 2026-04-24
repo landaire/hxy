@@ -70,8 +70,8 @@ pub fn load_plugins_from_dir(dir: &Path) -> Result<Vec<PluginHandler>, PluginLoa
         .map_err(PluginLoadError::Engine)?;
     let linker = Arc::new(linker);
 
-    let read_dir = std::fs::read_dir(dir)
-        .map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
+    let read_dir =
+        std::fs::read_dir(dir).map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
 
     let mut handlers = Vec::new();
     for entry in read_dir {
@@ -88,8 +88,8 @@ pub fn load_plugins_from_dir(dir: &Path) -> Result<Vec<PluginHandler>, PluginLoa
 
 fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> Result<PluginHandler, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
-    let component =
-        Component::new(engine, &bytes).map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
+    let component = Component::new(engine, &bytes)
+        .map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
     PluginHandler::new(engine.clone(), component, linker)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
@@ -112,8 +112,8 @@ pub fn load_template_plugins_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRunt
         .map_err(PluginLoadError::Engine)?;
     let linker = Arc::new(linker);
 
-    let read_dir = std::fs::read_dir(dir)
-        .map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
+    let read_dir =
+        std::fs::read_dir(dir).map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
 
     let mut runtimes = Vec::new();
     for entry in read_dir {
@@ -134,8 +134,8 @@ fn load_template_single(
     path: &Path,
 ) -> Result<WasmTemplateRuntime, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
-    let component =
-        Component::new(engine, &bytes).map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
+    let component = Component::new(engine, &bytes)
+        .map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
     WasmTemplateRuntime::new(engine.clone(), component, linker)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
@@ -143,10 +143,7 @@ fn load_template_single(
 /// Compile an already-in-memory component into a [`WasmTemplateRuntime`].
 /// The `label` is only used for error reporting — typically a short
 /// identifier like `"builtin:010-bt"`.
-pub fn load_template_runtime_from_bytes(
-    bytes: &[u8],
-    label: &str,
-) -> Result<WasmTemplateRuntime, PluginLoadError> {
+pub fn load_template_runtime_from_bytes(bytes: &[u8], label: &str) -> Result<WasmTemplateRuntime, PluginLoadError> {
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;

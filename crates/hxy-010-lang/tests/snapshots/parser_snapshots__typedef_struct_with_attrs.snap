@@ -8,6 +8,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "HEADER",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -20,13 +21,15 @@ Program {
                             },
                             name: "version",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 21,
-                                end: 35,
+                                end: 34,
                             },
                         },
                         FieldDecl {
@@ -40,13 +43,15 @@ Program {
                             },
                             name: "flags",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 40,
-                                end: 53,
+                                end: 52,
                             },
                         },
                         If {
@@ -82,19 +87,21 @@ Program {
                                 },
                                 name: "extra",
                                 array_size: None,
+                                args: [],
+                                bit_width: None,
                                 init: None,
                                 attrs: Attrs(
                                     [],
                                 ),
                                 span: Span {
                                     start: 83,
-                                    end: 94,
+                                    end: 93,
                                 },
                             },
                             else_branch: None,
                             span: Span {
                                 start: 58,
-                                end: 94,
+                                end: 93,
                             },
                         },
                     ],
@@ -130,6 +137,7 @@ Program {
                             },
                         ],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 0,
                         end: 139,

@@ -109,7 +109,6 @@ pub fn default_decoders() -> Vec<Arc<dyn Decoder>> {
     ]
 }
 
-
 struct BinaryDecoder;
 
 impl Decoder for BinaryDecoder {
@@ -269,7 +268,6 @@ impl Decoder for LebDecoder {
     }
 }
 
-
 struct FloatDecoder {
     width: usize,
 }
@@ -308,7 +306,6 @@ impl Decoder for FloatDecoder {
         Some(Decoded::text(text))
     }
 }
-
 
 enum TimeDecoder {
     /// 32-bit Unix epoch seconds, signed.
@@ -438,7 +435,6 @@ fn format_unix_seconds(secs: i64) -> Option<Decoded> {
     Some(Decoded::text(ts.to_string()))
 }
 
-
 enum ColorDecoder {
     /// u32 with alpha-first byte order (0xAARRGGBB as read LE/BE).
     Argb,
@@ -467,18 +463,12 @@ impl Decoder for ColorDecoder {
             Endian::Big => u32::from_be_bytes(a),
         };
         let (ar, rr, gg, bb) = match self {
-            Self::Argb => (
-                ((raw >> 24) & 0xFF) as u8,
-                ((raw >> 16) & 0xFF) as u8,
-                ((raw >> 8) & 0xFF) as u8,
-                (raw & 0xFF) as u8,
-            ),
-            Self::Rgba => (
-                (raw & 0xFF) as u8,
-                ((raw >> 24) & 0xFF) as u8,
-                ((raw >> 16) & 0xFF) as u8,
-                ((raw >> 8) & 0xFF) as u8,
-            ),
+            Self::Argb => {
+                (((raw >> 24) & 0xFF) as u8, ((raw >> 16) & 0xFF) as u8, ((raw >> 8) & 0xFF) as u8, (raw & 0xFF) as u8)
+            }
+            Self::Rgba => {
+                ((raw & 0xFF) as u8, ((raw >> 24) & 0xFF) as u8, ((raw >> 16) & 0xFF) as u8, ((raw >> 8) & 0xFF) as u8)
+            }
         };
         let tuple = match self {
             Self::Argb => format!("argb=({ar},{rr},{gg},{bb})"),
@@ -488,7 +478,6 @@ impl Decoder for ColorDecoder {
         Some(Decoded::Color { rgba: [rr, gg, bb, ar], label })
     }
 }
-
 
 fn format_unsigned(value: u128, width: usize, radix: IntRadix) -> String {
     match radix {
@@ -517,7 +506,6 @@ fn format_signed(value: i128, width: usize, radix: IntRadix) -> String {
         }
     }
 }
-
 
 /// Draw the inspector into `ui`. `caret_offset` is the cursor byte
 /// position; `bytes` is a prefetched window of data (typically 16
@@ -550,53 +538,38 @@ pub fn show(
     ui.add_space(4.0);
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("hxy_inspector_grid")
-            .num_columns(2)
-            .striped(true)
-            .min_col_width(100.0)
-            .show(ui, |ui| {
-                for dec in decoders {
-                    ui.label(dec.name());
-                    let decoded = dec.decode(bytes, state.endian, state.radix);
-                    match decoded {
-                        Some(Decoded::Text(s)) => {
-                            ui.add(egui::Label::new(egui::RichText::new(&s).monospace()).truncate());
-                        }
-                        Some(Decoded::Color { rgba, label }) => {
-                            ui.horizontal(|ui| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(14.0, 14.0),
-                                    egui::Sense::hover(),
-                                );
-                                let fill = egui::Color32::from_rgba_unmultiplied(
-                                    rgba[0], rgba[1], rgba[2], rgba[3],
-                                );
-                                ui.painter().rect_filled(rect, 3.0, fill);
-                                // Thin outline so light colours on a
-                                // light background still read as a
-                                // distinct swatch.
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    3.0,
-                                    egui::Stroke::new(
-                                        1.0,
-                                        ui.visuals().widgets.noninteractive.fg_stroke.color,
-                                    ),
-                                    egui::StrokeKind::Inside,
-                                );
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(&label).monospace())
-                                        .truncate(),
-                                );
-                            });
-                        }
-                        None => {
-                            ui.weak("—");
-                        }
+        egui::Grid::new("hxy_inspector_grid").num_columns(2).striped(true).min_col_width(100.0).show(ui, |ui| {
+            for dec in decoders {
+                ui.label(dec.name());
+                let decoded = dec.decode(bytes, state.endian, state.radix);
+                match decoded {
+                    Some(Decoded::Text(s)) => {
+                        ui.add(egui::Label::new(egui::RichText::new(&s).monospace()).truncate());
                     }
-                    ui.end_row();
+                    Some(Decoded::Color { rgba, label }) => {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                            let fill = egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
+                            ui.painter().rect_filled(rect, 3.0, fill);
+                            // Thin outline so light colours on a
+                            // light background still read as a
+                            // distinct swatch.
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0,
+                                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.add(egui::Label::new(egui::RichText::new(&label).monospace()).truncate());
+                        });
+                    }
+                    None => {
+                        ui.weak("—");
+                    }
                 }
-            });
+                ui.end_row();
+            }
+        });
     });
 }
 

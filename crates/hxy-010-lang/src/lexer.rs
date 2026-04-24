@@ -55,16 +55,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
 
 /// Single token, leaving `input` advanced past it.
 fn lex_one(input: &mut &str) -> ModalResult<TokenKind> {
-    alt((
-        lex_number,
-        lex_string,
-        lex_char,
-        lex_ident_or_keyword,
-        lex_punct_or_op,
-    ))
-    .parse_next(input)
+    alt((lex_number, lex_string, lex_char, lex_ident_or_keyword, lex_punct_or_op)).parse_next(input)
 }
-
 
 fn skip_trivia(input: &mut &str) {
     loop {
@@ -101,7 +93,6 @@ fn block_comment(input: &mut &str) -> ModalResult<()> {
     }
 }
 
-
 fn lex_number(input: &mut &str) -> ModalResult<TokenKind> {
     alt((hex_int, bin_int, float_or_int)).parse_next(input)
 }
@@ -122,12 +113,9 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
     // integer [ . fraction ] [ e|E [+-]? digits ] [ f|F|L|l|u|U ]?
     let int_part: &str = digit1.parse_next(input)?;
     let fraction: Option<&str> = opt(preceded(".", take_while(0.., |c: char| c.is_ascii_digit()))).parse_next(input)?;
-    let exponent: Option<(&str, Option<&str>, &str)> = opt((
-        alt(("e", "E")),
-        opt(alt(("+", "-"))),
-        take_while(1.., |c: char| c.is_ascii_digit()),
-    ))
-    .parse_next(input)?;
+    let exponent: Option<(&str, Option<&str>, &str)> =
+        opt((alt(("e", "E")), opt(alt(("+", "-"))), take_while(1.., |c: char| c.is_ascii_digit())))
+            .parse_next(input)?;
     // Type suffixes are consumed but don't change the parsed value.
     let _ = opt(one_of(('f', 'F', 'l', 'L', 'u', 'U'))).parse_next(input)?;
 
@@ -150,7 +138,6 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
     }
     Ok(TokenKind::Float(s.parse::<f64>().unwrap_or(0.0)))
 }
-
 
 fn lex_string(input: &mut &str) -> ModalResult<TokenKind> {
     delimited("\"", string_inner, "\"").map(TokenKind::String).parse_next(input)
@@ -206,7 +193,6 @@ fn decode_escape(c: char) -> char {
     }
 }
 
-
 fn lex_ident_or_keyword(input: &mut &str) -> ModalResult<TokenKind> {
     let first = one_of(|c: char| c.is_ascii_alphabetic() || c == '_').parse_next(input)?;
     let rest: &str = take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_').parse_next(input)?;
@@ -218,7 +204,6 @@ fn lex_ident_or_keyword(input: &mut &str) -> ModalResult<TokenKind> {
         None => TokenKind::Ident(s),
     })
 }
-
 
 fn lex_punct_or_op(input: &mut &str) -> ModalResult<TokenKind> {
     alt((three_char_op, two_char_op, single_char_op)).parse_next(input)

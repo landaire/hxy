@@ -40,6 +40,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "MSSTRING",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -52,13 +53,15 @@ Program {
                             },
                             name: "Size",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 395,
-                                end: 405,
+                                end: 404,
                             },
                         },
                         FieldDecl {
@@ -80,13 +83,15 @@ Program {
                                     },
                                 },
                             ),
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 408,
-                                end: 426,
+                                end: 425,
                             },
                         },
                         FieldDecl {
@@ -100,6 +105,8 @@ Program {
                             },
                             name: "pos",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Call {
                                     callee: Ident {
@@ -121,7 +128,7 @@ Program {
                             ),
                             span: Span {
                                 start: 432,
-                                end: 457,
+                                end: 456,
                             },
                         },
                         If {
@@ -173,13 +180,15 @@ Program {
                                         },
                                         name: "padding",
                                         array_size: None,
+                                        args: [],
+                                        bit_width: None,
                                         init: None,
                                         attrs: Attrs(
                                             [],
                                         ),
                                         span: Span {
                                             start: 483,
-                                            end: 496,
+                                            end: 495,
                                         },
                                     },
                                 ],
@@ -198,6 +207,7 @@ Program {
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 375,
                         end: 503,
@@ -217,6 +227,8 @@ Program {
                 },
                 name: "idx",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     IntLit {
                         value: 0,
@@ -231,7 +243,7 @@ Program {
                 ),
                 span: Span {
                     start: 505,
-                    end: 525,
+                    end: 524,
                 },
             },
         ),
@@ -247,6 +259,8 @@ Program {
                 },
                 name: "addr",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     IntLit {
                         value: 0,
@@ -261,7 +275,7 @@ Program {
                 ),
                 span: Span {
                     start: 526,
-                    end: 547,
+                    end: 546,
                 },
             },
         ),
@@ -269,6 +283,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "RECENTRY",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -281,13 +296,15 @@ Program {
                             },
                             name: "VersionIndex",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 567,
-                                end: 585,
+                                end: 584,
                             },
                         },
                         FieldDecl {
@@ -301,13 +318,15 @@ Program {
                             },
                             name: "DeviceIndex",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 588,
-                                end: 605,
+                                end: 604,
                             },
                         },
                         FieldDecl {
@@ -321,13 +340,15 @@ Program {
                             },
                             name: "Length",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 608,
-                                end: 621,
+                                end: 620,
                             },
                         },
                         FieldDecl {
@@ -341,13 +362,15 @@ Program {
                             },
                             name: "Timestamp",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 624,
-                                end: 643,
+                                end: 642,
                             },
                         },
                         FieldDecl {
@@ -361,13 +384,15 @@ Program {
                             },
                             name: "Path",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 653,
-                                end: 667,
+                                end: 666,
                             },
                         },
                         FieldDecl {
@@ -381,6 +406,8 @@ Program {
                             },
                             name: "testWord",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 Unary {
                                     op: Neg,
@@ -402,7 +429,7 @@ Program {
                             ),
                             span: Span {
                                 start: 846,
-                                end: 871,
+                                end: 870,
                             },
                         },
                         FieldDecl {
@@ -416,6 +443,8 @@ Program {
                             },
                             name: "totalWord",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: Some(
                                 IntLit {
                                     value: 0,
@@ -430,7 +459,7 @@ Program {
                             ),
                             span: Span {
                                 start: 874,
-                                end: 900,
+                                end: 899,
                             },
                         },
                         While {
@@ -468,13 +497,15 @@ Program {
                                         },
                                         name: "BlockCompressedSize",
                                         array_size: None,
+                                        args: [],
+                                        bit_width: None,
                                         init: None,
                                         attrs: Attrs(
                                             [],
                                         ),
                                         span: Span {
                                             start: 932,
-                                            end: 957,
+                                            end: 956,
                                         },
                                     },
                                     Expr {
@@ -553,13 +584,15 @@ Program {
                             },
                             name: "FinalBlockDecSize",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1161,
-                                end: 1184,
+                                end: 1183,
                             },
                         },
                         FieldDecl {
@@ -573,13 +606,15 @@ Program {
                             },
                             name: "BlockCompressedSize",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1187,
-                                end: 1212,
+                                end: 1211,
                             },
                         },
                         Expr {
@@ -751,6 +786,7 @@ Program {
                             },
                         ],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 548,
                         end: 1484,
@@ -797,13 +833,15 @@ Program {
                         },
                         name: "s",
                         array_size: None,
+                        args: [],
+                        bit_width: None,
                         init: None,
                         attrs: Attrs(
                             [],
                         ),
                         span: Span {
                             start: 1525,
-                            end: 1534,
+                            end: 1533,
                         },
                     },
                     If {
@@ -1116,13 +1154,15 @@ Program {
                 },
                 name: "VersionCount",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1731,
-                    end: 1749,
+                    end: 1748,
                 },
             },
         ),
@@ -1138,6 +1178,8 @@ Program {
                 },
                 name: "i",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: Some(
                     IntLit {
                         value: 0,
@@ -1152,7 +1194,7 @@ Program {
                 ),
                 span: Span {
                     start: 1750,
-                    end: 1766,
+                    end: 1765,
                 },
             },
         ),
@@ -1251,6 +1293,8 @@ Program {
                     },
                     name: "Version",
                     array_size: None,
+                    args: [],
+                    bit_width: None,
                     init: None,
                     attrs: Attrs(
                         [
@@ -1272,12 +1316,12 @@ Program {
                     ),
                     span: Span {
                         start: 1808,
-                        end: 1839,
+                        end: 1838,
                     },
                 },
                 span: Span {
                     start: 1767,
-                    end: 1839,
+                    end: 1838,
                 },
             },
         ),
@@ -1285,6 +1329,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "RECDEVICE",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -1297,13 +1342,15 @@ Program {
                             },
                             name: "Name",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1959,
-                                end: 1973,
+                                end: 1972,
                             },
                         },
                         FieldDecl {
@@ -1317,19 +1364,22 @@ Program {
                             },
                             name: "Path",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 1976,
-                                end: 1990,
+                                end: 1989,
                             },
                         },
                     ],
                     attrs: Attrs(
                         [],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 1938,
                         end: 1993,
@@ -1349,13 +1399,15 @@ Program {
                 },
                 name: "DeviceCount",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 1994,
-                    end: 2011,
+                    end: 2010,
                 },
             },
         ),
@@ -1440,6 +1492,8 @@ Program {
                     },
                     name: "Device",
                     array_size: None,
+                    args: [],
+                    bit_width: None,
                     init: None,
                     attrs: Attrs(
                         [
@@ -1461,12 +1515,12 @@ Program {
                     ),
                     span: Span {
                         start: 2048,
-                        end: 2079,
+                        end: 2078,
                     },
                 },
                 span: Span {
                     start: 2012,
-                    end: 2079,
+                    end: 2078,
                 },
             },
         ),
@@ -1482,13 +1536,15 @@ Program {
                 },
                 name: "LzxWindowSize",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 2157,
-                    end: 2177,
+                    end: 2176,
                 },
             },
         ),
@@ -1540,18 +1596,20 @@ Program {
                     },
                     name: "Entry",
                     array_size: None,
+                    args: [],
+                    bit_width: None,
                     init: None,
                     attrs: Attrs(
                         [],
                     ),
                     span: Span {
                         start: 2209,
-                        end: 2224,
+                        end: 2223,
                     },
                 },
                 span: Span {
                     start: 2179,
-                    end: 2224,
+                    end: 2223,
                 },
             },
         ),

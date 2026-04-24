@@ -273,116 +273,119 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         } = self;
         let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
         ui.push_id(salt, |ui| {
-        let palette = value_highlight.map(|mode| {
-            let palette =
-                palette_override.unwrap_or_else(|| HighlightPalette::for_theme_and_mode(ui.visuals().dark_mode, mode));
-            (mode, palette)
-        });
-        let total_rows = row_count(source.len(), columns);
-        let address_chars = address_hex_width(source.len());
-        let font_id = TextStyle::Monospace.resolve(ui.style());
-        let row_height = ui.text_style_height(&TextStyle::Monospace);
-        let char_w = measure_char_width(ui, &font_id);
-        let layout = RowLayout::compute(char_w, address_chars, columns);
-        let source_len = source.len();
+            let palette = value_highlight.map(|mode| {
+                let palette = palette_override
+                    .unwrap_or_else(|| HighlightPalette::for_theme_and_mode(ui.visuals().dark_mode, mode));
+                (mode, palette)
+            });
+            let total_rows = row_count(source.len(), columns);
+            let address_chars = address_hex_width(source.len());
+            let font_id = TextStyle::Monospace.resolve(ui.style());
+            let row_height = ui.text_style_height(&TextStyle::Monospace);
+            let char_w = measure_char_width(ui, &font_id);
+            let layout = RowLayout::compute(char_w, address_chars, columns);
+            let source_len = source.len();
 
-        let mut response = HexViewResponse::default();
+            let mut response = HexViewResponse::default();
 
-        paint_column_header(ui, &layout, &font_id, row_height, column_header_formatter.as_deref());
+            paint_column_header(ui, &layout, &font_id, row_height, column_header_formatter.as_deref());
 
-        let scroll_id = ui.id().with("hxy_scroll");
-        // Minimap click, explicit `scroll_to`, or a stashed pending value
-        // from a prior frame can all drive the next scroll position.
-        // `scroll_to_byte` takes precedence: compute the target row's
-        // top Y from columns + row_height.
-        let pending_offset = scroll_to_byte
-            .map(|b| {
-                let row = b.get() / u64::from(columns.get());
-                (row as f32) * row_height
-            })
-            .or_else(|| ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)))
-            .or(initial_scroll);
-
-        let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
-        let scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
-        let avail = ui.available_rect_before_wrap();
-        let hex_rect =
-            Rect::from_min_size(avail.min, Vec2::new(avail.width() - minimap_width - scrollbar_width, avail.height()));
-        let minimap_rect =
-            Rect::from_min_size(Pos2::new(hex_rect.right(), avail.top()), Vec2::new(minimap_width, avail.height()));
-        let scrollbar_rect = Rect::from_min_size(
-            Pos2::new(minimap_rect.right(), avail.top()),
-            Vec2::new(scrollbar_width, avail.height()),
-        );
-
-        let hex_out = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
-                // Hex view owns scroll state but the visible bar lives
-                // in the rightmost column (past the minimap) as a
-                // separate widget, so we always hide the inner bar.
-                let mut area = egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .id_salt(scroll_id)
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-                if let Some(target) = pending_offset {
-                    area = area.vertical_scroll_offset(target);
-                }
-                area.show(ui, |ui| {
-                    paint_and_interact(
-                        ui,
-                        &layout,
-                        &font_id,
-                        row_height,
-                        total_rows,
-                        source_len,
-                        columns,
-                        source,
-                        selection,
-                        palette.clone(),
-                        byte_styler.as_deref(),
-                        address_formatter.as_deref(),
-                        context_menu,
-                        hover_span,
-                        field_boundaries,
-                        &mut response,
-                    );
+            let scroll_id = ui.id().with("hxy_scroll");
+            // Minimap click, explicit `scroll_to`, or a stashed pending value
+            // from a prior frame can all drive the next scroll position.
+            // `scroll_to_byte` takes precedence: compute the target row's
+            // top Y from columns + row_height.
+            let pending_offset = scroll_to_byte
+                .map(|b| {
+                    let row = b.get() / u64::from(columns.get());
+                    (row as f32) * row_height
                 })
-            })
-            .inner;
+                .or_else(|| ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)))
+                .or(initial_scroll);
 
-        response.scroll_offset = hex_out.state.offset.y;
-        response.viewport_height = hex_out.inner_rect.height();
+            let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
+            let scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
+            let avail = ui.available_rect_before_wrap();
+            let hex_rect = Rect::from_min_size(
+                avail.min,
+                Vec2::new(avail.width() - minimap_width - scrollbar_width, avail.height()),
+            );
+            let minimap_rect =
+                Rect::from_min_size(Pos2::new(hex_rect.right(), avail.top()), Vec2::new(minimap_width, avail.height()));
+            let scrollbar_rect = Rect::from_min_size(
+                Pos2::new(minimap_rect.right(), avail.top()),
+                Vec2::new(scrollbar_width, avail.height()),
+            );
 
-        if minimap {
-            draw_minimap(
+            let hex_out = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
+                    // Hex view owns scroll state but the visible bar lives
+                    // in the rightmost column (past the minimap) as a
+                    // separate widget, so we always hide the inner bar.
+                    let mut area = egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .id_salt(scroll_id)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                    if let Some(target) = pending_offset {
+                        area = area.vertical_scroll_offset(target);
+                    }
+                    area.show(ui, |ui| {
+                        paint_and_interact(
+                            ui,
+                            &layout,
+                            &font_id,
+                            row_height,
+                            total_rows,
+                            source_len,
+                            columns,
+                            source,
+                            selection,
+                            palette.clone(),
+                            byte_styler.as_deref(),
+                            address_formatter.as_deref(),
+                            context_menu,
+                            hover_span,
+                            field_boundaries,
+                            &mut response,
+                        );
+                    })
+                })
+                .inner;
+
+            response.scroll_offset = hex_out.state.offset.y;
+            response.viewport_height = hex_out.inner_rect.height();
+
+            if minimap {
+                draw_minimap(
+                    ui,
+                    scroll_id,
+                    minimap_rect,
+                    source,
+                    source_len,
+                    palette,
+                    minimap_colored,
+                    row_height,
+                    hex_out.state.offset.y,
+                    hex_out.inner_rect.height(),
+                    total_rows,
+                    hover_span,
+                    field_boundaries,
+                    field_colors,
+                );
+            }
+
+            draw_scrollbar(
                 ui,
                 scroll_id,
-                minimap_rect,
-                source,
-                source_len,
-                palette,
-                minimap_colored,
-                row_height,
+                scrollbar_rect,
                 hex_out.state.offset.y,
                 hex_out.inner_rect.height(),
-                total_rows,
-                hover_span,
-                field_boundaries,
-                field_colors,
+                total_rows as f32 * row_height,
             );
-        }
 
-        draw_scrollbar(
-            ui,
-            scroll_id,
-            scrollbar_rect,
-            hex_out.state.offset.y,
-            hex_out.inner_rect.height(),
-            total_rows as f32 * row_height,
-        );
-
-        response
-        }).inner
+            response
+        })
+        .inner
     }
 }
 
@@ -923,9 +926,8 @@ fn paint_row_field_outlines(
     let row_last_exclusive = row_first + chunk_len.min(cols) as u64;
     let row_visible_cols = chunk_len.min(cols);
 
-    let first_idx = ctx
-        .field_boundaries
-        .partition_point(|(start, len)| start.get().saturating_add(len.get()) <= row_first);
+    let first_idx =
+        ctx.field_boundaries.partition_point(|(start, len)| start.get().saturating_add(len.get()) <= row_first);
 
     for (start, len) in &ctx.field_boundaries[first_idx..] {
         let field_start = start.get();
@@ -1103,10 +1105,7 @@ fn hit_to_offset(hit: HitRowCol, cols: usize, source_len: ByteLen) -> Option<Byt
 #[allow(clippy::too_many_arguments)]
 fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<ByteOffset> {
     let pos = response.hover_pos().or_else(|| {
-        response
-            .is_pointer_button_down_on()
-            .then(|| ui.ctx().input(|i| i.pointer.latest_pos()))
-            .flatten()
+        response.is_pointer_button_down_on().then(|| ui.ctx().input(|i| i.pointer.latest_pos())).flatten()
     })?;
     if !hit.block_rect.contains(pos) {
         return None;
@@ -1377,11 +1376,8 @@ fn draw_minimap<S: HexSource + ?Sized>(
         for (c, byte) in chunk.iter().enumerate() {
             let x = minimap_rect.left() + c as f32 * cell_w;
             let offset = row_base_offset + c as u64;
-            let field_color = if field_override {
-                field_color_for(field_boundaries, field_colors, offset)
-            } else {
-                None
-            };
+            let field_color =
+                if field_override { field_color_for(field_boundaries, field_colors, offset) } else { None };
             let color = field_color.unwrap_or_else(|| {
                 if colored {
                     palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
@@ -1475,19 +1471,13 @@ fn paint_hover_span_on_minimap(
     // lies beyond so the user knows which way to scroll.
     if span_last_row_inclusive < window_top_row {
         let top = minimap_rect.top();
-        let caret = Rect::from_min_size(
-            Pos2::new(minimap_rect.right() - 6.0, top),
-            Vec2::new(6.0, 4.0),
-        );
+        let caret = Rect::from_min_size(Pos2::new(minimap_rect.right() - 6.0, top), Vec2::new(6.0, 4.0));
         painter.rect_filled(caret, 0.0, accent);
         return;
     }
     if span_first_row >= window_end_row {
         let bottom = minimap_rect.bottom();
-        let caret = Rect::from_min_size(
-            Pos2::new(minimap_rect.right() - 6.0, bottom - 4.0),
-            Vec2::new(6.0, 4.0),
-        );
+        let caret = Rect::from_min_size(Pos2::new(minimap_rect.right() - 6.0, bottom - 4.0), Vec2::new(6.0, 4.0));
         painter.rect_filled(caret, 0.0, accent);
         return;
     }
@@ -1570,11 +1560,7 @@ fn draw_scrollbar(
 /// Look up the template-field colour for `byte_offset` by binary-
 /// searching the sorted `boundaries`. Returns `None` when the offset
 /// doesn't fall inside any field or when `colors` is too short.
-fn field_color_for(
-    boundaries: &[(ByteOffset, ByteLen)],
-    colors: &[Color32],
-    byte_offset: u64,
-) -> Option<Color32> {
+fn field_color_for(boundaries: &[(ByteOffset, ByteLen)], colors: &[Color32], byte_offset: u64) -> Option<Color32> {
     let idx = boundaries.partition_point(|(start, _)| start.get() <= byte_offset);
     if idx == 0 {
         return None;

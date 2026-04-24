@@ -12,8 +12,7 @@ use hxy_plugin_host::TemplateRuntime as _;
 use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/png-template/target/png-template.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/png-template/target/png-template.component.wasm")
 }
 
 /// Build a minimal valid PNG: 8-byte signature + IHDR (13 bytes of
@@ -51,8 +50,7 @@ fn png_template_parses_signature_ihdr_and_iend() {
         return;
     }
     let dir = path.parent().unwrap();
-    let mut plugins =
-        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template plugins");
+    let mut plugins = hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template plugins");
     let plugin = plugins.pop().expect("at least one plugin");
     assert_eq!(plugin.name(), "png");
     assert_eq!(plugin.extensions(), ["png".to_string()]);
@@ -71,11 +69,7 @@ fn png_template_parses_signature_ihdr_and_iend() {
     assert!(tree.nodes.iter().any(|n| n.name == "chunk IEND"));
 
     // Width / height / color_type should be present under IHDR.
-    let width = tree
-        .nodes
-        .iter()
-        .find(|n| n.name == "width")
-        .expect("width node");
+    let width = tree.nodes.iter().find(|n| n.name == "width").expect("width node");
     match width.value {
         Some(Value::U32Val(v)) => assert_eq!(v, 320),
         ref other => panic!("expected u32 width, got {other:?}"),

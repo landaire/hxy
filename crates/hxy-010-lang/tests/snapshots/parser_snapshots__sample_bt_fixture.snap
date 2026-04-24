@@ -127,6 +127,7 @@ Program {
             TypedefStruct(
                 StructDecl {
                     name: "ENTRY",
+                    params: [],
                     body: [
                         FieldDecl {
                             modifier: Field,
@@ -147,6 +148,8 @@ Program {
                                     },
                                 },
                             ),
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [
@@ -168,7 +171,7 @@ Program {
                             ),
                             span: Span {
                                 start: 464,
-                                end: 510,
+                                end: 509,
                             },
                         },
                         FieldDecl {
@@ -182,6 +185,8 @@ Program {
                             },
                             name: "version",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [
@@ -203,7 +208,7 @@ Program {
                             ),
                             span: Span {
                                 start: 515,
-                                end: 549,
+                                end: 548,
                             },
                         },
                         FieldDecl {
@@ -217,13 +222,15 @@ Program {
                             },
                             name: "flags",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 554,
-                                end: 569,
+                                end: 568,
                             },
                         },
                         FieldDecl {
@@ -237,13 +244,15 @@ Program {
                             },
                             name: "kind",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 574,
-                                end: 588,
+                                end: 587,
                             },
                         },
                         FieldDecl {
@@ -257,6 +266,8 @@ Program {
                             },
                             name: "crc",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [
@@ -278,7 +289,7 @@ Program {
                             ),
                             span: Span {
                                 start: 593,
-                                end: 619,
+                                end: 618,
                             },
                         },
                         FieldDecl {
@@ -292,13 +303,15 @@ Program {
                             },
                             name: "compressedSize",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 624,
-                                end: 648,
+                                end: 647,
                             },
                         },
                         FieldDecl {
@@ -312,13 +325,15 @@ Program {
                             },
                             name: "uncompressedSize",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 653,
-                                end: 679,
+                                end: 678,
                             },
                         },
                         FieldDecl {
@@ -332,13 +347,15 @@ Program {
                             },
                             name: "nameLength",
                             array_size: None,
+                            args: [],
+                            bit_width: None,
                             init: None,
                             attrs: Attrs(
                                 [],
                             ),
                             span: Span {
                                 start: 684,
-                                end: 704,
+                                end: 703,
                             },
                         },
                         If {
@@ -382,19 +399,21 @@ Program {
                                         },
                                     },
                                 ),
+                                args: [],
+                                bit_width: None,
                                 init: None,
                                 attrs: Attrs(
                                     [],
                                 ),
                                 span: Span {
                                     start: 739,
-                                    end: 764,
+                                    end: 763,
                                 },
                             },
                             else_branch: None,
                             span: Span {
                                 start: 709,
-                                end: 764,
+                                end: 763,
                             },
                         },
                         If {
@@ -438,6 +457,8 @@ Program {
                                         },
                                     },
                                 ),
+                                args: [],
+                                bit_width: None,
                                 init: None,
                                 attrs: Attrs(
                                     [
@@ -459,13 +480,13 @@ Program {
                                 ),
                                 span: Span {
                                     start: 803,
-                                    end: 846,
+                                    end: 845,
                                 },
                             },
                             else_branch: None,
                             span: Span {
                                 start: 769,
-                                end: 846,
+                                end: 845,
                             },
                         },
                     ],
@@ -501,6 +522,7 @@ Program {
                             },
                         ],
                     ),
+                    is_union: false,
                     span: Span {
                         start: 443,
                         end: 889,
@@ -628,13 +650,15 @@ Program {
                 },
                 name: "tag",
                 array_size: None,
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [],
                 ),
                 span: Span {
                     start: 991,
-                    end: 1006,
+                    end: 1005,
                 },
             },
         ),
@@ -767,13 +791,15 @@ Program {
                                 },
                                 name: "entry",
                                 array_size: None,
+                                args: [],
+                                bit_width: None,
                                 init: None,
                                 attrs: Attrs(
                                     [],
                                 ),
                                 span: Span {
                                     start: 1111,
-                                    end: 1123,
+                                    end: 1122,
                                 },
                             },
                             else_branch: Some(

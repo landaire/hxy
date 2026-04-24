@@ -6,9 +6,9 @@
 
 use thiserror::Error;
 
+use crate::ast::AssignOp;
 use crate::ast::Attr;
 use crate::ast::Attrs;
-use crate::ast::AssignOp;
 use crate::ast::BinOp;
 use crate::ast::DeclModifier;
 use crate::ast::EnumDecl;
@@ -54,7 +54,6 @@ struct Parser {
 }
 
 impl Parser {
-
     fn at_eof(&self) -> bool {
         self.pos >= self.tokens.len()
     }
@@ -86,11 +85,9 @@ impl Parser {
     fn expect_kind(&mut self, want: &TokenKind, expected_msg: &'static str) -> Result<Token, ParseError> {
         match self.peek() {
             Some(t) if &t.kind == want => Ok(self.bump().unwrap()),
-            Some(t) => Err(ParseError::Unexpected {
-                expected: expected_msg,
-                found: format!("{:?}", t.kind),
-                span: t.span,
-            }),
+            Some(t) => {
+                Err(ParseError::Unexpected { expected: expected_msg, found: format!("{:?}", t.kind), span: t.span })
+            }
             None => Err(ParseError::UnexpectedEof { expected: expected_msg }),
         }
     }
@@ -103,11 +100,9 @@ impl Parser {
                 let TokenKind::Ident(name) = tok.kind else { unreachable!() };
                 Ok((name, span))
             }
-            Some(t) => Err(ParseError::Unexpected {
-                expected: "identifier",
-                found: format!("{:?}", t.kind),
-                span: t.span,
-            }),
+            Some(t) => {
+                Err(ParseError::Unexpected { expected: "identifier", found: format!("{:?}", t.kind), span: t.span })
+            }
             None => Err(ParseError::UnexpectedEof { expected: "identifier" }),
         }
     }
@@ -129,7 +124,6 @@ impl Parser {
             false
         }
     }
-
 
     fn parse_top_item(&mut self) -> Result<TopItem, ParseError> {
         // Function defs are hard to distinguish from variable decls
@@ -181,13 +175,17 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
+        // 010 lets function params carry a `local` / `const` qualifier
+        // ahead of the type — e.g. `string readFoo(local CTYPE &t)`.
+        // The qualifier is semantic sugar for us; accept and discard
+        // either one.
+        let _ = self.eat_keyword(Keyword::Local) || self.eat_keyword(Keyword::Const);
         let ty = self.parse_type_ref()?;
         let is_ref = self.eat_kind(&TokenKind::Amp);
         let (name, name_span) = self.expect_ident()?;
         let span = Span::new(ty.span.start, name_span.end);
         Ok(Param { ty, is_ref, name, span })
     }
-
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let Some(tok) = self.peek() else {
@@ -211,6 +209,8 @@ impl Parser {
                 Ok(Stmt::Continue { span: t.span })
             }
             TokenKind::Keyword(Keyword::Typedef) => self.parse_typedef(),
+            TokenKind::Keyword(Keyword::Switch) => self.parse_switch(),
+            TokenKind::Keyword(Keyword::Union) => self.parse_struct_stmt(),
             TokenKind::Keyword(Keyword::Local) | TokenKind::Keyword(Keyword::Const) => self.parse_field_decl(None),
             TokenKind::Semi => {
                 // Empty statement — consume and treat as a no-op block.
@@ -218,9 +218,26 @@ impl Parser {
                 Ok(Stmt::Block { stmts: Vec::new(), span: t.span })
             }
             TokenKind::Keyword(Keyword::Struct) => self.parse_struct_stmt(),
-            TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Enum) => {
-                // Field declaration if followed by an identifier; else
-                // an expression statement.
+            TokenKind::Keyword(Keyword::Enum) => {
+                // Bare `enum` outside a typedef has three shapes:
+                //   1. `enum Name { ... };` — pure type declaration
+                //   2. `enum <backing>? Name? { ... } ident;` — inline
+                //       enum used as a field type
+                //   3. `enum Name field;` — field whose type is a
+                //       previously-declared enum
+                //
+                // Peek past the optional tag: if the next significant
+                // token is `{` or `<`, it's form 1 or 2; otherwise
+                // we're looking at a field declaration.
+                if self.is_enum_type_decl_start() {
+                    self.parse_inline_enum_field()
+                } else if self.looks_like_field_decl() {
+                    self.parse_field_decl(None)
+                } else {
+                    self.parse_expr_stmt()
+                }
+            }
+            TokenKind::Ident(_) => {
                 if self.looks_like_field_decl() {
                     self.parse_field_decl(None)
                 } else {
@@ -238,13 +255,44 @@ impl Parser {
     /// so we disambiguate conservatively: we treat two consecutive
     /// identifiers as a field declaration, anything else as an
     /// expression. This matches how 010 itself resolves ambiguity.
+    /// Token lookahead for `enum [<backing>] [Tag] {`. Distinguishes
+    /// an enum type declaration from `enum Name fieldName;`.
+    fn is_enum_type_decl_start(&self) -> bool {
+        // We're positioned on `enum`. Skip the keyword, then an
+        // optional `< ... >` backing clause, then an optional tag
+        // identifier, and check for `{`.
+        let mut offset = 1;
+        if matches!(self.peek_at(offset).map(|t| &t.kind), Some(TokenKind::Lt)) {
+            // Scan to the matching `>` — backing type refs are simple
+            // (one identifier), so the next-next token is the closer.
+            offset += 1;
+            while let Some(t) = self.peek_at(offset) {
+                offset += 1;
+                if matches!(t.kind, TokenKind::Gt) {
+                    break;
+                }
+                if offset > 8 {
+                    return false;
+                }
+            }
+        }
+        if matches!(self.peek_at(offset).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            offset += 1;
+        }
+        matches!(self.peek_at(offset).map(|t| &t.kind), Some(TokenKind::LBrace))
+    }
+
     fn looks_like_field_decl(&self) -> bool {
         let Some(t0) = self.peek() else { return false };
-        if !matches!(&t0.kind, TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Enum))
-        {
+        if !matches!(
+            &t0.kind,
+            TokenKind::Ident(_) | TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Enum)
+        ) {
             return false;
         }
-        matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        // `Type ident ...` — normal declaration.
+        // `Type : N;`     — anonymous bitfield padding.
+        matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_) | TokenKind::Colon))
     }
 
     fn parse_block(&mut self) -> Result<Stmt, ParseError> {
@@ -263,15 +311,8 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect_kind(&TokenKind::RParen, ")")?;
         let then_branch = Box::new(self.parse_stmt()?);
-        let else_branch = if self.eat_keyword(Keyword::Else) {
-            Some(Box::new(self.parse_stmt()?))
-        } else {
-            None
-        };
-        let end = else_branch
-            .as_ref()
-            .map(|s| stmt_span(s).end)
-            .unwrap_or_else(|| stmt_span(&then_branch).end);
+        let else_branch = if self.eat_keyword(Keyword::Else) { Some(Box::new(self.parse_stmt()?)) } else { None };
+        let end = else_branch.as_ref().map(|s| stmt_span(s).end).unwrap_or_else(|| stmt_span(&then_branch).end);
         Ok(Stmt::If { cond, then_branch, else_branch, span: Span::new(kw.span.start, end) })
     }
 
@@ -307,17 +348,9 @@ impl Parser {
             // trailing `;` itself.
             Some(Box::new(self.parse_stmt()?))
         };
-        let cond = if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
-            None
-        } else {
-            Some(self.parse_expr()?)
-        };
+        let cond = if matches!(self.peek_kind(), Some(TokenKind::Semi)) { None } else { Some(self.parse_expr()?) };
         self.expect_kind(&TokenKind::Semi, ";")?;
-        let step = if matches!(self.peek_kind(), Some(TokenKind::RParen)) {
-            None
-        } else {
-            Some(self.parse_expr()?)
-        };
+        let step = if matches!(self.peek_kind(), Some(TokenKind::RParen)) { None } else { Some(self.parse_expr()?) };
         self.expect_kind(&TokenKind::RParen, ")")?;
         let body = Box::new(self.parse_stmt()?);
         let end = stmt_span(&body).end;
@@ -326,11 +359,7 @@ impl Parser {
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().unwrap();
-        let value = if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
-            None
-        } else {
-            Some(self.parse_expr()?)
-        };
+        let value = if matches!(self.peek_kind(), Some(TokenKind::Semi)) { None } else { Some(self.parse_expr()?) };
         let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
         Ok(Stmt::Return { value, span: Span::new(kw.span.start, end_tok.span.end) })
     }
@@ -342,12 +371,16 @@ impl Parser {
         Ok(Stmt::Expr { expr, span })
     }
 
-
     fn parse_typedef(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().unwrap(); // `typedef`
         let start = kw.span.start;
 
-        // `typedef enum <backing>? { ... } Name <attrs>?;`
+        // `typedef enum <backing>? [Tag] { ... } [Alias] <attrs>?;`
+        //
+        // Either tag-before-body or alias-after-body is accepted;
+        // when both are given we prefer the tag because that's the
+        // name by which the type is referred to in the rest of the
+        // source. Anonymous + alias also works (`typedef enum { ... } X;`).
         if self.eat_keyword(Keyword::Enum) {
             let backing = if self.eat_kind(&TokenKind::Lt) {
                 let t = self.parse_type_ref()?;
@@ -356,6 +389,8 @@ impl Parser {
             } else {
                 None
             };
+            let tag =
+                if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { Some(self.expect_ident()?.0) } else { None };
             self.expect_kind(&TokenKind::LBrace, "{")?;
             let mut variants = Vec::new();
             if !matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
@@ -370,92 +405,324 @@ impl Parser {
                 }
             }
             self.expect_kind(&TokenKind::RBrace, "}")?;
-            let (name, _) = self.expect_ident()?;
+            let alias =
+                if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { Some(self.expect_ident()?.0) } else { None };
+            let (name, alias_for_extra) = match (tag.clone(), alias.clone()) {
+                (Some(t), alias_opt) => (t, alias_opt),
+                (None, Some(a)) => (a, None),
+                (None, None) => {
+                    return Err(ParseError::Unexpected {
+                        expected: "enum tag or typedef alias",
+                        found: "neither".into(),
+                        span: Span::new(start, start),
+                    });
+                }
+            };
             let attrs = self.parse_optional_attrs()?;
             let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-            return Ok(Stmt::TypedefEnum(EnumDecl {
-                name,
-                backing,
-                variants,
-                attrs,
-                span: Span::new(start, end_tok.span.end),
-            }));
+            let span = Span::new(start, end_tok.span.end);
+            let main = Stmt::TypedefEnum(EnumDecl { name: name.clone(), backing, variants, attrs, span });
+            // Both the tag and the typedef alias should resolve to
+            // the same type. We register the tag as the primary
+            // declaration and emit an alias stmt for each extra
+            // name so the interpreter's type registry picks up both.
+            if let Some(extra) = alias_for_extra {
+                return Ok(Stmt::Block {
+                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, span }],
+                    span,
+                });
+            }
+            return Ok(main);
         }
 
-        // `typedef struct [Tag] { ... } [Alias] <attrs>?;`
-        // The struct can have a tag before the body, an alias after
-        // the body, or both — at least one is required. We pick the
-        // tag when present, else fall back to the alias.
-        if self.eat_keyword(Keyword::Struct) {
-            let tag = if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
-                Some(self.expect_ident()?.0)
-            } else {
-                None
-            };
+        // `typedef struct [Tag] [(params)] { ... } [Alias] <attrs>?;`
+        // `typedef union  [Tag] { ... } [Alias] <attrs>?;`
+        if matches!(self.peek_kind(), Some(TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Union))) {
+            let is_union = matches!(self.peek_kind(), Some(TokenKind::Keyword(Keyword::Union)));
+            self.bump();
+            let tag =
+                if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { Some(self.expect_ident()?.0) } else { None };
+            let params = self.parse_optional_struct_params()?;
             let body_block = self.parse_block()?;
-            let Stmt::Block { stmts, .. } = body_block else { unreachable!() };
-            let alias = if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
-                Some(self.expect_ident()?.0)
-            } else {
-                None
+            let Stmt::Block { stmts: body, .. } = body_block else { unreachable!() };
+            let alias =
+                if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { Some(self.expect_ident()?.0) } else { None };
+            let (name, alias_for_extra) = match (tag.clone(), alias.clone()) {
+                (Some(t), alias_opt) => (t, alias_opt),
+                (None, Some(a)) => (a, None),
+                (None, None) => {
+                    return Err(ParseError::Unexpected {
+                        expected: "struct tag or typedef alias",
+                        found: "neither".into(),
+                        span: Span::new(start, start),
+                    });
+                }
             };
-            let name = tag.clone().or(alias).ok_or(ParseError::Unexpected {
-                expected: "struct tag or typedef alias",
-                found: "neither".into(),
-                span: Span::new(start, start),
-            })?;
             let attrs = self.parse_optional_attrs()?;
             let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-            return Ok(Stmt::TypedefStruct(StructDecl {
-                name,
-                body: stmts,
-                attrs,
-                span: Span::new(start, end_tok.span.end),
-            }));
+            let span = Span::new(start, end_tok.span.end);
+            let main = Stmt::TypedefStruct(StructDecl { name: name.clone(), params, body, attrs, is_union, span });
+            if let Some(extra) = alias_for_extra {
+                return Ok(Stmt::Block {
+                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, span }],
+                    span,
+                });
+            }
+            return Ok(main);
         }
 
-        // `typedef SourceType NewName;`
+        // `typedef SourceType NewName [array_size]? <attrs>?;`
+        //
+        // 010 allows a typedef alias to carry an optional array size
+        // and / or attribute list — e.g.
+        // `typedef CHAR DIGEST[20] <read=formatDigest>;`. We parse
+        // and discard both because our alias model is shallow; a
+        // template that depends on the array semantics of an alias
+        // would need a richer TypedefAlias variant.
         let source = self.parse_type_ref()?;
         let (new_name, name_span) = self.expect_ident()?;
+        if self.eat_kind(&TokenKind::LBracket) {
+            let _ = self.parse_expr()?;
+            self.expect_kind(&TokenKind::RBracket, "]")?;
+        }
+        let _ = self.parse_optional_attrs()?;
         let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-        Ok(Stmt::TypedefAlias {
-            new_name,
-            source,
-            span: Span::new(start, end_tok.span.end.max(name_span.end)),
-        })
+        Ok(Stmt::TypedefAlias { new_name, source, span: Span::new(start, end_tok.span.end.max(name_span.end)) })
     }
 
-    /// Handle the `struct` keyword outside a `typedef`. Three shapes:
+    /// Parse an optional parenthesised parameter list on a struct
+    /// definition: `struct Name (int32 len, int32 kind) { ... }`.
+    /// Returns an empty vector when no `(` follows the struct name.
+    fn parse_optional_struct_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        if !self.eat_kind(&TokenKind::LParen) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+            loop {
+                params.push(self.parse_param()?);
+                if !self.eat_kind(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect_kind(&TokenKind::RParen, ")")?;
+        Ok(params)
+    }
+
+    /// Parse `enum <backing>? [Tag] { variants } ident [<attrs>];` when
+    /// it appears outside a `typedef`. Emits a synthetic
+    /// [`Stmt::TypedefEnum`] + [`Stmt::FieldDecl`] bundled in a
+    /// [`Stmt::Block`] so the interpreter registers the type before
+    /// reading the field.
+    fn parse_inline_enum_field(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().unwrap(); // `enum`
+        let start = kw.span.start;
+        let backing = if self.eat_kind(&TokenKind::Lt) {
+            let t = self.parse_type_ref()?;
+            self.expect_kind(&TokenKind::Gt, ">")?;
+            Some(t)
+        } else {
+            None
+        };
+        let tag = if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
+            // Peek further to tell a tag apart from the field name:
+            // if the next-next token is `{`, the ident is a tag.
+            let next_is_brace = matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::LBrace));
+            if next_is_brace { Some(self.expect_ident()?.0) } else { None }
+        } else {
+            None
+        };
+        self.expect_kind(&TokenKind::LBrace, "{")?;
+        let mut variants = Vec::new();
+        if !matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
+            loop {
+                variants.push(self.parse_enum_variant()?);
+                if !self.eat_kind(&TokenKind::Comma) {
+                    break;
+                }
+                if matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
+                    break;
+                }
+            }
+        }
+        let close = self.expect_kind(&TokenKind::RBrace, "}")?;
+        let has_tag = tag.is_some();
+        let anon_name = tag.unwrap_or_else(|| format!("__anon_enum_{}", close.span.end));
+        let enum_stmt = Stmt::TypedefEnum(EnumDecl {
+            name: anon_name.clone(),
+            backing,
+            variants,
+            attrs: Attrs::default(),
+            span: Span::new(start, close.span.end),
+        });
+        // `enum Name { ... };` with no following identifier is a pure
+        // type declaration. The tag is what gets registered; no field
+        // is emitted.
+        if has_tag && matches!(self.peek_kind(), Some(TokenKind::Semi)) {
+            let end_tok = self.bump().unwrap();
+            return Ok(Stmt::Block { stmts: vec![enum_stmt], span: Span::new(start, end_tok.span.end) });
+        }
+        let (field_name, field_name_span) = self.expect_ident()?;
+        let array_size = if self.eat_kind(&TokenKind::LBracket) {
+            let expr = self.parse_expr()?;
+            self.expect_kind(&TokenKind::RBracket, "]")?;
+            Some(expr)
+        } else {
+            None
+        };
+        let field_attrs = self.parse_optional_attrs()?;
+        let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+        let field_stmt = Stmt::FieldDecl {
+            modifier: DeclModifier::Field,
+            ty: TypeRef { name: anon_name, span: field_name_span },
+            name: field_name,
+            array_size,
+            args: Vec::new(),
+            bit_width: None,
+            init: None,
+            attrs: field_attrs,
+            span: Span::new(start, end_tok.span.end),
+        };
+        Ok(Stmt::Block { stmts: vec![enum_stmt, field_stmt], span: Span::new(start, end_tok.span.end) })
+    }
+
+    fn parse_switch(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().unwrap(); // `switch`
+        self.expect_kind(&TokenKind::LParen, "(")?;
+        let scrutinee = self.parse_expr()?;
+        self.expect_kind(&TokenKind::RParen, ")")?;
+        self.expect_kind(&TokenKind::LBrace, "{")?;
+        let mut arms: Vec<crate::ast::SwitchArm> = Vec::new();
+        while !matches!(self.peek_kind(), Some(TokenKind::RBrace) | None) {
+            let arm_start = self.peek().map(|t| t.span.start).unwrap_or(0);
+            let pattern = if self.eat_keyword(Keyword::Case) {
+                let pat = self.parse_expr()?;
+                self.expect_kind(&TokenKind::Colon, ":")?;
+                Some(pat)
+            } else if self.eat_keyword(Keyword::Default) {
+                self.expect_kind(&TokenKind::Colon, ":")?;
+                None
+            } else {
+                return Err(ParseError::Unexpected {
+                    expected: "case or default",
+                    found: self.peek().map(|t| format!("{:?}", t.kind)).unwrap_or_else(|| "eof".into()),
+                    span: self.peek().map(|t| t.span).unwrap_or(Span::new(arm_start, arm_start)),
+                });
+            };
+            let mut body = Vec::new();
+            while !matches!(
+                self.peek_kind(),
+                Some(TokenKind::Keyword(Keyword::Case))
+                    | Some(TokenKind::Keyword(Keyword::Default))
+                    | Some(TokenKind::RBrace)
+                    | None
+            ) {
+                body.push(self.parse_stmt()?);
+            }
+            let end = self.last_span().end;
+            arms.push(crate::ast::SwitchArm { pattern, body, span: Span::new(arm_start, end) });
+        }
+        let close = self.expect_kind(&TokenKind::RBrace, "}")?;
+        Ok(Stmt::Switch { scrutinee, arms, span: Span::new(kw.span.start, close.span.end) })
+    }
+
+    /// Handle the `struct` / `union` keywords outside a `typedef`.
+    /// Four shapes:
     ///   1. `struct Name { body };` — type declaration
-    ///   2. `struct { body } field_name;` — anonymous struct as a field type
-    ///   3. `struct Name field_name;` — field whose type is an already-declared struct
+    ///   2. `struct Name (params) { body };` — parameterised type decl
+    ///   3. `struct { body } field_name;` — anonymous struct as a field type
+    ///   4. `struct Name field_name;` — field whose type is an already-declared struct
     fn parse_struct_stmt(&mut self) -> Result<Stmt, ParseError> {
-        let kw = self.bump().unwrap(); // `struct`
+        let kw = self.bump().unwrap(); // `struct` or `union`
+        let is_union = matches!(kw.kind, TokenKind::Keyword(Keyword::Union));
         let start = kw.span.start;
 
         match self.peek_kind() {
             // `struct Name ...`
             Some(TokenKind::Ident(_)) => {
                 let (name, name_span) = self.expect_ident()?;
-                if matches!(self.peek_kind(), Some(TokenKind::LBrace)) {
-                    // Form 1: `struct Name { body } [<attrs>];`
+                // A `(` after the name is always a param list on a
+                // definition — field decls can't take args on a bare
+                // `struct Name x(args)` form because the struct type
+                // itself would already need to have been parsed.
+                if matches!(self.peek_kind(), Some(TokenKind::LParen)) {
+                    let params = self.parse_optional_struct_params()?;
                     let body_block = self.parse_block()?;
                     let Stmt::Block { stmts, .. } = body_block else { unreachable!() };
                     let attrs = self.parse_optional_attrs()?;
                     let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-                    Ok(Stmt::TypedefStruct(StructDecl {
+                    return Ok(Stmt::TypedefStruct(StructDecl {
                         name,
+                        params,
                         body: stmts,
                         attrs,
+                        is_union,
+                        span: Span::new(start, end_tok.span.end),
+                    }));
+                }
+                if matches!(self.peek_kind(), Some(TokenKind::LBrace)) {
+                    // Form 1: `struct Name { body } [<attrs>];`
+                    // Form 1b: `struct Name { body } field [array] [<attrs>];`
+                    //          — inline def + instance (common in
+                    //          XEX2Headers.bt).
+                    let body_block = self.parse_block()?;
+                    let Stmt::Block { stmts, span: body_span } = body_block else { unreachable!() };
+                    // If an identifier follows the body, this is
+                    // Form 1b: define the type, then immediately
+                    // declare a field of that type.
+                    if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
+                        let struct_stmt = Stmt::TypedefStruct(StructDecl {
+                            name: name.clone(),
+                            params: Vec::new(),
+                            body: stmts,
+                            attrs: Attrs::default(),
+                            is_union,
+                            span: Span::new(start, body_span.end),
+                        });
+                        let (field_name, field_name_span) = self.expect_ident()?;
+                        let array_size = if self.eat_kind(&TokenKind::LBracket) {
+                            let expr = self.parse_expr()?;
+                            self.expect_kind(&TokenKind::RBracket, "]")?;
+                            Some(expr)
+                        } else {
+                            None
+                        };
+                        let field_attrs = self.parse_optional_attrs()?;
+                        let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+                        let field_stmt = Stmt::FieldDecl {
+                            modifier: DeclModifier::Field,
+                            ty: TypeRef { name, span: field_name_span },
+                            name: field_name,
+                            array_size,
+                            args: Vec::new(),
+                            bit_width: None,
+                            init: None,
+                            attrs: field_attrs,
+                            span: Span::new(start, end_tok.span.end),
+                        };
+                        return Ok(Stmt::Block {
+                            stmts: vec![struct_stmt, field_stmt],
+                            span: Span::new(start, end_tok.span.end),
+                        });
+                    }
+                    let attrs = self.parse_optional_attrs()?;
+                    let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+                    Ok(Stmt::TypedefStruct(StructDecl {
+                        name,
+                        params: Vec::new(),
+                        body: stmts,
+                        attrs,
+                        is_union,
                         span: Span::new(start, end_tok.span.end),
                     }))
                 } else {
-                    // Form 3: `struct Name field_name [array] [<attrs>];`
+                    // Form 4: `struct Name field_name [array] [<attrs>];`
                     let ty = TypeRef { name, span: name_span };
                     self.parse_field_decl(Some(ty))
                 }
             }
-            // Form 2: `struct { body } field_name ...;`
+            // Form 3: `struct { body } field_name ...;`
             Some(TokenKind::LBrace) => {
                 // Give the anonymous struct a synthetic name so the
                 // AST remains a strict subset of the named form. The
@@ -464,16 +731,15 @@ impl Parser {
                 let Stmt::Block { stmts, span: body_span } = body_block else { unreachable!() };
                 let anon_name = format!("__anon_struct_{}", body_span.start);
                 let struct_attrs = self.parse_optional_attrs()?;
-                // Emit a typedef-style struct decl, then fall through
-                // to a field declaration using that synthetic name.
                 let decl_span = Span::new(start, self.last_span().end);
                 let struct_stmt = Stmt::TypedefStruct(StructDecl {
                     name: anon_name.clone(),
+                    params: Vec::new(),
                     body: stmts,
                     attrs: struct_attrs,
+                    is_union,
                     span: decl_span,
                 });
-                // The field after the anonymous struct body.
                 let (field_name, field_name_span) = self.expect_ident()?;
                 let array_size = if self.eat_kind(&TokenKind::LBracket) {
                     let expr = self.parse_expr()?;
@@ -489,17 +755,13 @@ impl Parser {
                     ty: TypeRef { name: anon_name, span: field_name_span },
                     name: field_name,
                     array_size,
+                    args: Vec::new(),
+                    bit_width: None,
                     init: None,
                     attrs: field_attrs,
                     span: Span::new(start, end_tok.span.end),
                 };
-                // Bundle both into a block so the caller gets a single
-                // statement back; the interpreter walks blocks
-                // transparently.
-                Ok(Stmt::Block {
-                    stmts: vec![struct_stmt, field_stmt],
-                    span: Span::new(start, end_tok.span.end),
-                })
+                Ok(Stmt::Block { stmts: vec![struct_stmt, field_stmt], span: Span::new(start, end_tok.span.end) })
             }
             _ => Err(ParseError::Unexpected {
                 expected: "struct name or body",
@@ -511,11 +773,7 @@ impl Parser {
 
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, ParseError> {
         let (name, name_span) = self.expect_ident()?;
-        let value = if self.eat_kind(&TokenKind::Eq) {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
+        let value = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
         let end = value.as_ref().map(|e| e.span().end).unwrap_or(name_span.end);
         Ok(EnumVariant { name, value, span: Span::new(name_span.start, end) })
     }
@@ -549,6 +807,10 @@ impl Parser {
     /// is reserved for re-entry from contexts where the parser has
     /// already consumed the type (currently unused; kept for future
     /// nested-struct use).
+    ///
+    /// Supports parameterised struct instantiation:
+    /// `PNG_CHUNK_PLTE plte(length);` — the args after the field name
+    /// are bound to the struct's declared params at execute time.
     fn parse_field_decl(&mut self, ty_override: Option<TypeRef>) -> Result<Stmt, ParseError> {
         let start = self.peek().map(|t| t.span.start).unwrap_or(0);
         let modifier = if self.eat_keyword(Keyword::Local) {
@@ -562,7 +824,15 @@ impl Parser {
             Some(t) => t,
             None => self.parse_type_ref()?,
         };
-        let (name, _) = self.expect_ident()?;
+        // Anonymous bitfield: `DWORD : 22;` reserves bits without
+        // giving them a name. Accept it here and synthesize a unique
+        // internal name so the rest of the decl pipeline stays simple.
+        let (name, _) = if matches!(self.peek_kind(), Some(TokenKind::Colon)) {
+            let anon_span = self.peek().map(|t| t.span).unwrap_or_else(|| Span::new(start, start));
+            (format!("__anon_bitfield_{}", anon_span.start), anon_span)
+        } else {
+            self.expect_ident()?
+        };
         let array_size = if self.eat_kind(&TokenKind::LBracket) {
             let expr = self.parse_expr()?;
             self.expect_kind(&TokenKind::RBracket, "]")?;
@@ -570,22 +840,98 @@ impl Parser {
         } else {
             None
         };
-        let attrs = self.parse_optional_attrs()?;
-        let init = if self.eat_kind(&TokenKind::Eq) {
-            Some(self.parse_expr()?)
+        let args = if self.eat_kind(&TokenKind::LParen) {
+            let mut out = Vec::new();
+            if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+                loop {
+                    out.push(self.parse_expr_bp(1)?);
+                    if !self.eat_kind(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect_kind(&TokenKind::RParen, ")")?;
+            out
         } else {
-            None
+            Vec::new()
         };
-        let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-        Ok(Stmt::FieldDecl {
+        // C-style bitfield: `DWORD flag : 3;` packs `flag` into the
+        // low / high 3 bits of the next shared DWORD slot.
+        let bit_width = if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(ATTR_VALUE_BP)?) } else { None };
+        let attrs = self.parse_optional_attrs()?;
+        let init = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
+
+        let first_decl = Stmt::FieldDecl {
             modifier,
-            ty,
+            ty: ty.clone(),
             name,
             array_size,
+            args,
+            bit_width,
             init,
             attrs,
-            span: Span::new(start, end_tok.span.end),
-        })
+            span: Span::new(start, self.last_span().end),
+        };
+
+        // C-style comma-separated declarators: `local int x, headerLen;`
+        // shares the type prefix across names. Each additional name
+        // parses its own optional array / attrs / initializer and
+        // becomes its own [`Stmt::FieldDecl`]; the caller gets a
+        // [`Stmt::Block`] bundle so a single call site hands back a
+        // single AST node.
+        let mut decls = vec![first_decl];
+        while self.eat_kind(&TokenKind::Comma) {
+            let decl_start = self.peek().map(|t| t.span.start).unwrap_or(start);
+            let (next_name, _) = if matches!(self.peek_kind(), Some(TokenKind::Colon)) {
+                let sp = self.peek().map(|t| t.span).unwrap_or_else(|| Span::new(decl_start, decl_start));
+                (format!("__anon_bitfield_{}", sp.start), sp)
+            } else {
+                self.expect_ident()?
+            };
+            let next_array_size = if self.eat_kind(&TokenKind::LBracket) {
+                let expr = self.parse_expr()?;
+                self.expect_kind(&TokenKind::RBracket, "]")?;
+                Some(expr)
+            } else {
+                None
+            };
+            let next_args = if self.eat_kind(&TokenKind::LParen) {
+                let mut out = Vec::new();
+                if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+                    loop {
+                        out.push(self.parse_expr_bp(1)?);
+                        if !self.eat_kind(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect_kind(&TokenKind::RParen, ")")?;
+                out
+            } else {
+                Vec::new()
+            };
+            let next_bit_width =
+                if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(ATTR_VALUE_BP)?) } else { None };
+            let next_attrs = self.parse_optional_attrs()?;
+            let next_init = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
+            decls.push(Stmt::FieldDecl {
+                modifier,
+                ty: ty.clone(),
+                name: next_name,
+                array_size: next_array_size,
+                args: next_args,
+                bit_width: next_bit_width,
+                init: next_init,
+                attrs: next_attrs,
+                span: Span::new(decl_start, self.last_span().end),
+            });
+        }
+
+        let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+        if decls.len() == 1 {
+            return Ok(decls.into_iter().next().unwrap());
+        }
+        Ok(Stmt::Block { stmts: decls, span: Span::new(start, end_tok.span.end) })
     }
 
     fn parse_type_ref(&mut self) -> Result<TypeRef, ParseError> {
@@ -596,7 +942,6 @@ impl Parser {
         let (name, span) = self.expect_ident()?;
         Ok(TypeRef { name, span })
     }
-
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_expr_bp(0)
@@ -748,8 +1093,7 @@ impl Parser {
                 let close = self.expect_kind(&TokenKind::RParen, ")")?;
                 // Model as a call to a magic identifier; the
                 // interpreter resolves it specially.
-                let callee =
-                    Expr::Ident { name: "sizeof".into(), span: tok.span };
+                let callee = Expr::Ident { name: "sizeof".into(), span: tok.span };
                 Ok(Expr::Call {
                     callee: Box::new(callee),
                     args: vec![inner],
@@ -789,10 +1133,7 @@ impl Parser {
                 let span = Span::new(tok.span.start, operand.span().end);
                 Ok(Expr::Unary { op: UnaryOp::PreDec, operand: Box::new(operand), span })
             }
-            _ => Err(ParseError::NotAnExpression {
-                found: format!("{:?}", tok.kind),
-                span: tok.span,
-            }),
+            _ => Err(ParseError::NotAnExpression { found: format!("{:?}", tok.kind), span: tok.span }),
         }
     }
 
@@ -810,7 +1151,6 @@ impl Parser {
         Ok(args)
     }
 }
-
 
 /// Binding power of a prefix operator like unary `-` / `!` — higher
 /// than any infix so `-a * b` parses as `(-a) * b`.
@@ -876,6 +1216,7 @@ fn stmt_span(s: &Stmt) -> Span {
         | Stmt::Continue { span }
         | Stmt::Block { span, .. }
         | Stmt::Expr { span, .. }
+        | Stmt::Switch { span, .. }
         | Stmt::FieldDecl { span, .. } => *span,
         Stmt::TypedefEnum(e) => e.span,
         Stmt::TypedefStruct(s) => s.span,

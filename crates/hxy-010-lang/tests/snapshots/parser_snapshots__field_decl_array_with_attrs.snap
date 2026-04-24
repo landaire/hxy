@@ -24,6 +24,8 @@ Program {
                         },
                     },
                 ),
+                args: [],
+                bit_width: None,
                 init: None,
                 attrs: Attrs(
                     [
@@ -59,7 +61,7 @@ Program {
                 ),
                 span: Span {
                     start: 0,
-                    end: 42,
+                    end: 41,
                 },
             },
         ),

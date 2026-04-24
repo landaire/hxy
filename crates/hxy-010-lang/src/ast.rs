@@ -64,11 +64,21 @@ pub struct EnumVariant {
 }
 
 /// `typedef struct { body } Name <attrs>;` or an inline `struct Name { body }`.
+///
+/// `params` is populated for parameterised structs — the form
+/// `struct Name (int32 len) { ... }` — and empty otherwise. Each field
+/// declaration that references a parameterised struct must pass a
+/// matching positional arg list; see [`FieldDecl::args`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDecl {
     pub name: String,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub attrs: Attrs,
+    /// `true` when the declaration was a `union`. Unions share the
+    /// struct-decl shape because their syntax is identical; the
+    /// interpreter treats fields as overlapping at the start offset.
+    pub is_union: bool,
     pub span: Span,
 }
 
@@ -93,7 +103,11 @@ pub struct Param {
 /// A statement. Declarations are statements in 010 just like in C.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stmt {
-    TypedefAlias { new_name: String, source: TypeRef, span: Span },
+    TypedefAlias {
+        new_name: String,
+        source: TypeRef,
+        span: Span,
+    },
     TypedefEnum(EnumDecl),
     TypedefStruct(StructDecl),
 
@@ -101,27 +115,90 @@ pub enum Stmt {
     /// `local int i = 0;`, `const uint MAX = 10;`. Whether this reads
     /// bytes from the source or allocates an ephemeral variable is
     /// decided by `modifier` — the interpreter's job, not the parser's.
+    ///
+    /// `args` carries the positional arguments to a parameterised
+    /// struct: `PNG_CHUNK_PLTE plte(length);` → `args = [length]`.
+    /// `bit_width` is set when the declaration uses C-style bitfield
+    /// syntax: `DWORD flag : 1;` packs successive fields into the
+    /// same underlying integer.
     FieldDecl {
         modifier: DeclModifier,
         ty: TypeRef,
         name: String,
         array_size: Option<Expr>,
+        args: Vec<Expr>,
+        bit_width: Option<Expr>,
         init: Option<Expr>,
         attrs: Attrs,
         span: Span,
     },
 
-    If { cond: Expr, then_branch: Box<Stmt>, else_branch: Option<Box<Stmt>>, span: Span },
-    While { cond: Expr, body: Box<Stmt>, span: Span },
-    DoWhile { body: Box<Stmt>, cond: Expr, span: Span },
-    For { init: Option<Box<Stmt>>, cond: Option<Expr>, step: Option<Expr>, body: Box<Stmt>, span: Span },
+    /// `switch (scrutinee) { case A: ...; case B: ...; default: ...; }`
+    ///
+    /// Case bodies are sequences of statements; fall-through is
+    /// permitted (and common in 010's `switch`es). The lack of an
+    /// enclosing `Block` means the interpreter can drop into the next
+    /// arm when no `break` is encountered.
+    Switch {
+        scrutinee: Expr,
+        arms: Vec<SwitchArm>,
+        span: Span,
+    },
 
-    Return { value: Option<Expr>, span: Span },
-    Break { span: Span },
-    Continue { span: Span },
+    If {
+        cond: Expr,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
+        span: Span,
+    },
+    While {
+        cond: Expr,
+        body: Box<Stmt>,
+        span: Span,
+    },
+    DoWhile {
+        body: Box<Stmt>,
+        cond: Expr,
+        span: Span,
+    },
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        step: Option<Expr>,
+        body: Box<Stmt>,
+        span: Span,
+    },
 
-    Block { stmts: Vec<Stmt>, span: Span },
-    Expr { expr: Expr, span: Span },
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
+
+    Block {
+        stmts: Vec<Stmt>,
+        span: Span,
+    },
+    Expr {
+        expr: Expr,
+        span: Span,
+    },
+}
+
+/// One `case <value>:` or `default:` arm within a [`Stmt::Switch`].
+/// An arm with `None` pattern is the `default` branch; there is at
+/// most one per switch (the parser doesn't enforce that today since
+/// 010 itself is forgiving).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwitchArm {
+    pub pattern: Option<Expr>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,14 +275,14 @@ pub enum BinOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
-    Neg,        // -
-    Pos,        // +
-    Not,        // !
-    BitNot,     // ~
-    PreInc,     // ++x
-    PreDec,     // --x
-    PostInc,    // x++
-    PostDec,    // x--
+    Neg,     // -
+    Pos,     // +
+    Not,     // !
+    BitNot,  // ~
+    PreInc,  // ++x
+    PreDec,  // --x
+    PostInc, // x++
+    PostDec, // x--
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -13,8 +13,7 @@ use hxy_plugin_host::TemplateRuntime as _;
 use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/bt-runtime/target/bt-runtime.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/bt-runtime/target/bt-runtime.component.wasm")
 }
 
 #[test]
@@ -25,8 +24,7 @@ fn executes_basic_template() {
         return;
     }
     let dir = path.parent().unwrap();
-    let mut runtimes =
-        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
+    let mut runtimes = hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
     let runtime = runtimes.pop().expect("at least one runtime");
     assert_eq!(runtime.name(), "010-bt");
     assert_eq!(runtime.extensions(), ["bt".to_string()]);
@@ -44,11 +42,7 @@ uint16 count;
 
     let parsed = runtime.parse(source, template_source).expect("parse template");
     let tree = parsed.execute(&[]).expect("execute");
-    assert!(
-        tree.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        tree.diagnostics
-    );
+    assert!(tree.diagnostics.is_empty(), "unexpected diagnostics: {:?}", tree.diagnostics);
     assert_eq!(tree.nodes.len(), 2, "expected two field nodes");
 
     // First node: magic u32 = 0xDEADBEEF
@@ -72,8 +66,7 @@ fn executes_typedef_struct_template() {
         return;
     }
     let dir = path.parent().unwrap();
-    let mut runtimes =
-        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
+    let mut runtimes = hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
     let runtime = runtimes.pop().expect("runtime");
 
     let template_source = r#"
