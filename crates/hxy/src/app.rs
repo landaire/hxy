@@ -565,7 +565,10 @@ impl eframe::App for HxyApp {
                 plugin_rescan: &mut self.plugin_rescan,
             };
             let style = Style::from_egui(ui.style());
-            DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
+            DockArea::new(&mut self.dock)
+                .style(style)
+                .show_leaf_collapse_buttons(false)
+                .show_inside(ui, &mut viewer);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
