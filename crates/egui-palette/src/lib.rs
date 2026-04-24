@@ -179,6 +179,10 @@ pub struct Style {
     /// Colour of the entry subtitle. `None` uses
     /// `visuals.weak_text_color()`.
     pub subtitle_color: Option<Color32>,
+    /// Font size used for the subtitle. `None` falls back to the
+    /// size of [`egui::TextStyle::Small`] (noticeably smaller than
+    /// the title so a long path reads as secondary).
+    pub subtitle_size: Option<f32>,
     /// Colour of the icon glyph. `None` uses [`Self::text_color`] so
     /// icons and titles match unless explicitly split.
     pub icon_color: Option<Color32>,
@@ -216,6 +220,7 @@ impl Default for Style {
             selected_fill: None,
             text_color: None,
             subtitle_color: None,
+            subtitle_size: None,
             icon_color: None,
             close_on_backdrop_click: true,
             consume_nav_keys: true,
@@ -430,6 +435,10 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     }
     let inner = rect.shrink2(egui::vec2(8.0, 2.0));
     let body = egui::TextStyle::Body.resolve(ui.style());
+    let subtitle_font = egui::FontId {
+        size: style.subtitle_size.unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()).size),
+        ..body.clone()
+    };
     let text_color = style.text_color.unwrap_or_else(|| ui.visuals().text_color());
     let icon_color = style.icon_color.unwrap_or(text_color);
     let sub_color = style.subtitle_color.unwrap_or_else(|| ui.visuals().weak_text_color());
@@ -444,17 +453,38 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
         inner.left()
     };
 
-    ui.painter().text(
-        egui::pos2(title_x, inner.center().y),
-        egui::Align2::LEFT_CENTER,
-        &entry.title,
-        body.clone(),
-        text_color,
-    );
+    let title_width_budget = inner.right() - title_x;
+    let title_galley = layout_truncated(ui, entry.title.clone(), body.clone(), text_color, title_width_budget);
+    let title_pos = egui::pos2(title_x, inner.center().y - title_galley.size().y * 0.5);
+    let title_size = title_galley.size();
+    ui.painter().galley(title_pos, title_galley, text_color);
+
     if let Some(sub) = entry.subtitle.as_deref() {
-        let title_galley = ui.painter().layout_no_wrap(entry.title.clone(), body.clone(), text_color);
-        let sub_x = title_x + title_galley.size().x + style.subtitle_spacing;
-        ui.painter().text(egui::pos2(sub_x, inner.center().y), egui::Align2::LEFT_CENTER, sub, body, sub_color);
+        let sub_x = title_x + title_size.x + style.subtitle_spacing;
+        let sub_budget = inner.right() - sub_x;
+        if sub_budget > 0.0 {
+            let sub_galley = layout_truncated(ui, sub.to_owned(), subtitle_font, sub_color, sub_budget);
+            let sub_pos = egui::pos2(sub_x, inner.center().y - sub_galley.size().y * 0.5);
+            ui.painter().galley(sub_pos, sub_galley, sub_color);
+        }
     }
     resp
+}
+
+/// Lay out `text` in `font`, clipped to one row of `max_width`
+/// pixels. Overflow is replaced with an ellipsis character so long
+/// titles or filesystem paths don't spill past the panel edge.
+fn layout_truncated(
+    ui: &egui::Ui,
+    text: String,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        text,
+        egui::text::TextFormat { font_id: font, color, ..Default::default() },
+    );
+    job.wrap = egui::epaint::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
 }
