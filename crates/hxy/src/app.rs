@@ -1365,6 +1365,14 @@ fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::co
             #[cfg(target_arch = "wasm32")]
             let _ = path;
         }
+        CommandEffect::UndoActiveFile => {
+            #[cfg(not(target_arch = "wasm32"))]
+            undo_active_file(app);
+        }
+        CommandEffect::RedoActiveFile => {
+            #[cfg(not(target_arch = "wasm32"))]
+            redo_active_file(app);
+        }
     }
 }
 
@@ -2272,7 +2280,8 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
         return;
     }
     let copy_ctx = copy_palette_context(app);
-    let entries = build_palette_entries(app, copy_ctx);
+    let history_ctx = history_palette_context(app);
+    let entries = build_palette_entries(app, copy_ctx, history_ctx);
     let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::command_palette::Outcome::Closed => app.palette.close(),
@@ -2292,6 +2301,13 @@ struct CopyPaletteContext {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
+    let Some(id) = active_file_id(app) else { return HistoryPaletteContext::default() };
+    let Some(file) = app.files.get(&id) else { return HistoryPaletteContext::default() };
+    HistoryPaletteContext { can_undo: file.can_undo(), can_redo: file.can_redo() }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
     let id = active_file_id(app)?;
     let file = app.files.get(&id)?;
@@ -2304,9 +2320,17 @@ fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Default)]
+struct HistoryPaletteContext {
+    can_undo: bool,
+    can_redo: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn build_palette_entries(
     app: &HxyApp,
     copy_ctx: Option<CopyPaletteContext>,
+    history_ctx: HistoryPaletteContext,
 ) -> Vec<egui_palette::Entry<crate::command_palette::Action>> {
     use crate::command_palette::Action;
     use crate::command_palette::Mode;
@@ -2352,6 +2376,18 @@ fn build_palette_entries(
                 )
                 .with_icon(icon::TRASH),
             );
+            if history_ctx.can_undo {
+                out.push(
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand("undo"))
+                        .with_icon(icon::ARROW_COUNTER_CLOCKWISE),
+                );
+            }
+            if history_ctx.can_redo {
+                out.push(
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand("redo"))
+                        .with_icon(icon::ARROW_CLOCKWISE),
+                );
+            }
             if let Some(ctx) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     out.push(
@@ -2435,6 +2471,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 "show-console" => app.show_console(),
                 "show-inspector" => app.show_inspector(),
                 "show-plugins" => app.show_plugins(),
+                "undo" => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
+                "redo" => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
                 _ => {}
             }
         }

@@ -33,6 +33,10 @@ pub enum CommandEffect {
     /// Run a specific template file without prompting -- pushed when
     /// the auto-detected library has matched the active file.
     RunTemplateDirect(std::path::PathBuf),
+    /// Undo the most recent edit on the active tab.
+    UndoActiveFile,
+    /// Redo the most recently undone edit on the active tab.
+    RedoActiveFile,
 }
 
 /// Button in the global toolbar. Commands are registered once at
@@ -152,7 +156,73 @@ impl ToolbarCommand for RunTemplateCommand {
     }
 }
 
+/// Built-in command: revert the active tab's most recent undo entry.
+/// Disabled when the tab has no undo history.
+pub struct UndoCommand;
+
+impl ToolbarCommand for UndoCommand {
+    fn id(&self) -> &'static str {
+        "undo"
+    }
+
+    fn label(&self, _: &ToolbarCtx<'_, '_>) -> String {
+        hxy_i18n::t("menu-edit-undo")
+    }
+
+    fn icon(&self) -> &'static str {
+        egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE
+    }
+
+    fn enabled(&self, cx: &ToolbarCtx<'_, '_>) -> bool {
+        cx.active_file.as_ref().is_some_and(|f| f.can_undo())
+    }
+
+    fn shortcut(&self) -> Option<egui::KeyboardShortcut> {
+        Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z))
+    }
+
+    fn invoke(&self, cx: &mut ToolbarCtx<'_, '_>) {
+        cx.effects.push(CommandEffect::UndoActiveFile);
+    }
+}
+
+/// Built-in command: re-apply the active tab's most recently undone
+/// edit. Disabled when the tab has no redo history.
+pub struct RedoCommand;
+
+impl ToolbarCommand for RedoCommand {
+    fn id(&self) -> &'static str {
+        "redo"
+    }
+
+    fn label(&self, _: &ToolbarCtx<'_, '_>) -> String {
+        hxy_i18n::t("menu-edit-redo")
+    }
+
+    fn icon(&self) -> &'static str {
+        egui_phosphor::regular::ARROW_CLOCKWISE
+    }
+
+    fn enabled(&self, cx: &ToolbarCtx<'_, '_>) -> bool {
+        cx.active_file.as_ref().is_some_and(|f| f.can_redo())
+    }
+
+    fn shortcut(&self) -> Option<egui::KeyboardShortcut> {
+        Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z))
+    }
+
+    fn invoke(&self, cx: &mut ToolbarCtx<'_, '_>) {
+        cx.effects.push(CommandEffect::RedoActiveFile);
+    }
+}
+
 /// Default command list registered at app startup.
 pub fn default_commands() -> Vec<Box<dyn ToolbarCommand>> {
-    vec![Box::new(OpenFileCommand), Box::new(BrowseArchiveCommand), Box::new(RunTemplateCommand)]
+    vec![
+        Box::new(OpenFileCommand),
+        Box::new(BrowseArchiveCommand),
+        Box::new(RunTemplateCommand),
+        Box::new(UndoCommand),
+        Box::new(RedoCommand),
+    ]
 }
