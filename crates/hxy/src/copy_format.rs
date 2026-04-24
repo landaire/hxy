@@ -21,6 +21,12 @@ pub enum CopyKind {
     BytesOctalCsv,
     BytesCArray,
     BytesRustArray,
+    /// Standard base64 (RFC 4648) over the raw selection bytes.
+    BytesBase64,
+    /// Lossy UTF-8 decode of the selection, then base64 over that
+    /// text. Non-UTF-8 bytes become U+FFFD before encoding, so the
+    /// output round-trips cleanly through "base64 -d" as valid UTF-8.
+    TextBase64,
     ValueHex,
     ValueDecimal,
     ValueOctal,
@@ -41,6 +47,8 @@ pub const BYTES_MENU: &[(&str, CopyKind)] = &[
     ("Octal (CSV)", CopyKind::BytesOctalCsv),
     ("C array", CopyKind::BytesCArray),
     ("Rust array", CopyKind::BytesRustArray),
+    ("Base64 (bytes)", CopyKind::BytesBase64),
+    ("Base64 (UTF-8 text)", CopyKind::TextBase64),
 ];
 
 /// Menu items for the scalar-value submenu (only visible for
@@ -86,6 +94,15 @@ pub fn format_bytes(kind: CopyKind, bytes: &[u8], ident_hint: &str, type_hint: &
             }
             let _ = write!(out, "]; // {type_hint}");
             Some(out)
+        }
+        CopyKind::BytesBase64 => {
+            use base64::Engine as _;
+            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+        }
+        CopyKind::TextBase64 => {
+            use base64::Engine as _;
+            let text = String::from_utf8_lossy(bytes);
+            Some(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))
         }
         _ => None,
     }
@@ -181,5 +198,36 @@ mod tests {
     #[test]
     fn empty_ident_falls_back_to_data() {
         assert_eq!(sanitize_ident(""), "data");
+    }
+
+    #[test]
+    fn bytes_base64_encodes_raw() {
+        assert_eq!(
+            format_bytes(CopyKind::BytesBase64, b"Many hands make light work.", "sel", "u8[..]").unwrap(),
+            "TWFueSBoYW5kcyBtYWtlIGxpZ2h0IHdvcmsu"
+        );
+    }
+
+    #[test]
+    fn bytes_base64_handles_padding() {
+        assert_eq!(format_bytes(CopyKind::BytesBase64, b"f", "sel", "u8").unwrap(), "Zg==");
+        assert_eq!(format_bytes(CopyKind::BytesBase64, b"fo", "sel", "u8[2]").unwrap(), "Zm8=");
+        assert_eq!(format_bytes(CopyKind::BytesBase64, b"foo", "sel", "u8[3]").unwrap(), "Zm9v");
+    }
+
+    #[test]
+    fn text_base64_matches_bytes_for_valid_utf8() {
+        let input = b"hello";
+        let as_bytes = format_bytes(CopyKind::BytesBase64, input, "sel", "u8[5]").unwrap();
+        let as_text = format_bytes(CopyKind::TextBase64, input, "sel", "u8[5]").unwrap();
+        assert_eq!(as_bytes, as_text);
+    }
+
+    #[test]
+    fn text_base64_replaces_invalid_utf8_with_replacement_char() {
+        // 0xFF is never a valid UTF-8 byte; the lossy decode substitutes
+        // U+FFFD (three bytes 0xEF 0xBF 0xBD in UTF-8), then base64 encodes.
+        let out = format_bytes(CopyKind::TextBase64, &[0xFF], "sel", "u8").unwrap();
+        assert_eq!(out, "77+9");
     }
 }
