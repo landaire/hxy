@@ -748,46 +748,93 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
             let mut response = HexViewResponse::default();
 
-            paint_column_header(ui, &layout, &font_id, row_height, column_header_formatter.as_deref());
-
             let scroll_id = ui.id().with("hxy_scroll");
+            let h_scroll_id = ui.id().with("hxy_hscroll");
             // Minimap click, explicit `scroll_to`, or a stashed pending value
             // from a prior frame can all drive the next scroll position.
             // `scroll_to_byte` takes precedence: compute the target row's
             // top Y from columns + row_height.
-            let pending_offset = scroll_to_byte
+            let pending_v_offset = scroll_to_byte
                 .map(|b| {
                     let row = b.get() / u64::from(columns.get());
                     (row as f32) * row_height
                 })
                 .or_else(|| ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)))
                 .or(initial_scroll);
+            // The custom horizontal scrollbar drag stashes its target
+            // offset under `h_scroll_id`; pick it up here so the next
+            // frame's ScrollArea starts at that scroll position.
+            let pending_h_offset = ui.ctx().data_mut(|d| d.remove_temp::<f32>(h_scroll_id));
 
+            // Layout: [address | scroll viewport | minimap | V scrollbar],
+            // with an optional H scrollbar reserved at the bottom of the
+            // scroll viewport (only when the content overflows).
+            //
+            // The address column stays pinned: addresses scroll with the
+            // rows vertically but never with the horizontal scroll, so a
+            // user dragging right keeps offsets visible as a stable left
+            // anchor. The minimap and V scrollbar are likewise pinned to
+            // the right edge of the visible area.
             let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
-            let scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
+            let v_scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
+            let h_scrollbar_height = ui.style().spacing.scroll.bar_width.max(10.0);
+            let header_height = row_height * 0.75;
             let avail = ui.available_rect_before_wrap();
-            let hex_rect = Rect::from_min_size(
-                avail.min,
-                Vec2::new(avail.width() - minimap_width - scrollbar_width, avail.height()),
+
+            let scroll_w = (avail.width() - layout.address_w - minimap_width - v_scrollbar_width).max(1.0);
+            let needs_h_scroll = layout.total_width > scroll_w;
+            let h_bar_h = if needs_h_scroll { h_scrollbar_height } else { 0.0 };
+            let content_h = (avail.height() - header_height - h_bar_h).max(1.0);
+
+            let address_rect = Rect::from_min_size(
+                Pos2::new(avail.left(), avail.top() + header_height),
+                Vec2::new(layout.address_w, content_h),
             );
-            let minimap_rect =
-                Rect::from_min_size(Pos2::new(hex_rect.right(), avail.top()), Vec2::new(minimap_width, avail.height()));
-            let scrollbar_rect = Rect::from_min_size(
-                Pos2::new(minimap_rect.right(), avail.top()),
-                Vec2::new(scrollbar_width, avail.height()),
+            let scroll_rect = Rect::from_min_size(
+                Pos2::new(avail.left() + layout.address_w, avail.top() + header_height),
+                Vec2::new(scroll_w, content_h),
+            );
+            let header_rect = Rect::from_min_size(
+                Pos2::new(scroll_rect.left(), avail.top()),
+                Vec2::new(scroll_w, header_height),
+            );
+            let h_bar_rect = Rect::from_min_size(
+                Pos2::new(scroll_rect.left(), scroll_rect.bottom()),
+                Vec2::new(scroll_w, h_bar_h),
+            );
+            let minimap_rect = Rect::from_min_size(
+                Pos2::new(scroll_rect.right(), avail.top() + header_height),
+                Vec2::new(minimap_width, content_h),
+            );
+            let v_scrollbar_rect = Rect::from_min_size(
+                Pos2::new(minimap_rect.right(), avail.top() + header_height),
+                Vec2::new(v_scrollbar_width, content_h),
+            );
+
+            // Tell the outer Ui that this whole region was consumed
+            // so any siblings below the hex view start past it. The
+            // individual paints below all use absolute rects and
+            // don't grow the layout cursor on their own.
+            let _ = ui.allocate_rect(
+                Rect::from_min_size(avail.min, Vec2::new(avail.width(), avail.height())),
+                Sense::hover(),
             );
 
             let hex_out = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(hex_rect), |ui| {
-                    // Hex view owns scroll state but the visible bar lives
-                    // in the rightmost column (past the minimap) as a
-                    // separate widget, so we always hide the inner bar.
-                    let mut area = egui::ScrollArea::vertical()
+                .scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
+                    // Both bars hidden -- we paint custom V (always)
+                    // and H (when needed) outside the scroll area so
+                    // they live next to the minimap instead of being
+                    // welded to the scroll viewport's edges.
+                    let mut area = egui::ScrollArea::both()
                         .auto_shrink([false, false])
                         .id_salt(scroll_id)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-                    if let Some(target) = pending_offset {
+                    if let Some(target) = pending_v_offset {
                         area = area.vertical_scroll_offset(target);
+                    }
+                    if let Some(target) = pending_h_offset {
+                        area = area.horizontal_scroll_offset(target);
                     }
                     area.show(ui, |ui| {
                         paint_and_interact(
@@ -802,7 +849,6 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                             selection,
                             palette.clone(),
                             byte_styler.as_deref(),
-                            address_formatter.as_deref(),
                             context_menu,
                             hover_span,
                             field_boundaries,
@@ -814,8 +860,36 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 })
                 .inner;
 
-            response.scroll_offset = hex_out.state.offset.y;
+            let v_offset = hex_out.state.offset.y;
+            let h_offset = hex_out.state.offset.x;
+            response.scroll_offset = v_offset;
             response.viewport_height = hex_out.inner_rect.height();
+
+            // Header tracks horizontal scroll so the column labels
+            // line up with the cells beneath them.
+            paint_column_header(
+                ui,
+                header_rect,
+                &layout,
+                &font_id,
+                row_height,
+                h_offset,
+                column_header_formatter.as_deref(),
+            );
+            // Address column tracks vertical scroll only -- the
+            // whole point of pinning it is keeping offsets visible
+            // while the user scrolls right.
+            paint_address_column(
+                ui,
+                address_rect,
+                &layout,
+                &font_id,
+                row_height,
+                source_len,
+                columns,
+                v_offset,
+                address_formatter.as_deref(),
+            );
 
             if minimap {
                 draw_minimap(
@@ -828,7 +902,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     palette,
                     minimap_colored,
                     row_height,
-                    hex_out.state.offset.y,
+                    v_offset,
                     hex_out.inner_rect.height(),
                     total_rows,
                     hover_span,
@@ -840,11 +914,22 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             draw_scrollbar(
                 ui,
                 scroll_id,
-                scrollbar_rect,
-                hex_out.state.offset.y,
+                v_scrollbar_rect,
+                v_offset,
                 hex_out.inner_rect.height(),
                 total_rows as f32 * row_height,
             );
+
+            if needs_h_scroll {
+                draw_horizontal_scrollbar(
+                    ui,
+                    h_scroll_id,
+                    h_bar_rect,
+                    h_offset,
+                    hex_out.inner_rect.width(),
+                    layout.total_width,
+                );
+            }
 
             response
         })
@@ -963,6 +1048,13 @@ fn measure_char_width(ui: &Ui, font_id: &FontId) -> f32 {
 }
 
 /// Precomputed x-offsets for every slot in a row. Addressed in "points".
+/// Geometry of one row's content area -- the hex pane and ASCII pane
+/// only. The address column (`address_w`) sits to the *left* of this
+/// layout in screen space; positions inside `RowLayout` are local to
+/// the content area so the hex/ASCII panes can live inside a
+/// horizontal `ScrollArea` while the address column stays pinned. The
+/// host pairs `address_w` with `total_width` to size the two side-by-
+/// side regions.
 #[derive(Clone, Copy, Debug)]
 struct RowLayout {
     address_w: f32,
@@ -984,7 +1076,11 @@ impl RowLayout {
         let cols_f = f32::from(columns.get());
         let hex_total = cols_f * hex_cell_w + (cols_f - 1.0) * hex_gap;
         let section_gap = char_w * 2.0;
-        let hex_start_x = address_w + section_gap;
+        // hex_start_x and ascii_start_x are local to the content
+        // area (i.e. relative to the start of the section gap that
+        // follows the address column). The host adds `address_w` on
+        // top to position the content area in screen space.
+        let hex_start_x = section_gap;
         let ascii_cell_w = char_w;
         let ascii_start_x = hex_start_x + hex_total + section_gap;
         let ascii_total = cols_f * ascii_cell_w;
@@ -1041,10 +1137,6 @@ impl RowLayout {
         Rect::from_min_max(Pos2::new(start, row_origin.y), Pos2::new(end, row_origin.y + row_height))
     }
 
-    fn address_rect(&self, row_origin: Pos2, row_height: f32) -> Rect {
-        Rect::from_min_size(row_origin, Vec2::new(self.address_w, row_height))
-    }
-
     /// Map a pointer position within the rendered block to
     /// `(row_in_block, column, pane)`. `row_in_block` is clamped to
     /// `0..num_rows`; `column` is clamped to `0..columns`. Returns
@@ -1087,7 +1179,6 @@ struct PaintCtx<'a> {
     columns: ColumnCount,
     palette: Option<(ValueHighlight, HighlightPalette)>,
     byte_styler: Option<&'a dyn Fn(u8, ByteOffset) -> ByteStyle>,
-    address_formatter: Option<&'a dyn Fn(ByteOffset, usize) -> String>,
     colors: RowColors,
     selected_range: Option<ByteRange>,
     cursor_offset: Option<ByteOffset>,
@@ -1137,7 +1228,6 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     selection: &mut Option<Selection>,
     palette: Option<(ValueHighlight, HighlightPalette)>,
     byte_styler: Option<&dyn Fn(u8, ByteOffset) -> ByteStyle>,
-    address_formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
     context_menu: Option<ContextMenuFn<'_>>,
     hover_span: Option<ByteRange>,
     field_boundaries: &[(ByteOffset, ByteLen)],
@@ -1202,7 +1292,6 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         columns,
         palette,
         byte_styler,
-        address_formatter,
         colors,
         selected_range,
         cursor_offset,
@@ -1277,17 +1366,6 @@ fn paint_row_backs_and_glyphs(
     chunk: &[u8],
 ) {
     let cols = usize::from(ctx.columns.get());
-
-    painter.text(
-        ctx.layout.address_rect(row_origin, ctx.row_height).left_center(),
-        Align2::LEFT_CENTER,
-        match ctx.address_formatter {
-            Some(f) => f(row_first_offset, ctx.layout.address_chars),
-            None => format_address(row_first_offset, ctx.layout.address_chars),
-        },
-        ctx.font_id.clone(),
-        ctx.colors.weak,
-    );
 
     if let Some(range) = ctx.selected_range {
         paint_row_selection(
@@ -2086,6 +2164,63 @@ fn paint_hover_span_on_minimap(
 /// minimap. The inner scroll area's own bar is hidden, so this is the
 /// only visible scroll indicator. Click/drag maps pointer y linearly to
 /// the file's full scroll range, like the minimap's interaction.
+/// Custom horizontal scrollbar mirroring [`draw_scrollbar`]. Sized
+/// for the visible viewport at the bottom of the hex pane; only
+/// painted when the host has reserved space for it (i.e. when the
+/// content is wider than the viewport). Drag-to-scroll stashes the
+/// target offset under `h_scroll_id` so the next frame's
+/// `ScrollArea` can pick it up via `horizontal_scroll_offset`.
+fn draw_horizontal_scrollbar(
+    ui: &mut Ui,
+    h_scroll_id: egui::Id,
+    rect: Rect,
+    current_offset: f32,
+    viewport_width: f32,
+    content_width: f32,
+) {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return;
+    }
+    let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+
+    let track_color = ui.visuals().extreme_bg_color;
+    painter.rect_filled(rect, 3.0, track_color);
+
+    if content_width <= viewport_width {
+        return;
+    }
+
+    let viewport_frac = (viewport_width / content_width).clamp(0.05, 1.0);
+    let max_scroll = (content_width - viewport_width).max(1.0);
+    let scroll_frac = (current_offset / max_scroll).clamp(0.0, 1.0);
+
+    let thumb_w = (viewport_frac * rect.width()).max(18.0);
+    let thumb_left = rect.left() + scroll_frac * (rect.width() - thumb_w);
+    let thumb_rect =
+        Rect::from_min_size(Pos2::new(thumb_left, rect.top() + 2.0), Vec2::new(thumb_w, rect.height() - 4.0));
+
+    let widget_visuals = if response.is_pointer_button_down_on() {
+        ui.visuals().widgets.active
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered
+    } else {
+        ui.visuals().widgets.inactive
+    };
+    painter.rect_filled(thumb_rect, 3.0, widget_visuals.bg_fill);
+
+    let pointer = response
+        .interact_pointer_pos()
+        .or_else(|| response.hover_pos().filter(|_| response.is_pointer_button_down_on()));
+    if let Some(pos) = pointer.filter(|_| response.dragged() || response.clicked() || response.drag_started()) {
+        let x = (pos.x - rect.left() - thumb_w * 0.5).clamp(0.0, rect.width() - thumb_w);
+        let frac = if rect.width() > thumb_w { x / (rect.width() - thumb_w) } else { 0.0 };
+        let target = (frac * max_scroll).clamp(0.0, max_scroll);
+        ui.ctx().data_mut(|d| d.insert_temp(h_scroll_id, target));
+        ui.ctx().request_repaint();
+    }
+}
+
 fn draw_scrollbar(
     ui: &mut Ui,
     scroll_id: egui::Id,
@@ -2164,19 +2299,25 @@ fn grayscale_for_byte(byte: u8, dark: bool) -> Color32 {
 /// Paint a one-row header with column indices ("0" through "f" in a 16-
 /// column view) aligned with each hex cell. Rendered outside the scroll
 /// area so it stays in view while scrolling.
+/// Paint the column header into `header_rect`, clipped to its width
+/// and shifted left by `x_offset` so the header tracks the horizontal
+/// scroll of the rows below. The painter is clipped to `header_rect`,
+/// so labels that fall outside the viewport simply get cut at the
+/// edges instead of bleeding into adjacent UI.
 fn paint_column_header(
     ui: &mut Ui,
+    header_rect: Rect,
     layout: &RowLayout,
     font_id: &FontId,
     row_height: f32,
+    x_offset: f32,
     formatter: Option<&dyn Fn(usize) -> String>,
 ) {
     let cols = usize::from(layout.columns.get());
     let header_height = row_height * 0.75;
-    let (header_rect, _) = ui.allocate_exact_size(Vec2::new(layout.total_width, header_height), Sense::empty());
     let painter = ui.painter_at(header_rect);
     let color = ui.visuals().weak_text_color();
-    let origin = header_rect.min;
+    let origin = header_rect.min - Vec2::new(x_offset, 0.0);
     for col in 0..cols {
         // Default labelling repeats 0..F per group of 16 columns.
         // The high nibbles of the absolute offset come from the
@@ -2200,6 +2341,64 @@ fn paint_column_header(
         [Pos2::new(header_rect.left(), divider_y), Pos2::new(header_rect.right(), divider_y)],
         Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)),
     );
+}
+
+/// Paint the pinned address column for whichever rows are currently
+/// visible inside the scrolling content area. Decoupled from the row
+/// content paint so the address column can stay anchored to the left
+/// edge of the hex view while the hex / ASCII panes scroll
+/// horizontally inside their own viewport.
+///
+/// `v_offset` mirrors the scroll area's vertical offset so addresses
+/// follow the rows below; the painter is clipped to `rect` so labels
+/// at scroll boundaries get cut at the edges instead of leaking into
+/// the header band or the H scrollbar gutter.
+#[allow(clippy::too_many_arguments)]
+fn paint_address_column(
+    ui: &mut Ui,
+    rect: Rect,
+    layout: &RowLayout,
+    font_id: &FontId,
+    row_height: f32,
+    source_len: ByteLen,
+    columns: ColumnCount,
+    v_offset: f32,
+    formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
+) {
+    if rect.width() < 1.0 || rect.height() < 1.0 || source_len.get() == 0 {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let color = ui.visuals().weak_text_color();
+    let cols = columns.as_u64();
+    let len = source_len.get();
+    // Match `paint_rows`: only the rows that hold at least one byte
+    // get an address. The trailing EOF-cursor row (when the buffer
+    // ends on a row boundary) intentionally has no address shown,
+    // mirroring the inside-scroll behaviour.
+    let rows_with_bytes = len.div_ceil(cols);
+    let first_row = (v_offset / row_height).floor().max(0.0) as u64;
+    let last_row_exclusive =
+        ((v_offset + rect.height()) / row_height).ceil().max(0.0) as u64;
+    let last = last_row_exclusive.min(rows_with_bytes);
+    if first_row >= last {
+        return;
+    }
+    for row_idx in first_row..last {
+        let row_first_offset = ByteOffset::new(row_idx * cols);
+        let y = rect.top() + (row_idx as f32) * row_height - v_offset;
+        let label = match formatter {
+            Some(f) => f(row_first_offset, layout.address_chars),
+            None => format_address(row_first_offset, layout.address_chars),
+        };
+        painter.text(
+            Pos2::new(rect.left(), y + row_height * 0.5),
+            Align2::LEFT_CENTER,
+            label,
+            font_id.clone(),
+            color,
+        );
+    }
 }
 
 fn format_address(offset: ByteOffset, width: usize) -> String {
