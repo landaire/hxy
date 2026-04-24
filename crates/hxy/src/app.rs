@@ -1378,6 +1378,7 @@ fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::co
         }
         CommandEffect::DockSplit(dir) => dock_split_focused(app, dir),
         CommandEffect::DockMerge(dir) => dock_merge_focused(app, dir),
+        CommandEffect::DockMoveTab(dir) => dock_move_focused_tab(app, dir),
     }
 }
 
@@ -1442,6 +1443,50 @@ fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
         tree[target].append_tab(tab);
     }
     tree.remove_leaf(path.node);
+    if let Some(found) = app.dock.find_tab(&refocus_tab) {
+        app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
+    }
+}
+
+/// Pop just the focused tab from its leaf and append it to the
+/// neighbour leaf in `dir`. Sibling tabs stay where they are -- this
+/// is the single-tab counterpart to [`dock_merge_focused`]. If the
+/// source leaf ends up empty after the move it gets removed the same
+/// way merge does so the parent split collapses.
+fn dock_move_focused_tab(app: &mut HxyApp, dir: crate::commands::DockDir) {
+    let Some(path) = resolve_target_leaf(app) else { return };
+    let tree = &app.dock[path.surface];
+    let Some(target) = find_neighbor_leaf(tree, path.node, dir) else { return };
+    if target == path.node {
+        return;
+    }
+    let tree = &mut app.dock[path.surface];
+    let moved_tab = match &mut tree[path.node] {
+        egui_dock::Node::Leaf(leaf) => {
+            if leaf.tabs.is_empty() {
+                return;
+            }
+            let idx = leaf.active.0.min(leaf.tabs.len().saturating_sub(1));
+            let tab = leaf.tabs.remove(idx);
+            // Keep the source leaf's active selection sane after the
+            // remove: clamp to the new last index, falling back to 0
+            // when the leaf is now empty (it'll be removed below).
+            if !leaf.tabs.is_empty() {
+                let new_active = idx.min(leaf.tabs.len() - 1);
+                leaf.active = egui_dock::TabIndex(new_active);
+            }
+            tab
+        }
+        _ => return,
+    };
+    let refocus_tab = moved_tab;
+    tree[target].append_tab(moved_tab);
+    let source_empty = matches!(&tree[path.node], egui_dock::Node::Leaf(leaf) if leaf.tabs.is_empty());
+    if source_empty {
+        tree.remove_leaf(path.node);
+    }
+    // Refocus on the moved tab. `target` may have been rewired by
+    // remove_leaf, so look it up by the moved tab itself.
     if let Some(found) = app.dock.find_tab(&refocus_tab) {
         app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
     }
@@ -3142,6 +3187,22 @@ fn build_palette_entries(
                 egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeUp))
                     .with_icon(icon::ARROW_LINE_UP),
             );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabRight))
+                    .with_icon(icon::ARROW_FAT_RIGHT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabLeft))
+                    .with_icon(icon::ARROW_FAT_LEFT),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabDown))
+                    .with_icon(icon::ARROW_FAT_DOWN),
+            );
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabUp))
+                    .with_icon(icon::ARROW_FAT_UP),
+            );
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
@@ -3472,6 +3533,10 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::MergeLeft => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Left)),
                     PaletteCommand::MergeUp => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Up)),
                     PaletteCommand::MergeDown => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down)),
+                    PaletteCommand::MoveTabRight => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Right)),
+                    PaletteCommand::MoveTabLeft => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Left)),
+                    PaletteCommand::MoveTabUp => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Up)),
+                    PaletteCommand::MoveTabDown => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down)),
                     PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
                     PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),

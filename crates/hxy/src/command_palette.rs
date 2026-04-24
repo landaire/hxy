@@ -134,6 +134,13 @@ pub enum PaletteCommand {
     MergeLeft,
     MergeUp,
     MergeDown,
+    /// Move just the focused tab into the neighbour pane in the
+    /// given direction. Distinct from the `Merge*` commands, which
+    /// pull every tab in the leaf along.
+    MoveTabRight,
+    MoveTabLeft,
+    MoveTabUp,
+    MoveTabDown,
     ToggleEditMode,
     /// Copy the active tab's caret offset as a formatted number.
     CopyCaretOffset,

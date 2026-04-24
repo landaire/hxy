@@ -44,6 +44,12 @@ pub enum CommandEffect {
     /// moving all its tabs into that neighbour and collapsing the
     /// empty split.
     DockMerge(DockDir),
+    /// Move just the focused tab into the neighbour leaf in
+    /// `DockDir`. Distinct from [`Self::DockMerge`], which carries
+    /// every tab in the leaf along; this only relocates the active
+    /// tab, leaving siblings put. If the source leaf is left empty
+    /// it gets collapsed the same way merge does.
+    DockMoveTab(DockDir),
 }
 
 /// Directional axis for dock-pane split / merge commands.

@@ -107,6 +107,10 @@ palette-merge-right = Merge pane with right
 palette-merge-left = Merge pane with left
 palette-merge-up = Merge pane with up
 palette-merge-down = Merge pane with down
+palette-move-tab-right = Move tab right
+palette-move-tab-left = Move tab left
+palette-move-tab-up = Move tab up
+palette-move-tab-down = Move tab down
 
 # Errors
 error-open-failed = Failed to open file
