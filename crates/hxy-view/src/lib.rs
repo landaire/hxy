@@ -824,6 +824,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     minimap_rect,
                     source,
                     source_len,
+                    columns,
                     palette,
                     minimap_colored,
                     row_height,
@@ -1884,6 +1885,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
     minimap_rect: Rect,
     source: &S,
     source_len: ByteLen,
+    columns: ColumnCount,
     palette: Option<(ValueHighlight, HighlightPalette)>,
     colored: bool,
     row_height: f32,
@@ -1897,7 +1899,13 @@ fn draw_minimap<S: HexSource + ?Sized>(
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
     }
-    let cols = 16usize;
+    // Pack as many bytes per minimap row as the hex view does. The
+    // pixel width stays the same; cells just get narrower (or wider)
+    // so each minimap row maps 1:1 to a hex view row. Without this,
+    // the minimap window scrolls at a different rate from the hex
+    // view at non-16 column counts and `total_rows` no longer
+    // describes the file in minimap-row units.
+    let cols = usize::from(columns.get());
     let response = ui.allocate_rect(minimap_rect, Sense::click_and_drag());
     let painter = ui.painter_at(minimap_rect);
     painter.rect_filled(minimap_rect, 0.0, ui.visuals().extreme_bg_color);
