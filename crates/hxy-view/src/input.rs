@@ -239,10 +239,20 @@ pub(crate) fn advance_cursor_byte(editor: &mut HexEditor) {
 }
 
 pub(crate) fn nav_nibble(editor: &mut HexEditor, step: HorizStep, extend: Extend) {
+    // Nibble-granular stepping only makes sense in the hex pane
+    // when editing -- in the ASCII pane each cell is exactly one
+    // byte, and without the editor feature there's no nibble
+    // pointer at all. In either of those cases arrow keys move a
+    // whole byte.
+    #[cfg(feature = "editor")]
+    let nibble_granular = matches!(editor.active_pane, Pane::Hex);
+    #[cfg(not(feature = "editor"))]
+    let nibble_granular = false;
+
     let Some(sel) = editor.selection.as_mut() else { return };
     let source_len = editor.source.len().get();
-    #[cfg(feature = "editor")]
-    {
+    if nibble_granular {
+        #[cfg(feature = "editor")]
         match step {
             HorizStep::Right => {
                 if editor.edit.edit_high_nibble {
@@ -265,9 +275,7 @@ pub(crate) fn nav_nibble(editor: &mut HexEditor, step: HorizStep, extend: Extend
                 }
             }
         }
-    }
-    #[cfg(not(feature = "editor"))]
-    {
+    } else {
         match step {
             HorizStep::Right => {
                 let next = sel.cursor.get().saturating_add(1).min(source_len);
@@ -279,6 +287,13 @@ pub(crate) fn nav_nibble(editor: &mut HexEditor, step: HorizStep, extend: Extend
                     sel.cursor = ByteOffset::new(cur - 1);
                 }
             }
+        }
+        // ASCII-pane moves land on a whole byte: reset any half-
+        // typed-nibble state so flipping back to the hex pane
+        // starts fresh on the high nibble.
+        #[cfg(feature = "editor")]
+        {
+            editor.edit.edit_high_nibble = true;
         }
     }
     if !extend.extends() {
