@@ -2316,6 +2316,12 @@ fn paint_column_header(
     let cols = usize::from(layout.columns.get());
     let header_height = row_height * 0.75;
     let painter = ui.painter_at(header_rect);
+    // Opaque background so a row scrolled up to the top edge of the
+    // viewport doesn't bleed colored byte tints up into the header
+    // band. The painter's clip rect alone isn't enough -- ScrollArea's
+    // clipping can include sub-pixel slop and `painter.text` shapes
+    // straddling the viewport top would otherwise show through here.
+    painter.rect_filled(header_rect, 0.0, ui.visuals().panel_fill);
     let color = ui.visuals().weak_text_color();
     let origin = header_rect.min - Vec2::new(x_offset, 0.0);
     for col in 0..cols {
@@ -2365,10 +2371,18 @@ fn paint_address_column(
     v_offset: f32,
     formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
 ) {
-    if rect.width() < 1.0 || rect.height() < 1.0 || source_len.get() == 0 {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
         return;
     }
     let painter = ui.painter_at(rect);
+    // Same anti-bleed background as the column header: the address
+    // column lives next to the horizontal scroll viewport, so an
+    // off-by-a-pixel content paint or a glyph straddling the viewport
+    // edge could otherwise leak colored byte tints into the gutter.
+    painter.rect_filled(rect, 0.0, ui.visuals().panel_fill);
+    if source_len.get() == 0 {
+        return;
+    }
     let color = ui.visuals().weak_text_color();
     let cols = columns.as_u64();
     let len = source_len.get();
