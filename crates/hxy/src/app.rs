@@ -2816,12 +2816,16 @@ fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: OffsetCopy
             let Some(sel) = sel else { return };
             let range = sel.range();
             let last_inclusive = range.end().get().saturating_sub(1);
-            let len = range.len().get();
-            format!("{}-{} ({} bytes)", format_offset(range.start().get(), base), format_offset(last_inclusive, base), len)
+            format!(
+                "{}-{} ({} bytes)",
+                format_offset(range.start().get(), base),
+                format_offset(last_inclusive, base),
+                format_offset(range.len().get(), base),
+            )
         }
         OffsetCopy::SelectionLength => {
             let Some(sel) = sel else { return };
-            format!("{}", sel.range().len().get())
+            format_offset(sel.range().len().get(), base)
         }
         OffsetCopy::FileLength => format_offset(source_len, base),
     };
@@ -3038,11 +3042,12 @@ fn build_palette_entries(
                         .with_subtitle(caret_preview),
                     );
                     if len > 1 {
+                        let len_preview = format_offset(len, base);
                         let range_preview = format!(
                             "{}-{} ({} bytes)",
                             format_offset(start, base),
                             format_offset(last_inclusive, base),
-                            len
+                            len_preview,
                         );
                         out.push(
                             egui_palette::Entry::new(
@@ -3058,7 +3063,7 @@ fn build_palette_entries(
                                 Action::InvokeCommand(crate::command_palette::PaletteCommand::CopySelectionLength),
                             )
                             .with_icon(icon::COPY)
-                            .with_subtitle(format!("{len}")),
+                            .with_subtitle(len_preview),
                         );
                     }
                 }
@@ -3855,7 +3860,7 @@ fn status_bar_ui(
             } else {
                 let start = format_offset(range.start().get(), base);
                 let end = format_offset(last_inclusive, base);
-                let len = range.len().get();
+                let len = format_offset(range.len().get(), base);
                 let copy_value = format!("{start}-{end} ({len} bytes)");
                 let tooltip = format!(
                     "{}-{}",
