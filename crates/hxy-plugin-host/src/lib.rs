@@ -10,6 +10,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 mod bindings;
+mod commands;
 mod fs_impl;
 mod grants;
 mod handler;
@@ -21,6 +22,9 @@ mod token;
 
 pub mod template;
 
+pub use commands::InvokeOutcome;
+pub use commands::MountRequest;
+pub use commands::PluginCommand;
 pub use grants::GrantsError;
 pub use grants::PermissionGrants;
 pub use grants::PluginGrants;

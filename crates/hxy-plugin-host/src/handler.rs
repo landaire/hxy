@@ -23,6 +23,8 @@ use crate::PluginManifest;
 use crate::Permissions;
 use crate::StateStore;
 use crate::bindings::handler_world::Plugin;
+use crate::commands::InvokeOutcome;
+use crate::commands::PluginCommand;
 use crate::host::HostState;
 
 pub struct PluginHandler {
@@ -104,6 +106,65 @@ impl PluginHandler {
             state = state.with_persist(self.key.name.clone(), true, store);
         }
         state
+    }
+
+    /// Top-level palette commands the plugin contributes. Returns
+    /// an empty list when the plugin was not granted the
+    /// `commands` permission so the host can call this
+    /// unconditionally without first checking the grant. The plugin
+    /// is instantiated in a fresh `Store` for each call -- short-
+    /// lived enough that any per-invocation state inside the plugin
+    /// is by design discarded; persisted state survives via
+    /// `hxy:host/state`.
+    pub fn list_commands(&self) -> Vec<PluginCommand> {
+        if !self.granted.commands {
+            return Vec::new();
+        }
+        let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
+        let plugin = match Plugin::instantiate(&mut store, &self.component, &self.linker) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, "instantiate for list-commands");
+                return Vec::new();
+            }
+        };
+        match plugin.hxy_vfs_commands().call_list_commands(&mut store) {
+            Ok(list) => list.into_iter().map(PluginCommand::from_wit).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, "call list-commands");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Run the plugin's `invoke` for a command id and return what
+    /// the host should do next. Returns `None` when the commands
+    /// permission isn't granted (the host should never have
+    /// surfaced an entry the plugin couldn't be asked about) or
+    /// when the underlying call traps -- both treated as "do
+    /// nothing, log and move on" rather than escalating to the
+    /// caller, who has no useful recovery path.
+    pub fn invoke_command(&self, id: &str) -> Option<InvokeOutcome> {
+        if !self.granted.commands {
+            return None;
+        }
+        let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
+        let plugin = match Plugin::instantiate(&mut store, &self.component, &self.linker) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, "instantiate for invoke");
+                return None;
+            }
+        };
+        match plugin.hxy_vfs_commands().call_invoke(&mut store, id) {
+            Ok(result) => Some(InvokeOutcome::from_wit(result)),
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, command = id, "call invoke");
+                None
+            }
+        }
     }
 }
 
