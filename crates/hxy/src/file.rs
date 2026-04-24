@@ -105,6 +105,12 @@ pub struct OpenFile {
     /// nibble pointer; otherwise typing after an arrow-key move
     /// would land on the wrong nibble.
     pub last_cursor_offset: Option<u64>,
+    /// Which of the row's two panes currently owns keyboard input.
+    /// Updated when the user clicks into the hex or ASCII pane;
+    /// drives how `dispatch_hex_edit_keys` interprets typed
+    /// characters (hex nibble vs literal ASCII byte). Defaults to
+    /// [`hxy_view::Pane::Hex`].
+    pub active_pane: hxy_view::Pane,
     /// Undo stack: most recent edit at the end. Consecutive writes
     /// that overlap or abut each other coalesce into a single entry
     /// unless a boundary has been pushed (via navigation, mode
@@ -307,6 +313,7 @@ impl OpenFile {
             edit_mode,
             edit_high_nibble: true,
             last_cursor_offset: None,
+            active_pane: hxy_view::Pane::Hex,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             history_break: false,
@@ -502,6 +509,24 @@ impl OpenFile {
         self.edit_high_nibble = true;
     }
 
+    /// Write a single byte at the current cursor, used when the
+    /// active pane is ASCII. Returns `true` if a write was actually
+    /// issued so the caller can advance the cursor. Unlike the hex
+    /// path this is a one-shot per keystroke: there's no high/low
+    /// nibble state to track.
+    pub fn type_ascii_byte(&mut self, byte: u8) -> Result<bool, WriteError> {
+        if self.edit_mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let Some(selection) = self.selection else { return Ok(false) };
+        let offset = selection.cursor.get();
+        if offset >= self.source.len().get() {
+            return Ok(false);
+        }
+        self.request_write(offset, vec![byte])?;
+        Ok(true)
+    }
+
     fn read_byte_at(&self, offset: u64) -> Result<u8, WriteError> {
         use hxy_core::ByteOffset;
         use hxy_core::ByteRange;
@@ -664,6 +689,28 @@ mod tests {
         f.revert();
         assert_eq!(f.undo_stack.len(), 0);
         assert_eq!(f.redo_stack.len(), 0);
+    }
+
+    #[test]
+    fn ascii_byte_write_advances_through_coalescing() {
+        let mut f = sample();
+        f.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(1)));
+        assert!(f.type_ascii_byte(b'H').unwrap());
+        // Simulate cursor advance the dispatcher does.
+        let sel = f.selection.as_mut().unwrap();
+        sel.cursor = hxy_core::ByteOffset::new(2);
+        sel.anchor = sel.cursor;
+        assert!(f.type_ascii_byte(b'i').unwrap());
+        assert_eq!(f.undo_stack.len(), 1);
+        assert_eq!(f.undo_stack[0].new_bytes, vec![b'H', b'i']);
+    }
+
+    #[test]
+    fn ascii_byte_write_rejects_readonly() {
+        let mut f = sample();
+        f.edit_mode = EditMode::Readonly;
+        f.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
+        assert!(matches!(f.type_ascii_byte(b'A'), Err(WriteError::Readonly)));
     }
 
     #[test]

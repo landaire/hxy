@@ -883,49 +883,68 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
     }
 
     let mutable = file.edit_mode == crate::file::EditMode::Mutable;
+    let pane = file.active_pane;
 
     // Snapshot pressed keys up front so arrow-driven cursor moves
     // in the middle of this loop don't see their own updates
     // mid-stream.
     let presses: Vec<EditPress> = ctx.input_mut(|i| {
         let mut out = Vec::new();
-        i.events.retain(|event| {
-            let egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } = event else {
-                return true;
-            };
-            if modifiers.command || modifiers.alt {
-                return true;
+        i.events.retain(|event| match event {
+            egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } => {
+                if modifiers.command || modifiers.alt {
+                    return true;
+                }
+                // Only the hex pane treats A..F / 0..9 key events as
+                // byte input. ASCII pane input flows through the
+                // Text event arm below so shift-modified characters
+                // and punctuation come through verbatim.
+                if mutable
+                    && pane == hxy_view::Pane::Hex
+                    && let Some(nibble) = key_to_hex_nibble(*key)
+                {
+                    out.push(EditPress::Hex(nibble));
+                    return false;
+                }
+                let extend = modifiers.shift;
+                match key {
+                    egui::Key::ArrowLeft => {
+                        out.push(EditPress::Nav(NavDir::Left, extend));
+                        false
+                    }
+                    egui::Key::ArrowRight => {
+                        out.push(EditPress::Nav(NavDir::Right, extend));
+                        false
+                    }
+                    egui::Key::ArrowUp => {
+                        out.push(EditPress::Nav(NavDir::Up, extend));
+                        false
+                    }
+                    egui::Key::ArrowDown => {
+                        out.push(EditPress::Nav(NavDir::Down, extend));
+                        false
+                    }
+                    egui::Key::Escape => {
+                        out.push(EditPress::ClearSelection);
+                        false
+                    }
+                    _ => true,
+                }
             }
-            if mutable
-                && let Some(nibble) = key_to_hex_nibble(*key)
-            {
-                out.push(EditPress::Hex(nibble));
-                return false;
+            egui::Event::Text(s) if mutable && pane == hxy_view::Pane::Ascii => {
+                let mut consumed = false;
+                for ch in s.chars() {
+                    // Accept printable ASCII plus space; non-ASCII
+                    // and control chars (arrow keys land as Key,
+                    // not Text) fall through untouched.
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        out.push(EditPress::Ascii(ch as u8));
+                        consumed = true;
+                    }
+                }
+                !consumed
             }
-            let extend = modifiers.shift;
-            match key {
-                egui::Key::ArrowLeft => {
-                    out.push(EditPress::Nav(NavDir::Left, extend));
-                    false
-                }
-                egui::Key::ArrowRight => {
-                    out.push(EditPress::Nav(NavDir::Right, extend));
-                    false
-                }
-                egui::Key::ArrowUp => {
-                    out.push(EditPress::Nav(NavDir::Up, extend));
-                    false
-                }
-                egui::Key::ArrowDown => {
-                    out.push(EditPress::Nav(NavDir::Down, extend));
-                    false
-                }
-                egui::Key::Escape => {
-                    out.push(EditPress::ClearSelection);
-                    false
-                }
-                _ => true,
-            }
+            _ => true,
         });
         out
     });
@@ -949,6 +968,11 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "hex edit"),
+            },
+            EditPress::Ascii(byte) => match file.type_ascii_byte(byte) {
+                Ok(true) => advance_cursor_byte(file),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "ascii edit"),
             },
             EditPress::Nav(dir, extend) => {
                 match dir {
@@ -1048,6 +1072,10 @@ enum NavDir {
 
 enum EditPress {
     Hex(u8),
+    /// Literal ASCII byte typed into the ASCII pane. Each press
+    /// writes one byte and advances the cursor, unlike the
+    /// two-press Hex variant.
+    Ascii(u8),
     /// Move the cursor. `bool` is true when Shift was held: extend the
     /// selection from the anchor rather than collapsing to a caret.
     Nav(NavDir, bool),
@@ -1940,6 +1968,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let nibble_cursor = (file.edit_mode == crate::file::EditMode::Mutable).then_some(
         if file.edit_high_nibble { hxy_view::NibbleSide::High } else { hxy_view::NibbleSide::Low },
     );
+    let active_pane =
+        (file.edit_mode == crate::file::EditMode::Mutable).then_some(file.active_pane);
     let mut view = HexView::new(&*file.source, &mut file.selection)
         .id_salt(("hxy-hex-view", file.id.get()))
         .columns(state.app.hex_columns)
@@ -1948,7 +1978,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .minimap_colored(state.app.minimap_colored)
         .hover_span(hover_span)
         .field_boundaries(field_boundaries)
-        .nibble_cursor(nibble_cursor);
+        .nibble_cursor(nibble_cursor)
+        .active_pane(active_pane);
     if let Some((_, colors)) = field_colors {
         view = view.field_colors(colors);
     }
@@ -2017,6 +2048,11 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .show(ui);
     file.hovered = response.hovered_offset;
     file.scroll_offset = response.scroll_offset;
+    if let Some(pane) = response.interacted_pane {
+        file.active_pane = pane;
+        file.reset_edit_nibble();
+        file.push_history_boundary();
+    }
     sync_tab_state(state, file);
 
     // If a template is active and the user is hovering a byte it

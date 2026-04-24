@@ -112,6 +112,12 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     /// cursor's plain rounded-rect outline and leaves the glyphs
     /// unmarked.
     nibble_cursor: Option<NibbleSide>,
+    /// Which pane the consumer considers active. The cursor
+    /// outline on the inactive pane is dimmed so the user can tell
+    /// which side of the row will accept the next keystroke.
+    /// `None` leaves both panes at full intensity (the previous
+    /// behaviour; appropriate for read-only tabs).
+    active_pane: Option<Pane>,
 }
 
 /// Which half of a byte cell the nibble-edit cursor sits on.
@@ -121,6 +127,16 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
 pub enum NibbleSide {
     High,
     Low,
+}
+
+/// Which of the two row panes a pointer interacted with, or which
+/// one the caller's editor currently treats as "active" for styling
+/// purposes. Consumers can use this to route keystrokes (hex digits
+/// vs ASCII characters) and to visually mark the inactive pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pane {
+    Hex,
+    Ascii,
 }
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
@@ -144,7 +160,16 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             field_colors: &[],
             id_salt: None,
             nibble_cursor: None,
+            active_pane: None,
         }
+    }
+
+    /// Tell the view which pane the editor considers active. Only
+    /// affects styling -- the cursor outline on the inactive pane is
+    /// drawn in the weak text colour so the active pane stands out.
+    pub fn active_pane(mut self, pane: Option<Pane>) -> Self {
+        self.active_pane = pane;
+        self
     }
 
     /// Paint a nibble-granular cursor indicator beneath the cursor
@@ -296,6 +321,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             field_colors,
             id_salt,
             nibble_cursor,
+            active_pane,
         } = self;
         let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
         ui.push_id(salt, |ui| {
@@ -373,6 +399,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                             hover_span,
                             field_boundaries,
                             nibble_cursor,
+                            active_pane,
                             &mut response,
                         );
                     })
@@ -434,6 +461,11 @@ pub struct HexViewResponse {
     /// the screen rect of any visible byte (useful for painting overlays
     /// from outside the widget).
     pub layout: Option<HexViewLayout>,
+    /// If the user clicked or drag-started inside the view this
+    /// frame, the pane the interaction landed on. `None` on frames
+    /// without a new interaction -- consumers should latch the last
+    /// non-`None` value to know which pane the caret lives in.
+    pub interacted_pane: Option<Pane>,
 }
 
 /// Immutable snapshot of the HexView's per-frame geometry. Values are in
@@ -602,10 +634,11 @@ impl RowLayout {
         Rect::from_min_size(row_origin, Vec2::new(self.address_w, row_height))
     }
 
-    /// Map a pointer position within the rendered block to `(row_in_block,
-    /// column)`. `row_in_block` is clamped to `0..num_rows`; `column` is
-    /// clamped to `0..columns`. Returns `None` only if the pointer's x is
-    /// before the hex pane or past the ASCII pane.
+    /// Map a pointer position within the rendered block to
+    /// `(row_in_block, column, pane)`. `row_in_block` is clamped to
+    /// `0..num_rows`; `column` is clamped to `0..columns`. Returns
+    /// `None` only if the pointer's x is before the hex pane or
+    /// past the ASCII pane.
     fn hit_test(&self, block_rect: Rect, pos: Pos2, row_height: f32, num_rows: usize) -> Option<HitRowCol> {
         let x = (pos.x - block_rect.left()).max(0.0);
         let y = (pos.y - block_rect.top()).clamp(0.0, num_rows.saturating_sub(1) as f32 * row_height);
@@ -616,13 +649,13 @@ impl RowLayout {
             let local = x - self.hex_start_x;
             let stride = self.hex_cell_w + self.hex_gap;
             let col = ((local / stride) as usize).min(cols - 1);
-            return Some(HitRowCol { row, col });
+            return Some(HitRowCol { row, col, pane: Pane::Hex });
         }
         let ascii_end = self.ascii_start_x + (cols as f32) * self.ascii_cell_w;
         if x >= self.ascii_start_x && x < ascii_end {
             let local = x - self.ascii_start_x;
             let col = ((local / self.ascii_cell_w) as usize).min(cols - 1);
-            return Some(HitRowCol { row, col });
+            return Some(HitRowCol { row, col, pane: Pane::Ascii });
         }
         None
     }
@@ -632,6 +665,7 @@ impl RowLayout {
 struct HitRowCol {
     row: usize,
     col: usize,
+    pane: Pane,
 }
 
 /// Everything the painter needs that stays constant for the whole frame.
@@ -647,6 +681,7 @@ struct PaintCtx<'a> {
     selected_range: Option<ByteRange>,
     cursor_offset: Option<ByteOffset>,
     nibble_cursor: Option<NibbleSide>,
+    active_pane: Option<Pane>,
     hover_offset: Option<ByteOffset>,
     hover_span: Option<ByteRange>,
     field_boundaries: &'a [(ByteOffset, ByteLen)],
@@ -691,6 +726,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     hover_span: Option<ByteRange>,
     field_boundaries: &[(ByteOffset, ByteLen)],
     nibble_cursor: Option<NibbleSide>,
+    active_pane: Option<Pane>,
     response_out: &mut HexViewResponse,
 ) {
     let cols = usize::from(columns.get());
@@ -755,6 +791,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         selected_range,
         cursor_offset,
         nibble_cursor,
+        active_pane,
         hover_offset,
         hover_span,
         field_boundaries,
@@ -762,7 +799,9 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
 
-    apply_interaction(ui, &response, &hit, selection);
+    let mut interacted_pane = None;
+    apply_interaction(ui, &response, &hit, selection, &mut interacted_pane);
+    response_out.interacted_pane = interacted_pane;
 
     response_out.hovered_offset = hover_offset;
     response_out.cursor_offset = cursor_offset;
@@ -919,6 +958,16 @@ fn paint_row_marks(
 ) {
     let cols = usize::from(ctx.columns.get());
     paint_row_field_outlines(painter, ctx, row_origin, row_first_offset, chunk_len, cols);
+    // Dim the cursor stroke on whichever pane the consumer has
+    // marked inactive so the active pane visibly owns keyboard
+    // input. `None` keeps both at full intensity (pre-editing
+    // behaviour / read-only tabs).
+    let dim = Stroke::new(ctx.colors.cursor_stroke.width, ctx.colors.weak);
+    let (hex_cursor_stroke, ascii_cursor_stroke) = match ctx.active_pane {
+        Some(Pane::Hex) => (ctx.colors.cursor_stroke, dim),
+        Some(Pane::Ascii) => (dim, ctx.colors.cursor_stroke),
+        None => (ctx.colors.cursor_stroke, ctx.colors.cursor_stroke),
+    };
     for i in 0..chunk_len.min(cols) {
         let byte_offset = ByteOffset::new(row_first_offset.get() + i as u64);
         let hex_rect = ctx.layout.hex_cell_rect(row_origin, i, ctx.row_height);
@@ -926,8 +975,8 @@ fn paint_row_marks(
         let hex_mark = hex_rect.expand2(Vec2::new(ctx.layout.hex_gap * 0.35, 2.0));
         let ascii_mark = ascii_rect.expand2(Vec2::new(0.5, 2.0));
         if ctx.cursor_offset == Some(byte_offset) {
-            painter.rect_stroke(hex_mark, 2.0, ctx.colors.cursor_stroke, StrokeKind::Middle);
-            painter.rect_stroke(ascii_mark, 2.0, ctx.colors.cursor_stroke, StrokeKind::Middle);
+            painter.rect_stroke(hex_mark, 2.0, hex_cursor_stroke, StrokeKind::Middle);
+            painter.rect_stroke(ascii_mark, 2.0, ascii_cursor_stroke, StrokeKind::Middle);
             // A two-pixel underline under the active nibble shows
             // the next hex-digit keystroke's landing half without
             // obscuring the glyph.
@@ -1101,7 +1150,13 @@ fn paint_row_selection(
     painter.rect_filled(ascii_bar, 2.0, bg);
 }
 
-fn apply_interaction(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>, selection: &mut Option<Selection>) {
+fn apply_interaction(
+    ui: &Ui,
+    response: &egui::Response,
+    hit: &HitCtx<'_>,
+    selection: &mut Option<Selection>,
+    interacted_pane: &mut Option<Pane>,
+) {
     let cols = usize::from(hit.columns.get());
     let shift = ui.input(|i| i.modifiers.shift);
     let active = response.dragged() || response.drag_started() || response.clicked();
@@ -1115,6 +1170,14 @@ fn apply_interaction(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>, selec
         return;
     };
     let Some(hit_offset) = hit_to_offset(rc, cols, hit.source_len) else { return };
+
+    if response.drag_started() || response.clicked() {
+        // Report the pane the click landed in so the consumer can
+        // switch input routing to ASCII vs hex keystrokes. Plain
+        // drags without a fresh click should not rebind the pane
+        // mid-gesture.
+        *interacted_pane = Some(rc.pane);
+    }
 
     if response.drag_started() {
         *selection = Some(match (shift, *selection) {
