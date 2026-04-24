@@ -84,10 +84,7 @@ mod tests {
     fn empty_query_matches_all() {
         let entries: Vec<Entry<usize>> = vec![Entry::new("a", 0), Entry::new("b", 1)];
         let (m, c, n) = defaults();
-        assert_eq!(
-            filter_and_sort("", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str())),
-            vec![0, 1]
-        );
+        assert_eq!(filter_and_sort("", &entries, &m, c, n, |e| Cow::Borrowed(e.title.as_str())), vec![0, 1]);
     }
 
     #[test]

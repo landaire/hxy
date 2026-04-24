@@ -304,17 +304,13 @@ pub fn show_with_style<A: Clone>(
         return Some(Outcome::Closed);
     }
 
-    let filtered = fuzzy::filter_and_sort(
-        &state.query,
-        entries,
-        &style.matcher,
-        style.case_matching,
-        style.normalization,
-        |e| match &e.subtitle {
-            Some(sub) => std::borrow::Cow::Owned(format!("{} {}", e.title, sub)),
-            None => std::borrow::Cow::Borrowed(e.title.as_str()),
-        },
-    );
+    let filtered =
+        fuzzy::filter_and_sort(&state.query, entries, &style.matcher, style.case_matching, style.normalization, |e| {
+            match &e.subtitle {
+                Some(sub) => std::borrow::Cow::Owned(format!("{} {}", e.title, sub)),
+                None => std::borrow::Cow::Borrowed(e.title.as_str()),
+            }
+        });
     if state.query != state.last_query {
         // The top-scoring result almost always moved on a query
         // change, so drop the user back to row 0 instead of leaving
