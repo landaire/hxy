@@ -18,6 +18,10 @@ pub enum Tab {
     /// caret into integers / floats / time / colour rows. Opened from
     /// the View menu; closeable.
     Inspector,
+    /// Plugin manager: browse VFS handlers and template runtimes
+    /// installed in the user plugin directories, install new ones
+    /// from disk, and delete / rescan.
+    Plugins,
 }
 
 impl Tab {
