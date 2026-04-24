@@ -92,7 +92,6 @@ impl HexSource for PatchedSource {
                     &mut out,
                 )?;
                 output_cursor += pre_len;
-                source_cursor = op.offset;
             }
             // New bytes from the splice
             let new_len = op.new_bytes.len() as u64;

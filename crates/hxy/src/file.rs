@@ -2,14 +2,17 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::PatchedSource;
 use hxy_core::Selection;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::TabSource;
 use hxy_vfs::VfsHandler;
+use suture::Patch;
 use thiserror::Error;
 
 /// Identifier for an open-file tab. Stable across the tab's lifetime so
@@ -26,13 +29,44 @@ impl FileId {
     }
 }
 
+/// Whether writes through [`OpenFile::request_write`] are accepted.
+/// New tabs default to [`EditMode::Readonly`]; the user toggles to
+/// [`EditMode::Mutable`] explicitly. Mirrors 010 Editor's "edit mode"
+/// gate: the readonly default avoids accidental edits while exploring.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditMode {
+    #[default]
+    Readonly,
+    Mutable,
+}
+
+#[derive(Debug, Error)]
+pub enum WriteError {
+    #[error("file is read-only; switch to mutable edit mode first")]
+    Readonly,
+    #[error("write at {offset} extends past source length {source_len}")]
+    OutOfBounds { offset: u64, len: u64, source_len: u64 },
+    #[error("write rejected: {0}")]
+    Rejected(String),
+}
+
 pub struct OpenFile {
     pub id: FileId,
     pub display_name: String,
     /// Persistent identity of the tab's byte source. `None` for
     /// temporary in-memory buffers that shouldn't survive a restart.
     pub source_kind: Option<TabSource>,
+    /// Patched view of the underlying bytes. Readers (hex view,
+    /// inspector, template runner, exporters) all consume this and
+    /// transparently see edits from `patch`. The same `Arc` is held
+    /// by the `PatchedSource` (so the patch is shared) and by
+    /// readers (so they can clone freely for worker threads).
     pub source: Arc<dyn HexSource>,
+    /// Shared handle into the [`PatchedSource`]'s patch. Mutated by
+    /// [`OpenFile::request_write`] and friends; read by the dirty
+    /// indicator and the save path.
+    pub patch: Arc<RwLock<Patch>>,
+    pub edit_mode: EditMode,
     pub selection: Option<Selection>,
     /// Last-hovered byte offset reported by the hex view -- surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
@@ -169,11 +203,28 @@ impl OpenFile {
         source_kind: Option<TabSource>,
         bytes: Vec<u8>,
     ) -> Self {
+        let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+        Self::from_source(id, display_name, source_kind, base)
+    }
+
+    /// Construct from any pre-built [`HexSource`]. Wraps it in a
+    /// [`PatchedSource`] so future writes record into the per-tab
+    /// patch.
+    pub fn from_source(
+        id: FileId,
+        display_name: impl Into<String>,
+        source_kind: Option<TabSource>,
+        base: Arc<dyn HexSource>,
+    ) -> Self {
+        let patched = PatchedSource::new(base);
+        let patch = patched.patch();
         Self {
             id,
             display_name: display_name.into(),
             source_kind,
-            source: Arc::new(MemorySource::new(bytes)),
+            source: Arc::new(patched),
+            patch,
+            edit_mode: EditMode::default(),
             selection: None,
             hovered: None,
             scroll_offset: 0.0,
@@ -196,6 +247,35 @@ impl OpenFile {
     /// tabs with no path backing (e.g. placeholder buffers).
     pub fn root_path(&self) -> Option<&PathBuf> {
         self.source_kind.as_ref().map(|s| s.root_path())
+    }
+
+    /// `true` when the per-tab patch carries any pending edits.
+    pub fn is_dirty(&self) -> bool {
+        !self.patch.read().expect("patch lock poisoned").is_empty()
+    }
+
+    /// Record a length-preserving write through the edit-mode gate.
+    /// Errors when the tab is in [`EditMode::Readonly`] or the write
+    /// would extend past the current source length.
+    pub fn request_write(&self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
+        if self.edit_mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let source_len = self.source.len().get();
+        let end = offset + bytes.len() as u64;
+        if end > source_len {
+            return Err(WriteError::OutOfBounds { offset, len: bytes.len() as u64, source_len });
+        }
+        self.patch
+            .write()
+            .expect("patch lock poisoned")
+            .write(offset, bytes)
+            .map_err(|e| WriteError::Rejected(e.to_string()))
+    }
+
+    /// Drop all pending edits.
+    pub fn revert(&self) {
+        *self.patch.write().expect("patch lock poisoned") = Patch::new();
     }
 }
 
