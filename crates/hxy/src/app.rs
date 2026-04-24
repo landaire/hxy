@@ -998,11 +998,8 @@ fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
         }
     });
     let Some(kind) = kind else { return };
-    let file_id =
-        app.dock.find_active_focused().and_then(|(_, tab)| if let Tab::File(id) = *tab { Some(id) } else { None });
-    if let Some(id) = file_id
-        && let Some(file) = app.files.get(&id)
-    {
+    let Some(id) = active_file_id(app) else { return };
+    if let Some(file) = app.files.get(&id) {
         do_copy(ctx, file, kind);
     }
 }
@@ -2528,8 +2525,28 @@ fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
     }
 }
 
+/// Best guess at which file tab the user is "in" right now. Tries in
+/// order: the egui_dock-focused tab (exact), the most recently
+/// focused file (so clicking into the Inspector / Console doesn't
+/// blank out a menu command), and finally -- when only one file is
+/// open -- that sole file. Returning `None` means there's genuinely
+/// no file to act on.
 fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
-    app.dock.find_active_focused().and_then(|(_, tab)| if let Tab::File(id) = *tab { Some(id) } else { None })
+    if let Some((_, tab)) = app.dock.find_active_focused()
+        && let Tab::File(id) = *tab
+    {
+        app.last_active_file = Some(id);
+        return Some(id);
+    }
+    if let Some(id) = app.last_active_file
+        && app.files.contains_key(&id)
+    {
+        return Some(id);
+    }
+    if app.files.len() == 1 {
+        return app.files.keys().copied().next();
+    }
+    None
 }
 
 fn handle_open_file(app: &mut HxyApp) {
@@ -2661,12 +2678,7 @@ struct HxyTabViewer<'a> {
 /// doesn't make its content disappear).
 #[cfg(not(target_arch = "wasm32"))]
 fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
-    if let Some((_, tab)) = app.dock.find_active_focused()
-        && let Tab::File(id) = *tab
-    {
-        app.last_active_file = Some(id);
-    }
-    let id = app.last_active_file?;
+    let id = active_file_id(app)?;
     let file = app.files.get(&id)?;
     let caret = file.editor.selection()?.cursor.get();
     let src_len = file.editor.source().len().get();

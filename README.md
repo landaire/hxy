@@ -2,6 +2,8 @@
 
 A hex editor built with Rust and [egui]. Desktop and web.
 
+Reusable egui widget: [![hxy-view on crates.io](https://img.shields.io/crates/v/hxy-view.svg?label=hxy-view)](https://crates.io/crates/hxy-view) [![hxy-view on docs.rs](https://docs.rs/hxy-view/badge.svg)](https://docs.rs/hxy-view)
+
 ## Screenshots
 
 ![hex view](img/hex_view.png)
