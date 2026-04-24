@@ -93,6 +93,19 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     /// field the pointer is over. Painted as a secondary fill that
     /// co-exists with the primary selection.
     hover_span: Option<ByteRange>,
+    /// Leaf-field byte ranges from a template execution. The
+    /// painter draws a thin outline around each range so the user
+    /// can see field boundaries the same way 010 Editor does.
+    /// Ranges must be sorted by start and must not overlap.
+    field_boundaries: &'s [(ByteOffset, ByteLen)],
+    /// Per-field tint, parallel to `field_boundaries`. When present
+    /// and long enough, the minimap paints each hit byte with its
+    /// field's colour so the user sees the same colour map in both
+    /// views. Empty = no minimap override; byte-palette / grayscale
+    /// is used instead.
+    field_colors: &'s [Color32],
+    /// Optional caller-supplied id salt; see [`HexView::id_salt`].
+    id_salt: Option<egui::Id>,
 }
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
@@ -112,7 +125,40 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             initial_scroll: None,
             scroll_to_byte: None,
             hover_span: None,
+            field_boundaries: &[],
+            field_colors: &[],
+            id_salt: None,
         }
+    }
+
+    /// Supply leaf-field byte ranges from a template. The view paints
+    /// a thin outline at each range's edges so users can see where
+    /// template fields start and end without looking at the side
+    /// panel. Must be sorted by start; caller guarantees no overlap.
+    pub fn field_boundaries(mut self, boundaries: &'s [(ByteOffset, ByteLen)]) -> Self {
+        self.field_boundaries = boundaries;
+        self
+    }
+
+    /// Per-field colour, parallel to `field_boundaries`. The minimap
+    /// overrides its byte-palette / grayscale fill with this colour
+    /// for bytes that fall inside a field, so the overview strip
+    /// matches the colouring the user sees in the main view.
+    pub fn field_colors(mut self, colors: &'s [Color32]) -> Self {
+        self.field_colors = colors;
+        self
+    }
+
+    /// Stable seed for this view's internal widget ids. egui runs two
+    /// layout passes; without a stable salt the hex body and column
+    /// header — both giant `allocate_exact_size` widgets — get auto-
+    /// ids derived from call-site position, which drifts under
+    /// egui_dock's tab shuffling and triggers "Widget rect changed id
+    /// between passes" warnings. Callers should pass something tied
+    /// to the tab (e.g. `FileId`).
+    pub fn id_salt(mut self, salt: impl std::hash::Hash) -> Self {
+        self.id_salt = Some(egui::Id::new(salt));
+        self
     }
 
     /// Tell the hex view to draw a secondary highlight over the given
@@ -221,7 +267,12 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             initial_scroll,
             scroll_to_byte,
             hover_span,
+            field_boundaries,
+            field_colors,
+            id_salt,
         } = self;
+        let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
+        ui.push_id(salt, |ui| {
         let palette = value_highlight.map(|mode| {
             let palette =
                 palette_override.unwrap_or_else(|| HighlightPalette::for_theme_and_mode(ui.visuals().dark_mode, mode));
@@ -287,11 +338,12 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                         columns,
                         source,
                         selection,
-                        palette,
+                        palette.clone(),
                         byte_styler.as_deref(),
                         address_formatter.as_deref(),
                         context_menu,
                         hover_span,
+                        field_boundaries,
                         &mut response,
                     );
                 })
@@ -315,6 +367,8 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 hex_out.inner_rect.height(),
                 total_rows,
                 hover_span,
+                field_boundaries,
+                field_colors,
             );
         }
 
@@ -328,6 +382,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         );
 
         response
+        }).inner
     }
 }
 
@@ -563,6 +618,7 @@ struct PaintCtx<'a> {
     cursor_offset: Option<ByteOffset>,
     hover_offset: Option<ByteOffset>,
     hover_span: Option<ByteRange>,
+    field_boundaries: &'a [(ByteOffset, ByteLen)],
 }
 
 /// Geometry + source metadata used for pointer hit-testing against the
@@ -602,6 +658,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     address_formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
     context_menu: Option<ContextMenuFn<'_>>,
     hover_span: Option<ByteRange>,
+    field_boundaries: &[(ByteOffset, ByteLen)],
     response_out: &mut HexViewResponse,
 ) {
     let cols = usize::from(columns.get());
@@ -667,6 +724,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         cursor_offset,
         hover_offset,
         hover_span,
+        field_boundaries,
     };
     let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
@@ -779,14 +837,14 @@ fn paint_row_backs_and_glyphs(
         let is_sel = ctx.selected_range.is_some_and(|r| r.contains(byte_offset));
 
         // Palette-derived defaults for this byte.
-        let class_color = ctx.palette.map(|(_, p)| p.color_for(*byte));
-        let (palette_bg, palette_fg) = match ctx.palette {
-            Some((ValueHighlight::Background, _)) => {
+        let class_color = ctx.palette.as_ref().map(|(_, p)| p.color_for(*byte));
+        let (palette_bg, palette_fg) = match ctx.palette.as_ref().map(|(m, _)| *m) {
+            Some(ValueHighlight::Background) => {
                 let bg = class_color;
                 let fg = contrast_text_color(class_color.unwrap_or(ctx.colors.text), ctx.colors.text);
                 (bg, fg)
             }
-            Some((ValueHighlight::Text, _)) => (None, class_color.unwrap_or(ctx.colors.text)),
+            Some(ValueHighlight::Text) => (None, class_color.unwrap_or(ctx.colors.text)),
             None => (None, ctx.colors.text),
         };
 
@@ -827,6 +885,7 @@ fn paint_row_marks(
     chunk_len: usize,
 ) {
     let cols = usize::from(ctx.columns.get());
+    paint_row_field_outlines(painter, ctx, row_origin, row_first_offset, chunk_len, cols);
     for i in 0..chunk_len.min(cols) {
         let byte_offset = ByteOffset::new(row_first_offset.get() + i as u64);
         let hex_rect = ctx.layout.hex_cell_rect(row_origin, i, ctx.row_height);
@@ -840,6 +899,126 @@ fn paint_row_marks(
             painter.rect_stroke(hex_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
             painter.rect_stroke(ascii_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
         }
+    }
+}
+
+/// Paint hairline outlines around every template-field span that
+/// overlaps this row. One rect per field per row; adjacent fields
+/// meet edge-to-edge (the hex-cell gap is split down the middle so
+/// their vertical edges share a column). Stroke endpoints are
+/// snapped to physical pixel centres so 1px lines stay crisp.
+fn paint_row_field_outlines(
+    painter: &egui::Painter,
+    ctx: &PaintCtx<'_>,
+    row_origin: Pos2,
+    row_first_offset: ByteOffset,
+    chunk_len: usize,
+    cols: usize,
+) {
+    if ctx.field_boundaries.is_empty() || chunk_len == 0 {
+        return;
+    }
+    let stroke = Stroke::new(1.0, ctx.colors.weak.gamma_multiply(0.7));
+    let row_first = row_first_offset.get();
+    let row_last_exclusive = row_first + chunk_len.min(cols) as u64;
+    let row_visible_cols = chunk_len.min(cols);
+
+    let first_idx = ctx
+        .field_boundaries
+        .partition_point(|(start, len)| start.get().saturating_add(len.get()) <= row_first);
+
+    for (start, len) in &ctx.field_boundaries[first_idx..] {
+        let field_start = start.get();
+        let field_end = field_start.saturating_add(len.get());
+        if field_start >= row_last_exclusive {
+            break;
+        }
+        let seg_start = field_start.max(row_first);
+        let seg_end = field_end.min(row_last_exclusive);
+        if seg_start >= seg_end {
+            continue;
+        }
+        let first_col = (seg_start - row_first) as usize;
+        let last_col = (seg_end - row_first - 1) as usize;
+
+        let top_edge = field_start == seg_start;
+        let bottom_edge = field_end == seg_end;
+        let left_edge = field_start == seg_start;
+        let right_edge = field_end == seg_end;
+
+        let hex_rect = hex_outline_rect(ctx.layout, row_origin, ctx.row_height, first_col, last_col, row_visible_cols);
+        let ascii_rect =
+            ascii_outline_rect(ctx.layout, row_origin, ctx.row_height, first_col, last_col, row_visible_cols);
+
+        for rect in [hex_rect, ascii_rect] {
+            paint_rect_edges(painter, rect, stroke, top_edge, bottom_edge, left_edge, right_edge);
+        }
+    }
+}
+
+/// Rect covering hex columns `[first_col..=last_col]` with each side
+/// bleeding halfway into the adjacent inter-cell gap — matches the
+/// tint-rect geometry so outlines and field tints coincide exactly.
+/// First / last columns of the row clamp to the pane edges so two
+/// rows' worth of outlines don't step sideways at the wrap.
+fn hex_outline_rect(
+    layout: &RowLayout,
+    row_origin: Pos2,
+    row_height: f32,
+    first_col: usize,
+    last_col: usize,
+    total_cols: usize,
+) -> Rect {
+    let left_cell = layout.hex_cell_rect(row_origin, first_col, row_height);
+    let right_cell = layout.hex_cell_rect(row_origin, last_col, row_height);
+    let half_gap = layout.hex_gap * 0.5;
+    let left = if first_col == 0 { left_cell.left() } else { left_cell.left() - half_gap };
+    let right = if last_col + 1 >= total_cols { right_cell.right() } else { right_cell.right() + half_gap };
+    Rect::from_min_max(Pos2::new(left, row_origin.y), Pos2::new(right, row_origin.y + row_height))
+}
+
+/// ASCII cells already sit edge-to-edge, so the span rect needs no
+/// gap fudging — the tint-rect math is just `cell_rect` union.
+fn ascii_outline_rect(
+    layout: &RowLayout,
+    row_origin: Pos2,
+    row_height: f32,
+    first_col: usize,
+    last_col: usize,
+    _total_cols: usize,
+) -> Rect {
+    let left = layout.ascii_cell_rect(row_origin, first_col, row_height).left();
+    let right = layout.ascii_cell_rect(row_origin, last_col, row_height).right();
+    Rect::from_min_max(Pos2::new(left, row_origin.y), Pos2::new(right, row_origin.y + row_height))
+}
+
+fn paint_rect_edges(
+    painter: &egui::Painter,
+    rect: Rect,
+    stroke: Stroke,
+    top: bool,
+    bottom: bool,
+    left: bool,
+    right: bool,
+) {
+    let ppp = painter.pixels_per_point();
+    let snap_x = |x: f32| (x * ppp).round() / ppp + 0.5 / ppp;
+    let snap_y = |y: f32| (y * ppp).round() / ppp + 0.5 / ppp;
+    let l = snap_x(rect.left());
+    let r = snap_x(rect.right());
+    let t = snap_y(rect.top());
+    let b = snap_y(rect.bottom());
+    if top {
+        painter.line_segment([Pos2::new(l, t), Pos2::new(r, t)], stroke);
+    }
+    if bottom {
+        painter.line_segment([Pos2::new(l, b), Pos2::new(r, b)], stroke);
+    }
+    if left {
+        painter.line_segment([Pos2::new(l, t), Pos2::new(l, b)], stroke);
+    }
+    if right {
+        painter.line_segment([Pos2::new(r, t), Pos2::new(r, b)], stroke);
     }
 }
 
@@ -923,7 +1102,12 @@ fn hit_to_offset(hit: HitRowCol, cols: usize, source_len: ByteLen) -> Option<Byt
 
 #[allow(clippy::too_many_arguments)]
 fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<ByteOffset> {
-    let pos = response.hover_pos().or_else(|| ui.ctx().input(|i| i.pointer.latest_pos()))?;
+    let pos = response.hover_pos().or_else(|| {
+        response
+            .is_pointer_button_down_on()
+            .then(|| ui.ctx().input(|i| i.pointer.latest_pos()))
+            .flatten()
+    })?;
     if !hit.block_rect.contains(pos) {
         return None;
     }
@@ -931,13 +1115,16 @@ fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<
     hit_to_offset(rc, usize::from(hit.columns.get()), hit.source_len)
 }
 
-/// Colour source for byte-value tinting. Either coarse class-based
-/// (null / whitespace / printable / ...) or a per-value gradient that
-/// gives every byte its own colour.
-#[derive(Clone, Copy, Debug)]
+/// Colour source for byte-value tinting. Plugins can hand a fully-
+/// specified 256-entry table via [`Self::Custom`] so a template run
+/// can override the user's default palette for the duration.
+#[derive(Clone, Debug)]
 pub enum HighlightPalette {
     Class(BytePalette),
     Value(ValueGradient),
+    /// Plugin-supplied palette: one colour per byte value, held
+    /// behind an `Arc` so cloning the enum is cheap.
+    Custom(std::sync::Arc<[Color32; 256]>),
 }
 
 impl HighlightPalette {
@@ -949,6 +1136,7 @@ impl HighlightPalette {
         match self {
             Self::Class(p) => p.color_for(byte),
             Self::Value(g) => g.color_for(byte),
+            Self::Custom(table) => table[byte as usize],
         }
     }
 }
@@ -1092,7 +1280,7 @@ fn contrast_text_color(bg: Color32, default_fg: Color32) -> Color32 {
 
 /// Coarse categorization of a byte value for palette lookup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ByteClass {
+pub(crate) enum ByteClass {
     Null,
     AllBits,
     Whitespace,
@@ -1102,7 +1290,7 @@ pub enum ByteClass {
 }
 
 impl ByteClass {
-    pub fn of(byte: u8) -> Self {
+    pub(crate) fn of(byte: u8) -> Self {
         match byte {
             0x00 => Self::Null,
             0xFF => Self::AllBits,
@@ -1128,6 +1316,8 @@ fn draw_minimap<S: HexSource + ?Sized>(
     viewport_height: f32,
     total_rows: usize,
     hover_span: Option<ByteRange>,
+    field_boundaries: &[(ByteOffset, ByteLen)],
+    field_colors: &[Color32],
 ) {
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
@@ -1174,6 +1364,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
         .and_then(|r| source.read(r).ok())
         .unwrap_or_default();
 
+    let field_override = !field_boundaries.is_empty() && !field_colors.is_empty();
     for i in 0..shown_rows {
         let chunk_start = i * cols;
         if chunk_start >= bytes.len() {
@@ -1182,13 +1373,22 @@ fn draw_minimap<S: HexSource + ?Sized>(
         let chunk_end = (chunk_start + cols).min(bytes.len());
         let chunk = &bytes[chunk_start..chunk_end];
         let y = minimap_rect.top() + i as f32 * cell_h;
+        let row_base_offset = read_start + (i as u64) * cols as u64;
         for (c, byte) in chunk.iter().enumerate() {
             let x = minimap_rect.left() + c as f32 * cell_w;
-            let color = if colored {
-                palette.map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
+            let offset = row_base_offset + c as u64;
+            let field_color = if field_override {
+                field_color_for(field_boundaries, field_colors, offset)
             } else {
-                grayscale_for_byte(*byte, dark)
+                None
             };
+            let color = field_color.unwrap_or_else(|| {
+                if colored {
+                    palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
+                } else {
+                    grayscale_for_byte(*byte, dark)
+                }
+            });
             painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h)), 0.0, color);
         }
     }
@@ -1367,6 +1567,23 @@ fn draw_scrollbar(
 /// darkest content shade and 0xFF to near-white (or the opposite on
 /// light mode), giving a faint brightness gradient that still reveals
 /// structure without dragging in the palette.
+/// Look up the template-field colour for `byte_offset` by binary-
+/// searching the sorted `boundaries`. Returns `None` when the offset
+/// doesn't fall inside any field or when `colors` is too short.
+fn field_color_for(
+    boundaries: &[(ByteOffset, ByteLen)],
+    colors: &[Color32],
+    byte_offset: u64,
+) -> Option<Color32> {
+    let idx = boundaries.partition_point(|(start, _)| start.get() <= byte_offset);
+    if idx == 0 {
+        return None;
+    }
+    let (start, len) = boundaries[idx - 1];
+    let end = start.get().saturating_add(len.get());
+    if byte_offset < end { colors.get(idx - 1).copied() } else { None }
+}
+
 fn grayscale_for_byte(byte: u8, dark: bool) -> Color32 {
     let t = f32::from(byte) / 255.0;
     let (lo, hi) = if dark { (40.0, 230.0) } else { (40.0, 220.0) };
