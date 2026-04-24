@@ -13,7 +13,6 @@ use hxy_vfs::TabSource;
 use hxy_vfs::VfsHandler;
 use hxy_vfs::VfsRegistry;
 use hxy_vfs::handlers::ZipHandler;
-use hxy_view::HexView;
 
 use crate::APP_NAME;
 use crate::file::FileId;
@@ -360,17 +359,14 @@ impl HxyApp {
     ) -> FileId {
         let id = self.fresh_file_id();
         let mut file = OpenFile::from_bytes(id, display_name, source_kind.clone(), bytes);
-        file.selection = restore_selection;
-        if let Some(s) = restore_scroll {
-            file.pending_scroll = Some(s);
-            file.scroll_offset = s;
-        }
+        file.editor.set_selection(restore_selection);        if let Some(s) = restore_scroll {
+            file.editor.set_scroll_to(s);        }
 
         // Detect a matching VFS handler against the first ~4 KiB.
         if let Ok(range) = hxy_core::ByteRange::new(
             hxy_core::ByteOffset::new(0),
-            hxy_core::ByteOffset::new(file.source.len().get().min(4096)),
-        ) && let Ok(head) = file.source.read(range)
+            hxy_core::ByteOffset::new(file.editor.source().len().get().min(4096)),
+        ) && let Ok(head) = file.editor.source().read(range)
         {
             file.detected_handler = self.registry.detect(&head);
             #[cfg(not(target_arch = "wasm32"))]
@@ -390,7 +386,7 @@ impl HxyApp {
         }
 
         if restore_show_vfs_tree && let Some(handler) = file.detected_handler.clone() {
-            match handler.mount(file.source.clone()) {
+            match handler.mount(file.editor.source().clone()) {
                 Ok(mount) => {
                     file.mount = Some(Arc::new(mount));
                     file.show_vfs_tree = true;
@@ -609,19 +605,19 @@ impl eframe::App for HxyApp {
         let Some(dir) = unsaved_edits_dir() else { return };
         for file in self.files.values() {
             let Some(path) = file.root_path().cloned() else { continue };
-            if !file.is_dirty() {
+            if !file.editor.is_dirty() {
                 // Clear any lingering sidecar from a previous session
                 // -- the in-memory state for this file is clean now.
                 let _ = crate::patch_persist::discard(&dir, &path);
                 continue;
             }
-            let patch = file.patch.read().expect("patch lock poisoned").clone();
+            let patch = file.editor.patch().read().expect("patch lock poisoned").clone();
             let Some(sidecar) = crate::patch_persist::snapshot(
                 path.clone(),
-                file.source.as_ref(),
+                file.editor.source().as_ref(),
                 patch,
-                file.undo_stack.clone(),
-                file.redo_stack.clone(),
+                file.editor.undo_stack().to_vec(),
+                file.editor.redo_stack().to_vec(),
             ) else {
                 continue;
             };
@@ -791,8 +787,8 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                 // tamper still aborts.  Modified / Unknown: user
                 // already opted in, skip verification and adopt.
                 let verified = if integrity_clean {
-                    let len = file.source.len().get();
-                    match file.source.read(
+                    let len = file.editor.source().len().get();
+                    match file.editor.source().read(
                         hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
                             .expect("range valid"),
                     ) {
@@ -816,12 +812,8 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                 };
 
                 if verified {
-                    *file.patch.write().expect("patch lock poisoned") = pending.sidecar.patch;
-                    file.undo_stack = pending.sidecar.undo_stack;
-                    file.redo_stack = pending.sidecar.redo_stack;
-                    file.history_break = true;
-                    file.edit_mode = crate::file::EditMode::Mutable;
-                    if integrity_clean {
+                    *file.editor.patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
+                    file.editor.set_undo_stack(pending.sidecar.undo_stack);                    file.editor.set_redo_stack(pending.sidecar.redo_stack);                    file.editor.push_history_boundary();                    file.editor.set_edit_mode(crate::file::EditMode::Mutable);                    if integrity_clean {
                         log_lines.push((ConsoleSeverity::Info, "restored unsaved edits".to_owned()));
                     } else {
                         log_lines.push((
@@ -862,255 +854,10 @@ enum RestoreAction {
 /// keys via egui's normal focus path; only un-consumed presses
 /// reach the active hex-edit cursor.
 fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
-    // A focused text input owns the keyboard; never steal from it.
-    if ctx.egui_wants_keyboard_input() {
-        return;
-    }
-    let columns = app.state.read().app.hex_columns.get() as u64;
     let Some(id) = active_file_id(app) else { return };
-    let Some(file) = app.files.get_mut(&id) else { return };
-
-    // Detect cursor moves that came from outside this dispatcher
-    // (mouse click in the hex view, template panel "jump to span")
-    // and reset the nibble cursor so the next press lands on the
-    // high nibble of the new byte. Arrow-key moves below update
-    // `last_cursor_offset` themselves, so they don't flap the flag.
-    let current_cursor = file.selection.as_ref().map(|s| s.cursor.get());
-    if current_cursor != file.last_cursor_offset {
-        file.reset_edit_nibble();
-        file.push_history_boundary();
-        file.last_cursor_offset = current_cursor;
+    if let Some(file) = app.files.get_mut(&id) {
+        file.editor.handle_input(ctx);
     }
-
-    let mutable = file.edit_mode == crate::file::EditMode::Mutable;
-    let pane = file.active_pane;
-
-    // Snapshot pressed keys up front so arrow-driven cursor moves
-    // in the middle of this loop don't see their own updates
-    // mid-stream.
-    let presses: Vec<EditPress> = ctx.input_mut(|i| {
-        let mut out = Vec::new();
-        i.events.retain(|event| match event {
-            egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } => {
-                if modifiers.command || modifiers.alt {
-                    return true;
-                }
-                // Only the hex pane treats A..F / 0..9 key events as
-                // byte input. ASCII pane input flows through the
-                // Text event arm below so shift-modified characters
-                // and punctuation come through verbatim.
-                if mutable
-                    && pane == hxy_view::Pane::Hex
-                    && let Some(nibble) = key_to_hex_nibble(*key)
-                {
-                    out.push(EditPress::Hex(nibble));
-                    return false;
-                }
-                let extend = modifiers.shift;
-                match key {
-                    egui::Key::ArrowLeft => {
-                        out.push(EditPress::Nav(NavDir::Left, extend));
-                        false
-                    }
-                    egui::Key::ArrowRight => {
-                        out.push(EditPress::Nav(NavDir::Right, extend));
-                        false
-                    }
-                    egui::Key::ArrowUp => {
-                        out.push(EditPress::Nav(NavDir::Up, extend));
-                        false
-                    }
-                    egui::Key::ArrowDown => {
-                        out.push(EditPress::Nav(NavDir::Down, extend));
-                        false
-                    }
-                    egui::Key::Escape => {
-                        out.push(EditPress::ClearSelection);
-                        false
-                    }
-                    _ => true,
-                }
-            }
-            egui::Event::Text(s) if mutable && pane == hxy_view::Pane::Ascii => {
-                let mut consumed = false;
-                for ch in s.chars() {
-                    // Accept printable ASCII plus space; non-ASCII
-                    // and control chars (arrow keys land as Key,
-                    // not Text) fall through untouched.
-                    if ch.is_ascii_graphic() || ch == ' ' {
-                        out.push(EditPress::Ascii(ch as u8));
-                        consumed = true;
-                    }
-                }
-                !consumed
-            }
-            _ => true,
-        });
-        out
-    });
-    if presses.is_empty() {
-        return;
-    }
-
-    let source_len = file.source.len().get();
-    // Arrow navigation works without a selection too: pretend the
-    // caret was at byte 0 so the first key press takes effect.
-    if file.selection.is_none() && presses.iter().any(|p| p.is_navigation()) {
-        file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
-        file.reset_edit_nibble();
-    }
-
-    for press in presses {
-        match press {
-            EditPress::Hex(nibble) => match file.type_hex_digit(nibble) {
-                Ok(true) => {
-                    advance_cursor_byte(file);
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!(error = %e, "hex edit"),
-            },
-            EditPress::Ascii(byte) => match file.type_ascii_byte(byte) {
-                Ok(true) => advance_cursor_byte(file),
-                Ok(false) => {}
-                Err(e) => tracing::warn!(error = %e, "ascii edit"),
-            },
-            EditPress::Nav(dir, extend) => {
-                match dir {
-                    NavDir::Left => nav_nibble(file, -1, extend),
-                    NavDir::Right => nav_nibble(file, 1, extend),
-                    NavDir::Up => nav_row(file, -1, columns, source_len, extend),
-                    NavDir::Down => nav_row(file, 1, columns, source_len, extend),
-                }
-                file.push_history_boundary();
-            }
-            EditPress::ClearSelection => {
-                if let Some(sel) = file.selection.as_mut() {
-                    sel.anchor = sel.cursor;
-                }
-                file.reset_edit_nibble();
-            }
-        }
-    }
-    file.last_cursor_offset = file.selection.as_ref().map(|s| s.cursor.get());
-}
-
-/// Advance the cursor by one whole byte (wrap at EOF). Used after a
-/// complete byte's worth of hex input (high + low) and by nibble
-/// navigation crossing a byte boundary. Collapses any existing
-/// selection to a caret -- typing isn't a selection-extending op.
-fn advance_cursor_byte(file: &mut OpenFile) {
-    if let Some(sel) = file.selection.as_mut() {
-        let next = sel.cursor.get().saturating_add(1).min(file.source.len().get());
-        sel.cursor = hxy_core::ByteOffset::new(next);
-        sel.anchor = sel.cursor;
-    }
-}
-
-/// Move the cursor one nibble in `direction` (-1 left, +1 right).
-/// Left/right steps flip `edit_high_nibble`; crossing a byte
-/// boundary moves the byte cursor and lands on the correct half
-/// (low when coming from the right, high when coming from the
-/// left). When `extend` is false the anchor follows the cursor so
-/// the selection stays a caret; when true the anchor stays put and
-/// the selection grows between anchor and cursor.
-fn nav_nibble(file: &mut OpenFile, direction: i32, extend: bool) {
-    let Some(sel) = file.selection.as_mut() else { return };
-    let source_len = file.source.len().get();
-    if direction > 0 {
-        if file.edit_high_nibble {
-            file.edit_high_nibble = false;
-        } else {
-            let next = sel.cursor.get().saturating_add(1).min(source_len);
-            sel.cursor = hxy_core::ByteOffset::new(next);
-            file.edit_high_nibble = true;
-        }
-    } else if !file.edit_high_nibble {
-        file.edit_high_nibble = true;
-    } else {
-        let cur = sel.cursor.get();
-        if cur > 0 {
-            sel.cursor = hxy_core::ByteOffset::new(cur - 1);
-            file.edit_high_nibble = false;
-        }
-    }
-    if !extend {
-        sel.anchor = sel.cursor;
-    }
-}
-
-/// Move the cursor one row in `direction`. Lands on the high nibble
-/// of the new byte and clamps to the last byte (`source_len - 1`)
-/// when moving down past EOF; up at row 0 is a no-op. `extend`
-/// follows the same anchor/cursor contract as [`nav_nibble`].
-fn nav_row(file: &mut OpenFile, direction: i32, columns: u64, source_len: u64, extend: bool) {
-    if columns == 0 {
-        return;
-    }
-    let Some(sel) = file.selection.as_mut() else { return };
-    let cur = sel.cursor.get();
-    let new = if direction > 0 {
-        let candidate = cur.saturating_add(columns);
-        let last = source_len.saturating_sub(1);
-        candidate.min(last)
-    } else {
-        cur.saturating_sub(columns)
-    };
-    sel.cursor = hxy_core::ByteOffset::new(new);
-    file.edit_high_nibble = true;
-    if !extend {
-        sel.anchor = sel.cursor;
-    }
-}
-
-#[derive(Clone, Copy)]
-enum NavDir {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-enum EditPress {
-    Hex(u8),
-    /// Literal ASCII byte typed into the ASCII pane. Each press
-    /// writes one byte and advances the cursor, unlike the
-    /// two-press Hex variant.
-    Ascii(u8),
-    /// Move the cursor. `bool` is true when Shift was held: extend the
-    /// selection from the anchor rather than collapsing to a caret.
-    Nav(NavDir, bool),
-    /// Collapse the selection to a caret at the current cursor and
-    /// reset the half-typed-nibble pointer. Bound to Escape.
-    ClearSelection,
-}
-
-impl EditPress {
-    fn is_navigation(&self) -> bool {
-        matches!(self, EditPress::Nav(..))
-    }
-}
-
-fn key_to_hex_nibble(key: egui::Key) -> Option<u8> {
-    use egui::Key as K;
-    Some(match key {
-        K::Num0 => 0,
-        K::Num1 => 1,
-        K::Num2 => 2,
-        K::Num3 => 3,
-        K::Num4 => 4,
-        K::Num5 => 5,
-        K::Num6 => 6,
-        K::Num7 => 7,
-        K::Num8 => 8,
-        K::Num9 => 9,
-        K::A => 0xA,
-        K::B => 0xB,
-        K::C => 0xC,
-        K::D => 0xD,
-        K::E => 0xE,
-        K::F => 0xF,
-        _ => return None,
-    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1174,7 +921,7 @@ fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    if file.edit_mode != crate::file::EditMode::Mutable {
+    if file.editor.edit_mode() != crate::file::EditMode::Mutable {
         return;
     }
     let text = match paste_event_text {
@@ -1215,27 +962,25 @@ fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
 /// written byte so the next paste / keystroke lands after it.
 #[cfg(not(target_arch = "wasm32"))]
 fn paste_bytes_at_cursor(file: &mut crate::file::OpenFile, bytes: Vec<u8>) {
-    let source_len = file.source.len().get();
+    let source_len = file.editor.source().len().get();
     if source_len == 0 {
         return;
     }
-    let start = file.selection.map(|s| s.range().start().get()).unwrap_or(0);
+    let start = file.editor.selection().map(|s| s.range().start().get()).unwrap_or(0);
     let available = source_len.saturating_sub(start);
     if available == 0 {
         return;
     }
     let n = (bytes.len() as u64).min(available) as usize;
     let bytes = if n == bytes.len() { bytes } else { bytes[..n].to_vec() };
-    file.push_history_boundary();
-    if let Err(e) = file.request_write(start, bytes) {
+    file.editor.push_history_boundary();
+    if let Err(e) = file.editor.request_write(start, bytes) {
         tracing::warn!(error = %e, "paste write");
         return;
     }
     let new_cursor = (start + n as u64).min(source_len.saturating_sub(1));
-    file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor)));
-    file.reset_edit_nibble();
-    file.last_cursor_offset = Some(new_cursor);
-    file.push_history_boundary();
+    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor))));    file.editor.reset_edit_nibble();
+    file.editor.push_history_boundary();
 }
 
 /// App-level copy shortcut handler. Runs after the dock renders, so
@@ -1599,7 +1344,7 @@ fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, pat
     // would otherwise freeze pan / scroll / input. The `UiInbox`
     // triggers a repaint when the worker sends, so we don't poll.
     let Some(file) = app.files.get_mut(&id) else { return };
-    let source = file.source.clone();
+    let source = file.editor.source().clone();
     file.template = None;
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
     file.template_running =
@@ -1692,7 +1437,7 @@ fn mount_active_file(app: &mut HxyApp) {
         return;
     }
     let Some(handler) = file.detected_handler.clone() else { return };
-    match handler.mount(file.source.clone()) {
+    match handler.mount(file.editor.source().clone()) {
         Ok(mount) => {
             file.mount = Some(Arc::new(mount));
             file.show_vfs_tree = true;
@@ -1806,16 +1551,16 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                             let offset = node.span.offset;
                             let length = node.span.length.max(1);
                             let end_inclusive = offset.saturating_add(length - 1);
-                            file.selection = Some(hxy_core::Selection {
+                            file.editor.set_selection(Some(hxy_core::Selection {
                                 anchor: hxy_core::ByteOffset::new(offset),
                                 cursor: hxy_core::ByteOffset::new(end_inclusive),
-                            });
-                            file.pending_scroll_to_byte = Some(hxy_core::ByteOffset::new(offset));
+                            }));
+                            file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
                         }
                     }
                     crate::template_panel::TemplateEvent::Copy { idx, kind } => {
                         if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
-                            let source = file.source.clone();
+                            let source = file.editor.source().clone();
                             let ctx = ui.ctx().clone();
                             if let Some(text) = format_template_copy(&source, &node, kind) {
                                 ctx.copy_text(text);
@@ -1824,7 +1569,7 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                     }
                     crate::template_panel::TemplateEvent::SaveBytes(idx) => {
                         if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
-                            save_template_bytes(&file.source, &node);
+                            save_template_bytes(file.editor.source(), &node);
                         }
                     }
                     crate::template_panel::TemplateEvent::ToggleColors(on) => {
@@ -1934,14 +1679,12 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
         (highlight, build_palette(ui.visuals().dark_mode, &state.app, highlight))
     };
-    let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
+    let has_sel = file.editor.selection().map(|s| !s.range().is_empty()).unwrap_or(false);
     // Pre-compute "is the selection a scalar integer width?" before
     // taking the mutable borrow HexView needs; the `ui.selection`
     // can't be read inside the context menu closure once HexView
     // holds it.
-    let show_scalar_submenu = file.selection.map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
-    let pending_scroll = file.pending_scroll.take();
-    let pending_scroll_to_byte = file.pending_scroll_to_byte.take();
+    let show_scalar_submenu = file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
 
     let mut copy_request: Option<CopyKind> = None;
     let hover_span = file
@@ -1962,49 +1705,42 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .filter(|t| t.show_colors && !t.leaf_boundaries.is_empty())
         .map(|t| (t.leaf_boundaries.as_slice(), t.leaf_colors.as_slice()));
 
-    let modified_ranges = file.modified_ranges();
-    // Only surface the nibble indicator when the tab is actually
-    // accepting edits; read-only tabs keep the plain byte cursor.
-    let nibble_cursor = (file.edit_mode == crate::file::EditMode::Mutable).then_some(
-        if file.edit_high_nibble { hxy_view::NibbleSide::High } else { hxy_view::NibbleSide::Low },
-    );
-    let active_pane =
-        (file.edit_mode == crate::file::EditMode::Mutable).then_some(file.active_pane);
-    let mut view = HexView::new(&*file.source, &mut file.selection)
-        .id_salt(("hxy-hex-view", file.id.get()))
-        .columns(state.app.hex_columns)
-        .value_highlight(highlight)
-        .minimap(state.app.show_minimap)
-        .minimap_colored(state.app.minimap_colored)
-        .hover_span(hover_span)
-        .field_boundaries(field_boundaries)
-        .nibble_cursor(nibble_cursor)
-        .active_pane(active_pane);
-    if let Some((_, colors)) = field_colors {
-        view = view.field_colors(colors);
-    }
+    let modified_ranges = file.editor.modified_ranges();
+    let tab_id = file.id.get();
+    let columns = state.app.hex_columns;
     let need_styler = field_colors.is_some() || !modified_ranges.is_empty();
-    if need_styler {
+    let styler_data = if need_styler {
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
-        // Put the modified-byte tint in the *other* channel from
-        // the user's base highlight mode so it's always visible:
-        // text-highlight scheme paints glyphs, so patched bytes get
-        // a red background; background-highlight scheme (or
-        // highlighting disabled) already owns the cell fill, so
-        // patched bytes get red text instead.
         let modified_style = if text_mode {
             hxy_view::ByteStyle { bg: Some(MODIFIED_BYTE_BG), fg: None }
         } else {
             hxy_view::ByteStyle { bg: None, fg: Some(MODIFIED_BYTE_FG) }
         };
-        // Pulled out so the closure doesn't have to hold the
-        // `field_colors` Option through its lifetime.
         let field_data = field_colors.map(|(b, c)| (b.to_vec(), c.to_vec()));
+        Some((text_mode, modified_style, field_data))
+    } else {
+        None
+    };
+
+    let mut view = file
+        .editor
+        .view()
+        .id_salt(("hxy-hex-view", tab_id))
+        .columns(columns)
+        .value_highlight(highlight)
+        .minimap(state.app.show_minimap)
+        .minimap_colored(state.app.minimap_colored)
+        .hover_span(hover_span)
+        .field_boundaries(field_boundaries);
+    if let Some((_, colors)) = field_colors {
+        view = view.field_colors(colors);
+    }
+    if let Some((text_mode, modified_style, field_data)) = styler_data {
+        // Patched bytes win over the template field tint -- the
+        // user is editing them right now, the template colour can
+        // wait.
         view = view.byte_styler(move |_byte, offset| {
             let b = offset.get();
-            // Patched bytes win over the template field tint -- the
-            // user is editing them right now, the template colour
-            // can wait.
             if range_contains(&modified_ranges, b) {
                 return modified_style;
             }
@@ -2031,12 +1767,6 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     if let Some(p) = palette {
         view = view.palette(p);
     }
-    if let Some(s) = pending_scroll {
-        view = view.scroll_to(s);
-    }
-    if let Some(b) = pending_scroll_to_byte {
-        view = view.scroll_to_byte(b);
-    }
     let response = view
         .context_menu(|ui| {
             ui.add_enabled_ui(has_sel, |ui| {
@@ -2046,13 +1776,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
             });
         })
         .show(ui);
+    file.editor.on_response(&response, columns);
     file.hovered = response.hovered_offset;
-    file.scroll_offset = response.scroll_offset;
-    if let Some(pane) = response.interacted_pane {
-        file.active_pane = pane;
-        file.reset_edit_nibble();
-        file.push_history_boundary();
-    }
     sync_tab_state(state, file);
 
     // If a template is active and the user is hovering a byte it
@@ -2061,7 +1786,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     if let Some(offset) = response.hovered_offset
         && let Some(template) = file.template.as_ref()
         && let Some(path) =
-            crate::template_panel::breadcrumb_for_offset(&template.tree, file.source.as_ref(), offset.get())
+            crate::template_panel::breadcrumb_for_offset(&template.tree, file.editor.source().as_ref(), offset.get())
     {
         let layer = ui.layer_id();
         egui::Tooltip::always_open(
@@ -2221,17 +1946,17 @@ fn sync_native_menu_state(app: &mut HxyApp) {
     let has_file = active.is_some();
     let has_scalar = active
         .and_then(|id| app.files.get(&id))
-        .and_then(|f| f.selection)
+        .and_then(|f| f.editor.selection())
         .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
         .unwrap_or(false);
-    let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.is_dirty() || f.root_path().is_some());
+    let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
     let (can_undo, can_redo) = active
         .and_then(|id| app.files.get(&id))
-        .map(|f| (f.can_undo(), f.can_redo()))
+        .map(|f| (f.editor.can_undo(), f.editor.can_redo()))
         .unwrap_or((false, false));
     let can_paste = active
         .and_then(|id| app.files.get(&id))
-        .is_some_and(|f| f.edit_mode == crate::file::EditMode::Mutable);
+        .is_some_and(|f| f.editor.edit_mode() == crate::file::EditMode::Mutable);
     if let Some(menu) = app.menu.as_ref() {
         menu.set_file_open(has_file);
         menu.set_scalar_selection(has_scalar);
@@ -2247,18 +1972,17 @@ fn sync_native_menu_state(app: &mut HxyApp) {
 fn toggle_active_edit_mode(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    file.edit_mode = match file.edit_mode {
+    let next = match file.editor.edit_mode() {
         crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
         crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
     };
-    file.reset_edit_nibble();
-    file.push_history_boundary();
+    file.editor.set_edit_mode(next);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
     let Some(id) = active_file_id(app) else { return };
-    let edit_mode = app.files.get(&id).map(|f| f.edit_mode);
+    let edit_mode = app.files.get(&id).map(|f| f.editor.edit_mode());
     if edit_mode != Some(crate::file::EditMode::Mutable) {
         return;
     }
@@ -2295,7 +2019,7 @@ fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
 fn undo_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    if let Some(entry) = file.undo() {
+    if let Some(entry) = file.editor.undo() {
         jump_cursor_to(file, entry.offset);
     }
 }
@@ -2304,7 +2028,7 @@ fn undo_active_file(app: &mut HxyApp) {
 fn redo_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    if let Some(entry) = file.redo() {
+    if let Some(entry) = file.editor.redo() {
         jump_cursor_to(file, entry.offset);
     }
 }
@@ -2315,11 +2039,9 @@ fn redo_active_file(app: &mut HxyApp) {
 /// so typing after the jump starts on the high nibble.
 #[cfg(not(target_arch = "wasm32"))]
 fn jump_cursor_to(file: &mut crate::file::OpenFile, offset: u64) {
-    let len = file.source.len().get();
+    let len = file.editor.source().len().get();
     let clamped = offset.min(len.saturating_sub(1));
-    file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped)));
-    file.reset_edit_nibble();
-    file.last_cursor_offset = Some(clamped);
+    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));    file.editor.reset_edit_nibble();
 }
 
 #[cfg(target_os = "macos")]
@@ -2339,7 +2061,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     handle_open_file(app);
                 }
                 let active = active_file_id(app);
-                let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.is_dirty() || f.root_path().is_some());
+                let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
                 let save_text = ui.ctx().format_shortcut(&SAVE_FILE);
                 let save_as_text = ui.ctx().format_shortcut(&SAVE_FILE_AS);
                 ui.add_enabled_ui(can_save, |ui| {
@@ -2371,7 +2093,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 let active_file = active_file_id(app);
                 let (can_undo, can_redo) = active_file
                     .and_then(|id| app.files.get(&id))
-                    .map(|f| (f.can_undo(), f.can_redo()))
+                    .map(|f| (f.editor.can_undo(), f.editor.can_redo()))
                     .unwrap_or((false, false));
                 ui.add_enabled_ui(can_undo, |ui| {
                     if ui.add(egui::Button::new(hxy_i18n::t("menu-edit-undo")).shortcut_text(undo_text)).clicked() {
@@ -2388,7 +2110,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 ui.separator();
                 let mode_label = active_file
                     .and_then(|id| app.files.get(&id))
-                    .map(|f| match f.edit_mode {
+                    .map(|f| match f.editor.edit_mode() {
                         crate::file::EditMode::Readonly => hxy_i18n::t("menu-edit-enter-edit-mode"),
                         crate::file::EditMode::Mutable => hxy_i18n::t("menu-edit-leave-edit-mode"),
                     })
@@ -2431,7 +2153,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     let paste_hex_text = ui.ctx().format_shortcut(&PASTE_AS_HEX);
                     let can_paste = active_file
                         .and_then(|id| app.files.get(&id))
-                        .is_some_and(|f| f.edit_mode == crate::file::EditMode::Mutable);
+                        .is_some_and(|f| f.editor.edit_mode() == crate::file::EditMode::Mutable);
                     ui.add_enabled_ui(can_paste, |ui| {
                         if ui.add(egui::Button::new(hxy_i18n::t("menu-edit-paste")).shortcut_text(paste_text)).clicked()
                         {
@@ -2452,7 +2174,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     // panel's row menu.
                     let show_scalar = active_file
                         .and_then(|id| app.files.get(&id))
-                        .and_then(|f| f.selection)
+                        .and_then(|f| f.editor.selection())
                         .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
                         .unwrap_or(false);
                     if let Some(kind) = crate::copy_format::copy_as_menu(ui, show_scalar)
@@ -2524,9 +2246,9 @@ fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
     let Some(id) = active_file_id(app) else { return HistoryPaletteContext::default() };
     let Some(file) = app.files.get(&id) else { return HistoryPaletteContext::default() };
     HistoryPaletteContext {
-        can_undo: file.can_undo(),
-        can_redo: file.can_redo(),
-        can_paste: file.edit_mode == crate::file::EditMode::Mutable,
+        can_undo: file.editor.can_undo(),
+        can_redo: file.editor.can_redo(),
+        can_paste: file.editor.edit_mode() == crate::file::EditMode::Mutable,
     }
 }
 
@@ -2534,7 +2256,7 @@ fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
 fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
     let id = active_file_id(app)?;
     let file = app.files.get(&id)?;
-    let sel = file.selection?;
+    let sel = file.editor.selection()?;
     let range = sel.range();
     if range.is_empty() {
         return None;
@@ -2850,8 +2572,8 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
     let Some(path) = target else { return };
 
     let ctx = format!("Save {}", path.display());
-    let len = file.source.len().get();
-    let bytes = match file.source.read(
+    let len = file.editor.source().len().get();
+    let bytes = match file.editor.source().read(
         hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).expect("valid range"),
     ) {
         Ok(b) => b,
@@ -2868,17 +2590,11 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
     // Successful write -- swap the tab's byte source over to the
     // just-saved bytes so the view reflects on-disk state instead
     // of the stale pre-edit buffer. Reverting the patch alone would
-    // leave `file.source` wrapping the original pre-edit bytes and
+    // leave `file.editor.source()` wrapping the original pre-edit bytes and
     // reads would show the wrong content.
     if let Some(file) = app.files.get_mut(&id) {
         let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
-        let patched = hxy_core::PatchedSource::new(base);
-        file.patch = patched.patch();
-        file.source = std::sync::Arc::new(patched);
-        file.undo_stack.clear();
-        file.redo_stack.clear();
-        file.history_break = true;
-        file.last_edit_at = None;
+        file.editor.swap_source(base);
         file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();
@@ -2952,14 +2668,14 @@ fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
     }
     let id = app.last_active_file?;
     let file = app.files.get(&id)?;
-    let caret = file.selection?.cursor.get();
-    let src_len = file.source.len().get();
+    let caret = file.editor.selection()?.cursor.get();
+    let src_len = file.editor.source().len().get();
     if caret >= src_len {
         return Some((caret, Vec::new()));
     }
     let end = caret.saturating_add(16).min(src_len);
     let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(caret), hxy_core::ByteOffset::new(end)).ok()?;
-    let bytes = file.source.read(range).ok()?;
+    let bytes = file.editor.source().read(range).ok()?;
     Some((caret, bytes))
 }
 
@@ -2980,11 +2696,11 @@ impl TabViewer for HxyTabViewer<'_> {
                     // then a bullet when there are unsaved edits,
                     // then the filename.
                     let mut prefix = String::new();
-                    if matches!(f.edit_mode, crate::file::EditMode::Readonly) {
+                    if matches!(f.editor.edit_mode(), crate::file::EditMode::Readonly) {
                         prefix.push_str(egui_phosphor::regular::LOCK);
                         prefix.push(' ');
                     }
-                    if f.is_dirty() {
+                    if f.editor.is_dirty() {
                         prefix.push_str("\u{2022} ");
                     }
                     format!("{prefix}{}", f.display_name).into()
@@ -3053,8 +2769,8 @@ impl TabViewer for HxyTabViewer<'_> {
 fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
     let Some(source) = &file.source_kind else { return };
     if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
-        entry.selection = file.selection;
-        entry.scroll_offset = file.scroll_offset;
+        entry.selection = file.editor.selection();
+        entry.scroll_offset = file.editor.scroll_offset();
         entry.show_vfs_tree = file.show_vfs_tree;
     }
 }
@@ -3096,7 +2812,7 @@ fn status_bar_ui(
             ui.label("Hover: --");
         }
         ui.separator();
-        if let Some(sel) = file.selection {
+        if let Some(sel) = file.editor.selection() {
             let range = sel.range();
             let last_inclusive = range.end().get().saturating_sub(1);
             let (display, copy, tooltip) = if sel.is_caret() {
@@ -3119,12 +2835,12 @@ fn status_bar_ui(
             ui.label("Sel: --");
         }
 
-        let size = file.source.len().get();
+        let size = file.editor.source().len().get();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Lock toggle sits next to the length readout. Clicking
             // flips EditMode; the tooltip describes what the click
             // will do, not what the icon currently shows.
-            let (icon, tooltip_key) = match file.edit_mode {
+            let (icon, tooltip_key) = match file.editor.edit_mode() {
                 crate::file::EditMode::Readonly => (egui_phosphor::regular::LOCK, "status-lock-readonly-tooltip"),
                 crate::file::EditMode::Mutable => (egui_phosphor::regular::LOCK_OPEN, "status-lock-mutable-tooltip"),
             };
@@ -3132,12 +2848,11 @@ fn status_bar_ui(
                 .add(egui::Button::new(icon).frame(false).min_size(egui::vec2(18.0, 18.0)))
                 .on_hover_text(hxy_i18n::t(tooltip_key));
             if resp.clicked() {
-                file.edit_mode = match file.edit_mode {
+                let next = match file.editor.edit_mode() {
                     crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
                     crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
                 };
-                file.reset_edit_nibble();
-                file.push_history_boundary();
+                file.editor.set_edit_mode(next);
             }
 
             let value = format_offset(size, base);
@@ -3224,13 +2939,13 @@ fn range_contains(ranges: &[(u64, u64)], offset: u64) -> bool {
 /// hex view has no type context, so this is the best we can do
 /// without a template supplying sign + endianness.
 fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
-    let Some(selection) = file.selection else { return };
+    let Some(selection) = file.editor.selection() else { return };
     let range = selection.range();
     if range.is_empty() {
         return;
     }
     let offset = range.start().get();
-    let bytes = match file.source.read(range) {
+    let bytes = match file.editor.source().read(range) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, "read selection for copy");

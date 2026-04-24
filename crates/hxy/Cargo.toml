@@ -35,7 +35,7 @@ wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-s
 # Internal crates
 hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
-hxy-view = { workspace = true }
+hxy-view = { workspace = true, features = ["serde"] }
 
 # UI -- eframe configured with default-features = false so we can opt into
 # wayland only on desktop (wayland can't be linked on wasm).

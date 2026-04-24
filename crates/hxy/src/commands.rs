@@ -174,7 +174,7 @@ impl ToolbarCommand for UndoCommand {
     }
 
     fn enabled(&self, cx: &ToolbarCtx<'_, '_>) -> bool {
-        cx.active_file.as_ref().is_some_and(|f| f.can_undo())
+        cx.active_file.as_ref().is_some_and(|f| f.editor.can_undo())
     }
 
     fn shortcut(&self) -> Option<egui::KeyboardShortcut> {
@@ -204,7 +204,7 @@ impl ToolbarCommand for RedoCommand {
     }
 
     fn enabled(&self, cx: &ToolbarCtx<'_, '_>) -> bool {
-        cx.active_file.as_ref().is_some_and(|f| f.can_redo())
+        cx.active_file.as_ref().is_some_and(|f| f.editor.can_redo())
     }
 
     fn shortcut(&self) -> Option<egui::KeyboardShortcut> {
