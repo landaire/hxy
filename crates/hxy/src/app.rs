@@ -2595,16 +2595,19 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => "Plugins".into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
-                    // Leading lock icon marks a read-only tab;
-                    // trailing dot marks unsaved edits (the standard
-                    // VS Code / Vim / Emacs convention).
-                    let lock = if matches!(f.edit_mode, crate::file::EditMode::Readonly) {
-                        format!("{} ", egui_phosphor::regular::LOCK)
-                    } else {
-                        String::new()
-                    };
-                    let dirty = if f.is_dirty() { " \u{2022}" } else { "" };
-                    format!("{lock}{}{dirty}", f.display_name).into()
+                    // Both indicators sit to the left of the name:
+                    // lock glyph first when the tab is read-only,
+                    // then a bullet when there are unsaved edits,
+                    // then the filename.
+                    let mut prefix = String::new();
+                    if matches!(f.edit_mode, crate::file::EditMode::Readonly) {
+                        prefix.push_str(egui_phosphor::regular::LOCK);
+                        prefix.push(' ');
+                    }
+                    if f.is_dirty() {
+                        prefix.push_str("\u{2022} ");
+                    }
+                    format!("{prefix}{}", f.display_name).into()
                 }
                 None => format!("file-{}", id.get()).into(),
             },
