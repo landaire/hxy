@@ -310,7 +310,24 @@ pub fn show_with_style<A: Clone>(
         return None;
     }
 
-    if ctx.input(|i| style.dismiss_keys.iter().any(|k| i.key_pressed(*k))) {
+    // Drain matching key-press events so downstream handlers don't
+    // also react to the same press (e.g. clearing a hex-editor
+    // selection when the user hit Esc only to dismiss the palette).
+    let dismissed = ctx.input_mut(|i| {
+        let mut found = false;
+        i.events.retain(|event| {
+            let egui::Event::Key { key, pressed: true, repeat: false, .. } = event else {
+                return true;
+            };
+            if style.dismiss_keys.iter().any(|k| k == key) {
+                found = true;
+                return false;
+            }
+            true
+        });
+        found
+    });
+    if dismissed {
         return Some(Outcome::Closed);
     }
 

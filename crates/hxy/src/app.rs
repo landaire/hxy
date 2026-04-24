@@ -900,25 +900,26 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
                 out.push(EditPress::Hex(nibble));
                 return false;
             }
+            let extend = modifiers.shift;
             match key {
                 egui::Key::ArrowLeft => {
-                    out.push(EditPress::NavLeft);
+                    out.push(EditPress::Nav(NavDir::Left, extend));
                     false
                 }
                 egui::Key::ArrowRight => {
-                    out.push(EditPress::NavRight);
+                    out.push(EditPress::Nav(NavDir::Right, extend));
                     false
                 }
                 egui::Key::ArrowUp => {
-                    out.push(EditPress::NavUp);
+                    out.push(EditPress::Nav(NavDir::Up, extend));
                     false
                 }
                 egui::Key::ArrowDown => {
-                    out.push(EditPress::NavDown);
+                    out.push(EditPress::Nav(NavDir::Down, extend));
                     false
                 }
                 egui::Key::Escape => {
-                    out.push(EditPress::ResetNibble);
+                    out.push(EditPress::ClearSelection);
                     false
                 }
                 _ => true,
@@ -947,23 +948,21 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "hex edit"),
             },
-            EditPress::NavLeft => {
-                nav_nibble(file, -1);
+            EditPress::Nav(dir, extend) => {
+                match dir {
+                    NavDir::Left => nav_nibble(file, -1, extend),
+                    NavDir::Right => nav_nibble(file, 1, extend),
+                    NavDir::Up => nav_row(file, -1, columns, source_len, extend),
+                    NavDir::Down => nav_row(file, 1, columns, source_len, extend),
+                }
                 file.push_history_boundary();
             }
-            EditPress::NavRight => {
-                nav_nibble(file, 1);
-                file.push_history_boundary();
+            EditPress::ClearSelection => {
+                if let Some(sel) = file.selection.as_mut() {
+                    sel.anchor = sel.cursor;
+                }
+                file.reset_edit_nibble();
             }
-            EditPress::NavUp => {
-                nav_row(file, -1, columns, source_len);
-                file.push_history_boundary();
-            }
-            EditPress::NavDown => {
-                nav_row(file, 1, columns, source_len);
-                file.push_history_boundary();
-            }
-            EditPress::ResetNibble => file.reset_edit_nibble(),
         }
     }
     file.last_cursor_offset = file.selection.as_ref().map(|s| s.cursor.get());
@@ -971,11 +970,13 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
 
 /// Advance the cursor by one whole byte (wrap at EOF). Used after a
 /// complete byte's worth of hex input (high + low) and by nibble
-/// navigation crossing a byte boundary.
+/// navigation crossing a byte boundary. Collapses any existing
+/// selection to a caret -- typing isn't a selection-extending op.
 fn advance_cursor_byte(file: &mut OpenFile) {
     if let Some(sel) = file.selection.as_mut() {
         let next = sel.cursor.get().saturating_add(1).min(file.source.len().get());
         sel.cursor = hxy_core::ByteOffset::new(next);
+        sel.anchor = sel.cursor;
     }
 }
 
@@ -983,12 +984,13 @@ fn advance_cursor_byte(file: &mut OpenFile) {
 /// Left/right steps flip `edit_high_nibble`; crossing a byte
 /// boundary moves the byte cursor and lands on the correct half
 /// (low when coming from the right, high when coming from the
-/// left).
-fn nav_nibble(file: &mut OpenFile, direction: i32) {
+/// left). When `extend` is false the anchor follows the cursor so
+/// the selection stays a caret; when true the anchor stays put and
+/// the selection grows between anchor and cursor.
+fn nav_nibble(file: &mut OpenFile, direction: i32, extend: bool) {
     let Some(sel) = file.selection.as_mut() else { return };
     let source_len = file.source.len().get();
     if direction > 0 {
-        // Right: high -> low (same byte), low -> high of next byte.
         if file.edit_high_nibble {
             file.edit_high_nibble = false;
         } else {
@@ -996,25 +998,25 @@ fn nav_nibble(file: &mut OpenFile, direction: i32) {
             sel.cursor = hxy_core::ByteOffset::new(next);
             file.edit_high_nibble = true;
         }
+    } else if !file.edit_high_nibble {
+        file.edit_high_nibble = true;
     } else {
-        // Left: low -> high (same byte), high -> low of previous
-        // byte. Clamp at byte 0 so the cursor stops at the start.
-        if !file.edit_high_nibble {
-            file.edit_high_nibble = true;
-        } else {
-            let cur = sel.cursor.get();
-            if cur > 0 {
-                sel.cursor = hxy_core::ByteOffset::new(cur - 1);
-                file.edit_high_nibble = false;
-            }
+        let cur = sel.cursor.get();
+        if cur > 0 {
+            sel.cursor = hxy_core::ByteOffset::new(cur - 1);
+            file.edit_high_nibble = false;
         }
+    }
+    if !extend {
+        sel.anchor = sel.cursor;
     }
 }
 
 /// Move the cursor one row in `direction`. Lands on the high nibble
 /// of the new byte and clamps to the last byte (`source_len - 1`)
-/// when moving down past EOF; up at row 0 is a no-op.
-fn nav_row(file: &mut OpenFile, direction: i32, columns: u64, source_len: u64) {
+/// when moving down past EOF; up at row 0 is a no-op. `extend`
+/// follows the same anchor/cursor contract as [`nav_nibble`].
+fn nav_row(file: &mut OpenFile, direction: i32, columns: u64, source_len: u64, extend: bool) {
     if columns == 0 {
         return;
     }
@@ -1029,20 +1031,32 @@ fn nav_row(file: &mut OpenFile, direction: i32, columns: u64, source_len: u64) {
     };
     sel.cursor = hxy_core::ByteOffset::new(new);
     file.edit_high_nibble = true;
+    if !extend {
+        sel.anchor = sel.cursor;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NavDir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 enum EditPress {
     Hex(u8),
-    NavLeft,
-    NavRight,
-    NavUp,
-    NavDown,
-    ResetNibble,
+    /// Move the cursor. `bool` is true when Shift was held: extend the
+    /// selection from the anchor rather than collapsing to a caret.
+    Nav(NavDir, bool),
+    /// Collapse the selection to a caret at the current cursor and
+    /// reset the half-typed-nibble pointer. Bound to Escape.
+    ClearSelection,
 }
 
 impl EditPress {
     fn is_navigation(&self) -> bool {
-        matches!(self, EditPress::NavLeft | EditPress::NavRight | EditPress::NavUp | EditPress::NavDown)
+        matches!(self, EditPress::Nav(..))
     }
 }
 
