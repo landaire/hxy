@@ -13,16 +13,9 @@ use std::sync::Arc;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
-use hxy_plugin_host::Arg;
-use hxy_plugin_host::Diagnostic;
-use hxy_plugin_host::DisplayHint;
-use hxy_plugin_host::Node;
 use hxy_plugin_host::ParsedTemplate;
-use hxy_plugin_host::ResultTree;
-use hxy_plugin_host::Severity;
-use hxy_plugin_host::Span;
 use hxy_plugin_host::TemplateRuntime;
-use hxy_plugin_host::Value as WitValue;
+use hxy_plugin_host::template as wit;
 use hxy_vfs::HandlerError;
 
 /// Builtin list. Order matters: first match wins in the dispatch
@@ -73,13 +66,18 @@ struct Bt010Parsed {
 }
 
 impl ParsedTemplate for Bt010Parsed {
-    fn execute(&self, _args: &[Arg]) -> Result<ResultTree, HandlerError> {
+    fn execute(&self, _args: &[wit::Arg]) -> Result<wit::ResultTree, HandlerError> {
         let shim = HexSourceShim(self.source.clone());
         let result = hxy_010_lang::Interpreter::new(shim).run(&self.program);
         Ok(to_result_tree(result))
     }
 
-    fn expand_array(&self, _array_id: u64, _start: u64, _end: u64) -> Result<Vec<Node>, HandlerError> {
+    fn expand_array(
+        &self,
+        _array_id: u64,
+        _start: u64,
+        _end: u64,
+    ) -> Result<Vec<wit::Node>, HandlerError> {
         Err(HandlerError::Unsupported(
             "the built-in 010-bt runtime materialises arrays eagerly; no deferred expansion".into(),
         ))
@@ -106,30 +104,33 @@ impl hxy_010_lang::HexSource for HexSourceShim {
     }
 }
 
-fn to_result_tree(r: hxy_010_lang::RunResult) -> ResultTree {
+fn to_result_tree(r: hxy_010_lang::RunResult) -> wit::ResultTree {
     let nodes = r.nodes.iter().map(convert_node).collect();
     let diagnostics = r.diagnostics.iter().map(convert_diagnostic).collect();
-    ResultTree { nodes, diagnostics }
+    // The 010 language has no syntax for declaring a byte palette —
+    // leave the override empty and the app falls back to the user's
+    // chosen highlight scheme.
+    wit::ResultTree { nodes, diagnostics, byte_palette: None }
 }
 
-fn convert_node(n: &hxy_010_lang::NodeOut) -> Node {
+fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
     let display = n.attrs.iter().find_map(|(k, v)| {
         if k == "format" {
             Some(match v.as_str() {
-                "hex" => DisplayHint::Hex,
-                "decimal" => DisplayHint::Decimal,
-                "binary" => DisplayHint::Binary,
-                "ascii" => DisplayHint::Ascii,
-                _ => DisplayHint::Decimal,
+                "hex" => wit::DisplayHint::Hex,
+                "decimal" => wit::DisplayHint::Decimal,
+                "binary" => wit::DisplayHint::Binary,
+                "ascii" => wit::DisplayHint::Ascii,
+                _ => wit::DisplayHint::Decimal,
             })
         } else {
             None
         }
     });
-    Node {
+    wit::Node {
         name: n.name.clone(),
-        type_name: n.type_name.clone(),
-        span: Span { offset: n.offset, length: n.length },
+        type_name: convert_node_type(&n.ty),
+        span: wit::Span { offset: n.offset, length: n.length },
         value: n.value.as_ref().map(convert_value),
         parent: n.parent,
         array: None,
@@ -137,42 +138,73 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> Node {
     }
 }
 
-fn convert_value(v: &hxy_010_lang::Value) -> WitValue {
-    use hxy_010_lang::Value;
-    match v {
-        Value::Void => WitValue::StringVal(String::new()),
-        Value::UInt { value, kind } => match kind.width {
-            1 => WitValue::U8Val(*value as u8),
-            2 => WitValue::U16Val(*value as u16),
-            4 => WitValue::U32Val(*value as u32),
-            _ => WitValue::U64Val(*value as u64),
-        },
-        Value::SInt { value, kind } => match kind.width {
-            1 => WitValue::S8Val(*value as i8),
-            2 => WitValue::S16Val(*value as i16),
-            4 => WitValue::S32Val(*value as i32),
-            _ => WitValue::S64Val(*value as i64),
-        },
-        Value::Float { value, kind } => {
-            if kind.width == 4 {
-                WitValue::F32Val(*value as f32)
-            } else {
-                WitValue::F64Val(*value)
-            }
-        }
-        Value::Char { value, .. } => WitValue::U8Val(*value as u8),
-        Value::Str(s) => WitValue::StringVal(s.clone()),
-        Value::Bool(b) => WitValue::U8Val(u8::from(*b)),
+fn convert_scalar(k: hxy_010_lang::ScalarKind) -> wit::ScalarKind {
+    match k {
+        hxy_010_lang::ScalarKind::U8 => wit::ScalarKind::U8K,
+        hxy_010_lang::ScalarKind::U16 => wit::ScalarKind::U16K,
+        hxy_010_lang::ScalarKind::U32 => wit::ScalarKind::U32K,
+        hxy_010_lang::ScalarKind::U64 => wit::ScalarKind::U64K,
+        hxy_010_lang::ScalarKind::S8 => wit::ScalarKind::S8K,
+        hxy_010_lang::ScalarKind::S16 => wit::ScalarKind::S16K,
+        hxy_010_lang::ScalarKind::S32 => wit::ScalarKind::S32K,
+        hxy_010_lang::ScalarKind::S64 => wit::ScalarKind::S64K,
+        hxy_010_lang::ScalarKind::F32 => wit::ScalarKind::F32K,
+        hxy_010_lang::ScalarKind::F64 => wit::ScalarKind::F64K,
+        hxy_010_lang::ScalarKind::Bool => wit::ScalarKind::BoolK,
+        hxy_010_lang::ScalarKind::Bytes => wit::ScalarKind::BytesK,
+        hxy_010_lang::ScalarKind::Str => wit::ScalarKind::StringK,
     }
 }
 
-fn convert_diagnostic(d: &hxy_010_lang::Diagnostic) -> Diagnostic {
-    Diagnostic {
+fn convert_node_type(t: &hxy_010_lang::NodeType) -> wit::NodeType {
+    match t {
+        hxy_010_lang::NodeType::Scalar(k) => wit::NodeType::Scalar(convert_scalar(*k)),
+        hxy_010_lang::NodeType::ScalarArray(k, n) => {
+            wit::NodeType::ScalarArray((convert_scalar(*k), *n))
+        }
+        hxy_010_lang::NodeType::StructType(s) => wit::NodeType::StructType(s.clone()),
+        hxy_010_lang::NodeType::StructArray(s, n) => wit::NodeType::StructArray((s.clone(), *n)),
+        hxy_010_lang::NodeType::EnumType(s) => wit::NodeType::EnumType(s.clone()),
+        hxy_010_lang::NodeType::EnumArray(s, n) => wit::NodeType::EnumArray((s.clone(), *n)),
+        hxy_010_lang::NodeType::Unknown(s) => wit::NodeType::Unknown(s.clone()),
+    }
+}
+
+fn convert_value(v: &hxy_010_lang::Value) -> wit::Value {
+    match v {
+        hxy_010_lang::Value::Void => wit::Value::StringVal(String::new()),
+        hxy_010_lang::Value::UInt { value, kind } => match kind.width {
+            1 => wit::Value::U8Val(*value as u8),
+            2 => wit::Value::U16Val(*value as u16),
+            4 => wit::Value::U32Val(*value as u32),
+            _ => wit::Value::U64Val(*value as u64),
+        },
+        hxy_010_lang::Value::SInt { value, kind } => match kind.width {
+            1 => wit::Value::S8Val(*value as i8),
+            2 => wit::Value::S16Val(*value as i16),
+            4 => wit::Value::S32Val(*value as i32),
+            _ => wit::Value::S64Val(*value as i64),
+        },
+        hxy_010_lang::Value::Float { value, kind } => {
+            if kind.width == 4 {
+                wit::Value::F32Val(*value as f32)
+            } else {
+                wit::Value::F64Val(*value)
+            }
+        }
+        hxy_010_lang::Value::Char { value, .. } => wit::Value::U8Val(*value as u8),
+        hxy_010_lang::Value::Str(s) => wit::Value::StringVal(s.clone()),
+        hxy_010_lang::Value::Bool(b) => wit::Value::U8Val(u8::from(*b)),
+    }
+}
+
+fn convert_diagnostic(d: &hxy_010_lang::Diagnostic) -> wit::Diagnostic {
+    wit::Diagnostic {
         message: d.message.clone(),
         severity: match d.severity {
-            hxy_010_lang::Severity::Error => Severity::Error,
-            hxy_010_lang::Severity::Warning => Severity::Warning,
-            hxy_010_lang::Severity::Info => Severity::Info,
+            hxy_010_lang::Severity::Error => wit::Severity::Error,
+            hxy_010_lang::Severity::Warning => wit::Severity::Warning,
+            hxy_010_lang::Severity::Info => wit::Severity::Info,
         },
         file_offset: d.file_offset,
         template_line: d.template_line,

@@ -1,6 +1,6 @@
 //! hxy hex editor application.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod app;
 pub mod commands;
@@ -18,10 +18,19 @@ pub mod copy_format;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod inspector;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod command_palette;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugins_tab;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod template_library;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod template_panel;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
+
+#[cfg(target_os = "macos")]
+pub mod menu;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;

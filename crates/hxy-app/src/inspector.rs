@@ -109,7 +109,6 @@ pub fn default_decoders() -> Vec<Arc<dyn Decoder>> {
     ]
 }
 
-// ---- integer / binary --------------------------------------------------
 
 struct BinaryDecoder;
 
@@ -270,7 +269,6 @@ impl Decoder for LebDecoder {
     }
 }
 
-// ---- floats ------------------------------------------------------------
 
 struct FloatDecoder {
     width: usize,
@@ -311,7 +309,6 @@ impl Decoder for FloatDecoder {
     }
 }
 
-// ---- time --------------------------------------------------------------
 
 enum TimeDecoder {
     /// 32-bit Unix epoch seconds, signed.
@@ -441,7 +438,6 @@ fn format_unix_seconds(secs: i64) -> Option<Decoded> {
     Some(Decoded::text(ts.to_string()))
 }
 
-// ---- colours -----------------------------------------------------------
 
 enum ColorDecoder {
     /// u32 with alpha-first byte order (0xAARRGGBB as read LE/BE).
@@ -484,12 +480,15 @@ impl Decoder for ColorDecoder {
                 ((raw >> 8) & 0xFF) as u8,
             ),
         };
-        let label = format!("#{rr:02X}{gg:02X}{bb:02X}  α={ar} rgba=({rr},{gg},{bb},{ar})");
+        let tuple = match self {
+            Self::Argb => format!("argb=({ar},{rr},{gg},{bb})"),
+            Self::Rgba => format!("rgba=({rr},{gg},{bb},{ar})"),
+        };
+        let label = format!("#{rr:02X}{gg:02X}{bb:02X}  α={ar} {tuple}");
         Some(Decoded::Color { rgba: [rr, gg, bb, ar], label })
     }
 }
 
-// ---- formatting helpers ------------------------------------------------
 
 fn format_unsigned(value: u128, width: usize, radix: IntRadix) -> String {
     match radix {
@@ -519,7 +518,6 @@ fn format_signed(value: i128, width: usize, radix: IntRadix) -> String {
     }
 }
 
-// ---- rendering ---------------------------------------------------------
 
 /// Draw the inspector into `ui`. `caret_offset` is the cursor byte
 /// position; `bytes` is a prefetched window of data (typically 16
@@ -545,14 +543,9 @@ pub fn show(
     });
     ui.separator();
 
-    match caret_offset {
-        Some(off) => {
-            ui.weak(format!("Caret: {:#x} ({off})", off));
-        }
-        None => {
-            ui.weak("No caret — click a byte in the hex view.");
-            return;
-        }
+    if caret_offset.is_none() {
+        ui.weak("No caret — click a byte in the hex view.");
+        return;
     }
     ui.add_space(4.0);
 

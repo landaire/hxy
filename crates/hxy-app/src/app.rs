@@ -71,6 +71,24 @@ pub struct HxyApp {
     /// clicked) keep showing data from the file the user was last
     /// reading, not from themselves.
     last_active_file: Option<FileId>,
+    /// Native macOS menu bar. `None` until the app is constructed on
+    /// the main thread. Dropping it tears the NSMenu down.
+    #[cfg(target_os = "macos")]
+    menu: Option<crate::menu::MenuState>,
+    /// Set by the Plugins tab when the user installs or deletes a
+    /// file in the plugin directories. Drained at end of `ui()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_rescan: bool,
+    /// Auto-detected template library loaded from the user's
+    /// `templates/` dir. Consulted when a file is opened so the
+    /// toolbar can offer `Run ZIP.bt` directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    templates: crate::template_library::TemplateLibrary,
+    /// Cmd+P / Ctrl+P unified palette. Outlives individual opens so
+    /// toggling off and back on feels continuous; the state is reset
+    /// explicitly when switching modes.
+    #[cfg(not(target_arch = "wasm32"))]
+    palette: crate::command_palette::PaletteState,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -135,7 +153,48 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             decoders: crate::inspector::default_decoders(),
             last_active_file: None,
+            #[cfg(target_os = "macos")]
+            menu: Some(crate::menu::MenuState::install()),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_rescan: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            templates: crate::template_library::TemplateLibrary::load_from(
+                user_templates_dir().as_deref(),
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            palette: crate::command_palette::PaletteState::default(),
         }
+    }
+
+    /// Rebuild the VFS registry + template runtime list from the
+    /// user's plugin directories. Called by the Plugins tab after the
+    /// user installs or deletes a file.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reload_plugins(&mut self) {
+        let mut registry = VfsRegistry::new();
+        registry.register(Arc::new(ZipHandler::new()));
+        register_user_plugins(&mut registry);
+        self.registry = registry;
+        self.template_plugins = load_user_template_plugins();
+        self.templates =
+            crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
+    }
+
+    /// Show the Plugins tab. Focuses if already open; otherwise splits
+    /// to the right of the main dock area like the other side panels.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_plugins(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Plugins) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        self.dock.main_surface_mut().split_right(
+            egui_dock::NodeIndex::root(),
+            0.72,
+            vec![Tab::Plugins],
+        );
     }
 
     /// Open the data inspector as a right-side split of the main
@@ -312,6 +371,24 @@ impl HxyApp {
         ) && let Ok(head) = file.source.read(range)
         {
             file.detected_handler = self.registry.detect(&head);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let ext = file
+                    .source_kind
+                    .as_ref()
+                    .map(|s| s.root_path().clone())
+                    .as_ref()
+                    .and_then(|p| p.extension())
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase());
+                file.suggested_template = self
+                    .templates
+                    .suggest(ext.as_deref(), &head)
+                    .map(|entry| crate::file::SuggestedTemplate {
+                        path: entry.path.clone(),
+                        display_name: entry.name.clone(),
+                    });
+            }
         }
 
         if restore_show_vfs_tree
@@ -444,6 +521,12 @@ impl eframe::App for HxyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let snapshot_before = self.state.read().clone();
 
+        #[cfg(target_os = "macos")]
+        drain_native_menu(ui.ctx(), self);
+        #[cfg(target_os = "macos")]
+        sync_native_menu_state(self);
+
+        #[cfg(not(target_os = "macos"))]
         top_menu_bar(ui, self);
         render_toolbar_and_apply(ui, self);
 
@@ -465,9 +548,16 @@ impl eframe::App for HxyApp {
                 decoders: &self.decoders,
                 #[cfg(not(target_arch = "wasm32"))]
                 inspector_data,
+                #[cfg(not(target_arch = "wasm32"))]
+                plugin_rescan: &mut self.plugin_rescan,
             };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::mem::take(&mut self.plugin_rescan) {
+            self.reload_plugins();
         }
 
         apply_zoom_change(ui.ctx(), &self.state, &mut self.applied_zoom);
@@ -482,6 +572,9 @@ impl eframe::App for HxyApp {
         drain_template_runs(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        handle_command_palette(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
@@ -668,13 +761,22 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
-/// Push the current `settings.zoom_factor` into the egui context whenever
-/// it drifts from what we last applied.
+/// Two-way sync between `settings.zoom_factor` and egui's own zoom.
+/// The user can change zoom from the Settings slider (settings →
+/// context) or via Cmd+= / Cmd+- / Cmd+0 (context → settings). The
+/// direction is determined by comparing both against `applied`, the
+/// value we last pushed in either direction.
 fn apply_zoom_change(ctx: &egui::Context, state: &SharedPersistedState, applied: &mut f32) {
     let target = state.read().app.zoom_factor;
-    if (target - *applied).abs() > f32::EPSILON {
+    let ctx_zoom = ctx.zoom_factor();
+    let setting_drift = (target - *applied).abs() > f32::EPSILON;
+    let ctx_drift = (ctx_zoom - *applied).abs() > f32::EPSILON;
+    if setting_drift {
         ctx.set_zoom_factor(target);
         *applied = target;
+    } else if ctx_drift {
+        state.write().app.zoom_factor = ctx_zoom;
+        *applied = ctx_zoom;
     }
 }
 
@@ -797,6 +899,14 @@ fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::co
             #[cfg(not(target_arch = "wasm32"))]
             run_template_dialog(ctx, app);
         }
+        CommandEffect::RunTemplateDirect(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(id) = active_file_id(app) {
+                run_template_from_path(ctx, app, id, path);
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = path;
+        }
         CommandEffect::OpenRecent(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             match std::fs::read(&path) {
@@ -822,10 +932,18 @@ fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::co
 fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(path) = rfd::FileDialog::new().pick_file() else { return };
+    run_template_from_path(ctx, app, id, path);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_template_from_path(
+    ctx: &egui::Context,
+    app: &mut HxyApp,
+    id: FileId,
+    path: std::path::PathBuf,
+) {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
 
-    // Context used on every console entry for this run so the user
-    // can tell which file/template produced a given message.
     let data_name = app
         .files
         .get(&id)
@@ -935,9 +1053,9 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
                 }
                 for d in &diagnostics {
                     let severity = match d.severity {
-                        hxy_plugin_host::Severity::Error => ConsoleSeverity::Error,
-                        hxy_plugin_host::Severity::Warning => ConsoleSeverity::Warning,
-                        hxy_plugin_host::Severity::Info => ConsoleSeverity::Info,
+                        hxy_plugin_host::template::Severity::Error => ConsoleSeverity::Error,
+                        hxy_plugin_host::template::Severity::Warning => ConsoleSeverity::Warning,
+                        hxy_plugin_host::template::Severity::Info => ConsoleSeverity::Info,
                     };
                     let loc = match d.file_offset {
                         Some(off) => format!(" @ {off:#x}"),
@@ -1108,6 +1226,9 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                             save_template_bytes(&file.source, &node);
                         }
                     }
+                    crate::template_panel::TemplateEvent::ToggleColors(on) => {
+                        state.show_colors = on;
+                    }
                 }
             }
         });
@@ -1119,7 +1240,7 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
 #[cfg(not(target_arch = "wasm32"))]
 fn format_template_copy(
     source: &std::sync::Arc<dyn hxy_core::HexSource>,
-    node: &hxy_plugin_host::Node,
+    node: &hxy_plugin_host::template::Node,
     kind: CopyKind,
 ) -> Option<String> {
     if kind.is_value() {
@@ -1130,16 +1251,17 @@ fn format_template_copy(
     let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
     let range = hxy_core::ByteRange::new(start, end).ok()?;
     let bytes = source.read(range).ok()?;
-    crate::copy_format::format_bytes(kind, &bytes, &node.name, &node.type_name)
+    let ty = hxy_plugin_host::node_type_label(&node.type_name);
+    crate::copy_format::format_bytes(kind, &bytes, &node.name, &ty)
 }
 
-/// Extract a u64 bit pattern from a scalar [`hxy_plugin_host::Value`],
+/// Extract a u64 bit pattern from a scalar [`hxy_plugin_host::template::Value`],
 /// preserving signed-bit representation so hex displays match what the
 /// user sees on the wire. Returns `None` for non-scalar values (Str /
 /// Bool / Bytes / Enum).
 #[cfg(not(target_arch = "wasm32"))]
-fn scalar_value_u64(v: &hxy_plugin_host::Value) -> Option<u64> {
-    use hxy_plugin_host::Value;
+fn scalar_value_u64(v: &hxy_plugin_host::template::Value) -> Option<u64> {
+    use hxy_plugin_host::template::Value;
     Some(match v {
         Value::U8Val(x) => u64::from(*x),
         Value::U16Val(x) => u64::from(*x),
@@ -1154,7 +1276,7 @@ fn scalar_value_u64(v: &hxy_plugin_host::Value) -> Option<u64> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &hxy_plugin_host::Node) {
+fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &hxy_plugin_host::template::Node) {
     let start = hxy_core::ByteOffset::new(node.span.offset);
     let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
     let Ok(range) = hxy_core::ByteRange::new(start, end) else { return };
@@ -1204,8 +1326,22 @@ fn render_tree_panel_header(ui: &mut egui::Ui, show: &mut bool) {
 }
 
 fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut PersistedState) -> Option<CopyKind> {
-    let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
-    let palette = build_palette(ui.visuals().dark_mode, &state.app, highlight);
+    let template_palette_override = file
+        .template
+        .as_ref()
+        .and_then(|t| t.byte_palette_override.clone());
+    // A plugin-supplied palette forces the highlight on (in Background
+    // mode by default) so the user actually sees it; otherwise the
+    // user's own setting wins.
+    let (highlight, palette) = if let Some(table) = template_palette_override {
+        (
+            Some(state.app.byte_highlight_mode.as_view()),
+            Some(hxy_view::HighlightPalette::Custom(table)),
+        )
+    } else {
+        let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
+        (highlight, build_palette(ui.visuals().dark_mode, &state.app, highlight))
+    };
     let has_sel = file.selection.map(|s| !s.range().is_empty()).unwrap_or(false);
     // Pre-compute "is the selection a scalar integer width?" before
     // taking the mutable borrow HexView needs; the `ui.selection`
@@ -1230,12 +1366,52 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
             hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
         });
 
+    let field_boundaries = file
+        .template
+        .as_ref()
+        .map(|t| t.leaf_boundaries.as_slice())
+        .unwrap_or_default();
+    let field_colors = file
+        .template
+        .as_ref()
+        .filter(|t| t.show_colors && !t.leaf_boundaries.is_empty())
+        .map(|t| (t.leaf_boundaries.as_slice(), t.leaf_colors.as_slice()));
+
     let mut view = HexView::new(&*file.source, &mut file.selection)
+        .id_salt(("hxy-hex-view", file.id.get()))
         .columns(state.app.hex_columns)
         .value_highlight(highlight)
         .minimap(state.app.show_minimap)
         .minimap_colored(state.app.minimap_colored)
-        .hover_span(hover_span);
+        .hover_span(hover_span)
+        .field_boundaries(field_boundaries);
+    if let Some((_, colors)) = field_colors {
+        view = view.field_colors(colors);
+    }
+    if let Some((boundaries, colors)) = field_colors {
+        let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
+        view = view.byte_styler(move |_byte, offset| {
+            let b = offset.get();
+            let idx = boundaries.partition_point(|(start, _)| start.get() <= b);
+            if idx == 0 {
+                return hxy_view::ByteStyle { bg: None, fg: None };
+            }
+            let (start, len) = boundaries[idx - 1];
+            let end = start.get().saturating_add(len.get());
+            if b >= end {
+                return hxy_view::ByteStyle { bg: None, fg: None };
+            }
+            let color = colors[idx - 1];
+            if text_mode {
+                hxy_view::ByteStyle { bg: None, fg: Some(color) }
+            } else {
+                // Mute the vivid base tone to a background tint; the
+                // view's own `contrast_text_color` picks the glyph
+                // colour from there.
+                hxy_view::ByteStyle { bg: Some(color.gamma_multiply(0.45)), fg: None }
+            }
+        });
+    }
     if let Some(p) = palette {
         view = view.palette(p);
     }
@@ -1257,6 +1433,34 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     file.hovered = response.hovered_offset;
     file.scroll_offset = response.scroll_offset;
     sync_tab_state(state, file);
+
+    // If a template is active and the user is hovering a byte it
+    // covers, pop a breadcrumb tooltip next to the pointer showing
+    // the full parent chain down to the containing field.
+    if let Some(offset) = response.hovered_offset
+        && let Some(template) = file.template.as_ref()
+        && let Some(path) = crate::template_panel::breadcrumb_for_offset(&template.tree, offset.get())
+    {
+        let layer = ui.layer_id();
+        egui::Tooltip::always_open(
+            ui.ctx().clone(),
+            layer,
+            egui::Id::new("hxy_template_breadcrumb"),
+            egui::PopupAnchor::Pointer,
+        )
+        .gap(12.0)
+        .show(|ui| {
+            for (i, line) in path.iter().enumerate() {
+                let text = egui::RichText::new(line).monospace();
+                if i + 1 == path.len() {
+                    ui.label(text.strong());
+                } else {
+                    ui.label(text);
+                }
+            }
+        });
+    }
+
     copy_request
 }
 
@@ -1311,6 +1515,15 @@ fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
     Some(base.join(APP_NAME).join("template-plugins"))
 }
 
+/// Directory for user-authored template sources (`.bt` files). The
+/// [`TemplateLibrary`] scans this for auto-detection; distinct from
+/// `template-plugins/`, which holds compiled WASM runtimes.
+#[cfg(not(target_arch = "wasm32"))]
+fn user_templates_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::data_dir()?;
+    Some(base.join(APP_NAME).join("templates"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
     let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
@@ -1347,6 +1560,48 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+#[cfg(target_os = "macos")]
+fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(menu) = app.menu.as_ref() else { return };
+    let actions = menu.drain_actions();
+    for action in actions {
+        match action {
+            crate::menu::MenuAction::OpenFile => handle_open_file(app),
+            crate::menu::MenuAction::CopyBytes => {
+                copy_active_file(ctx, app, CopyKind::BytesLossyUtf8)
+            }
+            crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
+            crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
+            crate::menu::MenuAction::ShowConsole => app.show_console(),
+            crate::menu::MenuAction::ShowInspector => app.show_inspector(),
+            crate::menu::MenuAction::ShowPlugins => app.show_plugins(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_native_menu_state(app: &mut HxyApp) {
+    let active = active_file_id(app);
+    let has_file = active.is_some();
+    let has_scalar = active
+        .and_then(|id| app.files.get(&id))
+        .and_then(|f| f.selection)
+        .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
+        .unwrap_or(false);
+    if let Some(menu) = app.menu.as_ref() {
+        menu.set_file_open(has_file);
+        menu.set_scalar_selection(has_scalar);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_active_file(ctx: &egui::Context, app: &mut HxyApp, kind: CopyKind) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get(&id) else { return };
+    do_copy(ctx, file, kind);
+}
+
+#[cfg(not(target_os = "macos"))]
 fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     egui::Panel::top("hxy_menu_bar").show_inside(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
@@ -1417,12 +1672,236 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     app.show_inspector();
                     ui.close();
                 }
+                if ui.button("Plugins").clicked() {
+                    app.show_plugins();
+                    ui.close();
+                }
             });
             ui.menu_button(hxy_i18n::t("menu-help"), |ui| {
                 ui.label(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION")));
             });
         });
     });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
+    let toggle = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::P);
+    if ctx.input_mut(|i| i.consume_shortcut(&toggle)) {
+        if app.palette.is_open() {
+            app.palette.close();
+        } else {
+            app.palette.open_at(crate::command_palette::Mode::Main);
+        }
+    }
+    if !app.palette.is_open() {
+        return;
+    }
+    let copy_ctx = copy_palette_context(app);
+    let entries = build_palette_entries(app, copy_ctx);
+    let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
+    match outcome {
+        crate::command_palette::Outcome::Closed => app.palette.close(),
+        crate::command_palette::Outcome::Picked(action) => apply_palette_action(ctx, app, action),
+    }
+}
+
+/// Snapshot of the active selection used by the palette to decide
+/// which `Copy as…` entries to expose. `None` when no file is
+/// focused or the selection is empty.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct CopyPaletteContext {
+    /// True when the selection width is a scalar integer width
+    /// (1/2/4/8 bytes), meaning the `Copy value as…` options apply.
+    scalar_width: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
+    let id = active_file_id(app)?;
+    let file = app.files.get(&id)?;
+    let sel = file.selection?;
+    let range = sel.range();
+    if range.is_empty() {
+        return None;
+    }
+    Some(CopyPaletteContext {
+        scalar_width: matches!(range.len().get(), 1 | 2 | 4 | 8),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_palette_entries(
+    app: &HxyApp,
+    copy_ctx: Option<CopyPaletteContext>,
+) -> Vec<egui_palette::Entry<crate::command_palette::Action>> {
+    use crate::command_palette::Action;
+    use crate::command_palette::Mode;
+    use egui_phosphor::regular as icon;
+
+    let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
+    match app.palette.mode {
+        Mode::Main => {
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("toolbar-open-file"),
+                    Action::InvokeCommand("open-file"),
+                )
+                .with_icon(icon::FOLDER_OPEN),
+            );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("toolbar-browse-archive"),
+                    Action::InvokeCommand("browse-archive"),
+                )
+                .with_icon(icon::TREE_STRUCTURE),
+            );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-view-console"),
+                    Action::InvokeCommand("show-console"),
+                )
+                .with_icon(icon::TERMINAL),
+            );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-view-inspector"),
+                    Action::InvokeCommand("show-inspector"),
+                )
+                .with_icon(icon::EYE),
+            );
+            out.push(
+                egui_palette::Entry::new("Plugins", Action::InvokeCommand("show-plugins"))
+                    .with_icon(icon::PUZZLE_PIECE),
+            );
+            out.push(
+                egui_palette::Entry::new("Run Template…", Action::SwitchMode(Mode::Templates))
+                    .with_icon(icon::SCROLL),
+            );
+            if let Some(ctx) = copy_ctx {
+                for (label, kind) in crate::copy_format::BYTES_MENU {
+                    out.push(
+                        egui_palette::Entry::new(
+                            format!("Copy bytes: {label}"),
+                            Action::Copy(*kind),
+                        )
+                        .with_icon(icon::COPY),
+                    );
+                }
+                if ctx.scalar_width {
+                    for (label, kind) in crate::copy_format::VALUE_MENU {
+                        out.push(
+                            egui_palette::Entry::new(
+                                format!("Copy value: {label}"),
+                                Action::Copy(*kind),
+                            )
+                            .with_icon(icon::COPY),
+                        );
+                    }
+                }
+            }
+            for (id, file) in &app.files {
+                let mut entry = egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
+                    .with_icon(icon::FILE);
+                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
+            }
+        }
+        Mode::Templates => {
+            for entry in app.templates.entries() {
+                out.push(
+                    egui_palette::Entry::new(
+                        format!("Run {}", entry.name),
+                        Action::RunTemplate(entry.path.clone()),
+                    )
+                    .with_subtitle(entry.path.display().to_string())
+                    .with_icon(icon::SCROLL),
+                );
+            }
+            out.push(
+                egui_palette::Entry::new("Install template…", Action::InstallTemplate)
+                    .with_subtitle("Pick a .bt file; it's copied into your templates directory.")
+                    .with_icon(icon::DOWNLOAD),
+            );
+        }
+    }
+    out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_palette_action(
+    ctx: &egui::Context,
+    app: &mut HxyApp,
+    action: crate::command_palette::Action,
+) {
+    use crate::commands::CommandEffect;
+    match action {
+        crate::command_palette::Action::InvokeCommand(id) => {
+            app.palette.close();
+            match id {
+                "open-file" => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
+                "browse-archive" => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
+                "show-console" => app.show_console(),
+                "show-inspector" => app.show_inspector(),
+                "show-plugins" => app.show_plugins(),
+                _ => {}
+            }
+        }
+        crate::command_palette::Action::FocusFile(id) => {
+            app.palette.close();
+            app.focus_file_tab(id);
+        }
+        crate::command_palette::Action::RunTemplate(path) => {
+            app.palette.close();
+            if let Some(id) = active_file_id(app) {
+                run_template_from_path(ctx, app, id, path);
+            }
+        }
+        crate::command_palette::Action::SwitchMode(mode) => {
+            app.palette.open_at(mode);
+        }
+        crate::command_palette::Action::InstallTemplate => {
+            app.palette.close();
+            install_template_from_dialog(app);
+        }
+        crate::command_palette::Action::Copy(kind) => {
+            app.palette.close();
+            if let Some(id) = active_file_id(app)
+                && let Some(file) = app.files.get(&id)
+            {
+                do_copy(ctx, file, kind);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn install_template_from_dialog(app: &mut HxyApp) {
+    let Some(picked) = rfd::FileDialog::new()
+        .add_filter("010 Editor binary template", &["bt"])
+        .pick_file()
+    else {
+        return;
+    };
+    let Some(dir) = user_templates_dir() else {
+        tracing::warn!("user templates dir could not be resolved");
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(error = %e, "create templates dir");
+        return;
+    }
+    let Some(filename) = picked.file_name() else { return };
+    let dest = dir.join(filename);
+    if let Err(e) = std::fs::copy(&picked, &dest) {
+        tracing::warn!(error = %e, src = %picked.display(), dst = %dest.display(), "install template");
+        return;
+    }
+    app.reload_plugins();
+    tracing::info!(path = %dest.display(), "installed template");
 }
 
 fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
@@ -1470,6 +1949,11 @@ struct HxyTabViewer<'a> {
     /// it without reborrowing `files`.
     #[cfg(not(target_arch = "wasm32"))]
     inspector_data: Option<(u64, Vec<u8>)>,
+    /// Set to true when the Plugins tab mutated the plugin directories
+    /// and needs the registry / template runtimes rebuilt. Drained at
+    /// end of frame by [`HxyApp::ui`].
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_rescan: &'a mut bool,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -1510,6 +1994,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Settings => hxy_i18n::t("tab-settings").into(),
             Tab::Console => hxy_i18n::t("tab-console").into(),
             Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
+            Tab::Plugins => "Plugins".into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => f.display_name.clone().into(),
                 None => format!("file-{}", id.get()).into(),
@@ -1529,6 +2014,17 @@ impl TabViewer for HxyTabViewer<'_> {
                 };
                 crate::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
             }
+            Tab::Plugins => {
+                let handlers_dir = user_plugins_dir();
+                let templates_dir = user_template_plugins_dir();
+                let events =
+                    crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref());
+                for e in events {
+                    match e {
+                        crate::plugins_tab::PluginsEvent::Rescan => *self.plugin_rescan = true,
+                    }
+                }
+            }
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
                     render_file_tab(ui, *id, file, self.state);
@@ -1541,7 +2037,7 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector)
+        matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins)
     }
 
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {

@@ -13,7 +13,7 @@ use egui_table::HeaderCellInfo;
 use egui_table::HeaderRow;
 use egui_table::Table;
 use egui_table::TableDelegate;
-use hxy_plugin_host::Node;
+use hxy_plugin_host::template::Node;
 use hxy_plugin_host::ParsedTemplate;
 
 use crate::file::TemplateArrayId;
@@ -37,6 +37,8 @@ pub enum TemplateEvent {
     /// User picked "Save bytes to file…". App should pop up a save
     /// dialog and write this node's byte span.
     SaveBytes(TemplateNodeIdx),
+    /// User toggled per-field byte tinting in the hex view.
+    ToggleColors(bool),
 }
 
 pub use crate::copy_format::CopyKind;
@@ -53,6 +55,12 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
             {
                 events.push(TemplateEvent::Close);
             }
+            let mut colors_on = state.show_colors;
+            let resp = ui.toggle_value(&mut colors_on, egui_phosphor::regular::PAINT_BUCKET)
+                .on_hover_text("Tint bytes by field");
+            if resp.changed() {
+                events.push(TemplateEvent::ToggleColors(colors_on));
+            }
         });
     });
     ui.separator();
@@ -64,9 +72,9 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
             .show(ui, |ui| {
                 for d in &state.tree.diagnostics {
                     let icon = match d.severity {
-                        hxy_plugin_host::Severity::Error => egui_phosphor::regular::X_CIRCLE,
-                        hxy_plugin_host::Severity::Warning => egui_phosphor::regular::WARNING,
-                        hxy_plugin_host::Severity::Info => egui_phosphor::regular::INFO,
+                        hxy_plugin_host::template::Severity::Error => egui_phosphor::regular::X_CIRCLE,
+                        hxy_plugin_host::template::Severity::Warning => egui_phosphor::regular::WARNING,
+                        hxy_plugin_host::template::Severity::Info => egui_phosphor::regular::INFO,
                     };
                     ui.label(format!("{icon}  {}", d.message));
                 }
@@ -218,14 +226,14 @@ impl TemplateTableDelegate<'_> {
         let is_scalar = node.value.as_ref().is_some_and(|v| {
             matches!(
                 v,
-                hxy_plugin_host::Value::U8Val(_)
-                    | hxy_plugin_host::Value::U16Val(_)
-                    | hxy_plugin_host::Value::U32Val(_)
-                    | hxy_plugin_host::Value::U64Val(_)
-                    | hxy_plugin_host::Value::S8Val(_)
-                    | hxy_plugin_host::Value::S16Val(_)
-                    | hxy_plugin_host::Value::S32Val(_)
-                    | hxy_plugin_host::Value::S64Val(_)
+                hxy_plugin_host::template::Value::U8Val(_)
+                    | hxy_plugin_host::template::Value::U16Val(_)
+                    | hxy_plugin_host::template::Value::U32Val(_)
+                    | hxy_plugin_host::template::Value::U64Val(_)
+                    | hxy_plugin_host::template::Value::S8Val(_)
+                    | hxy_plugin_host::template::Value::S16Val(_)
+                    | hxy_plugin_host::template::Value::S32Val(_)
+                    | hxy_plugin_host::template::Value::S64Val(_)
             )
         });
 
@@ -272,7 +280,8 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(&node.name).truncate());
             }
             1 => {
-                ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()).truncate());
+                let label = hxy_plugin_host::node_type_label(&node.type_name);
+                ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
             }
             2 => {
                 ui.monospace(format!("{:#x}", node.span.offset));
@@ -332,7 +341,8 @@ impl TemplateTableDelegate<'_> {
                 ui.label(format!("[{index}]"));
             }
             1 => {
-                ui.add(egui::Label::new(egui::RichText::new(&node.type_name).weak()));
+                let label = hxy_plugin_host::node_type_label(&node.type_name);
+                ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             2 => {
                 ui.monospace(format!("{:#x}", node.span.offset));
@@ -348,7 +358,6 @@ impl TemplateTableDelegate<'_> {
     }
 }
 
-// ---- visibility computation ------------------------------------------------
 
 fn children_by_parent(nodes: &[Node]) -> HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> {
     let mut map: HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> = HashMap::new();
@@ -414,20 +423,32 @@ fn emit_node(
     }
 }
 
-// ---- value formatting ------------------------------------------------------
+
+/// Character budget for rendering a template field's string / bytes
+/// value. Fields wider than this collapse to `… (N bytes)` so a
+/// multi-megabyte `uchar[N] data` doesn't blow up the row or tooltip.
+const STRING_VALUE_PREVIEW_BUDGET: usize = 64;
+
+fn summarise_string(s: &str) -> String {
+    if s.len() <= STRING_VALUE_PREVIEW_BUDGET {
+        s.to_owned()
+    } else {
+        format!("… ({} bytes)", s.len())
+    }
+}
 
 fn format_value(node: &Node) -> String {
-    use hxy_plugin_host::Value;
+    use hxy_plugin_host::template::Value;
     let Some(v) = node.value.as_ref() else { return String::new() };
     match v {
         Value::U8Val(x) => format!("{x}"),
         Value::U16Val(x) => format!("{x}"),
         Value::U32Val(x) => match node.display {
-            Some(hxy_plugin_host::DisplayHint::Hex) => format!("0x{x:08X}"),
+            Some(hxy_plugin_host::template::DisplayHint::Hex) => format!("0x{x:08X}"),
             _ => format!("{x}"),
         },
         Value::U64Val(x) => match node.display {
-            Some(hxy_plugin_host::DisplayHint::Hex) => format!("0x{x:016X}"),
+            Some(hxy_plugin_host::template::DisplayHint::Hex) => format!("0x{x:016X}"),
             _ => format!("{x}"),
         },
         Value::S8Val(x) => format!("{x}"),
@@ -437,12 +458,11 @@ fn format_value(node: &Node) -> String {
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
         Value::BytesVal(b) => format!("{} bytes", b.len()),
-        Value::StringVal(s) => s.clone(),
+        Value::StringVal(s) => summarise_string(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
     }
 }
 
-// ---- state helpers ---------------------------------------------------------
 
 pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count: u64) {
     const MAX_INITIAL: u64 = 512;
@@ -472,8 +492,11 @@ pub fn new_state(parsed: std::sync::Arc<dyn ParsedTemplate>) -> Result<TemplateS
 /// template and sends the result back to the UI.
 pub fn new_state_from(
     parsed: std::sync::Arc<dyn ParsedTemplate>,
-    tree: hxy_plugin_host::ResultTree,
+    tree: hxy_plugin_host::template::ResultTree,
 ) -> TemplateState {
+    let leaf_boundaries = collect_leaf_boundaries(&tree);
+    let leaf_colors = generate_leaf_colors(leaf_boundaries.len());
+    let byte_palette_override = build_byte_palette_override(tree.byte_palette.as_deref());
     TemplateState {
         parsed: Some(parsed),
         tree,
@@ -481,24 +504,166 @@ pub fn new_state_from(
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
+        leaf_boundaries,
+        leaf_colors,
+        show_colors: true,
+        byte_palette_override,
     }
+}
+
+/// Unpack the runtime's optional 256-entry `0xAARRGGBB` table into an
+/// `Arc<[Color32; 256]>`. Any length other than 256 is rejected — we
+/// keep the contract tight so the hex view can index without bounds
+/// checks. Returns `None` when the runtime didn't supply a palette.
+fn build_byte_palette_override(
+    palette: Option<&[u32]>,
+) -> Option<std::sync::Arc<[egui::Color32; 256]>> {
+    let raw = palette?;
+    if raw.len() != 256 {
+        return None;
+    }
+    let mut out = [egui::Color32::TRANSPARENT; 256];
+    for (i, packed) in raw.iter().enumerate() {
+        let a = (packed >> 24) as u8;
+        let r = (packed >> 16) as u8;
+        let g = (packed >> 8) as u8;
+        let b = *packed as u8;
+        out[i] = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+    }
+    Some(std::sync::Arc::new(out))
 }
 
 pub fn error_state(message: String) -> TemplateState {
     TemplateState {
         parsed: None,
-        tree: hxy_plugin_host::ResultTree {
+        tree: hxy_plugin_host::template::ResultTree {
             nodes: Vec::new(),
-            diagnostics: vec![hxy_plugin_host::Diagnostic {
+            diagnostics: vec![hxy_plugin_host::template::Diagnostic {
                 message,
-                severity: hxy_plugin_host::Severity::Error,
+                severity: hxy_plugin_host::template::Severity::Error,
                 file_offset: None,
                 template_line: None,
             }],
+            byte_palette: None,
         },
         show_panel: true,
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
+        leaf_boundaries: Vec::new(),
+        leaf_colors: Vec::new(),
+        show_colors: true,
+        byte_palette_override: None,
     }
+}
+
+/// Pick `n` distinct hues using the golden angle so neighbouring
+/// leaves don't land on similar colours. The base colours are vivid
+/// enough to read as glyphs in `ValueHighlight::Text` mode; callers
+/// that paint them as backgrounds apply `gamma_multiply` to mute
+/// them on the fly.
+fn generate_leaf_colors(n: usize) -> Vec<egui::Color32> {
+    (0..n)
+        .map(|i| {
+            let hue = (i as f32 * 0.381966) % 1.0;
+            egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.6, 0.9, 1.0))
+        })
+        .collect()
+}
+
+/// Walk `tree` to find the deepest node whose span contains `byte`
+/// and return a top-down path of "{type} {name}[ = {value}]" strings.
+/// `None` when no template field covers the offset.
+pub fn breadcrumb_for_offset(
+    tree: &hxy_plugin_host::template::ResultTree,
+    byte: u64,
+) -> Option<Vec<String>> {
+    // Find the deepest containing node by scanning once; later (more
+    // specific) nodes in the flat pre-order list win over ancestors.
+    let mut deepest: Option<u32> = None;
+    for (idx, node) in tree.nodes.iter().enumerate() {
+        let start = node.span.offset;
+        let end = start.saturating_add(node.span.length);
+        if byte >= start && byte < end {
+            deepest = Some(idx as u32);
+        }
+    }
+    let leaf = deepest?;
+
+    // Walk parent chain leaf → root.
+    let mut chain: Vec<u32> = Vec::new();
+    let mut cursor = Some(leaf);
+    while let Some(idx) = cursor {
+        chain.push(idx);
+        cursor = tree.nodes.get(idx as usize).and_then(|n| n.parent);
+    }
+    chain.reverse();
+
+    Some(
+        chain
+            .iter()
+            .map(|idx| {
+                let node = &tree.nodes[*idx as usize];
+                let is_leaf = *idx == leaf;
+                let ty = hxy_plugin_host::node_type_label(&node.type_name);
+                let value_str = if is_leaf { format_node_value(node) } else { None };
+                match value_str {
+                    Some(v) => format!("{} {} = {}", ty, node.name, v),
+                    None => format!("{} {}", ty, node.name),
+                }
+            })
+            .collect(),
+    )
+}
+
+fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
+    use hxy_plugin_host::template::Value;
+    let v = node.value.as_ref()?;
+    Some(match v {
+        Value::U8Val(x) => format!("{x}"),
+        Value::U16Val(x) => format!("{x}"),
+        Value::U32Val(x) => format!("{x}"),
+        Value::U64Val(x) => format!("{x}"),
+        Value::S8Val(x) => format!("{x}"),
+        Value::S16Val(x) => format!("{x}"),
+        Value::S32Val(x) => format!("{x}"),
+        Value::S64Val(x) => format!("{x}"),
+        Value::F32Val(x) => format!("{x}"),
+        Value::F64Val(x) => format!("{x}"),
+        Value::BytesVal(b) => format!("{} bytes", b.len()),
+        Value::StringVal(s) => format!("{:?}", summarise_string(s)),
+        Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
+    })
+}
+
+/// Collect (offset, length) for every leaf node — one with no
+/// children and no deferred array — and sort by offset. This is the
+/// list the hex view uses to draw per-field outlines.
+fn collect_leaf_boundaries(
+    tree: &hxy_plugin_host::template::ResultTree,
+) -> Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> {
+    let mut has_children = vec![false; tree.nodes.len()];
+    for node in &tree.nodes {
+        if let Some(parent) = node.parent
+            && (parent as usize) < has_children.len()
+        {
+            has_children[parent as usize] = true;
+        }
+    }
+    let mut out: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> = tree
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(idx, node)| {
+            !has_children[*idx] && node.array.is_none() && node.span.length > 0
+        })
+        .map(|(_, node)| {
+            (
+                hxy_core::ByteOffset::new(node.span.offset),
+                hxy_core::ByteLen::new(node.span.length),
+            )
+        })
+        .collect();
+    out.sort_by_key(|(start, _)| start.get());
+    out
 }

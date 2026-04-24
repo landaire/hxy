@@ -34,7 +34,7 @@ impl CopyKind {
 
 /// Menu items for the bytes submenu (available on any selection).
 pub const BYTES_MENU: &[(&str, CopyKind)] = &[
-    ("Bytes (UTF-8)", CopyKind::BytesLossyUtf8),
+    ("String (UTF-8)", CopyKind::BytesLossyUtf8),
     ("Hex (spaced)", CopyKind::BytesHexSpaced),
     ("Hex (compact)", CopyKind::BytesHexCompact),
     ("Decimal (CSV)", CopyKind::BytesDecimalCsv),

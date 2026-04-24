@@ -30,6 +30,9 @@ pub enum CommandEffect {
     MountActiveFile,
     OpenRecent(std::path::PathBuf),
     RunTemplateDialog,
+    /// Run a specific template file without prompting — pushed when
+    /// the auto-detected library has matched the active file.
+    RunTemplateDirect(std::path::PathBuf),
 }
 
 /// Button in the global toolbar. Commands are registered once at
@@ -119,7 +122,17 @@ impl ToolbarCommand for RunTemplateCommand {
         "run-template"
     }
 
-    fn label(&self, _: &ToolbarCtx<'_, '_>) -> String {
+    fn label(&self, cx: &ToolbarCtx<'_, '_>) -> String {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(name) = cx
+            .active_file
+            .as_ref()
+            .and_then(|f| f.suggested_template.as_ref())
+            .map(|s| s.display_name.clone())
+        {
+            return format!("Run {name}");
+        }
+        let _ = cx;
         hxy_i18n::t("toolbar-run-template")
     }
 
@@ -132,6 +145,16 @@ impl ToolbarCommand for RunTemplateCommand {
     }
 
     fn invoke(&self, cx: &mut ToolbarCtx<'_, '_>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = cx
+            .active_file
+            .as_ref()
+            .and_then(|f| f.suggested_template.as_ref())
+            .map(|s| s.path.clone())
+        {
+            cx.effects.push(CommandEffect::RunTemplateDirect(path));
+            return;
+        }
         cx.effects.push(CommandEffect::RunTemplateDialog);
     }
 }

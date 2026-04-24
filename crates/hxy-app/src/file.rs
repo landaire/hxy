@@ -68,6 +68,21 @@ pub struct OpenFile {
     /// tree; when the run finishes we swap the result in here.
     #[cfg(not(target_arch = "wasm32"))]
     pub template_running: Option<TemplateRun>,
+    /// Template auto-detected for this file by the library scanner:
+    /// either a File Mask extension hit or an ID Bytes magic match.
+    /// `None` when no library entry matches.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub suggested_template: Option<SuggestedTemplate>,
+}
+
+/// A template library entry pre-matched against a file's first bytes
+/// and extension. Stored on the tab so the toolbar can render its
+/// label (`Run ZIP.bt`) and invoke the runtime without re-scanning.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct SuggestedTemplate {
+    pub path: PathBuf,
+    pub display_name: String,
 }
 
 /// In-flight template run on a worker thread. Receives the full
@@ -85,7 +100,7 @@ pub struct TemplateRun {
 pub enum TemplateRunOutcome {
     Ok {
         parsed: std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>,
-        tree: hxy_plugin_host::ResultTree,
+        tree: hxy_plugin_host::template::ResultTree,
     },
     Err(String),
 }
@@ -115,12 +130,12 @@ pub struct TemplateState {
     /// `expand_array` can't be called and the panel renders only the
     /// diagnostics header.
     pub parsed: Option<std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>>,
-    pub tree: hxy_plugin_host::ResultTree,
+    pub tree: hxy_plugin_host::template::ResultTree,
     /// Show the panel in the file tab. User can toggle via the tree
     /// panel's close button.
     pub show_panel: bool,
     /// Array id -> materialised children, by order of expansion.
-    pub expanded_arrays: std::collections::HashMap<TemplateArrayId, Vec<hxy_plugin_host::Node>>,
+    pub expanded_arrays: std::collections::HashMap<TemplateArrayId, Vec<hxy_plugin_host::template::Node>>,
     /// Indexes of nodes whose subtrees the user has collapsed. Default
     /// is expanded; we store the negation so freshly-run templates
     /// reveal everything without per-node defaults.
@@ -129,6 +144,23 @@ pub struct TemplateState {
     /// whose row the pointer is over, if any. Consumed by the hex
     /// view to paint a highlight over that node's byte span.
     pub hovered_node: Option<TemplateNodeIdx>,
+    /// Precomputed (offset, length) spans for every leaf node in
+    /// the tree, sorted by offset. Passed to `HexView` so it can
+    /// draw field-boundary outlines without walking the tree each
+    /// frame.
+    pub leaf_boundaries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>,
+    /// One tint per entry in `leaf_boundaries`. The hex view uses
+    /// these to paint each field's bytes a distinct colour when
+    /// [`Self::show_colors`] is on.
+    pub leaf_colors: Vec<egui::Color32>,
+    /// When true, the hex view recolours bytes by their containing
+    /// template field. Toggled from the template panel header.
+    pub show_colors: bool,
+    /// Plugin-supplied per-byte palette (one colour per value 0..=255),
+    /// extracted once from the runtime's `ResultTree::byte_palette`.
+    /// When `Some`, overrides the user's byte-value highlight for
+    /// this tab.
+    pub byte_palette_override: Option<std::sync::Arc<[egui::Color32; 256]>>,
 }
 
 impl OpenFile {
@@ -157,6 +189,8 @@ impl OpenFile {
             template: None,
             #[cfg(not(target_arch = "wasm32"))]
             template_running: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            suggested_template: None,
         }
     }
 
