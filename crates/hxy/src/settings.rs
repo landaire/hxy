@@ -121,10 +121,29 @@ pub struct AppSettings {
     /// the simpler one-press-closes behaviour.
     #[serde(default = "default_palette_escape_pops_to_parent")]
     pub palette_escape_pops_to_parent: bool,
+
+    /// When `true`, the address column inserts
+    /// [`Self::address_separator_char`] between every group of 4 hex
+    /// digits (counting from the right) so long offsets stay readable
+    /// at a glance, e.g. `0000_0080`.
+    #[serde(default)]
+    pub address_separator_enabled: bool,
+
+    /// Character used between hex-digit groups in the address column
+    /// when [`Self::address_separator_enabled`] is on. Defaults to
+    /// `_`, the digit separator used by Rust / Python / Java numeric
+    /// literals; other common picks are `'` (C++), `:` (010 Editor),
+    /// or ` `.
+    #[serde(default = "default_address_separator_char")]
+    pub address_separator_char: char,
 }
 
 fn default_palette_escape_pops_to_parent() -> bool {
     true
+}
+
+fn default_address_separator_char() -> char {
+    '_'
 }
 
 impl Default for AppSettings {
@@ -142,6 +161,8 @@ impl Default for AppSettings {
             minimap_colored: true,
             recent_files: Vec::new(),
             palette_escape_pops_to_parent: true,
+            address_separator_enabled: false,
+            address_separator_char: default_address_separator_char(),
         }
     }
 }

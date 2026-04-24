@@ -488,6 +488,13 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     palette_override: Option<HighlightPalette>,
     byte_styler: Option<ByteStylerFn<'s>>,
     address_formatter: Option<AddressFormatterFn<'s>>,
+    /// Override the auto-computed width (in chars) of the address
+    /// column. Auto-default is the minimum number of hex digits
+    /// needed to address the source, padded to 8. Hosts that insert
+    /// digit-grouping separators (e.g. `0000_0080`) need to widen
+    /// the column to fit them and set this to the inflated character
+    /// count.
+    address_chars_override: Option<usize>,
     column_header_formatter: Option<ColumnHeaderFormatterFn<'s>>,
     context_menu: Option<ContextMenuFn<'s>>,
     minimap: bool,
@@ -557,6 +564,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             palette_override: None,
             byte_styler: None,
             address_formatter: None,
+            address_chars_override: None,
             column_header_formatter: None,
             context_menu: None,
             minimap: false,
@@ -642,6 +650,16 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         self
     }
 
+    /// Override the auto-computed address-column width, in characters.
+    /// The default is enough hex digits to address the source (padded
+    /// to 8). Pair this with [`Self::address_formatter`] when the
+    /// formatter inflates the rendered length, e.g. by inserting
+    /// digit-grouping separators.
+    pub fn address_chars(mut self, chars: usize) -> Self {
+        self.address_chars_override = Some(chars);
+        self
+    }
+
     /// Override the column-header label formatter. Default is a single
     /// uppercase hex digit.
     pub fn column_header_formatter(mut self, f: impl Fn(usize) -> String + 's) -> Self {
@@ -718,6 +736,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             palette_override,
             byte_styler,
             address_formatter,
+            address_chars_override,
             column_header_formatter,
             context_menu,
             minimap,
@@ -739,7 +758,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 (mode, palette)
             });
             let total_rows = row_count(source.len(), columns);
-            let address_chars = address_hex_width(source.len());
+            let address_chars = address_chars_override.unwrap_or_else(|| address_hex_width(source.len()));
             let font_id = TextStyle::Monospace.resolve(ui.style());
             let row_height = ui.text_style_height(&TextStyle::Monospace);
             let char_w = measure_char_width(ui, &font_id);
@@ -1036,9 +1055,47 @@ fn row_count(len: ByteLen, columns: ColumnCount) -> usize {
     usize::try_from(rows).unwrap_or(usize::MAX)
 }
 
-fn address_hex_width(len: ByteLen) -> usize {
+/// Number of hex digits needed to address every byte of a source of
+/// the given length, padded to a minimum of 8 so common short files
+/// still render with a familiar 8-digit offset column. Hosts overriding
+/// the address formatter use this to compute the base width before
+/// adding their own grouping separators.
+pub fn address_hex_width(len: ByteLen) -> usize {
     let bits_needed = 64 - len.get().saturating_sub(1).leading_zeros() as usize;
     bits_needed.div_ceil(4).max(8)
+}
+
+/// Render `offset` as uppercase zero-padded hex of width `chars`,
+/// inserting `separator` between every group of `group` digits counted
+/// from the right. With `group = 4` and `separator = '_'` this produces
+/// `0000_0080`, mirroring numeric-literal grouping in Rust / Python.
+/// `group = 0` disables separator insertion.
+pub fn format_address_grouped(offset: ByteOffset, chars: usize, separator: char, group: usize) -> String {
+    let raw = format!("{:0chars$X}", offset.get(), chars = chars);
+    if group == 0 || raw.len() <= group {
+        return raw;
+    }
+    let len = raw.len();
+    let mut out = String::with_capacity(len + (len - 1) / group);
+    for (i, ch) in raw.chars().enumerate() {
+        if i > 0 && (len - i) % group == 0 {
+            out.push(separator);
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Width in characters of an address rendered by
+/// [`format_address_grouped`] given the base hex-digit count and the
+/// grouping size. Hosts pair this with [`HexView::address_chars`] to
+/// reserve room for the inserted separators.
+pub fn address_chars_with_separator(base_chars: usize, group: usize) -> usize {
+    if group == 0 || base_chars <= group {
+        base_chars
+    } else {
+        base_chars + (base_chars - 1) / group
+    }
 }
 
 fn measure_char_width(ui: &Ui, font_id: &FontId) -> f32 {

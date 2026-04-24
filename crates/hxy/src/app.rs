@@ -2308,6 +2308,10 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         None
     };
 
+    let address_separator =
+        state.app.address_separator_enabled.then(|| {
+            (hxy_view::address_hex_width(file.editor.source().len()), state.app.address_separator_char)
+        });
     let mut view = file
         .editor
         .view()
@@ -2318,6 +2322,11 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .minimap_colored(state.app.minimap_colored)
         .hover_span(hover_span)
         .field_boundaries(field_boundaries);
+    if let Some((base_chars, sep)) = address_separator {
+        view = view
+            .address_chars(hxy_view::address_chars_with_separator(base_chars, 4))
+            .address_formatter(move |offset, _| hxy_view::format_address_grouped(offset, base_chars, sep, 4));
+    }
     if let Some((_, colors)) = field_colors {
         view = view.field_colors(colors);
     }
@@ -4687,6 +4696,24 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings) {
                 ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Hex, "Hex");
                 ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Decimal, "Decimal");
             });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-address-separator"));
+        ui.checkbox(&mut settings.address_separator_enabled, "");
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-address-separator-char"));
+        ui.add_enabled_ui(settings.address_separator_enabled, |ui| {
+            // Edit through a single-char string buffer; clamp on
+            // commit so the user can type a multi-char paste and
+            // still end up with a single character.
+            let mut buf = settings.address_separator_char.to_string();
+            if ui.add(egui::TextEdit::singleline(&mut buf).desired_width(28.0).char_limit(1)).changed()
+                && let Some(ch) = buf.chars().next()
+            {
+                settings.address_separator_char = ch;
+            }
+        });
         ui.end_row();
     });
 }
