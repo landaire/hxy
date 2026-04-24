@@ -98,7 +98,7 @@ fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> 
 /// `template-runtime` world. Components that don't match the world
 /// are reported as errors rather than silently skipped — the caller
 /// should split template and handler plugin directories.
-pub fn load_template_runtimes_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRuntime>, PluginLoadError> {
+pub fn load_template_plugins_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRuntime>, PluginLoadError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }

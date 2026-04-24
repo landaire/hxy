@@ -30,7 +30,7 @@ pub struct HxyApp {
     next_file_id: u64,
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
-    template_runtimes: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
+    template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
     commands: Vec<Box<dyn crate::commands::ToolbarCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -98,7 +98,7 @@ impl HxyApp {
         registry.register(Arc::new(ZipHandler::new()));
         register_user_plugins(&mut registry);
         #[cfg(not(target_arch = "wasm32"))]
-        let template_runtimes = load_user_template_runtimes();
+        let template_plugins = load_user_template_plugins();
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
@@ -106,7 +106,7 @@ impl HxyApp {
             next_file_id: 1,
             registry,
             #[cfg(not(target_arch = "wasm32"))]
-            template_runtimes,
+            template_plugins,
             commands: crate::commands::default_commands(),
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
@@ -166,7 +166,7 @@ impl HxyApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
-        self.template_runtimes
+        self.template_plugins
             .iter()
             .find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension)))
             .cloned()
@@ -784,9 +784,9 @@ fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let console_ctx = format!("{data_name} / {tpl_name}");
 
     let Some(runtime) = app.template_runtime_for(&ext) else {
-        let dir = user_template_runtimes_dir()
+        let dir = user_template_plugins_dir()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "$DATA/hxy/template-runtimes".to_owned());
+            .unwrap_or_else(|| "$DATA/hxy/template-plugins".to_owned());
         let msg = format!(
             "No template runtime is registered for .{ext} files.\nInstall a matching runtime component (.wasm) into:\n{dir}"
         );
@@ -1321,13 +1321,13 @@ fn user_plugins_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn user_template_runtimes_dir() -> Option<std::path::PathBuf> {
+fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
     let base = dirs::data_dir()?;
-    Some(base.join(APP_NAME).join("template-runtimes"))
+    Some(base.join(APP_NAME).join("template-plugins"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_user_template_runtimes() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
+fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
     let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
 
     // Native builtin runtimes link as regular Rust — no WASM wrap,
@@ -1341,8 +1341,8 @@ fn load_user_template_runtimes() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime
     // User-installed WASM components can still override a builtin
     // for the same extension — they get prepended so `find()` picks
     // them first.
-    if let Some(dir) = user_template_runtimes_dir() {
-        match hxy_plugin_host::load_template_runtimes_from_dir(&dir) {
+    if let Some(dir) = user_template_plugins_dir() {
+        match hxy_plugin_host::load_template_plugins_from_dir(&dir) {
             Ok(runtimes) => {
                 for r in runtimes {
                     tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = false, "loaded template runtime");

@@ -26,7 +26,7 @@ fn executes_basic_template() {
     }
     let dir = path.parent().unwrap();
     let mut runtimes =
-        hxy_plugin_host::load_template_runtimes_from_dir(dir).expect("load template runtimes");
+        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
     let runtime = runtimes.pop().expect("at least one runtime");
     assert_eq!(runtime.name(), "010-bt");
     assert_eq!(runtime.extensions(), ["bt".to_string()]);
@@ -73,7 +73,7 @@ fn executes_typedef_struct_template() {
     }
     let dir = path.parent().unwrap();
     let mut runtimes =
-        hxy_plugin_host::load_template_runtimes_from_dir(dir).expect("load template runtimes");
+        hxy_plugin_host::load_template_plugins_from_dir(dir).expect("load template runtimes");
     let runtime = runtimes.pop().expect("runtime");
 
     let template_source = r#"
