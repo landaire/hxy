@@ -2434,7 +2434,8 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     }
     let copy_ctx = copy_palette_context(app);
     let history_ctx = history_palette_context(app);
-    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx);
+    let template_ctx = template_palette_context(app);
+    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx);
     let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::command_palette::Outcome::Closed => app.palette.close(),
@@ -2485,12 +2486,45 @@ struct HistoryPaletteContext {
     can_paste: bool,
 }
 
+/// Snapshot of the active tab used for ranking `Run Template`
+/// entries against its content. Empty when no file is active --
+/// `rank_entries` falls through to the default ordering in that
+/// case.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Default)]
+struct TemplatePaletteContext {
+    extension: Option<String>,
+    head_bytes: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
+    let Some(id) = active_file_id(app) else { return TemplatePaletteContext::default() };
+    let Some(file) = app.files.get(&id) else { return TemplatePaletteContext::default() };
+    let extension = file
+        .root_path()
+        .and_then(|p| p.extension())
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    let source_len = file.editor.source().len().get();
+    let window = source_len.min(crate::template_library::DETECTION_WINDOW as u64);
+    let head_bytes = if window == 0 {
+        Vec::new()
+    } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window)) {
+        file.editor.source().read(range).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    TemplatePaletteContext { extension, head_bytes }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn build_palette_entries(
     ctx: &egui::Context,
     app: &HxyApp,
     copy_ctx: Option<CopyPaletteContext>,
     history_ctx: HistoryPaletteContext,
+    template_ctx: &TemplatePaletteContext,
 ) -> Vec<egui_palette::Entry<crate::command_palette::Action>> {
     use crate::command_palette::Action;
     use crate::command_palette::Mode;
@@ -2633,7 +2667,9 @@ fn build_palette_entries(
             }
         }
         Mode::Templates => {
-            for entry in app.templates.entries() {
+            let ranked =
+                app.templates.rank_entries(template_ctx.extension.as_deref(), &template_ctx.head_bytes);
+            for entry in ranked {
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),

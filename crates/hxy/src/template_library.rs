@@ -100,6 +100,36 @@ impl TemplateLibrary {
         }
         ext_candidate
     }
+
+    /// Return every entry sorted by how well it matches
+    /// `(extension, head_bytes)`: magic + extension hits first, then
+    /// magic-only, then extension-only, then the rest in the
+    /// library's default (alphabetical) order. Used by the command
+    /// palette's `Run Template` list so the most plausible runner
+    /// for the active file floats to the top.
+    pub fn rank_entries(&self, extension: Option<&str>, head_bytes: &[u8]) -> Vec<&TemplateEntry> {
+        let ext_lower = extension.map(str::to_ascii_lowercase);
+        let mut scored: Vec<(u8, usize, &TemplateEntry)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let ext_match = ext_lower.as_ref().is_some_and(|e| entry.extensions.iter().any(|x| x == e));
+                let magic_match = !entry.magic.is_empty() && entry.magic.iter().any(|m| head_bytes.starts_with(m));
+                let score = match (magic_match, ext_match) {
+                    (true, true) => 3,
+                    (true, false) => 2,
+                    (false, true) => 1,
+                    (false, false) => 0,
+                };
+                (score, idx, entry)
+            })
+            .collect();
+        // Higher score first; ties broken by original alphabetical
+        // ordering (already stored in `idx`).
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, e)| e).collect()
+    }
 }
 
 fn parse_template(path: &Path) -> Option<TemplateEntry> {
