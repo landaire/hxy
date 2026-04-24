@@ -210,6 +210,11 @@ pub struct Style {
     /// Colour of the icon glyph. `None` uses [`Self::text_color`] so
     /// icons and titles match unless explicitly split.
     pub icon_color: Option<Color32>,
+    /// Colour used to mark characters in the title / subtitle that
+    /// the fuzzy matcher hit for the current query. Defaults to
+    /// `visuals.selection.stroke.color` so it stands out against
+    /// both title and subtitle baselines without a hardcoded hue.
+    pub match_color: Option<Color32>,
 
     // ---- Behaviour ----
     /// Close the palette when the backdrop is clicked. Default
@@ -267,6 +272,7 @@ impl Default for Style {
             subtitle_color: None,
             subtitle_size: None,
             icon_color: None,
+            match_color: None,
             close_on_backdrop_click: true,
             consume_nav_keys: true,
             matcher: MatcherConfig::DEFAULT,
@@ -469,10 +475,10 @@ pub fn show_with_style<A: Clone>(
                 // they hit Cmd+P -- instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
                 egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(ui, |ui| {
-                    for (row, idx) in filtered.iter().enumerate() {
-                        let entry = &entries[*idx];
+                    for (row, hit) in filtered.iter().enumerate() {
+                        let entry = &entries[hit.index];
                         let selected = row == state.selected;
-                        let resp = render_row(ui, entry, selected, style);
+                        let resp = render_row(ui, entry, selected, style, &hit.match_indices);
                         if resp.clicked() {
                             picked_idx = Some(row);
                         }
@@ -492,14 +498,20 @@ pub fn show_with_style<A: Clone>(
         });
 
     if let Some(row) = picked_idx
-        && let Some(&idx) = filtered.get(row)
+        && let Some(hit) = filtered.get(row)
     {
-        return Some(Outcome::Picked(entries[idx].data.clone()));
+        return Some(Outcome::Picked(entries[hit.index].data.clone()));
     }
     None
 }
 
-fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &Style) -> egui::Response {
+fn render_row<A>(
+    ui: &mut egui::Ui,
+    entry: &Entry<A>,
+    selected: bool,
+    style: &Style,
+    match_indices: &[u32],
+) -> egui::Response {
     let desired = egui::vec2(ui.available_width(), style.row_height);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     if selected {
@@ -515,6 +527,24 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     let text_color = style.text_color.unwrap_or_else(|| ui.visuals().text_color());
     let icon_color = style.icon_color.unwrap_or(text_color);
     let sub_color = style.subtitle_color.unwrap_or_else(|| ui.visuals().weak_text_color());
+    let match_color = style.match_color.unwrap_or_else(|| ui.visuals().selection.stroke.color);
+
+    // Split the fuzzy-matcher's char indices (into the combined
+    // "title subtitle" haystack) into title-local and subtitle-local
+    // index lists so each run of marked characters highlights the
+    // right piece of text.
+    let title_char_len = entry.title.chars().count() as u32;
+    let separator_len = if entry.subtitle.is_some() { 1 } else { 0 };
+    let mut title_indices: Vec<u32> = Vec::new();
+    let mut subtitle_indices: Vec<u32> = Vec::new();
+    for &i in match_indices {
+        if i < title_char_len {
+            title_indices.push(i);
+        } else if entry.subtitle.is_some() {
+            let sub_i = i.saturating_sub(title_char_len + separator_len);
+            subtitle_indices.push(sub_i);
+        }
+    }
 
     // Lay out the shortcut hint first so we can reserve its width on
     // the right edge and trim the title / subtitle budget to match.
@@ -539,7 +569,15 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
     };
 
     let title_width_budget = content_right - title_x;
-    let title_galley = layout_truncated(ui, entry.title.clone(), body.clone(), text_color, title_width_budget);
+    let title_galley = layout_highlighted(
+        ui,
+        &entry.title,
+        body.clone(),
+        text_color,
+        match_color,
+        &title_indices,
+        title_width_budget,
+    );
     let title_pos = egui::pos2(title_x, inner.center().y - title_galley.size().y * 0.5);
     let title_size = title_galley.size();
     ui.painter().galley(title_pos, title_galley, text_color);
@@ -548,7 +586,8 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
         let sub_x = title_x + title_size.x + style.subtitle_spacing;
         let sub_budget = content_right - sub_x;
         if sub_budget > 0.0 {
-            let sub_galley = layout_truncated(ui, sub.to_owned(), subtitle_font, sub_color, sub_budget);
+            let sub_galley =
+                layout_highlighted(ui, sub, subtitle_font, sub_color, match_color, &subtitle_indices, sub_budget);
             let sub_pos = egui::pos2(sub_x, inner.center().y - sub_galley.size().y * 0.5);
             ui.painter().galley(sub_pos, sub_galley, sub_color);
         }
@@ -560,6 +599,67 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
         ui.painter().galley(pos, galley, sub_color);
     }
     resp
+}
+
+/// Lay out `text` with matched character positions painted in
+/// `match_color` and everything else in `base_color`. Char-based
+/// positions are into `text` directly (the caller is responsible
+/// for mapping the fuzzy matcher's haystack indices down to per-
+/// field indices). Truncates at `max_width` with an ellipsis like
+/// [`layout_truncated`].
+fn layout_highlighted(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    base_color: Color32,
+    match_color: Color32,
+    match_indices: &[u32],
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    if match_indices.is_empty() {
+        return layout_truncated(ui, text.to_owned(), font, base_color, max_width);
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let mut in_match = false;
+    let mut run_start_byte = 0usize;
+    // Walk the text char-by-char, emitting a section whenever the
+    // char's highlight state changes. Indices are sorted + deduped
+    // by the matcher so a single linear scan suffices.
+    let mut match_cursor = 0usize;
+    for (char_idx, (byte_idx, ch)) in text.char_indices().enumerate() {
+        let char_idx_u32 = char_idx as u32;
+        while match_cursor < match_indices.len() && match_indices[match_cursor] < char_idx_u32 {
+            match_cursor += 1;
+        }
+        let this_matches = match_cursor < match_indices.len() && match_indices[match_cursor] == char_idx_u32;
+        if char_idx == 0 {
+            in_match = this_matches;
+            run_start_byte = byte_idx;
+            continue;
+        }
+        if this_matches != in_match {
+            let color = if in_match { match_color } else { base_color };
+            job.append(
+                &text[run_start_byte..byte_idx],
+                0.0,
+                egui::text::TextFormat { font_id: font.clone(), color, ..Default::default() },
+            );
+            run_start_byte = byte_idx;
+            in_match = this_matches;
+        }
+        let _ = ch;
+    }
+    // Trailing run.
+    if run_start_byte < text.len() {
+        let color = if in_match { match_color } else { base_color };
+        job.append(
+            &text[run_start_byte..],
+            0.0,
+            egui::text::TextFormat { font_id: font, color, ..Default::default() },
+        );
+    }
+    job.wrap = egui::epaint::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
 }
 
 /// Lay out `text` in `font`, clipped to one row of `max_width`
