@@ -1109,12 +1109,24 @@ fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
 /// to a semantic copy event), or as a normal `Event::Key` with the
 /// Command modifier on platforms that pass it through.
 fn consume_copy_event(input: &mut egui::InputState) -> bool {
-    let had_copy = input.events.iter().any(|e| matches!(e, egui::Event::Copy));
-    if had_copy {
-        input.events.retain(|e| !matches!(e, egui::Event::Copy));
-        return true;
+    // winit on macOS sends Cmd+C as BOTH an `Event::Copy` (the
+    // semantic copy) AND a regular Cmd+C `Event::Key`. A previous
+    // version of this function returned after draining the semantic
+    // form, which left the Key event for the hex-view's dispatcher
+    // to grab -- so the status-bar label would copy its value and
+    // the hex view would immediately overwrite the clipboard with
+    // the current selection. Drain BOTH so a single "copy" click
+    // produces one clipboard write.
+    let mut any = false;
+    let before = input.events.len();
+    input.events.retain(|e| !matches!(e, egui::Event::Copy));
+    if input.events.len() != before {
+        any = true;
     }
-    input.consume_shortcut(&COPY_BYTES)
+    if input.consume_shortcut(&COPY_BYTES) {
+        any = true;
+    }
+    any
 }
 
 fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
@@ -3573,11 +3585,13 @@ fn copyable_status_label(
     if r.clicked() {
         *new_base = base.toggle();
     }
-    // Raw pointer-in-rect; `r.hovered()` can read false when a
-    // tooltip overlay or neighbouring widget counts as covering the
-    // label, which meant the Cmd+C consume here never fired and
-    // the hex-view's selection copy handler got the event instead.
-    let over_label = ui.rect_contains_pointer(r.rect);
+    // Direct pointer-in-rect check: `r.hovered()` and even
+    // `ui.rect_contains_pointer` can read false when a tooltip or
+    // neighbouring widget counts as covering the label. Reading the
+    // pointer position and testing `r.rect.contains(p)` bypasses
+    // egui's widget-layering bookkeeping entirely -- which is what
+    // we want for a whole-cell-is-the-target hover.
+    let over_label = ui.ctx().input(|i| i.pointer.latest_pos()).is_some_and(|p| r.rect.contains(p));
     let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
     let _ = r;
     if over_label && ui.ctx().input_mut(consume_copy_event) {
