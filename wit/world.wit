@@ -140,22 +140,16 @@ interface commands {
     invoke: func(id: string) -> invoke-result;
 }
 
-/// Basic plugin world: exports the handler interface, imports the
-/// source interface it reads from. Stable surface; existing plugins
-/// continue to compile against this.
+/// Plugin world: imports `source` (always) and `state` (gated by
+/// the `persist` permission), exports `handler` (always) and
+/// `commands` (gated by the `commands` permission). Permission
+/// gating happens at runtime: the host returns `denied` from `state`
+/// calls when persist is off, and skips invoking `commands.list-
+/// commands` when the commands permission is off. Plugins that
+/// don't want to persist anything just never call `state`; plugins
+/// that don't want to contribute palette entries return an empty
+/// list from `list-commands` and never expect `invoke` to fire.
 world plugin {
-    import source;
-    export handler;
-}
-
-/// Extended plugin world for plugins that opt into host-provided
-/// state and / or palette command contributions. All four interfaces
-/// are required at link time; permission gating happens at runtime
-/// (host returns `denied` from state-interface calls and skips
-/// invoking commands.list-commands when the relevant permission is
-/// not granted). Plugins that only need the handler should target
-/// the `plugin` world instead.
-world plugin-rich {
     import source;
     import state;
     export handler;

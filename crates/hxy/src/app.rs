@@ -2454,7 +2454,9 @@ fn register_user_plugins(registry: &mut VfsRegistry) {
     // permission a manifest requests is treated as denied. Plugins
     // that don't request permissions are unaffected.
     let grants = hxy_plugin_host::PluginGrants::default();
-    match hxy_plugin_host::load_plugins_from_dir(&dir, &grants) {
+    let state_store = dirs::data_dir()
+        .map(|base| Arc::new(hxy_plugin_host::StateStore::new(base.join(APP_NAME).join("plugin-state"))));
+    match hxy_plugin_host::load_plugins_from_dir(&dir, &grants, state_store) {
         Ok(handlers) => {
             for h in handlers {
                 tracing::info!(name = h.name(), "loaded wasm plugin");

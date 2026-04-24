@@ -21,6 +21,7 @@ use wasmtime::component::ResourceAny;
 use crate::PluginKey;
 use crate::PluginManifest;
 use crate::Permissions;
+use crate::StateStore;
 use crate::bindings::handler_world::Plugin;
 use crate::host::HostState;
 
@@ -29,6 +30,11 @@ pub struct PluginHandler {
     engine: Engine,
     component: Component,
     linker: Arc<Linker<HostState>>,
+    /// Shared on-disk persistence backend. `None` means the host
+    /// didn't wire one (e.g. tests, or no data dir available); the
+    /// state interface returns `denied` even for plugins that were
+    /// granted `persist`.
+    state_store: Option<Arc<StateStore>>,
     /// Sidecar manifest, if one was found at load time. `None` is
     /// the legacy / no-permissions case -- the plugin can still
     /// mount sources (the baseline API every plugin has) but cannot
@@ -53,6 +59,7 @@ impl PluginHandler {
         engine: Engine,
         component: Component,
         linker: Arc<Linker<HostState>>,
+        state_store: Option<Arc<StateStore>>,
         manifest: Option<PluginManifest>,
         key: PluginKey,
         granted: Permissions,
@@ -65,7 +72,7 @@ impl PluginHandler {
             .hxy_vfs_handler()
             .call_name(&mut store)
             .map_err(|e| HandlerError::Internal(format!("call name: {e}")))?;
-        Ok(Self { name, engine, component, linker, manifest, key, granted })
+        Ok(Self { name, engine, component, linker, state_store, manifest, key, granted })
     }
 
     /// Sidecar manifest, if one was found.
@@ -82,6 +89,21 @@ impl PluginHandler {
     /// with stored consent).
     pub fn granted(&self) -> Permissions {
         self.granted
+    }
+
+    /// Build the `HostState` that backs a fresh `Store` for this
+    /// plugin. Pre-populates the persist plumbing whenever the
+    /// plugin's persist permission is granted *and* the host wired
+    /// up a state store; otherwise the plugin's `state` calls fall
+    /// through to `denied` at runtime.
+    fn build_host_state(&self, source: Arc<dyn HexSource>) -> HostState {
+        let mut state = HostState::new(source);
+        if self.granted.persist
+            && let Some(store) = self.state_store.clone()
+        {
+            state = state.with_persist(self.key.name.clone(), true, store);
+        }
+        state
     }
 }
 
@@ -107,7 +129,7 @@ impl VfsHandler for PluginHandler {
     }
 
     fn mount(&self, source: Arc<dyn HexSource>) -> Result<MountedVfs, HandlerError> {
-        let mut store = Store::new(&self.engine, HostState::new(source));
+        let mut store = Store::new(&self.engine, self.build_host_state(source));
         let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker)
             .map_err(|e| HandlerError::Internal(format!("instantiate for mount: {e}")))?;
         let mount_resource = plugin

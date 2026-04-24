@@ -11,9 +11,12 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use hxy_plugin_api::handler::Command;
 use hxy_plugin_api::handler::FileType;
 use hxy_plugin_api::handler::Guest;
+use hxy_plugin_api::handler::GuestCommands;
 use hxy_plugin_api::handler::GuestMount;
+use hxy_plugin_api::handler::InvokeResult;
 use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::source;
 
@@ -32,6 +35,20 @@ impl Guest for Plugin {
 
     fn mount_source() -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
         Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(Mount))
+    }
+}
+
+// No-op commands export. The world requires every plugin to
+// export `commands`, but passthrough doesn't contribute any
+// palette entries, so it returns an empty list and `invoke` is
+// unreachable.
+impl GuestCommands for Plugin {
+    fn list_commands() -> Vec<Command> {
+        Vec::new()
+    }
+
+    fn invoke(_id: String) -> InvokeResult {
+        InvokeResult::Done
     }
 }
 

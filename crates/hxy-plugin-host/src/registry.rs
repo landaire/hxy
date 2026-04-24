@@ -15,6 +15,7 @@ use crate::ManifestError;
 use crate::PluginGrants;
 use crate::PluginKey;
 use crate::PluginManifest;
+use crate::StateStore;
 use crate::bindings::handler_world::Plugin;
 use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::handler::PluginHandler;
@@ -64,13 +65,19 @@ pub enum PluginLoadError {
 /// Silently tolerates an absent directory (returns empty) -- hosts may
 /// call this with a user-config path that doesn't exist yet.
 ///
-/// `grants` supplies per-plugin user consent decisions. The loader
-/// pairs each plugin with its sidecar manifest (when present),
-/// computes its [`PluginKey`], and stores the granted permission set
-/// on the resulting [`PluginHandler`] so the host can gate
-/// capability-providing interfaces. Plugins without a manifest get
-/// an empty permission set regardless of `grants`.
-pub fn load_plugins_from_dir(dir: &Path, grants: &PluginGrants) -> Result<Vec<PluginHandler>, PluginLoadError> {
+/// `grants` supplies per-plugin user consent decisions. `state_store`
+/// is the shared on-disk persistence backend handed to plugins that
+/// were granted `persist`; pass `None` when the host has no data dir
+/// (state interface calls then return `denied`).
+///
+/// The loader pairs each plugin with its sidecar manifest (when
+/// present), computes its [`PluginKey`], and stores the granted
+/// permission set on the resulting [`PluginHandler`].
+pub fn load_plugins_from_dir(
+    dir: &Path,
+    grants: &PluginGrants,
+    state_store: Option<Arc<StateStore>>,
+) -> Result<Vec<PluginHandler>, PluginLoadError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -94,7 +101,7 @@ pub fn load_plugins_from_dir(dir: &Path, grants: &PluginGrants) -> Result<Vec<Pl
         if path.extension().and_then(|s| s.to_str()) != Some("wasm") {
             continue;
         }
-        let handler = load_single(&engine, linker.clone(), &path, grants)?;
+        let handler = load_single(&engine, linker.clone(), &path, grants, state_store.clone())?;
         handlers.push(handler);
     }
     Ok(handlers)
@@ -105,6 +112,7 @@ fn load_single(
     linker: Arc<Linker<HostState>>,
     path: &Path,
     grants: &PluginGrants,
+    state_store: Option<Arc<StateStore>>,
 ) -> Result<PluginHandler, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
     let manifest = PluginManifest::load_for(path).map_err(PluginLoadError::Manifest)?;
@@ -125,7 +133,7 @@ fn load_single(
 
     let component = Component::new(engine, &bytes)
         .map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
-    PluginHandler::new(engine.clone(), component, linker, manifest, key, granted)
+    PluginHandler::new(engine.clone(), component, linker, state_store, manifest, key, granted)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
 

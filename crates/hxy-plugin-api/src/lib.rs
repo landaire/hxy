@@ -22,14 +22,22 @@ pub mod handler {
     });
 
     // Lift the exported handler interface's types and the imported
-    // `source` interface up to the module root so plugins can write
-    // `hxy_plugin_api::handler::FileType` instead of the generated
-    // `...::exports::hxy::vfs::handler::FileType` path.
+    // `source` / `state` interfaces up to the module root so plugins
+    // can write `hxy_plugin_api::handler::FileType` instead of the
+    // generated `...::exports::hxy::vfs::handler::FileType` path.
     pub use self::hxy::vfs::source;
+    pub use self::hxy::vfs::state;
     pub use exports::hxy::vfs::handler::FileType;
     pub use exports::hxy::vfs::handler::Guest;
     pub use exports::hxy::vfs::handler::GuestMount;
     pub use exports::hxy::vfs::handler::Metadata;
+    // Commands interface re-exports. `GuestCommands` is the trait
+    // every plugin must implement (return empty list / unreachable
+    // invoke when commands are not declared in the manifest).
+    pub use exports::hxy::vfs::commands::Command;
+    pub use exports::hxy::vfs::commands::Guest as GuestCommands;
+    pub use exports::hxy::vfs::commands::InvokeResult;
+    pub use exports::hxy::vfs::commands::MountRequest;
 }
 
 pub mod template {

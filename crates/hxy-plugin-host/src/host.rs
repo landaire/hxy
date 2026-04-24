@@ -13,8 +13,8 @@ use hxy_core::HexSource;
 use crate::StateError;
 use crate::StateStore;
 use crate::bindings::handler_world::hxy::vfs::source::Host as SourceHost;
-use crate::bindings::rich_world::hxy::vfs::state::Host as StateHost;
-use crate::bindings::rich_world::hxy::vfs::state::StateError as WitStateError;
+use crate::bindings::handler_world::hxy::vfs::state::Host as StateHost;
+use crate::bindings::handler_world::hxy::vfs::state::StateError as WitStateError;
 
 pub struct HostState {
     pub source: Arc<dyn HexSource>,
@@ -90,14 +90,6 @@ impl HostState {
     /// `Err(WitStateError::Denied)` when persist is off or no store
     /// is wired; otherwise yields the store handle and plugin name
     /// the call should use.
-    //
-    // Currently dead-code from the basic `plugin` world's
-    // perspective -- the rich-world linker that will route the
-    // state interface through `StateHost` is wired up in the
-    // follow-up that adds rich-world instantiation. Kept here so
-    // the impl + trait surface are reviewed together with the rest
-    // of the foundations.
-    #[allow(dead_code)]
     fn persist_handle(&self) -> Result<(&StateStore, &str), WitStateError> {
         if !self.persist_granted {
             return Err(WitStateError::Denied);
@@ -117,8 +109,6 @@ impl HostState {
     }
 }
 
-// See `persist_handle` -- dead until the rich-world linker lands.
-#[allow(dead_code)]
 fn map_state_error(e: StateError) -> WitStateError {
     match e {
         StateError::QuotaExceeded { limit, .. } => WitStateError::QuotaExceeded(limit),

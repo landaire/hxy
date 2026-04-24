@@ -31,7 +31,7 @@ fn passthrough_roundtrips_bytes_through_host_source() {
     }
     let dir = path.parent().unwrap();
     let grants = hxy_plugin_host::PluginGrants::default();
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir, &grants).expect("load plugins");
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir, &grants, None).expect("load plugins");
     let handler = handlers
         .into_iter()
         .find(|h| h.name() == "passthrough")
