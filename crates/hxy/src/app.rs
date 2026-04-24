@@ -1352,6 +1352,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .filter(|t| t.show_colors && !t.leaf_boundaries.is_empty())
         .map(|t| (t.leaf_boundaries.as_slice(), t.leaf_colors.as_slice()));
 
+    let modified_ranges = file.modified_ranges();
     let mut view = HexView::new(&*file.source, &mut file.selection)
         .id_salt(("hxy-hex-view", file.id.get()))
         .columns(state.app.hex_columns)
@@ -1363,10 +1364,23 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     if let Some((_, colors)) = field_colors {
         view = view.field_colors(colors);
     }
-    if let Some((boundaries, colors)) = field_colors {
+    let need_styler = field_colors.is_some() || !modified_ranges.is_empty();
+    if need_styler {
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
+        // Pulled out so the closure doesn't have to hold the
+        // `field_colors` Option through its lifetime.
+        let field_data = field_colors.map(|(b, c)| (b.to_vec(), c.to_vec()));
         view = view.byte_styler(move |_byte, offset| {
             let b = offset.get();
+            // Patched bytes get a saturated highlight that wins over
+            // the template field tint -- the user is editing them
+            // right now, the template colour can wait.
+            if range_contains(&modified_ranges, b) {
+                return hxy_view::ByteStyle { bg: Some(MODIFIED_BYTE_TINT), fg: None };
+            }
+            let Some((boundaries, colors)) = field_data.as_ref() else {
+                return hxy_view::ByteStyle { bg: None, fg: None };
+            };
             let idx = boundaries.partition_point(|(start, _)| start.get() <= b);
             if idx == 0 {
                 return hxy_view::ByteStyle { bg: None, fg: None };
@@ -1380,9 +1394,6 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
             if text_mode {
                 hxy_view::ByteStyle { bg: None, fg: Some(color) }
             } else {
-                // Mute the vivid base tone to a background tint; the
-                // view's own `contrast_text_color` picks the glyph
-                // colour from there.
                 hxy_view::ByteStyle { bg: Some(color.gamma_multiply(0.45)), fg: None }
             }
         });
@@ -2284,6 +2295,23 @@ const COPY_HEX: egui::KeyboardShortcut =
 const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
+
+/// Background tint painted over patched bytes in the hex view. A warm
+/// orange that reads on both light and dark themes; gamma-muted so it
+/// doesn't drown out the byte glyphs themselves.
+const MODIFIED_BYTE_TINT: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x55, 0x33, 0x00, 0x80);
+
+/// Binary search a sorted, non-overlapping list of byte ranges for
+/// `offset`. Used by the hex-view tinting closure -- O(log N) per
+/// pixel-row instead of O(N).
+fn range_contains(ranges: &[(u64, u64)], offset: u64) -> bool {
+    let idx = ranges.partition_point(|(start, _)| *start <= offset);
+    if idx == 0 {
+        return false;
+    }
+    let (_start, end) = ranges[idx - 1];
+    offset < end
+}
 
 /// Read the active selection's bytes from `file` and copy them to
 /// the clipboard formatted per `kind`. Value-kind variants read the

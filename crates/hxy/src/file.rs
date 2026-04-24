@@ -277,6 +277,24 @@ impl OpenFile {
     pub fn revert(&self) {
         *self.patch.write().expect("patch lock poisoned") = Patch::new();
     }
+
+    /// Snapshot the current patch as a sorted list of `(start, end)`
+    /// output-space byte ranges. Used by the hex view to tint
+    /// modified bytes; binary-searched per row, so O(log N).
+    ///
+    /// With the current length-preserving `request_write` API,
+    /// output offsets equal source offsets and `end - start` equals
+    /// the splice's `new_bytes.len()`. The mapping will need
+    /// rewriting if we expose insert / delete to the editor.
+    pub fn modified_ranges(&self) -> Vec<(u64, u64)> {
+        self.patch
+            .read()
+            .expect("patch lock poisoned")
+            .ops()
+            .iter()
+            .map(|op| (op.offset, op.offset + op.new_bytes.len() as u64))
+            .collect()
+    }
 }
 
 #[derive(Debug, Error)]
