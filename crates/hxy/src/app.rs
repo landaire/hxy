@@ -3703,8 +3703,21 @@ fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     {
         return Some(id);
     }
-    if app.files.len() == 1 {
-        return app.files.keys().copied().next();
+    // Final fallback: scan the dock for the first `Tab::File` in
+    // iteration order. Covers the "files are open but nothing
+    // file-shaped is currently focused" case (e.g. focus is on the
+    // Inspector/Console, palette is opened from a fresh session
+    // before `last_active_file` was ever populated). Without this,
+    // every command gated on `has_active_file` -- Set columns,
+    // Go-to offset, Select range -- silently disappears even
+    // though a file is plainly visible.
+    let fallback = app.dock.iter_all_tabs().find_map(|(_, t)| match t {
+        Tab::File(id) => Some(*id),
+        _ => None,
+    });
+    if let Some(id) = fallback {
+        app.last_active_file = Some(id);
+        return Some(id);
     }
     None
 }
