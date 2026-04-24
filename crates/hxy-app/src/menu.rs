@@ -1,0 +1,199 @@
+//! Native macOS menu bar via `muda`. Builds an `NSMenu` mirroring the
+//! in-window egui menu, dispatches clicks back to the app as
+//! [`MenuAction`]s, and syncs per-frame enable state (Copy items grey
+//! out when no file is open, etc.).
+//!
+//! Only compiled on macOS. On other platforms the app falls back to
+//! the egui top-bar menu in `app.rs`.
+
+use std::collections::HashMap;
+
+use muda::AboutMetadata;
+use muda::Menu;
+use muda::MenuEvent;
+use muda::MenuItem;
+use muda::PredefinedMenuItem;
+use muda::Submenu;
+use muda::accelerator::Accelerator;
+use muda::accelerator::Code;
+use muda::accelerator::Modifiers;
+
+use crate::APP_NAME;
+use crate::copy_format::CopyKind;
+
+/// Actions a menu item can dispatch. Produced by [`MenuState::drain_actions`]
+/// each frame; the app matches on the variant and invokes the same
+/// handlers the egui menu would.
+#[derive(Clone, Copy, Debug)]
+pub enum MenuAction {
+    OpenFile,
+    CopyBytes,
+    CopyHex,
+    CopyAs(CopyKind),
+    ShowConsole,
+    ShowInspector,
+    ShowPlugins,
+}
+
+/// Owns the muda [`Menu`] (dropping it tears down the `NSMenu`) and
+/// the id-to-action map used to translate incoming events. Held by
+/// [`crate::HxyApp`] on macOS.
+pub struct MenuState {
+    actions: HashMap<String, MenuAction>,
+    bytes_items: Vec<MenuItem>,
+    scalar_items: Vec<MenuItem>,
+    _menu: Menu,
+}
+
+impl MenuState {
+    /// Build the menu bar and install it as the NSApp main menu. Must
+    /// be called on the main thread *after* `NSApplication` has been
+    /// initialised — call from `HxyApp::new`, which runs on eframe's
+    /// `CreationContext` (window already created).
+    pub fn install() -> Self {
+        disable_automatic_window_tabbing();
+        let menu = Menu::new();
+        let mut actions: HashMap<String, MenuAction> = HashMap::new();
+
+        let app_menu = Submenu::new(APP_NAME, true);
+        menu.append(&app_menu).expect("append app menu");
+        let about_metadata = AboutMetadata {
+            name: Some(APP_NAME.to_string()),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            ..Default::default()
+        };
+        app_menu
+            .append_items(&[
+                &PredefinedMenuItem::about(None, Some(about_metadata)),
+                &PredefinedMenuItem::separator(),
+                &PredefinedMenuItem::services(None),
+                &PredefinedMenuItem::separator(),
+                &PredefinedMenuItem::hide(None),
+                &PredefinedMenuItem::hide_others(None),
+                &PredefinedMenuItem::show_all(None),
+                &PredefinedMenuItem::separator(),
+                &PredefinedMenuItem::quit(None),
+            ])
+            .expect("build app menu");
+
+        let file_menu = Submenu::new("File", true);
+        menu.append(&file_menu).expect("append file menu");
+        let open = MenuItem::new(
+            "Open…",
+            true,
+            Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
+        );
+        file_menu.append(&open).expect("append open");
+        actions.insert(open.id().0.clone(), MenuAction::OpenFile);
+
+        let edit_menu = Submenu::new("Edit", true);
+        menu.append(&edit_menu).expect("append edit menu");
+
+        let copy_bytes = MenuItem::new(
+            "Copy bytes",
+            false,
+            Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
+        );
+        let copy_hex = MenuItem::new(
+            "Copy hex",
+            false,
+            Some(Accelerator::new(
+                Some(Modifiers::SUPER | Modifiers::SHIFT),
+                Code::KeyC,
+            )),
+        );
+        edit_menu.append(&copy_bytes).expect("append copy bytes");
+        edit_menu.append(&copy_hex).expect("append copy hex");
+        actions.insert(copy_bytes.id().0.clone(), MenuAction::CopyBytes);
+        actions.insert(copy_hex.id().0.clone(), MenuAction::CopyHex);
+
+        let copy_as = Submenu::new("Copy bytes as", false);
+        edit_menu.append(&copy_as).expect("append copy as");
+        let mut bytes_items = vec![copy_bytes.clone(), copy_hex.clone()];
+        for (label, kind) in crate::copy_format::BYTES_MENU {
+            let item = MenuItem::new(*label, false, None);
+            copy_as.append(&item).expect("append copy-as entry");
+            actions.insert(item.id().0.clone(), MenuAction::CopyAs(*kind));
+            bytes_items.push(item);
+        }
+
+        let copy_value_as = Submenu::new("Copy value as", false);
+        edit_menu.append(&copy_value_as).expect("append copy value as");
+        let mut scalar_items = Vec::new();
+        for (label, kind) in crate::copy_format::VALUE_MENU {
+            let item = MenuItem::new(*label, false, None);
+            copy_value_as
+                .append(&item)
+                .expect("append copy-value-as entry");
+            actions.insert(item.id().0.clone(), MenuAction::CopyAs(*kind));
+            scalar_items.push(item);
+        }
+
+        let view_menu = Submenu::new("View", true);
+        menu.append(&view_menu).expect("append view menu");
+        let console = MenuItem::new("Console", true, None);
+        let inspector = MenuItem::new("Inspector", true, None);
+        let plugins = MenuItem::new("Plugins", true, None);
+        view_menu.append(&console).expect("append console");
+        view_menu.append(&inspector).expect("append inspector");
+        view_menu.append(&plugins).expect("append plugins");
+        actions.insert(console.id().0.clone(), MenuAction::ShowConsole);
+        actions.insert(inspector.id().0.clone(), MenuAction::ShowInspector);
+        actions.insert(plugins.id().0.clone(), MenuAction::ShowPlugins);
+
+        menu.init_for_nsapp();
+
+        Self {
+            actions,
+            bytes_items,
+            scalar_items,
+            _menu: menu,
+        }
+    }
+
+    /// Grey out / enable the byte-copy items. Called once per frame
+    /// from the app update loop with `has_active_file`.
+    pub fn set_file_open(&self, has_file: bool) {
+        for item in &self.bytes_items {
+            item.set_enabled(has_file);
+        }
+    }
+
+    /// Grey out / enable the scalar value-copy items (only meaningful
+    /// when the selection is 1/2/4/8 bytes wide).
+    pub fn set_scalar_selection(&self, has_scalar: bool) {
+        for item in &self.scalar_items {
+            item.set_enabled(has_scalar);
+        }
+    }
+
+    /// Drain any pending `muda` events and return the mapped actions.
+    /// Unknown ids are silently dropped — they belong to predefined
+    /// items (Quit, Hide, Undo, ...) that the OS handles itself.
+    pub fn drain_actions(&self) -> Vec<MenuAction> {
+        let mut out = Vec::new();
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if let Some(action) = self.actions.get(&event.id.0) {
+                out.push(*action);
+            }
+        }
+        out
+    }
+}
+
+/// Kill AppKit's automatic window tabbing. If left at the default
+/// `automatic` mode, AppKit injects "Show Tab Bar" and "Merge All
+/// Windows" into whichever menu it thinks is the window menu — which
+/// is noise for a single-window app.
+#[allow(unsafe_code)]
+fn disable_automatic_window_tabbing() {
+    use objc2::msg_send;
+    use objc2::runtime::AnyClass;
+    let Some(cls) = AnyClass::get(c"NSWindow") else { return };
+    // SAFETY: sending `setAllowsAutomaticWindowTabbing:` (a class method on
+    // NSWindow taking BOOL) is safe once AppKit is loaded; muda calls AppKit
+    // from the same thread via init_for_nsapp right after this.
+    unsafe {
+        let _: () = msg_send![cls, setAllowsAutomaticWindowTabbing: false];
+    }
+}
