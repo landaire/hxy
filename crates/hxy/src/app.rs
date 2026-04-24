@@ -2855,11 +2855,20 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
         return;
     }
 
-    // Successful write -- drop the patch, re-anchor the tab to the
-    // new path, and re-detect handler / template suggestions against
-    // the freshly-written bytes.
+    // Successful write -- swap the tab's byte source over to the
+    // just-saved bytes so the view reflects on-disk state instead
+    // of the stale pre-edit buffer. Reverting the patch alone would
+    // leave `file.source` wrapping the original pre-edit bytes and
+    // reads would show the wrong content.
     if let Some(file) = app.files.get_mut(&id) {
-        file.revert();
+        let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
+        let patched = hxy_core::PatchedSource::new(base);
+        file.patch = patched.patch();
+        file.source = std::sync::Arc::new(patched);
+        file.undo_stack.clear();
+        file.redo_stack.clear();
+        file.history_break = true;
+        file.last_edit_at = None;
         file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();
