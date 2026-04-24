@@ -257,7 +257,7 @@ impl<S: HexSource> Interpreter<S> {
         me
     }
 
-    /// Seed the root scope with 010's built-in constants -- colour
+    /// Seed the root scope with 010's built-in constants -- color
     /// names, `CHECKSUM_*` algorithm IDs, `cNone`, etc. The values
     /// aren't byte-for-byte identical to 010's (our palette is
     /// symbolic anyway), but every template that references them
@@ -268,7 +268,7 @@ impl<S: HexSource> Interpreter<S> {
         let mut bind = |name: &str, value: u64| {
             scope.vars.insert(name.to_owned(), Value::UInt { value: value as u128, kind: PrimKind::u32() });
         };
-        // Colour constants. Values are 010's convention but we don't
+        // Color constants. Values are 010's convention but we don't
         // render them -- any non-negative integer is fine.
         bind("cNone", 0xFFFF_FFFF);
         bind("cBlack", 0x00_000000);
@@ -892,7 +892,7 @@ impl<S: HexSource> Interpreter<S> {
         // Primitive arrays are emitted as a single contiguous node --
         // `char[N]` / `uchar[N]` become a Str value, other numeric
         // primitives carry the raw byte range. Rendering a 500-byte
-        // `uchar data[...]` as one coloured region matches 010's
+        // `uchar data[...]` as one colored region matches 010's
         // behaviour and keeps the hex view from fragmenting into
         // thousands of outlined cells per chunk.
         if let TypeDef::Primitive(p) = def.clone() {

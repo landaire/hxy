@@ -147,13 +147,13 @@ pub struct TemplateState {
     /// frame.
     pub leaf_boundaries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>,
     /// One tint per entry in `leaf_boundaries`. The hex view uses
-    /// these to paint each field's bytes a distinct colour when
+    /// these to paint each field's bytes a distinct color when
     /// [`Self::show_colors`] is on.
     pub leaf_colors: Vec<egui::Color32>,
-    /// When true, the hex view recolours bytes by their containing
+    /// When true, the hex view recolors bytes by their containing
     /// template field. Toggled from the template panel header.
     pub show_colors: bool,
-    /// Plugin-supplied per-byte palette (one colour per value 0..=255),
+    /// Plugin-supplied per-byte palette (one color per value 0..=255),
     /// extracted once from the runtime's `ResultTree::byte_palette`.
     /// When `Some`, overrides the user's byte-value highlight for
     /// this tab.

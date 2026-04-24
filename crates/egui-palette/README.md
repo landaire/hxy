@@ -58,7 +58,7 @@ impl App {
 
 ## Custom style
 
-Everything tweakable lives on `Style`. Colour fields default to
+Everything tweakable lives on `Style`. Color fields default to
 `None` and follow `egui::Visuals`, so light / dark mode switches
 track automatically.
 

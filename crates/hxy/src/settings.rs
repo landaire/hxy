@@ -57,13 +57,13 @@ impl ByteHighlightMode {
     }
 }
 
-/// Colour scheme used when byte highlighting is on.
+/// Color scheme used when byte highlighting is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ByteHighlightScheme {
     /// Group bytes into coarse classes (null, whitespace, printable, ...).
     #[default]
     Class,
-    /// Give every byte value 0x00..0xFF its own colour.
+    /// Give every byte value 0x00..0xFF its own color.
     Value,
 }
 
@@ -97,7 +97,7 @@ pub struct AppSettings {
     /// or as a tint on the glyphs.
     pub byte_highlight_mode: ByteHighlightMode,
 
-    /// Which colour scheme the highlight uses.
+    /// Which color scheme the highlight uses.
     pub byte_highlight_scheme: ByteHighlightScheme,
 
     /// Show a minimap strip beside the hex view.

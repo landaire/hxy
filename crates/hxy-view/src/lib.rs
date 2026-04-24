@@ -59,7 +59,7 @@ pub enum ValueHighlight {
 /// anywhere in the hex or ASCII pane.
 pub type ContextMenuFn<'s> = Box<dyn FnOnce(&mut egui::Ui) + 's>;
 
-/// Foreground + background colour choice for a single byte cell.
+/// Foreground + background color choice for a single byte cell.
 /// Returned by a [`ByteStylerFn`] so the consumer can fully override the
 /// built-in palette's decision per byte (e.g. to highlight a matched
 /// pattern, a diff, or bytes pointed to by a parsed template).
@@ -75,7 +75,7 @@ pub struct ByteStyle {
 
 /// Per-byte styler. Receives each byte's value and absolute file offset
 /// and returns a [`ByteStyle`]. Consumers can use this to drive their
-/// own colour logic (search hits, struct-field overlays, diff colours,
+/// own color logic (search hits, struct-field overlays, diff colors,
 /// etc.) without subclassing the widget.
 pub type ByteStylerFn<'s> = Box<dyn Fn(u8, ByteOffset) -> ByteStyle + 's>;
 
@@ -489,7 +489,7 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     field_boundaries: &'s [(ByteOffset, ByteLen)],
     /// Per-field tint, parallel to `field_boundaries`. When present
     /// and long enough, the minimap paints each hit byte with its
-    /// field's colour so the user sees the same colour map in both
+    /// field's color so the user sees the same color map in both
     /// views. Empty = no minimap override; byte-palette / grayscale
     /// is used instead.
     field_colors: &'s [Color32],
@@ -555,7 +555,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
     /// Tell the view which pane the editor considers active. Only
     /// affects styling -- the cursor outline on the inactive pane is
-    /// drawn in the weak text colour so the active pane stands out.
+    /// drawn in the weak text color so the active pane stands out.
     pub fn active_pane(mut self, pane: Option<Pane>) -> Self {
         self.active_pane = pane;
         self
@@ -579,10 +579,10 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
         self
     }
 
-    /// Per-field colour, parallel to `field_boundaries`. The minimap
-    /// overrides its byte-palette / grayscale fill with this colour
+    /// Per-field color, parallel to `field_boundaries`. The minimap
+    /// overrides its byte-palette / grayscale fill with this color
     /// for bytes that fall inside a field, so the overview strip
-    /// matches the colouring the user sees in the main view.
+    /// matches the coloring the user sees in the main view.
     pub fn field_colors(mut self, colors: &'s [Color32]) -> Self {
         self.field_colors = colors;
         self
@@ -655,7 +655,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     }
 
     /// When the minimap is enabled, toggle whether bytes are painted in
-    /// the highlight palette's colours or as a simple grayscale gradient
+    /// the highlight palette's colors or as a simple grayscale gradient
     /// keyed on byte value. Off is less busy.
     pub fn minimap_colored(mut self, colored: bool) -> Self {
         self.minimap_colored = colored;
@@ -675,7 +675,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     }
 
     /// Override the built-in theme-based palette. Use this to plug in a
-    /// class palette, a value gradient, or (later) a custom colour
+    /// class palette, a value gradient, or (later) a custom color
     /// scheme.
     pub fn palette(mut self, palette: HighlightPalette) -> Self {
         self.palette_override = Some(palette);
@@ -1283,7 +1283,7 @@ fn paint_row_backs_and_glyphs(
     }
     if let Some(range) = ctx.hover_span {
         // Paint hover underneath the selection so the user's explicit
-        // selection colour stays authoritative. Gamma-multiply the
+        // selection color stays authoritative. Gamma-multiply the
         // selection background to get a softer tint that reads as a
         // secondary marker rather than a primary highlight.
         let tint = ctx.colors.selection_bg.gamma_multiply(0.45);
@@ -1652,14 +1652,14 @@ fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<
     hit_to_offset(rc, usize::from(hit.columns.get()), hit.source_len)
 }
 
-/// Colour source for byte-value tinting. Plugins can hand a fully-
+/// Color source for byte-value tinting. Plugins can hand a fully-
 /// specified 256-entry table via [`Self::Custom`] so a template run
 /// can override the user's default palette for the duration.
 #[derive(Clone, Debug)]
 pub enum HighlightPalette {
     Class(BytePalette),
     Value(ValueGradient),
-    /// Plugin-supplied palette: one colour per byte value, held
+    /// Plugin-supplied palette: one color per byte value, held
     /// behind an `Arc` so cloning the enum is cheap.
     Custom(std::sync::Arc<[Color32; 256]>),
 }
@@ -1678,9 +1678,9 @@ impl HighlightPalette {
     }
 }
 
-/// Every byte value gets a unique colour from a fixed HSL hue wheel.
+/// Every byte value gets a unique color from a fixed HSL hue wheel.
 /// Saturation and lightness are tuned per theme/mode so the resulting
-/// colours stay readable under the view's fixed text contrast rules.
+/// colors stay readable under the view's fixed text contrast rules.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueGradient {
     pub saturation: f32,
@@ -1726,7 +1726,7 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color32 {
 }
 
 /// Palette for byte-class tinting. Each variant of [`ByteClass`] maps
-/// to one colour. Rendered text remains readable via the view's
+/// to one color. Rendered text remains readable via the view's
 /// contrast-adjustment.
 #[derive(Clone, Copy, Debug)]
 pub struct BytePalette {
@@ -2091,11 +2091,11 @@ fn draw_scrollbar(
     }
 }
 
-/// Uncoloured minimap fallback. Byte value 0x00 maps to the theme's
+/// Uncolored minimap fallback. Byte value 0x00 maps to the theme's
 /// darkest content shade and 0xFF to near-white (or the opposite on
 /// light mode), giving a faint brightness gradient that still reveals
 /// structure without dragging in the palette.
-/// Look up the template-field colour for `byte_offset` by binary-
+/// Look up the template-field color for `byte_offset` by binary-
 /// searching the sorted `boundaries`. Returns `None` when the offset
 /// doesn't fall inside any field or when `colors` is too short.
 fn field_color_for(boundaries: &[(ByteOffset, ByteLen)], colors: &[Color32], byte_offset: u64) -> Option<Color32> {

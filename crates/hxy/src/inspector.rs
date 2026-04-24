@@ -1,6 +1,6 @@
 //! Data inspector: decodes the bytes at the active tab's caret into
 //! a family of datatypes (sized integers, LEB128 varints, floats,
-//! common time encodings, colour channels) and renders them in a
+//! common time encodings, color channels) and renders them in a
 //! dock tab.
 //!
 //! User-registered decoders aren't wired yet -- the trait is public
@@ -551,7 +551,7 @@ pub fn show(
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                             let fill = egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
                             ui.painter().rect_filled(rect, 3.0, fill);
-                            // Thin outline so light colours on a
+                            // Thin outline so light colors on a
                             // light background still read as a
                             // distinct swatch.
                             ui.painter().rect_stroke(

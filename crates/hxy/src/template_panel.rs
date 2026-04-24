@@ -571,7 +571,7 @@ pub fn error_state(message: String) -> TemplateState {
 }
 
 /// Pick `n` distinct hues using the golden angle so neighbouring
-/// leaves don't land on similar colours. The base colours are vivid
+/// leaves don't land on similar colors. The base colors are vivid
 /// enough to read as glyphs in `ValueHighlight::Text` mode; callers
 /// that paint them as backgrounds apply `gamma_multiply` to mute
 /// them on the fly.

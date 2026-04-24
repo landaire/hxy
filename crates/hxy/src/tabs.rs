@@ -15,7 +15,7 @@ pub enum Tab {
     /// dock state (but the entries themselves are in-memory only).
     Console,
     /// Datatype inspector: decodes the bytes at the active file tab's
-    /// caret into integers / floats / time / colour rows. Opened from
+    /// caret into integers / floats / time / color rows. Opened from
     /// the View menu; closeable.
     Inspector,
     /// Plugin manager: browse VFS handlers and template runtimes

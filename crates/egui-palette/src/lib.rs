@@ -91,7 +91,7 @@ pub struct Entry<A> {
     /// in a fixed-width gutter on the left of the row.
     pub icon: Option<String>,
     /// Optional keyboard-shortcut hint rendered right-aligned in a
-    /// muted colour (e.g. `cmd-z`, `ctrl-shift-v`). Consumers
+    /// muted color (e.g. `cmd-z`, `ctrl-shift-v`). Consumers
     /// typically pass [`egui::Context::format_shortcut`]'s output
     /// here so the palette advertises the same keys that trigger the
     /// action outside the palette.
@@ -183,13 +183,13 @@ pub struct Style {
     /// (padding reserved for the text input + margins).
     pub row_reserve: f32,
 
-    // ---- Colours (None = follow egui::Visuals) ----
+    // ---- Colors (None = follow egui::Visuals) ----
     /// Full-viewport overlay painted behind the panel. `None` means
     /// no backdrop at all (the palette floats on top of unmodified
     /// app UI, e.g. for inline / always-open palettes).
     pub backdrop: Option<Color32>,
     /// Panel background fill. `None` uses [`egui::Frame::popup`]'s
-    /// theme-derived colour.
+    /// theme-derived color.
     pub panel_fill: Option<Color32>,
     /// Panel outline. `None` leaves [`egui::Frame::popup`]'s default.
     pub panel_stroke: Option<Stroke>,
@@ -197,20 +197,20 @@ pub struct Style {
     /// derives from `visuals.selection.bg_fill` with 0.4 opacity so
     /// it reads on both light and dark themes.
     pub selected_fill: Option<Color32>,
-    /// Colour of the entry title and the icon. `None` uses
+    /// Color of the entry title and the icon. `None` uses
     /// `visuals.text_color()`.
     pub text_color: Option<Color32>,
-    /// Colour of the entry subtitle. `None` uses
+    /// Color of the entry subtitle. `None` uses
     /// `visuals.weak_text_color()`.
     pub subtitle_color: Option<Color32>,
     /// Font size used for the subtitle. `None` falls back to the
     /// size of [`egui::TextStyle::Small`] (noticeably smaller than
     /// the title so a long path reads as secondary).
     pub subtitle_size: Option<f32>,
-    /// Colour of the icon glyph. `None` uses [`Self::text_color`] so
+    /// Color of the icon glyph. `None` uses [`Self::text_color`] so
     /// icons and titles match unless explicitly split.
     pub icon_color: Option<Color32>,
-    /// Colour used to mark characters in the title / subtitle that
+    /// Color used to mark characters in the title / subtitle that
     /// the fuzzy matcher hit for the current query. Defaults to
     /// `visuals.selection.stroke.color` so it stands out against
     /// both title and subtitle baselines without a hardcoded hue.
@@ -297,7 +297,7 @@ impl Style {
         self
     }
 
-    /// Override the colour of the semi-transparent backdrop, or
+    /// Override the color of the semi-transparent backdrop, or
     /// pass `None` to disable the backdrop entirely.
     pub fn backdrop_fill(mut self, fill: Option<Color32>) -> Self {
         self.backdrop = fill;
@@ -305,7 +305,7 @@ impl Style {
     }
 
     /// Convenience: override panel fill + outline together.
-    pub fn panel_colours(mut self, fill: Color32, stroke: Stroke) -> Self {
+    pub fn panel_colors(mut self, fill: Color32, stroke: Stroke) -> Self {
         self.panel_fill = Some(fill);
         self.panel_stroke = Some(stroke);
         self
@@ -548,7 +548,7 @@ fn render_row<A>(
 
     // Lay out the shortcut hint first so we can reserve its width on
     // the right edge and trim the title / subtitle budget to match.
-    // Rendered in the subtitle font + colour to match Zed's muted
+    // Rendered in the subtitle font + color to match Zed's muted
     // cmd-binding style.
     let shortcut_galley = entry
         .shortcut

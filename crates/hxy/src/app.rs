@@ -1950,7 +1950,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     }
     if let Some((text_mode, modified_style, field_data)) = styler_data {
         // Patched bytes win over the template field tint -- the
-        // user is editing them right now, the template colour can
+        // user is editing them right now, the template color can
         // wait.
         view = view.byte_styler(move |_byte, offset| {
             let b = offset.get();
@@ -2465,7 +2465,8 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     let copy_ctx = copy_palette_context(app);
     let history_ctx = history_palette_context(app);
     let template_ctx = template_palette_context(app);
-    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx);
+    let offset_ctx = offset_palette_context(app);
+    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx, &offset_ctx);
     let Some(outcome) = crate::command_palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::command_palette::Outcome::Closed => app.palette.close(),
@@ -2531,6 +2532,26 @@ struct TemplatePaletteContext {
     head_bytes: Vec<u8>,
 }
 
+/// Snapshot of the active tab's caret + source length, used by the
+/// Go-To / Select palette modes to resolve relative offsets and
+/// bounds-check resulting ranges.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Default)]
+struct OffsetPaletteContext {
+    cursor: u64,
+    source_len: u64,
+    available: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
+    let Some(id) = active_file_id(app) else { return OffsetPaletteContext::default() };
+    let Some(file) = app.files.get(&id) else { return OffsetPaletteContext::default() };
+    let source_len = file.editor.source().len().get();
+    let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
+    OffsetPaletteContext { cursor, source_len, available: true }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
     let Some(id) = active_file_id(app) else { return TemplatePaletteContext::default() };
@@ -2559,6 +2580,7 @@ fn build_palette_entries(
     copy_ctx: Option<CopyPaletteContext>,
     history_ctx: HistoryPaletteContext,
     template_ctx: &TemplatePaletteContext,
+    offset_ctx: &OffsetPaletteContext,
 ) -> Vec<egui_palette::Entry<crate::command_palette::Action>> {
     use crate::command_palette::Action;
     use crate::command_palette::Mode;
@@ -2644,6 +2666,29 @@ fn build_palette_entries(
                 )
                 .with_icon(icon::TRASH),
             );
+            if history_ctx.has_active_file {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-go-to-offset-entry"),
+                        Action::SwitchMode(Mode::GoToOffset),
+                    )
+                    .with_icon(icon::CROSSHAIR),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-select-from-offset-entry"),
+                        Action::SwitchMode(Mode::SelectFromOffset),
+                    )
+                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-select-range-entry"),
+                        Action::SwitchMode(Mode::SelectRange),
+                    )
+                    .with_icon(icon::BRACKETS_CURLY),
+                );
+            }
             if history_ctx.can_undo {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Undo))
@@ -2814,8 +2859,125 @@ fn build_palette_entries(
                 out.push(entry);
             }
         }
+        Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange => {
+            // Argument-style modes -- the palette's query *is* the
+            // input. Build a single dynamic entry that's actionable
+            // only when the query parses; invalid queries show an
+            // Invalid row that picks to a no-op (no dispatch arm).
+            if !offset_ctx.available {
+                return out;
+            }
+            let query = app.palette.inner.query.trim();
+            build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
+        }
     }
     out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_offset_entries(
+    out: &mut Vec<egui_palette::Entry<crate::command_palette::Action>>,
+    mode: crate::command_palette::Mode,
+    query: &str,
+    offset_ctx: &OffsetPaletteContext,
+) {
+    use crate::command_palette::Action;
+    use crate::command_palette::Mode;
+    use egui_phosphor::regular as icon;
+
+    if query.is_empty() {
+        return;
+    }
+    match mode {
+        Mode::GoToOffset => match crate::goto::parse_number(query)
+            .and_then(|n| n.resolve(offset_ctx.cursor, offset_ctx.source_len).ok_or(crate::goto::ParseError::OutOfRange))
+        {
+            Ok(target) => {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
+                        Action::GoToOffset(target),
+                    )
+                    .with_icon(icon::CROSSHAIR)
+                    .with_subtitle(format!("{target}")),
+                );
+            }
+            Err(e) => invalid_entry(out, query, &e.to_string()),
+        },
+        Mode::SelectFromOffset => match crate::goto::parse_number(query) {
+            // A byte count. Relative doesn't make sense here (what
+            // is it relative to?), but treating `+N`/`-N` like `N`
+            // /`abs(N)` would silently accept typos; require the
+            // absolute form so the input matches the mental model.
+            Ok(crate::goto::Number::Absolute(count)) if count > 0 => {
+                let start = offset_ctx.cursor;
+                let available = offset_ctx.source_len.saturating_sub(start);
+                if available == 0 {
+                    invalid_entry(out, query, "at EOF");
+                    return;
+                }
+                let clamped = count.min(available);
+                let end_exclusive = start + clamped;
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t_args(
+                            "palette-select-from-offset-fmt",
+                            &[("count", &format!("{clamped}")), ("start", &format!("0x{start:X}"))],
+                        ),
+                        Action::SetSelection { start, end_exclusive },
+                    )
+                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL)
+                    .with_subtitle(format!("0x{start:X} .. 0x{end_exclusive:X}")),
+                );
+            }
+            Ok(crate::goto::Number::Absolute(_)) => invalid_entry(out, query, "count must be nonzero"),
+            Ok(crate::goto::Number::Relative(_)) => {
+                invalid_entry(out, query, "count must be absolute (no + / - prefix)")
+            }
+            Err(e) => invalid_entry(out, query, &e.to_string()),
+        },
+        Mode::SelectRange => match crate::goto::parse_range(query, offset_ctx.source_len) {
+            Ok(range) => {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t_args(
+                            "palette-select-range-fmt",
+                            &[
+                                ("start", &format!("0x{:X}", range.start)),
+                                ("end", &format!("0x{:X}", range.end_exclusive)),
+                                ("count", &format!("{}", range.len())),
+                            ],
+                        ),
+                        Action::SetSelection { start: range.start, end_exclusive: range.end_exclusive },
+                    )
+                    .with_icon(icon::BRACKETS_CURLY),
+                );
+            }
+            Err(e) => invalid_entry(out, query, &e.to_string()),
+        },
+        _ => {}
+    }
+}
+
+/// Push a non-actionable "Invalid: {reason}" row. Activating it
+/// falls through to `apply_palette_action`'s existing Invalid arm
+/// which just closes the palette -- keeps a visible indication
+/// that the query isn't parseable without silently showing an
+/// empty list.
+#[cfg(not(target_arch = "wasm32"))]
+fn invalid_entry(
+    out: &mut Vec<egui_palette::Entry<crate::command_palette::Action>>,
+    query: &str,
+    reason: &str,
+) {
+    use crate::command_palette::Action;
+    use egui_phosphor::regular as icon;
+
+    out.push(
+        egui_palette::Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), Action::NoOp)
+            .with_icon(icon::WARNING)
+            .with_subtitle(query.to_owned()),
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2882,6 +3044,42 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
         crate::command_palette::Action::OpenRecent(path) => {
             app.palette.close();
             apply_command_effect(ctx, app, CommandEffect::OpenRecent(path));
+        }
+        crate::command_palette::Action::GoToOffset(target) => {
+            app.palette.close();
+            if let Some(id) = active_file_id(app)
+                && let Some(file) = app.files.get_mut(&id)
+            {
+                let max = file.editor.source().len().get().saturating_sub(1);
+                let clamped = target.min(max);
+                file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));
+                file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(clamped));
+            }
+        }
+        crate::command_palette::Action::SetSelection { start, end_exclusive } => {
+            app.palette.close();
+            if let Some(id) = active_file_id(app)
+                && let Some(file) = app.files.get_mut(&id)
+            {
+                let source_len = file.editor.source().len().get();
+                if source_len == 0 || end_exclusive <= start {
+                    return;
+                }
+                let last = end_exclusive.saturating_sub(1).min(source_len.saturating_sub(1));
+                let anchor = start.min(source_len.saturating_sub(1));
+                file.editor.set_selection(Some(hxy_core::Selection {
+                    anchor: hxy_core::ByteOffset::new(anchor),
+                    cursor: hxy_core::ByteOffset::new(last),
+                }));
+                file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(anchor));
+            }
+        }
+        crate::command_palette::Action::NoOp => {
+            // Placeholder rows (e.g. "Invalid: ..." in the Go-To
+            // cascade) pick to this. Close the palette so repeated
+            // Enter presses don't get the user stuck on an inert
+            // row, but don't dispatch any other effect.
+            app.palette.close();
         }
     }
 }

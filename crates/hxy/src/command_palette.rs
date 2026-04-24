@@ -55,6 +55,13 @@ pub enum Mode {
     /// already-open paths filtered out. Reached from `Main` via
     /// "Open recent...".
     Recent,
+    /// Prompt for a single offset (absolute, or +/- relative to the
+    /// current cursor). Enter jumps the caret.
+    GoToOffset,
+    /// Prompt for a byte count starting at the current cursor.
+    SelectFromOffset,
+    /// Prompt for a `<start>, <end>` (or `<start>..<end>`) range.
+    SelectRange,
 }
 
 /// Activation payload the app hands back to itself when the user
@@ -103,6 +110,18 @@ pub enum Action {
     /// Open a previously-visited filesystem file by path. Used by
     /// the `Open recent` cascade mode.
     OpenRecent(PathBuf),
+    /// Move the caret of the active tab to an absolute offset.
+    /// Relative inputs (`+N`, `-N`) are resolved against the
+    /// current cursor before the action is emitted, so the payload
+    /// is always absolute.
+    GoToOffset(u64),
+    /// Replace the active tab's selection with `[start, end_exclusive)`.
+    /// Covers both "Select N bytes from cursor" and "Select range".
+    SetSelection { start: u64, end_exclusive: u64 },
+    /// Intentionally does nothing. Used for non-actionable
+    /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
+    /// when the query doesn't parse).
+    NoOp,
 }
 
 /// Render the palette and return an outcome if the user activated
@@ -117,6 +136,9 @@ pub fn show(
         Mode::Templates => hxy_i18n::t("palette-hint-templates"),
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
         Mode::Recent => hxy_i18n::t("palette-hint-recent"),
+        Mode::GoToOffset => hxy_i18n::t("palette-hint-go-to-offset"),
+        Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),
+        Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),
     };
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Closed => Some(Outcome::Closed),
