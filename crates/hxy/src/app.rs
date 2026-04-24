@@ -586,6 +586,15 @@ impl eframe::App for HxyApp {
         drain_pending_vfs_opens(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_template_runs(ui.ctx(), self);
+        // Palette runs first so it gets first crack at keyboard
+        // events. egui clears focus on plain Escape during its own
+        // event preprocessing, so egui_wants_keyboard_input() reads
+        // false by the time dispatch_hex_edit_keys runs -- if the
+        // hex editor ran first it would drain Escape for its own
+        // clear-selection handler before the palette could use it
+        // to dismiss.
+        #[cfg(not(target_arch = "wasm32"))]
+        handle_command_palette(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
         dispatch_save_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -594,9 +603,6 @@ impl eframe::App for HxyApp {
         render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         render_patch_restore_dialog(ui.ctx(), self);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        handle_command_palette(ui.ctx(), self);
 
         self.save_if_dirty(&snapshot_before);
     }
