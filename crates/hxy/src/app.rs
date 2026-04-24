@@ -2462,6 +2462,7 @@ fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         can_undo: file.editor.can_undo(),
         can_redo: file.editor.can_redo(),
         can_paste: file.editor.edit_mode() == crate::file::EditMode::Mutable,
+        has_active_file: true,
     }
 }
 
@@ -2484,6 +2485,9 @@ struct HistoryPaletteContext {
     can_redo: bool,
     /// True when the active tab is mutable and would accept a paste.
     can_paste: bool,
+    /// True when an active file tab exists, regardless of edit mode.
+    /// Gates toggle-read-only and other tab-level actions.
+    has_active_file: bool,
 }
 
 /// Snapshot of the active tab used for ranking `Run Template`
@@ -2543,6 +2547,18 @@ fn build_palette_entries(
                 egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand("open-file"))
                     .with_icon(icon::FOLDER_OPEN),
             );
+            // "Open recent" cascades into a filtered list of recently
+            // used files, omitting paths that are already open in the
+            // current session.
+            if !app.state.read().app.recent_files.is_empty() {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-open-recent-entry"),
+                        Action::SwitchMode(Mode::Recent),
+                    )
+                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                );
+            }
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("toolbar-browse-archive"),
@@ -2588,6 +2604,18 @@ fn build_palette_entries(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand("redo"))
                         .with_icon(icon::ARROW_CLOCKWISE)
                         .with_shortcut(fmt(&REDO)),
+                );
+            }
+            if history_ctx.has_active_file {
+                let (label_key, toggle_icon) = if history_ctx.can_paste {
+                    ("palette-toggle-edit-mode-leave", icon::LOCK)
+                } else {
+                    ("palette-toggle-edit-mode-enter", icon::LOCK_OPEN)
+                };
+                out.push(
+                    egui_palette::Entry::new(hxy_i18n::t(label_key), Action::InvokeCommand("toggle-edit-mode"))
+                        .with_icon(toggle_icon)
+                        .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
                 );
             }
             if history_ctx.can_paste {
@@ -2710,6 +2738,30 @@ fn build_palette_entries(
                 }
             }
         }
+        Mode::Recent => {
+            // Already-open paths would just switch focus; FocusFile
+            // from Main covers that case cleanly. Filter them out
+            // here so "Open recent" only offers files that would
+            // actually open a fresh tab.
+            let open_paths: std::collections::HashSet<std::path::PathBuf> =
+                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
+            for recent in &app.state.read().app.recent_files {
+                if open_paths.contains(&recent.path) {
+                    continue;
+                }
+                let name = recent
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| recent.path.display().to_string());
+                let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
+                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                if let Some(parent) = recent.path.parent() {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
+            }
+        }
     }
     out
 }
@@ -2751,6 +2803,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 "merge-down" => {
                     apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Down))
                 }
+                "toggle-edit-mode" => toggle_active_edit_mode(app),
                 _ => {}
             }
         }
@@ -2782,6 +2835,10 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             {
                 do_copy(ctx, file, kind);
             }
+        }
+        crate::command_palette::Action::OpenRecent(path) => {
+            app.palette.close();
+            apply_command_effect(ctx, app, CommandEffect::OpenRecent(path));
         }
     }
 }

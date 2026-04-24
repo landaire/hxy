@@ -51,6 +51,10 @@ pub enum Mode {
     /// Picking one deletes its `.bt` file (and any siblings we added
     /// for it). Reached from `Main` via "Uninstall template...".
     Uninstall,
+    /// Recent filesystem files picked from `AppSettings::recent_files`,
+    /// already-open paths filtered out. Reached from `Main` via
+    /// "Open recent...".
+    Recent,
 }
 
 /// Activation payload the app hands back to itself when the user
@@ -68,6 +72,9 @@ pub enum Action {
     /// Copy the active file's current selection using the given
     /// format. Only offered when a non-empty selection exists.
     Copy(crate::copy_format::CopyKind),
+    /// Open a previously-visited filesystem file by path. Used by
+    /// the `Open recent` cascade mode.
+    OpenRecent(PathBuf),
 }
 
 /// Render the palette and return an outcome if the user activated
@@ -81,6 +88,7 @@ pub fn show(
         Mode::Main => hxy_i18n::t("palette-hint-main"),
         Mode::Templates => hxy_i18n::t("palette-hint-templates"),
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
+        Mode::Recent => hxy_i18n::t("palette-hint-recent"),
     };
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Closed => Some(Outcome::Closed),
