@@ -2,6 +2,22 @@
 
 A hex editor built with Rust and [egui]. Desktop and web.
 
+## Screenshots
+
+![hex view](img/hex_view.png)
+
+Data inspector:
+
+![data inspector](img/data_inspector.png)
+
+Template executor:
+
+![template runner](img/template_runner.png)
+
+Command palette:
+
+![command palette](img/command_palette.png)
+
 ## Install
 
 ```
