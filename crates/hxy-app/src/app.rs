@@ -1724,10 +1724,11 @@ fn build_palette_entries(
                     .with_icon(icon::PUZZLE_PIECE),
             );
             out.push(
-                egui_palette::Entry::new("Run Template…", Action::SwitchMode(Mode::Templates)).with_icon(icon::SCROLL),
+                egui_palette::Entry::new(hxy_i18n::t("palette-run-template-entry"), Action::SwitchMode(Mode::Templates))
+                    .with_icon(icon::SCROLL),
             );
             out.push(
-                egui_palette::Entry::new("Uninstall template…", Action::SwitchMode(Mode::Uninstall))
+                egui_palette::Entry::new(hxy_i18n::t("palette-uninstall-template"), Action::SwitchMode(Mode::Uninstall))
                     .with_icon(icon::TRASH),
             );
             if let Some(ctx) = copy_ctx {
@@ -1758,18 +1759,21 @@ fn build_palette_entries(
         Mode::Templates => {
             for entry in app.templates.entries() {
                 out.push(
-                    egui_palette::Entry::new(format!("Run {}", entry.name), Action::RunTemplate(entry.path.clone()))
-                        .with_subtitle(entry.path.display().to_string())
-                        .with_icon(icon::SCROLL),
+                    egui_palette::Entry::new(
+                        hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),
+                        Action::RunTemplate(entry.path.clone()),
+                    )
+                    .with_subtitle(entry.path.display().to_string())
+                    .with_icon(icon::SCROLL),
                 );
             }
             out.push(
-                egui_palette::Entry::new("Install template…", Action::InstallTemplate)
-                    .with_subtitle("Pick a .bt file; any #included dependencies come with it.")
+                egui_palette::Entry::new(hxy_i18n::t("palette-install-template"), Action::InstallTemplate)
+                    .with_subtitle(hxy_i18n::t("palette-install-template-subtitle"))
                     .with_icon(icon::DOWNLOAD),
             );
             out.push(
-                egui_palette::Entry::new("Uninstall template…", Action::SwitchMode(Mode::Uninstall))
+                egui_palette::Entry::new(hxy_i18n::t("palette-uninstall-template"), Action::SwitchMode(Mode::Uninstall))
                     .with_icon(icon::TRASH),
             );
         }
@@ -1781,9 +1785,12 @@ fn build_palette_entries(
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
                     out.push(
-                        egui_palette::Entry::new(format!("Delete {name}"), Action::UninstallTemplate(path.clone()))
-                            .with_subtitle(path.display().to_string())
-                            .with_icon(icon::TRASH),
+                        egui_palette::Entry::new(
+                            hxy_i18n::t_args("palette-delete-template-fmt", &[("name", &name)]),
+                            Action::UninstallTemplate(path.clone()),
+                        )
+                        .with_subtitle(path.display().to_string())
+                        .with_icon(icon::TRASH),
                     );
                 }
             }

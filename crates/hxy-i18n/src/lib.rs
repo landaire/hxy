@@ -84,6 +84,23 @@ pub fn t_in(lang: &LanguageIdentifier, key: &str) -> String {
     LOCALES.lookup(lang, key)
 }
 
+/// Translate `key` with Fluent variable interpolation — e.g.
+/// `t_args("palette-delete-template", &[("name", "PNG.bt")])`
+/// against an entry like `palette-delete-template = Delete { $name }`.
+pub fn t_args(key: &str, args: &[(&str, &str)]) -> String {
+    let mut map: std::collections::HashMap<
+        std::borrow::Cow<'static, str>,
+        fluent_templates::fluent_bundle::FluentValue<'_>,
+    > = std::collections::HashMap::new();
+    for (k, v) in args {
+        map.insert(
+            std::borrow::Cow::Owned((*k).to_owned()),
+            fluent_templates::fluent_bundle::FluentValue::from((*v).to_owned()),
+        );
+    }
+    LOCALES.lookup_with_args(&current(), key, &map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

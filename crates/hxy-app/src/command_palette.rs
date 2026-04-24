@@ -77,12 +77,12 @@ pub fn show(
     state: &mut PaletteState,
     entries: Vec<egui_palette::Entry<Action>>,
 ) -> Option<Outcome> {
-    let hint = match state.mode {
-        Mode::Main => "Search commands, files, templates…",
-        Mode::Templates => "Filter templates…",
-        Mode::Uninstall => "Uninstall which template?",
+    let hint: String = match state.mode {
+        Mode::Main => hxy_i18n::t("palette-hint-main"),
+        Mode::Templates => hxy_i18n::t("palette-hint-templates"),
+        Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
     };
-    match egui_palette::show(ctx, &mut state.inner, &entries, hint)? {
+    match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Closed => Some(Outcome::Closed),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),
     }
