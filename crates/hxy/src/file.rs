@@ -217,6 +217,19 @@ impl OpenFile {
         Self::from_source(id, display_name, source_kind, base)
     }
 
+    /// Pick an appropriate default [`EditMode`] for a file-backed tab.
+    /// Writable on-disk files default to `Mutable`; a file whose
+    /// permissions forbid writing (or whose metadata we can't read)
+    /// defaults to `Readonly`. Callers with no filesystem source
+    /// (pure in-memory buffers, VFS entries) should just default to
+    /// `Mutable` directly.
+    pub fn default_mode_for_path(path: &std::path::Path) -> EditMode {
+        match std::fs::metadata(path) {
+            Ok(meta) if !meta.permissions().readonly() => EditMode::Mutable,
+            _ => EditMode::Readonly,
+        }
+    }
+
     /// Construct from any pre-built [`HexSource`]. Wraps it in a
     /// [`PatchedSource`] so future writes record into the per-tab
     /// patch.
@@ -228,13 +241,21 @@ impl OpenFile {
     ) -> Self {
         let patched = PatchedSource::new(base);
         let patch = patched.patch();
+        // Default to mutable whenever we can actually write: pure
+        // in-memory buffers always can, filesystem-backed tabs only
+        // when the permissions allow. Users who want to explore
+        // without touching bytes can still flip the lock.
+        let edit_mode = match source_kind.as_ref() {
+            Some(TabSource::Filesystem(path)) => Self::default_mode_for_path(path),
+            _ => EditMode::Mutable,
+        };
         Self {
             id,
             display_name: display_name.into(),
             source_kind,
             source: Arc::new(patched),
             patch,
-            edit_mode: EditMode::default(),
+            edit_mode,
             edit_high_nibble: true,
             last_cursor_offset: None,
             selection: None,

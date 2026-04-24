@@ -1690,16 +1690,27 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     let need_styler = field_colors.is_some() || !modified_ranges.is_empty();
     if need_styler {
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
+        // Put the modified-byte tint in the *other* channel from
+        // the user's base highlight mode so it's always visible:
+        // text-highlight scheme paints glyphs, so patched bytes get
+        // a red background; background-highlight scheme (or
+        // highlighting disabled) already owns the cell fill, so
+        // patched bytes get red text instead.
+        let modified_style = if text_mode {
+            hxy_view::ByteStyle { bg: Some(MODIFIED_BYTE_BG), fg: None }
+        } else {
+            hxy_view::ByteStyle { bg: None, fg: Some(MODIFIED_BYTE_FG) }
+        };
         // Pulled out so the closure doesn't have to hold the
         // `field_colors` Option through its lifetime.
         let field_data = field_colors.map(|(b, c)| (b.to_vec(), c.to_vec()));
         view = view.byte_styler(move |_byte, offset| {
             let b = offset.get();
-            // Patched bytes get a saturated highlight that wins over
-            // the template field tint -- the user is editing them
-            // right now, the template colour can wait.
+            // Patched bytes win over the template field tint -- the
+            // user is editing them right now, the template colour
+            // can wait.
             if range_contains(&modified_ranges, b) {
-                return hxy_view::ByteStyle { bg: Some(MODIFIED_BYTE_TINT), fg: None };
+                return modified_style;
             }
             let Some((boundaries, colors)) = field_data.as_ref() else {
                 return hxy_view::ByteStyle { bg: None, fg: None };
@@ -2472,12 +2483,16 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => "Plugins".into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
-                    // Trailing dot marks unsaved edits. Mirrors the
-                    // convention every text editor (VS Code, Vim,
-                    // Emacs) uses; readers won't mistake it for part
-                    // of the filename.
-                    let mark = if f.is_dirty() { " \u{2022}" } else { "" };
-                    format!("{}{mark}", f.display_name).into()
+                    // Leading lock icon marks a read-only tab;
+                    // trailing dot marks unsaved edits (the standard
+                    // VS Code / Vim / Emacs convention).
+                    let lock = if matches!(f.edit_mode, crate::file::EditMode::Readonly) {
+                        format!("{} ", egui_phosphor::regular::LOCK)
+                    } else {
+                        String::new()
+                    };
+                    let dirty = if f.is_dirty() { " \u{2022}" } else { "" };
+                    format!("{lock}{}{dirty}", f.display_name).into()
                 }
                 None => format!("file-{}", id.get()).into(),
             },
@@ -2567,7 +2582,7 @@ fn build_palette(
 
 fn status_bar_ui(
     ui: &mut egui::Ui,
-    file: &OpenFile,
+    file: &mut OpenFile,
     base: crate::settings::OffsetBase,
     new_base: &mut crate::settings::OffsetBase,
 ) {
@@ -2611,6 +2626,24 @@ fn status_bar_ui(
 
         let size = file.source.len().get();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Lock toggle sits next to the length readout. Clicking
+            // flips EditMode; the tooltip describes what the click
+            // will do, not what the icon currently shows.
+            let (icon, tooltip_key) = match file.edit_mode {
+                crate::file::EditMode::Readonly => (egui_phosphor::regular::LOCK, "status-lock-readonly-tooltip"),
+                crate::file::EditMode::Mutable => (egui_phosphor::regular::LOCK_OPEN, "status-lock-mutable-tooltip"),
+            };
+            let resp = ui
+                .add(egui::Button::new(icon).frame(false).min_size(egui::vec2(18.0, 18.0)))
+                .on_hover_text(hxy_i18n::t(tooltip_key));
+            if resp.clicked() {
+                file.edit_mode = match file.edit_mode {
+                    crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
+                    crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
+                };
+                file.reset_edit_nibble();
+            }
+
             let value = format_offset(size, base);
             copyable_status_label(
                 ui,
@@ -2663,10 +2696,13 @@ const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
 const TOGGLE_EDIT_MODE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
 
-/// Background tint painted over patched bytes in the hex view. A warm
-/// orange that reads on both light and dark themes; gamma-muted so it
-/// doesn't drown out the byte glyphs themselves.
-const MODIFIED_BYTE_TINT: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x55, 0x33, 0x00, 0x80);
+/// Background tint for patched bytes when the user's highlight mode
+/// paints glyphs. Saturated red stands out against the default cell
+/// fill on both light and dark themes.
+const MODIFIED_BYTE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x80, 0x10, 0x10, 0xB0);
+/// Foreground tint for patched bytes when the base highlight already
+/// owns the cell fill (background mode or highlighting disabled).
+const MODIFIED_BYTE_FG: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x5A, 0x4A);
 
 /// Binary search a sorted, non-overlapping list of byte ranges for
 /// `offset`. Used by the hex-view tinting closure -- O(log N) per

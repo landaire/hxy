@@ -77,6 +77,10 @@ duplicate-open-focus = Go to existing tab
 duplicate-open-new-tab = Open in new tab
 duplicate-open-cancel = Cancel
 
+# Status bar
+status-lock-readonly-tooltip = Read-only -- click to enable edits
+status-lock-mutable-tooltip = Editable -- click to lock
+
 # Restore-unsaved-edits dialog
 restore-patch-title = Restore unsaved edits?
 restore-patch-body = { $ops } unsaved edit(s) from a previous session were saved alongside this file.
