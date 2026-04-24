@@ -21,9 +21,11 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
-use suture::FileMetadata;
 use suture::Patch;
-use suture::SourceMetadata;
+use suture::metadata::FileMetadata;
+use suture::metadata::HashAlgorithm;
+use suture::metadata::SourceDigest;
+use suture::metadata::SourceMetadata;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PatchSidecar {
@@ -54,7 +56,7 @@ impl PatchSidecar {
 pub fn sidecar_filename(source_path: &Path) -> String {
     let canonical = source_path.canonicalize().unwrap_or_else(|_| source_path.to_path_buf());
     let bytes = canonical.to_string_lossy().into_owned();
-    let digest = suture::HashAlgorithm::Blake3.compute(bytes.as_bytes());
+    let digest = HashAlgorithm::Blake3.compute(bytes.as_bytes());
     let mut hex = String::with_capacity(digest.len() * 2 + 5);
     for b in &digest {
         use std::fmt::Write;
@@ -111,9 +113,12 @@ pub fn snapshot(source_path: PathBuf, source: &dyn hxy_core::HexSource, patch: P
                 .expect("range valid"),
         )
         .ok()?;
-    let digest = suture::HashAlgorithm::Blake3.compute(&bytes);
-    let mut metadata =
-        SourceMetadata::new(len).with_digest(suture::SourceDigest::new(suture::HashAlgorithm::Blake3, digest));
+    let digest = HashAlgorithm::Blake3.compute(&bytes);
+    // `SourceDigest::new` validates the digest length against the
+    // algorithm; BLAKE3 always returns 32 bytes so this never fails
+    // in practice -- unwrap tells a future reviewer exactly why.
+    let source_digest = SourceDigest::new(HashAlgorithm::Blake3, digest).expect("blake3 digest is 32 bytes");
+    let mut metadata = SourceMetadata::new(len).with_digest(source_digest);
     if let Ok(meta) = fs::metadata(&source_path)
         && let Ok(file_meta) = FileMetadata::from_metadata(&meta)
     {
