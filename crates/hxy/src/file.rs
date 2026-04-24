@@ -53,7 +53,7 @@ pub enum WriteError {
 /// Single reversible edit: the byte range `[offset, offset+len)`, the
 /// bytes that were there before the edit, and the bytes that replaced
 /// them. Length-preserving, so `old_bytes.len() == new_bytes.len()`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EditEntry {
     pub offset: u64,
     pub old_bytes: Vec<u8>,

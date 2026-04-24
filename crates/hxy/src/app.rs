@@ -614,7 +614,13 @@ impl eframe::App for HxyApp {
                 continue;
             }
             let patch = file.patch.read().expect("patch lock poisoned").clone();
-            let Some(sidecar) = crate::patch_persist::snapshot(path.clone(), file.source.as_ref(), patch) else {
+            let Some(sidecar) = crate::patch_persist::snapshot(
+                path.clone(),
+                file.source.as_ref(),
+                patch,
+                file.undo_stack.clone(),
+                file.redo_stack.clone(),
+            ) else {
                 continue;
             };
             if let Err(e) = crate::patch_persist::store(&dir, &sidecar) {
@@ -809,6 +815,9 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
                 if verified {
                     *file.patch.write().expect("patch lock poisoned") = pending.sidecar.patch;
+                    file.undo_stack = pending.sidecar.undo_stack;
+                    file.redo_stack = pending.sidecar.redo_stack;
+                    file.history_break = true;
                     file.edit_mode = crate::file::EditMode::Mutable;
                     if integrity_clean {
                         log_lines.push((ConsoleSeverity::Info, "restored unsaved edits".to_owned()));

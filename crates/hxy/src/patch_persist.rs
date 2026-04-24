@@ -27,6 +27,8 @@ use suture::metadata::HashAlgorithm;
 use suture::metadata::SourceDigest;
 use suture::metadata::SourceMetadata;
 
+use crate::file::EditEntry;
+
 /// Largest source we'll content-hash on quit. Above this, the
 /// sidecar keeps only filesystem metadata -- hashing tens of MB/s
 /// would stall shutdown on a GB-scale file. The integrity check on
@@ -41,6 +43,15 @@ pub struct PatchSidecar {
     pub source_path: PathBuf,
     pub metadata: SourceMetadata,
     pub patch: Patch,
+    /// Undo history at snapshot time. Restored alongside the patch so
+    /// the user can keep reaching backward through edits made in the
+    /// previous session. `#[serde(default)]` keeps sidecars from
+    /// older builds readable (they land with an empty history).
+    #[serde(default)]
+    pub undo_stack: Vec<EditEntry>,
+    /// Redo history at snapshot time; same backward-compat treatment.
+    #[serde(default)]
+    pub redo_stack: Vec<EditEntry>,
 }
 
 /// How confident we are that the on-disk source still matches what
@@ -143,7 +154,17 @@ pub fn discard(dir: &Path, source_path: &Path) -> io::Result<()> {
 /// A content digest is additionally computed for sources smaller
 /// than [`DIGEST_MAX_BYTES`]; above that it'd stall shutdown.
 /// Returns `None` for an empty patch (nothing worth persisting).
-pub fn snapshot(source_path: PathBuf, source: &dyn hxy_core::HexSource, patch: Patch) -> Option<PatchSidecar> {
+///
+/// The undo / redo stacks are stored verbatim so the user can keep
+/// stepping backward and forward through the previous session's
+/// edits after the tab is reopened.
+pub fn snapshot(
+    source_path: PathBuf,
+    source: &dyn hxy_core::HexSource,
+    patch: Patch,
+    undo_stack: Vec<EditEntry>,
+    redo_stack: Vec<EditEntry>,
+) -> Option<PatchSidecar> {
     if patch.is_empty() {
         return None;
     }
@@ -166,5 +187,49 @@ pub fn snapshot(source_path: PathBuf, source: &dyn hxy_core::HexSource, patch: P
         let source_digest = SourceDigest::new(HashAlgorithm::Blake3, digest).expect("blake3 digest is 32 bytes");
         metadata = metadata.with_digest(source_digest);
     }
-    Some(PatchSidecar { source_path, metadata, patch })
+    Some(PatchSidecar { source_path, metadata, patch, undo_stack, redo_stack })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_sidecar() -> PatchSidecar {
+        let mut patch = Patch::new();
+        patch.write(0, vec![0xAA]).unwrap();
+        PatchSidecar {
+            source_path: PathBuf::from("/tmp/example.bin"),
+            metadata: SourceMetadata::new(16),
+            patch,
+            undo_stack: vec![EditEntry { offset: 0, old_bytes: vec![0x00], new_bytes: vec![0xAA] }],
+            redo_stack: vec![EditEntry { offset: 4, old_bytes: vec![0x22], new_bytes: vec![0xBB] }],
+        }
+    }
+
+    #[test]
+    fn sidecar_roundtrips_undo_and_redo_stacks() {
+        let original = sample_sidecar();
+        let json = serde_json::to_vec(&original).unwrap();
+        let loaded: PatchSidecar = serde_json::from_slice(&json).unwrap();
+        assert_eq!(loaded.undo_stack.len(), 1);
+        assert_eq!(loaded.undo_stack[0].offset, 0);
+        assert_eq!(loaded.undo_stack[0].new_bytes, vec![0xAA]);
+        assert_eq!(loaded.redo_stack.len(), 1);
+        assert_eq!(loaded.redo_stack[0].offset, 4);
+    }
+
+    #[test]
+    fn legacy_sidecar_without_stacks_still_parses() {
+        // Sidecars written by earlier builds have no undo_stack /
+        // redo_stack field. `#[serde(default)]` makes them deserialise
+        // with empty histories instead of erroring.
+        let json = serde_json::json!({
+            "source_path": "/tmp/example.bin",
+            "metadata": {"len": 16},
+            "patch": serde_json::to_value(&sample_sidecar().patch).unwrap(),
+        });
+        let loaded: PatchSidecar = serde_json::from_value(json).unwrap();
+        assert!(loaded.undo_stack.is_empty());
+        assert!(loaded.redo_stack.is_empty());
+    }
 }
