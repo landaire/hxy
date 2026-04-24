@@ -488,7 +488,19 @@ impl HxyApp {
         }
 
         self.files.insert(id, file);
+        // Replace the Welcome placeholder when opening the first
+        // file: focus its leaf, push the new tab into that same
+        // leaf, then remove Welcome. Doing it in this order keeps
+        // the leaf populated throughout, so egui_dock doesn't
+        // collapse it between the two ops.
+        let welcome_path = self.dock.find_tab(&Tab::Welcome);
+        if let Some(path) = welcome_path.as_ref() {
+            self.dock.set_focused_node_and_surface(path.node_path());
+        }
         self.dock.push_to_focused_leaf(Tab::File(id));
+        if let Some(path) = welcome_path {
+            let _ = self.dock.remove_tab(path);
+        }
 
         // Look for an unsaved-edits sidecar from a previous session
         // and offer it back to the user. The actual restore happens
