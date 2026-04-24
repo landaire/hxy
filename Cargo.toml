@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
@@ -21,13 +21,13 @@ authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
 
 [workspace.dependencies]
-hxy-core = { path = "crates/hxy-core", version = "0.1.0" }
-hxy-i18n = { path = "crates/hxy-i18n", version = "0.1.0" }
-hxy-view = { path = "crates/hxy-view", version = "0.1.0" }
-hxy-vfs = { path = "crates/hxy-vfs", version = "0.1.0" }
-hxy-plugin-host = { path = "crates/hxy-plugin-host", version = "0.1.0" }
-hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.1.0" }
-egui-palette = { path = "crates/egui-palette", version = "0.1.0" }
+hxy-core = { path = "crates/hxy-core", version = "0.2.0" }
+hxy-i18n = { path = "crates/hxy-i18n", version = "0.2.0" }
+hxy-view = { path = "crates/hxy-view", version = "0.2.0" }
+hxy-vfs = { path = "crates/hxy-vfs", version = "0.2.0" }
+hxy-plugin-host = { path = "crates/hxy-plugin-host", version = "0.2.0" }
+hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.2.0" }
+egui-palette = { path = "crates/egui-palette", version = "0.2.0" }
 
 [profile.release]
 opt-level = 3

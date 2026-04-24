@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "egui-palette"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "nucleo-matcher",
@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "hxy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "base64",
@@ -2720,7 +2720,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-010-lang"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arbitrary",
  "insta",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fskit",
  "jiff",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-i18n"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fluent-templates",
  "sys-locale",
@@ -2752,14 +2752,14 @@ dependencies = [
 
 [[package]]
 name = "hxy-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "wit-bindgen 0.57.1",
 ]
 
 [[package]]
 name = "hxy-plugin-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hxy-core",
  "hxy-vfs",
@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-vfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "file_type",
  "fskit",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-view"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "egui_kittest",
