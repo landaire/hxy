@@ -345,7 +345,18 @@ impl HexEditor {
         let Some(sel) = self.selection else { return Ok(false) };
         let offset = sel.cursor.get();
         let source_len = self.source.len().get();
+        // At EOF, high-nibble press extends the buffer by one zeroed
+        // byte so anonymous (scratch) tabs that start empty can grow
+        // as the user types. The low nibble of the just-inserted byte
+        // is filled by the subsequent keystroke via the overwrite
+        // branch below.
         if offset >= source_len {
+            if !self.edit.edit_high_nibble {
+                return Ok(false);
+            }
+            self.pin_scroll_for_next_frame();
+            self.edit.insert_at(offset, vec![nibble << 4])?;
+            self.edit.edit_high_nibble = false;
             return Ok(false);
         }
         let current = self.edit.read_byte_at(offset)?;
@@ -370,11 +381,14 @@ impl HexEditor {
         }
         let Some(sel) = self.selection else { return Ok(false) };
         let offset = sel.cursor.get();
-        if offset >= self.source.len().get() {
-            return Ok(false);
-        }
         self.pin_scroll_for_next_frame();
-        self.edit.request_write(offset, vec![byte])?;
+        if offset >= self.source.len().get() {
+            // Grow the buffer at EOF so anonymous tabs can be typed
+            // into from an empty start.
+            self.edit.insert_at(offset, vec![byte])?;
+        } else {
+            self.edit.request_write(offset, vec![byte])?;
+        }
         Ok(true)
     }
 

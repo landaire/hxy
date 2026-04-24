@@ -26,6 +26,8 @@ use crate::copy_format::CopyKind;
 /// handlers the egui menu would.
 #[derive(Clone, Copy, Debug)]
 pub enum MenuAction {
+    /// Create a fresh anonymous (scratch) tab named `Untitled N`.
+    NewFile,
     OpenFile,
     /// Save the active tab in place. Falls back to Save As when the
     /// tab has no path backing it.
@@ -101,6 +103,9 @@ impl MenuState {
 
         let file_menu = Submenu::new("File", true);
         menu.append(&file_menu).expect("append file menu");
+        let new_file = MenuItem::new("New", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)));
+        file_menu.append(&new_file).expect("append new file");
+        actions.insert(new_file.id().0.clone(), MenuAction::NewFile);
         let open = MenuItem::new("Open...", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)));
         file_menu.append(&open).expect("append open");
         actions.insert(open.id().0.clone(), MenuAction::OpenFile);

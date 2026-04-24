@@ -13,6 +13,6 @@ fskit = { version = "0.2.0", features = ["vfs", "jiff"] }
 jiff = { version = "0.2.24", features = ["serde"] }
 rootcause = "0.12.1"
 serde = { version = "1.0.228", features = ["derive"] }
-suture = { version = "0.1.0", path = "../../../suture" }
+suture = { version = "0.2.0", path = "../../../suture" }
 thiserror = "2.0.18"
 vfs = "0.13.0"

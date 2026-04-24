@@ -158,13 +158,46 @@ impl EditState {
             .expect("patch lock poisoned")
             .write(offset, bytes.clone())
             .map_err(|e| WriteError::Rejected(e.to_string()))?;
+        self.record_entry(EditEntry { offset, old_bytes, new_bytes: bytes });
+        Ok(())
+    }
+
+    /// Insert `bytes` at `offset`, growing the source by `bytes.len()`.
+    /// Used by the editor when the cursor sits at EOF so anonymous
+    /// buffers can start at 0 bytes and grow with typing.
+    pub(crate) fn insert_at(&mut self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
+        if self.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let source_len = self.patched_source.len().get();
+        if offset > source_len {
+            return Err(WriteError::OutOfBounds { offset, len: bytes.len() as u64, source_len });
+        }
+        self.patch
+            .write()
+            .expect("patch lock poisoned")
+            .insert(offset, bytes.clone())
+            .map_err(|e| WriteError::Rejected(e.to_string()))?;
+        self.record_entry(EditEntry { offset, old_bytes: Vec::new(), new_bytes: bytes });
+        Ok(())
+    }
+
+    /// Common bookkeeping after a successful patch mutation: clear
+    /// redo, coalesce when still on the same logical edit, otherwise
+    /// push fresh and enforce the cap. Entries where old_bytes and
+    /// new_bytes have different lengths (pure inserts / deletes /
+    /// splices) are never coalesced: the merge rules assume a
+    /// length-preserving overwrite.
+    fn record_entry(&mut self, entry: EditEntry) {
         self.redo_stack.clear();
         let now = Instant::now();
         let idle_break = self.last_edit_at.is_some_and(|last| now.duration_since(last) >= EDIT_COALESCE_IDLE);
-        let entry = EditEntry { offset, old_bytes, new_bytes: bytes };
+        let entry_is_length_preserving = entry.old_bytes.len() == entry.new_bytes.len();
         if !self.history_break
             && !idle_break
+            && entry_is_length_preserving
             && let Some(last) = self.undo_stack.last_mut()
+            && last.old_bytes.len() == last.new_bytes.len()
             && ranges_touch(last.offset, last.end(), entry.offset, entry.end())
         {
             merge_entry(last, &entry);
@@ -176,7 +209,6 @@ impl EditState {
         }
         self.history_break = false;
         self.last_edit_at = Some(now);
-        Ok(())
     }
 
     pub(crate) fn revert(&mut self) {
@@ -204,8 +236,13 @@ impl EditState {
             return None;
         }
         let entry = self.redo_stack.pop()?;
-        if let Err(e) = self.patch.write().expect("patch lock poisoned").write(entry.offset, entry.new_bytes.clone()) {
-            tracing::warn!(error = %e, "redo write rejected; restoring redo stack");
+        let result = self.patch.write().expect("patch lock poisoned").splice(
+            entry.offset,
+            entry.old_bytes.len() as u64,
+            entry.new_bytes.clone(),
+        );
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "redo splice rejected; restoring redo stack");
             self.redo_stack.push(entry);
             return None;
         }
@@ -223,7 +260,7 @@ impl EditState {
             None => Patch::new(),
         };
         for entry in &self.undo_stack {
-            if let Err(e) = patch.write(entry.offset, entry.new_bytes.clone()) {
+            if let Err(e) = patch.splice(entry.offset, entry.old_bytes.len() as u64, entry.new_bytes.clone()) {
                 tracing::warn!(error = %e, "rebuild_patch_from_stack: entry rejected");
             }
         }

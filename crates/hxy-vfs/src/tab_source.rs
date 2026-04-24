@@ -3,6 +3,18 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Stable identifier for an anonymous (scratch) tab. Monotonic
+/// within an app install; paired with a persisted byte file on
+/// disk so the tab survives restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AnonymousId(pub u64);
+
+impl AnonymousId {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Stable, serialisable identifier for an open tab's byte source.
 /// Nesting is explicit so a file inside an archive inside an archive
 /// still persists correctly and can be topologically restored on
@@ -14,29 +26,36 @@ pub enum TabSource {
     /// An entry inside another tab's mounted VFS. `entry_path` is the
     /// VFS path (forward-slash separated) within the parent's mount.
     VfsEntry { parent: Box<TabSource>, entry_path: String },
+    /// A scratch / untitled buffer not tied to any on-disk file.
+    /// Bytes are persisted under the app's data dir keyed by `id`;
+    /// `title` keeps the user-visible name (e.g. `Untitled 3`)
+    /// stable across restarts.
+    Anonymous { id: AnonymousId, title: String },
 }
 
 impl TabSource {
-    /// Depth of the nesting chain. `Filesystem` is depth 0; each nested
-    /// `VfsEntry` adds one.
+    /// Depth of the nesting chain. `Filesystem` and `Anonymous` are
+    /// depth 0; each nested `VfsEntry` adds one.
     pub fn depth(&self) -> usize {
         match self {
-            Self::Filesystem(_) => 0,
+            Self::Filesystem(_) | Self::Anonymous { .. } => 0,
             Self::VfsEntry { parent, .. } => parent.depth() + 1,
         }
     }
 
-    /// The root filesystem path at the bottom of any nesting. Useful
-    /// for display in recents and for grouping tabs by archive.
-    pub fn root_path(&self) -> &PathBuf {
+    /// The root filesystem path at the bottom of any nesting.
+    /// `None` for `Anonymous` tabs (no on-disk origin).
+    pub fn root_path(&self) -> Option<&PathBuf> {
         match self {
-            Self::Filesystem(p) => p,
+            Self::Filesystem(p) => Some(p),
             Self::VfsEntry { parent, .. } => parent.root_path(),
+            Self::Anonymous { .. } => None,
         }
     }
 
     /// A short human label: for `Filesystem` it's the file name; for
-    /// `VfsEntry` it's the last segment of `entry_path`.
+    /// `VfsEntry` it's the last segment of `entry_path`; for
+    /// `Anonymous` it's the stored title.
     pub fn display_name(&self) -> String {
         match self {
             Self::Filesystem(p) => {
@@ -45,6 +64,7 @@ impl TabSource {
             Self::VfsEntry { entry_path, .. } => {
                 entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned()
             }
+            Self::Anonymous { title, .. } => title.clone(),
         }
     }
 }

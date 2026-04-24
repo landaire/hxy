@@ -65,7 +65,7 @@ egui-palette = { workspace = true }
 # Rust instead of being wrapped in a WASM component. User-supplied
 # template runtimes still go through wasmtime via hxy-plugin-host.
 hxy-010-lang = { workspace = true }
-suture = { version = "0.1.0", path = "../../../suture", features = ["serde", "blake3"] }
+suture = { version = "0.2.0", path = "../../../suture", features = ["serde", "blake3"] }
 arboard = { version = "3.6.1", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

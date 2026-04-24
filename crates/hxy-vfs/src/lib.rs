@@ -20,5 +20,6 @@ pub use error::HandlerError;
 pub use handler::MountedVfs;
 pub use handler::VfsHandler;
 pub use registry::VfsRegistry;
+pub use tab_source::AnonymousId;
 pub use tab_source::TabSource;
 pub use vfs;

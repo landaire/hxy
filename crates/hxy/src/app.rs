@@ -374,7 +374,7 @@ impl HxyApp {
                 let ext = file
                     .source_kind
                     .as_ref()
-                    .map(|s| s.root_path().clone())
+                    .and_then(|s| s.root_path().cloned())
                     .as_ref()
                     .and_then(|p| p.extension())
                     .and_then(|s| s.to_str())
@@ -509,6 +509,26 @@ impl HxyApp {
                 self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), show_tree);
                 Ok(())
             }
+            TabSource::Anonymous { id, title } => {
+                let path = anonymous_file_path(*id).ok_or_else(|| crate::file::FileOpenError::Read {
+                    path: std::path::PathBuf::from(format!("anonymous/{}", id.get())),
+                    source: std::io::Error::other("no data dir"),
+                })?;
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Sidecar gone; fall back to a fresh zero buffer
+                        // so the tab still opens rather than dropping the
+                        // entry silently.
+                        vec![0u8; ANONYMOUS_DEFAULT_SIZE]
+                    }
+                    Err(e) => {
+                        return Err(crate::file::FileOpenError::Read { path, source: e });
+                    }
+                };
+                self.open(title.clone(), Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), false);
+                Ok(())
+            }
         }
     }
 
@@ -611,29 +631,67 @@ impl eframe::App for HxyApp {
     fn on_exit(&mut self) {
         // Persist every dirty tab's patch to a sidecar so restart
         // can offer to restore it. Best-effort: errors only log.
-        let Some(dir) = unsaved_edits_dir() else { return };
-        for file in self.files.values() {
-            let Some(path) = file.root_path().cloned() else { continue };
-            if !file.editor.is_dirty() {
-                // Clear any lingering sidecar from a previous session
-                // -- the in-memory state for this file is clean now.
-                let _ = crate::patch_persist::discard(&dir, &path);
-                continue;
+        if let Some(dir) = unsaved_edits_dir() {
+            for file in self.files.values() {
+                let Some(path) = file.root_path().cloned() else { continue };
+                if !file.editor.is_dirty() {
+                    // Clear any lingering sidecar from a previous session
+                    // -- the in-memory state for this file is clean now.
+                    let _ = crate::patch_persist::discard(&dir, &path);
+                    continue;
+                }
+                let patch = file.editor.patch().read().expect("patch lock poisoned").clone();
+                let Some(sidecar) = crate::patch_persist::snapshot(
+                    path.clone(),
+                    file.editor.source().as_ref(),
+                    patch,
+                    file.editor.undo_stack().to_vec(),
+                    file.editor.redo_stack().to_vec(),
+                ) else {
+                    continue;
+                };
+                if let Err(e) = crate::patch_persist::store(&dir, &sidecar) {
+                    tracing::warn!(error = %e, path = %path.display(), "store patch sidecar");
+                } else {
+                    tracing::info!(path = %path.display(), "saved unsaved-edits sidecar");
+                }
             }
-            let patch = file.editor.patch().read().expect("patch lock poisoned").clone();
-            let Some(sidecar) = crate::patch_persist::snapshot(
-                path.clone(),
-                file.editor.source().as_ref(),
-                patch,
-                file.editor.undo_stack().to_vec(),
-                file.editor.redo_stack().to_vec(),
-            ) else {
-                continue;
-            };
-            if let Err(e) = crate::patch_persist::store(&dir, &sidecar) {
-                tracing::warn!(error = %e, path = %path.display(), "store patch sidecar");
+        }
+
+        // Anonymous (scratch) tabs have no on-disk origin, so the
+        // full patched buffer is what we persist. One file per tab
+        // under `anonymous_files_dir()`, keyed by the tab's
+        // AnonymousId.
+        for file in self.files.values() {
+            let Some(TabSource::Anonymous { id, .. }) = file.source_kind.as_ref() else { continue };
+            let Some(path) = anonymous_file_path(*id) else { continue };
+            let len = file.editor.source().len().get();
+            let bytes = if len == 0 {
+                Vec::new()
             } else {
-                tracing::info!(path = %path.display(), "saved unsaved-edits sidecar");
+                let range = match hxy_core::ByteRange::new(
+                    hxy_core::ByteOffset::new(0),
+                    hxy_core::ByteOffset::new(len),
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "anonymous tab range invalid");
+                        continue;
+                    }
+                };
+                match file.editor.source().read(range) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "read anonymous tab bytes");
+                        continue;
+                    }
+                }
+            };
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                tracing::warn!(error = %e, path = %path.display(), "write anonymous tab");
             }
         }
     }
@@ -871,8 +929,9 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    let (save, save_as, toggle, undo, redo) = ctx.input_mut(|i| {
+    let (new_file, save, save_as, toggle, undo, redo) = ctx.input_mut(|i| {
         (
+            i.consume_shortcut(&NEW_FILE),
             i.consume_shortcut(&SAVE_FILE),
             i.consume_shortcut(&SAVE_FILE_AS),
             i.consume_shortcut(&TOGGLE_EDIT_MODE),
@@ -880,6 +939,9 @@ fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
             i.consume_shortcut(&REDO),
         )
     });
+    if new_file {
+        handle_new_file(app);
+    }
     if save_as {
         save_active_file(app, true);
     } else if save {
@@ -2001,6 +2063,29 @@ fn unsaved_edits_dir() -> Option<std::path::PathBuf> {
     Some(base.join(APP_NAME).join("edits"))
 }
 
+/// Per-install storage for anonymous / scratch tabs. One file per
+/// tab named after the [`hxy_vfs::AnonymousId`], created on first
+/// `New file` and removed when the tab is saved to a real path or
+/// closed without saving.
+#[cfg(not(target_arch = "wasm32"))]
+fn anonymous_files_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::data_dir()?;
+    Some(base.join(APP_NAME).join("anonymous"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn anonymous_file_path(id: hxy_vfs::AnonymousId) -> Option<std::path::PathBuf> {
+    anonymous_files_dir().map(|d| d.join(format!("{:016x}.bin", id.get())))
+}
+
+/// Default byte count for a fresh anonymous tab. Writes are
+/// length-preserving right now, so this also caps how much the
+/// user can edit before saving-as. 256 bytes is 16 rows at the
+/// default column count -- enough to experiment without looking
+/// cavernous.
+#[cfg(not(target_arch = "wasm32"))]
+const ANONYMOUS_DEFAULT_SIZE: usize = 256;
+
 #[cfg(not(target_arch = "wasm32"))]
 fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
     let mut out: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>> = Vec::new();
@@ -2043,6 +2128,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
     let actions = menu.drain_actions();
     for action in actions {
         match action {
+            crate::menu::MenuAction::NewFile => handle_new_file(app),
             crate::menu::MenuAction::OpenFile => handle_open_file(app),
             crate::menu::MenuAction::Save => save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => save_active_file(app, true),
@@ -2177,6 +2263,11 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     egui::Panel::top("hxy_menu_bar").show_inside(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(hxy_i18n::t("menu-file"), |ui| {
+                let new_text = ui.ctx().format_shortcut(&NEW_FILE);
+                if ui.add(egui::Button::new(hxy_i18n::t("menu-file-new")).shortcut_text(new_text)).clicked() {
+                    ui.close();
+                    handle_new_file(app);
+                }
                 if ui.button(hxy_i18n::t("menu-file-open")).clicked() {
                     ui.close();
                     handle_open_file(app);
@@ -2410,6 +2501,11 @@ fn build_palette_entries(
     match app.palette.mode {
         Mode::Main => {
             out.push(
+                egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand("new-file"))
+                    .with_icon(icon::FILE_PLUS)
+                    .with_shortcut(fmt(&NEW_FILE)),
+            );
+            out.push(
                 egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand("open-file"))
                     .with_icon(icon::FOLDER_OPEN),
             );
@@ -2589,6 +2685,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
         crate::command_palette::Action::InvokeCommand(id) => {
             app.palette.close();
             match id {
+                "new-file" => handle_new_file(app),
                 "open-file" => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
                 "browse-archive" => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
                 "show-console" => app.show_console(),
@@ -2742,6 +2839,54 @@ fn handle_open_file(app: &mut HxyApp) {
     }
 }
 
+/// Create a fresh anonymous ("Untitled") tab with a small zero-filled
+/// buffer. Picks the next free `AnonymousId` and a "Untitled N" title
+/// that doesn't collide with any already-open or persisted tab.
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_new_file(app: &mut HxyApp) {
+    let mut used_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for file in app.files.values() {
+        if let Some(TabSource::Anonymous { id, .. }) = &file.source_kind {
+            used_ids.insert(id.get());
+        }
+    }
+    for tab in &app.state.read().open_tabs {
+        if let TabSource::Anonymous { id, .. } = &tab.source {
+            used_ids.insert(id.get());
+        }
+    }
+    let next_id = (0u64..).find(|i| !used_ids.contains(i)).expect("u64 id space");
+
+    let mut used_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in app.files.values() {
+        used_titles.insert(file.display_name.clone());
+    }
+    let title = (1u64..)
+        .map(|n| if n == 1 { "Untitled".to_owned() } else { format!("Untitled {n}") })
+        .find(|t| !used_titles.contains(t))
+        .expect("nonzero range of titles");
+
+    let id = hxy_vfs::AnonymousId(next_id);
+    // Zero-length buffer: writes past EOF grow the file via
+    // HexEditor::insert_at, so the user can just start typing.
+    let bytes: Vec<u8> = Vec::new();
+    // Touch the persistent sidecar so a crash before the next
+    // save_if_dirty cycle still restores this tab (empty, but
+    // present). Best-effort.
+    if let Some(path) = anonymous_file_path(id) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            tracing::warn!(error = %e, path = %path.display(), "write anonymous tab seed");
+        }
+    }
+    let source = TabSource::Anonymous { id, title: title.clone() };
+    let initial_caret = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
+    let file_id = app.open(title, Some(source), bytes, initial_caret, None, false);
+    app.focus_file_tab(file_id);
+}
+
 /// Save the active tab. `force_dialog` always asks for a destination
 /// (Save As); otherwise the tab's existing filesystem path is used
 /// when present, falling back to the dialog when there isn't one.
@@ -2785,6 +2930,10 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
     // of the stale pre-edit buffer. Reverting the patch alone would
     // leave `file.editor.source()` wrapping the original pre-edit bytes and
     // reads would show the wrong content.
+    // Stash the previous source_kind before replacing so we can
+    // clean up anonymous sidecars and persisted entries after the
+    // tab re-anchors to Filesystem.
+    let previous_source = app.files.get(&id).and_then(|f| f.source_kind.clone());
     if let Some(file) = app.files.get_mut(&id) {
         let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
         file.editor.swap_source(base);
@@ -2798,6 +2947,24 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
     // launch would be confusing.
     if let Some(dir) = unsaved_edits_dir() {
         let _ = crate::patch_persist::discard(&dir, &path);
+    }
+    // If we just saved an anonymous tab, remove its backing file
+    // and swap the persisted entry from Anonymous to Filesystem.
+    if let Some(TabSource::Anonymous { id: anon_id, .. }) = previous_source.as_ref() {
+        if let Some(anon_path) = anonymous_file_path(*anon_id) {
+            let _ = std::fs::remove_file(&anon_path);
+        }
+        let new_source = TabSource::Filesystem(path.clone());
+        let mut state = app.state.write();
+        state.open_tabs.retain(|t| !matches!(&t.source, TabSource::Anonymous { id, .. } if id == anon_id));
+        if !state.open_tabs.iter().any(|t| t.source == new_source) {
+            state.open_tabs.push(crate::state::OpenTabState {
+                source: new_source,
+                selection: None,
+                scroll_offset: 0.0,
+                show_vfs_tree: false,
+            });
+        }
     }
     app.console_log(ConsoleSeverity::Info, &ctx, "saved");
 }
@@ -3090,6 +3257,7 @@ use crate::copy_format::CopyKind;
 const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
 const COPY_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
+const NEW_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
 const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 const SAVE_FILE_AS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);

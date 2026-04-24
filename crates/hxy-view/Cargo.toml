@@ -12,7 +12,7 @@ description = "Reusable egui hex-view widget"
 egui = "0.34.1"
 hxy-core = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
-suture = { version = "0.1.0", path = "../../../suture", optional = true }
+suture = { version = "0.2.0", path = "../../../suture", optional = true }
 thiserror = { version = "2.0.18", optional = true }
 tracing = { version = "0.1.44", optional = true }
 

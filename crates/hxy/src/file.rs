@@ -227,7 +227,7 @@ impl OpenFile {
     /// ultimately originates from. `None` only for purely in-memory
     /// tabs with no path backing (e.g. placeholder buffers).
     pub fn root_path(&self) -> Option<&PathBuf> {
-        self.source_kind.as_ref().map(|s| s.root_path())
+        self.source_kind.as_ref().and_then(|s| s.root_path())
     }
 }
 
