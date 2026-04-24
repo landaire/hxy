@@ -14,6 +14,10 @@ pub enum Tab {
     /// View menu; closeable and persists across sessions via the
     /// dock state (but the entries themselves are in-memory only).
     Console,
+    /// Datatype inspector: decodes the bytes at the active file tab's
+    /// caret into integers / floats / time / colour rows. Opened from
+    /// the View menu; closeable.
+    Inspector,
 }
 
 impl Tab {

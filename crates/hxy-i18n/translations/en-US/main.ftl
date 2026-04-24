@@ -12,6 +12,7 @@ menu-edit-copy-bytes = Copy bytes
 menu-edit-copy-hex = Copy hex string
 menu-view = View
 menu-view-console = Show Console
+menu-view-inspector = Show Inspector
 menu-help = Help
 menu-help-about = About
 
@@ -19,6 +20,7 @@ menu-help-about = About
 tab-settings = Settings
 tab-welcome = Welcome
 tab-console = Console
+tab-inspector = Inspector
 
 # Console tab
 console-empty = No plugin output yet. Template diagnostics will appear here.

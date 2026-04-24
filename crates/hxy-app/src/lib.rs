@@ -14,6 +14,8 @@ pub mod window;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod builtin_runtimes;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod inspector;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod template_panel;
 
 #[cfg(not(target_arch = "wasm32"))]

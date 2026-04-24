@@ -56,6 +56,16 @@ pub struct HxyApp {
     /// by the Console dock tab when it's open; entries accumulate
     /// regardless so opening the tab later reveals back-scroll.
     console: std::collections::VecDeque<ConsoleEntry>,
+
+    /// Data-inspector dock tab state. Endianness + radix preferences
+    /// and the `show_panel` flag that's only consulted when the
+    /// Inspector tab is closed and re-opened.
+    #[cfg(not(target_arch = "wasm32"))]
+    inspector: crate::inspector::InspectorState,
+    /// Registered decoders for the inspector. Defaults to the
+    /// built-in set; user-registered decoders will be additive.
+    #[cfg(not(target_arch = "wasm32"))]
+    decoders: Vec<Arc<dyn crate::inspector::Decoder>>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -115,7 +125,30 @@ impl HxyApp {
             applied_zoom: initial_zoom,
             pending_duplicate: None,
             console: std::collections::VecDeque::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            inspector: crate::inspector::InspectorState::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            decoders: crate::inspector::default_decoders(),
         }
+    }
+
+    /// Open the data inspector as a right-side split of the main
+    /// dock area, matching 010 Editor's layout. If already docked
+    /// anywhere (including after the user drags it elsewhere),
+    /// focus the existing tab instead of creating a second split.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_inspector(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Inspector) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        self.dock.main_surface_mut().split_right(
+            egui_dock::NodeIndex::root(),
+            0.72,
+            vec![Tab::Inspector],
+        );
     }
 
     /// Append a message to the Console tab. Caps the buffer at
@@ -408,12 +441,24 @@ impl eframe::App for HxyApp {
         top_menu_bar(ui, self);
         render_toolbar_and_apply(ui, self);
 
+        // Pre-read the 16-byte window at the active file's caret so
+        // the Inspector tab can render without needing to reborrow
+        // self.files while the dock is rendering.
+        #[cfg(not(target_arch = "wasm32"))]
+        let inspector_data = snapshot_inspector_bytes(self);
+
         {
             let mut state_guard = self.state.write();
             let mut viewer = HxyTabViewer {
                 files: &mut self.files,
                 state: &mut state_guard,
                 console: &self.console,
+                #[cfg(not(target_arch = "wasm32"))]
+                inspector: &mut self.inspector,
+                #[cfg(not(target_arch = "wasm32"))]
+                decoders: &self.decoders,
+                #[cfg(not(target_arch = "wasm32"))]
+                inspector_data,
             };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock).style(style).show_inside(ui, &mut viewer);
@@ -1409,6 +1454,10 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     app.show_console();
                     ui.close();
                 }
+                if ui.button(hxy_i18n::t("menu-view-inspector")).clicked() {
+                    app.show_inspector();
+                    ui.close();
+                }
             });
             ui.menu_button(hxy_i18n::t("menu-help"), |ui| {
                 ui.label(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION")));
@@ -1453,6 +1502,38 @@ struct HxyTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     state: &'a mut PersistedState,
     console: &'a std::collections::VecDeque<ConsoleEntry>,
+    #[cfg(not(target_arch = "wasm32"))]
+    inspector: &'a mut crate::inspector::InspectorState,
+    #[cfg(not(target_arch = "wasm32"))]
+    decoders: &'a [Arc<dyn crate::inspector::Decoder>],
+    /// (caret offset, up to 16 bytes at caret) for the active file,
+    /// snapshotted before dock render so the Inspector tab can read
+    /// it without reborrowing `files`.
+    #[cfg(not(target_arch = "wasm32"))]
+    inspector_data: Option<(u64, Vec<u8>)>,
+}
+
+/// Look up the currently active file tab's caret offset and the
+/// bytes immediately after it. Returns `None` if no file tab is
+/// active or the file has no selection.
+#[cfg(not(target_arch = "wasm32"))]
+fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
+    let (_, tab) = app.dock.find_active_focused()?;
+    let Tab::File(id) = *tab else { return None };
+    let file = app.files.get(&id)?;
+    let caret = file.selection?.cursor.get();
+    let src_len = file.source.len().get();
+    if caret >= src_len {
+        return Some((caret, Vec::new()));
+    }
+    let end = caret.saturating_add(16).min(src_len);
+    let range = hxy_core::ByteRange::new(
+        hxy_core::ByteOffset::new(caret),
+        hxy_core::ByteOffset::new(end),
+    )
+    .ok()?;
+    let bytes = file.source.read(range).ok()?;
+    Some((caret, bytes))
 }
 
 impl TabViewer for HxyTabViewer<'_> {
@@ -1463,6 +1544,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Welcome => hxy_i18n::t("tab-welcome").into(),
             Tab::Settings => hxy_i18n::t("tab-settings").into(),
             Tab::Console => hxy_i18n::t("tab-console").into(),
+            Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => f.display_name.clone().into(),
                 None => format!("file-{}", id.get()).into(),
@@ -1475,6 +1557,13 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Welcome => welcome_ui(ui, self.state),
             Tab::Settings => settings_ui(ui, &mut self.state.app),
             Tab::Console => console_ui(ui, self.console),
+            Tab::Inspector => {
+                let (caret, bytes) = match &self.inspector_data {
+                    Some((c, b)) => (Some(*c), b.as_slice()),
+                    None => (None, &[] as &[u8]),
+                };
+                crate::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
+            }
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
                     render_file_tab(ui, *id, file, self.state);
@@ -1487,14 +1576,17 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        matches!(tab, Tab::File(_) | Tab::Console)
+        matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector)
     }
 
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
-        // File tabs manage their own scrolling via the hex view's
-        // internal scroll area + minimap — no outer dock scrollbar.
-        // The console renders its own scroll area too.
-        if matches!(tab, Tab::File(_) | Tab::Console) { [false, false] } else { [true, true] }
+        // File tabs and the console/inspector manage their own
+        // scrolling; outer dock scrollbar off for those.
+        if matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector) {
+            [false, false]
+        } else {
+            [true, true]
+        }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
