@@ -1,57 +1,24 @@
-//! Subsequence-match fuzzy scorer. Plenty for a few hundred
-//! entries; swap in `nucleo-matcher` or similar if you have a
-//! million-entry file picker.
+//! Fuzzy matching, backed by [`nucleo_matcher`] (same engine
+//! Helix uses). Handles Unicode case folding, word-boundary and
+//! consecutive-match bonuses, SIMD-accelerated scoring — the
+//! bits you'd have to hand-roll otherwise.
+
+use nucleo_matcher::Matcher;
+use nucleo_matcher::Utf32Str;
+use nucleo_matcher::pattern::CaseMatching;
+use nucleo_matcher::pattern::Normalization;
+use nucleo_matcher::pattern::Pattern;
 
 use crate::Entry;
 
-/// Score `haystack` against `pattern`. `None` if the pattern isn't a
-/// subsequence of the haystack (case-insensitive). Higher is better.
-///
-/// Bonuses:
-/// - `+4` per consecutive match
-/// - `+6` for matching the first character of the haystack
-/// - `+3` when the preceding character is a non-alphanumeric (word
-///   start like `/`, `-`, `_`, space)
-/// - `+2` when the matched haystack character is uppercase
-pub fn score(pattern: &str, haystack: &str) -> Option<i64> {
-    let pat: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
-    let hay: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
-    let hay_original: Vec<char> = haystack.chars().collect();
-    let mut pi = 0;
-    let mut score: i64 = 0;
-    let mut prev_match: Option<usize> = None;
-    for (i, c) in hay.iter().enumerate() {
-        if pi >= pat.len() {
-            break;
-        }
-        if *c == pat[pi] {
-            score += 1;
-            if prev_match == Some(i.saturating_sub(1)) {
-                score += 4;
-            }
-            if i == 0 {
-                score += 6;
-            } else if let Some(prev) = hay_original.get(i.saturating_sub(1))
-                && !prev.is_alphanumeric()
-            {
-                score += 3;
-            }
-            if hay_original.get(i).is_some_and(|c| c.is_uppercase()) {
-                score += 2;
-            }
-            prev_match = Some(i);
-            pi += 1;
-        }
-    }
-    (pi == pat.len()).then_some(score)
-}
-
 /// Filter and sort `entries` by their match score against `query`.
-/// Returns indices into `entries` ordered best match first. An
-/// empty query yields every index in declaration order.
+/// Returns indices into `entries` ordered best match first. An empty
+/// query yields every index in declaration order.
 ///
 /// `haystack_of` builds the string to score against — typically
-/// `title + " " + subtitle` so both participate in matching.
+/// `title + " " + subtitle` so both participate in matching. Case is
+/// handled via `CaseMatching::Smart` (lowercase query → case-
+/// insensitive; mixed-case query → case-sensitive).
 pub fn filter_and_sort<A, F>(query: &str, entries: &[Entry<A>], haystack_of: F) -> Vec<usize>
 where
     F: Fn(&Entry<A>) -> String,
@@ -59,10 +26,18 @@ where
     if query.is_empty() {
         return (0..entries.len()).collect();
     }
-    let mut scored: Vec<(i64, usize)> = entries
+    let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(u32, usize)> = entries
         .iter()
         .enumerate()
-        .filter_map(|(idx, e)| score(query, &haystack_of(e)).map(|s| (s, idx)))
+        .filter_map(|(idx, e)| {
+            buf.clear();
+            let haystack = haystack_of(e);
+            let utf32 = Utf32Str::new(&haystack, &mut buf);
+            pattern.score(utf32, &mut matcher).map(|s| (s, idx))
+        })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.into_iter().map(|(_, i)| i).collect()
@@ -74,15 +49,22 @@ mod tests {
 
     #[test]
     fn subsequence_match() {
-        assert!(score("otf", "open-template-file").is_some());
-        assert!(score("ztemp", "open-template-file").is_none());
+        let entries: Vec<Entry<()>> = vec![
+            Entry::new("open-template-file", ()),
+            Entry::new("some-other-thing", ()),
+        ];
+        let hits = filter_and_sort("otf", &entries, |e| e.title.clone());
+        assert_eq!(hits.first(), Some(&0));
     }
 
     #[test]
     fn prefix_beats_middle() {
-        let prefix = score("opn", "open template").unwrap();
-        let middle = score("opn", "xoopens").unwrap();
-        assert!(prefix > middle);
+        let entries: Vec<Entry<usize>> = vec![
+            Entry::new("xoopens", 0),
+            Entry::new("open template", 1),
+        ];
+        let hits = filter_and_sort("opn", &entries, |e| e.title.clone());
+        assert_eq!(hits.first(), Some(&1));
     }
 
     #[test]
@@ -92,9 +74,12 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_run_beats_scattered() {
-        let tight = score("abc", "xxabcxx").unwrap();
-        let loose = score("abc", "aXbXcXX").unwrap();
-        assert!(tight > loose);
+    fn non_matching_entries_dropped() {
+        let entries: Vec<Entry<usize>> = vec![
+            Entry::new("zzzzzzz", 0),
+            Entry::new("keep", 1),
+        ];
+        let hits = filter_and_sort("keep", &entries, |e| e.title.clone());
+        assert_eq!(hits, vec![1]);
     }
 }
