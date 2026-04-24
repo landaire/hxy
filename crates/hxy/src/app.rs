@@ -2539,12 +2539,12 @@ fn build_palette_entries(
     match app.palette.mode {
         Mode::Main => {
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand("new-file"))
+                egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(crate::command_palette::PaletteCommand::NewFile))
                     .with_icon(icon::FILE_PLUS)
                     .with_shortcut(fmt(&NEW_FILE)),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand("open-file"))
+                egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(crate::command_palette::PaletteCommand::OpenFile))
                     .with_icon(icon::FOLDER_OPEN),
             );
             // "Open recent" cascades into a filtered list of recently
@@ -2562,20 +2562,20 @@ fn build_palette_entries(
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("toolbar-browse-archive"),
-                    Action::InvokeCommand("browse-archive"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::BrowseArchive),
                 )
                 .with_icon(icon::TREE_STRUCTURE),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-view-console"), Action::InvokeCommand("show-console"))
+                egui_palette::Entry::new(hxy_i18n::t("menu-view-console"), Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowConsole))
                     .with_icon(icon::TERMINAL),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-view-inspector"), Action::InvokeCommand("show-inspector"))
+                egui_palette::Entry::new(hxy_i18n::t("menu-view-inspector"), Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowInspector))
                     .with_icon(icon::EYE),
             );
             out.push(
-                egui_palette::Entry::new("Plugins", Action::InvokeCommand("show-plugins"))
+                egui_palette::Entry::new("Plugins", Action::InvokeCommand(crate::command_palette::PaletteCommand::ShowPlugins))
                     .with_icon(icon::PUZZLE_PIECE),
             );
             out.push(
@@ -2594,14 +2594,14 @@ fn build_palette_entries(
             );
             if history_ctx.can_undo {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand("undo"))
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Undo))
                         .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
                         .with_shortcut(fmt(&UNDO)),
                 );
             }
             if history_ctx.can_redo {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand("redo"))
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Redo))
                         .with_icon(icon::ARROW_CLOCKWISE)
                         .with_shortcut(fmt(&REDO)),
                 );
@@ -2613,56 +2613,56 @@ fn build_palette_entries(
                     ("palette-toggle-edit-mode-enter", icon::LOCK_OPEN)
                 };
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t(label_key), Action::InvokeCommand("toggle-edit-mode"))
+                    egui_palette::Entry::new(hxy_i18n::t(label_key), Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleEditMode))
                         .with_icon(toggle_icon)
                         .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
                 );
             }
             if history_ctx.can_paste {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-paste"), Action::InvokeCommand("paste"))
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-paste"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Paste))
                         .with_icon(icon::CLIPBOARD_TEXT)
                         .with_shortcut(fmt(&PASTE)),
                 );
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t("menu-edit-paste-as-hex"),
-                        Action::InvokeCommand("paste-as-hex"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::PasteAsHex),
                     )
                     .with_icon(icon::CLIPBOARD_TEXT)
                     .with_shortcut(fmt(&PASTE_AS_HEX)),
                 );
             }
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand("split-right"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitRight))
                     .with_icon(icon::ARROW_SQUARE_RIGHT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand("split-left"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitLeft))
                     .with_icon(icon::ARROW_SQUARE_LEFT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand("split-down"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitDown))
                     .with_icon(icon::ARROW_SQUARE_DOWN),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand("split-up"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitUp))
                     .with_icon(icon::ARROW_SQUARE_UP),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand("merge-right"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeRight))
                     .with_icon(icon::ARROW_LINE_RIGHT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand("merge-left"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeLeft))
                     .with_icon(icon::ARROW_LINE_LEFT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand("merge-down"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeDown))
                     .with_icon(icon::ARROW_LINE_DOWN),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand("merge-up"))
+                egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeUp))
                     .with_icon(icon::ARROW_LINE_UP),
             );
             if let Some(copy) = copy_ctx {
@@ -2772,39 +2772,30 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
     match action {
         crate::command_palette::Action::InvokeCommand(id) => {
             app.palette.close();
-            match id {
-                "new-file" => handle_new_file(app),
-                "open-file" => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
-                "browse-archive" => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
-                "show-console" => app.show_console(),
-                "show-inspector" => app.show_inspector(),
-                "show-plugins" => app.show_plugins(),
-                "undo" => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
-                "redo" => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
-                "paste" => paste_active_file(app, false),
-                "paste-as-hex" => paste_active_file(app, true),
-                "split-right" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Right))
+            {
+                use crate::command_palette::PaletteCommand;
+                use crate::commands::DockDir;
+                match id {
+                    PaletteCommand::NewFile => handle_new_file(app),
+                    PaletteCommand::OpenFile => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
+                    PaletteCommand::BrowseArchive => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
+                    PaletteCommand::ShowConsole => app.show_console(),
+                    PaletteCommand::ShowInspector => app.show_inspector(),
+                    PaletteCommand::ShowPlugins => app.show_plugins(),
+                    PaletteCommand::Undo => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
+                    PaletteCommand::Redo => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
+                    PaletteCommand::Paste => paste_active_file(app, false),
+                    PaletteCommand::PasteAsHex => paste_active_file(app, true),
+                    PaletteCommand::SplitRight => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Right)),
+                    PaletteCommand::SplitLeft => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Left)),
+                    PaletteCommand::SplitUp => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Up)),
+                    PaletteCommand::SplitDown => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Down)),
+                    PaletteCommand::MergeRight => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Right)),
+                    PaletteCommand::MergeLeft => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Left)),
+                    PaletteCommand::MergeUp => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Up)),
+                    PaletteCommand::MergeDown => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down)),
+                    PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
                 }
-                "split-left" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Left))
-                }
-                "split-up" => apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Up)),
-                "split-down" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockSplit(crate::commands::DockDir::Down))
-                }
-                "merge-right" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Right))
-                }
-                "merge-left" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Left))
-                }
-                "merge-up" => apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Up)),
-                "merge-down" => {
-                    apply_command_effect(ctx, app, CommandEffect::DockMerge(crate::commands::DockDir::Down))
-                }
-                "toggle-edit-mode" => toggle_active_edit_mode(app),
-                _ => {}
             }
         }
         crate::command_palette::Action::FocusFile(id) => {

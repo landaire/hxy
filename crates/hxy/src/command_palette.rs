@@ -60,9 +60,37 @@ pub enum Mode {
 /// Activation payload the app hands back to itself when the user
 /// picks an entry. Cloneable so it can ride back through
 /// [`egui_palette::Outcome::Picked`].
+/// Enumerated palette commands. Replaces the previous string-keyed
+/// [`Action::InvokeCommand`] payload so the dispatch in
+/// `apply_palette_action` is exhaustive at compile time -- typos
+/// and unused entries turn into `match` errors instead of silent
+/// no-ops through a `_ => {}` arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteCommand {
+    NewFile,
+    OpenFile,
+    BrowseArchive,
+    ShowConsole,
+    ShowInspector,
+    ShowPlugins,
+    Undo,
+    Redo,
+    Paste,
+    PasteAsHex,
+    SplitRight,
+    SplitLeft,
+    SplitUp,
+    SplitDown,
+    MergeRight,
+    MergeLeft,
+    MergeUp,
+    MergeDown,
+    ToggleEditMode,
+}
+
 #[derive(Clone)]
 pub enum Action {
-    InvokeCommand(&'static str),
+    InvokeCommand(PaletteCommand),
     FocusFile(FileId),
     RunTemplate(PathBuf),
     SwitchMode(Mode),
