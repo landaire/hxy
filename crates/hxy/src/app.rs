@@ -589,6 +589,8 @@ impl eframe::App for HxyApp {
         drain_template_runs(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
         dispatch_save_shortcut(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        dispatch_paste_shortcut(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1111,6 +1113,102 @@ fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
 
 #[cfg(target_arch = "wasm32")]
 fn dispatch_save_shortcut(_ctx: &egui::Context, _app: &mut HxyApp) {}
+
+/// Clipboard paste dispatcher. Consumes Cmd+V and Cmd+Shift+V plus any
+/// matching `Event::Paste` eframe auto-generated, reads the clipboard
+/// through `arboard`, parses as hex when the shift variant fired, and
+/// writes the result at the active tab's cursor.
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    if ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    let (paste, paste_hex, paste_event_text) = ctx.input_mut(|i| {
+        let paste = i.consume_shortcut(&PASTE);
+        let paste_hex = i.consume_shortcut(&PASTE_AS_HEX);
+        // Drain any Event::Paste too: eframe generates one on plain
+        // Cmd+V in addition to the Key event, so consuming only the
+        // shortcut leaves the text event behind.
+        let mut event_text = None;
+        i.events.retain(|event| {
+            if let egui::Event::Paste(text) = event
+                && event_text.is_none()
+            {
+                event_text = Some(text.clone());
+                return false;
+            }
+            true
+        });
+        (paste, paste_hex, event_text)
+    });
+    if !paste && !paste_hex {
+        return;
+    }
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    if file.edit_mode != crate::file::EditMode::Mutable {
+        return;
+    }
+    let text = match paste_event_text {
+        Some(t) if !t.is_empty() => t,
+        _ => match crate::paste::read_text() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "read clipboard");
+                return;
+            }
+        },
+    };
+    let bytes = if paste_hex {
+        match crate::paste::parse_hex_clipboard(&text) {
+            Ok(b) => b,
+            Err(e) => {
+                app.console_log(
+                    ConsoleSeverity::Warning,
+                    "Paste as hex",
+                    format!("clipboard text is not valid hex: {e}"),
+                );
+                return;
+            }
+        }
+    } else {
+        text.into_bytes()
+    };
+    if bytes.is_empty() {
+        return;
+    }
+    let Some(file) = app.files.get_mut(&id) else { return };
+    paste_bytes_at_cursor(file, bytes);
+}
+
+/// Apply a paste buffer at the tab's cursor. Length-preserving: the
+/// write is truncated to what fits before EOF, leaves an empty
+/// clipboard as a no-op, and parks the caret just past the last
+/// written byte so the next paste / keystroke lands after it.
+#[cfg(not(target_arch = "wasm32"))]
+fn paste_bytes_at_cursor(file: &mut crate::file::OpenFile, bytes: Vec<u8>) {
+    let source_len = file.source.len().get();
+    if source_len == 0 {
+        return;
+    }
+    let start = file.selection.map(|s| s.range().start().get()).unwrap_or(0);
+    let available = source_len.saturating_sub(start);
+    if available == 0 {
+        return;
+    }
+    let n = (bytes.len() as u64).min(available) as usize;
+    let bytes = if n == bytes.len() { bytes } else { bytes[..n].to_vec() };
+    file.push_history_boundary();
+    if let Err(e) = file.request_write(start, bytes) {
+        tracing::warn!(error = %e, "paste write");
+        return;
+    }
+    let new_cursor = (start + n as u64).min(source_len.saturating_sub(1));
+    file.selection = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor)));
+    file.reset_edit_nibble();
+    file.last_cursor_offset = Some(new_cursor);
+    file.push_history_boundary();
+}
 
 /// App-level copy shortcut handler. Runs after the dock renders, so
 /// per-widget hover-copy (status bar labels) has already had a chance
@@ -2069,6 +2167,8 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::Undo => undo_active_file(app),
             crate::menu::MenuAction::Redo => redo_active_file(app),
+            crate::menu::MenuAction::Paste => paste_active_file(app, false),
+            crate::menu::MenuAction::PasteAsHex => paste_active_file(app, true),
             crate::menu::MenuAction::CopyBytes => copy_active_file(ctx, app, CopyKind::BytesLossyUtf8),
             crate::menu::MenuAction::CopyHex => copy_active_file(ctx, app, CopyKind::BytesHexSpaced),
             crate::menu::MenuAction::CopyAs(kind) => copy_active_file(ctx, app, kind),
@@ -2093,6 +2193,9 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         .and_then(|id| app.files.get(&id))
         .map(|f| (f.can_undo(), f.can_redo()))
         .unwrap_or((false, false));
+    let can_paste = active
+        .and_then(|id| app.files.get(&id))
+        .is_some_and(|f| f.edit_mode == crate::file::EditMode::Mutable);
     if let Some(menu) = app.menu.as_ref() {
         menu.set_file_open(has_file);
         menu.set_scalar_selection(has_scalar);
@@ -2100,6 +2203,7 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         menu.set_edit_mode_enabled(has_file);
         menu.set_undo_enabled(can_undo);
         menu.set_redo_enabled(can_redo);
+        menu.set_paste_enabled(can_paste);
     }
 }
 
@@ -2113,6 +2217,42 @@ fn toggle_active_edit_mode(app: &mut HxyApp) {
     };
     file.reset_edit_nibble();
     file.push_history_boundary();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
+    let Some(id) = active_file_id(app) else { return };
+    let edit_mode = app.files.get(&id).map(|f| f.edit_mode);
+    if edit_mode != Some(crate::file::EditMode::Mutable) {
+        return;
+    }
+    let text = match crate::paste::read_text() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "read clipboard");
+            return;
+        }
+    };
+    let bytes = if as_hex {
+        match crate::paste::parse_hex_clipboard(&text) {
+            Ok(b) => b,
+            Err(e) => {
+                app.console_log(
+                    ConsoleSeverity::Warning,
+                    "Paste as hex",
+                    format!("clipboard text is not valid hex: {e}"),
+                );
+                return;
+            }
+        }
+    } else {
+        text.into_bytes()
+    };
+    if bytes.is_empty() {
+        return;
+    }
+    let Some(file) = app.files.get_mut(&id) else { return };
+    paste_bytes_at_cursor(file, bytes);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2251,6 +2391,26 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                         ui.close();
                     }
                     ui.separator();
+                    let paste_text = ui.ctx().format_shortcut(&PASTE);
+                    let paste_hex_text = ui.ctx().format_shortcut(&PASTE_AS_HEX);
+                    let can_paste = active_file
+                        .and_then(|id| app.files.get(&id))
+                        .is_some_and(|f| f.edit_mode == crate::file::EditMode::Mutable);
+                    ui.add_enabled_ui(can_paste, |ui| {
+                        if ui.add(egui::Button::new(hxy_i18n::t("menu-edit-paste")).shortcut_text(paste_text)).clicked()
+                        {
+                            ui.close();
+                            paste_active_file(app, false);
+                        }
+                        if ui
+                            .add(egui::Button::new(hxy_i18n::t("menu-edit-paste-as-hex")).shortcut_text(paste_hex_text))
+                            .clicked()
+                        {
+                            ui.close();
+                            paste_active_file(app, true);
+                        }
+                    });
+                    ui.separator();
                     // ...and the long tail in a submenu, same layout as
                     // the hex view's right-click and the template
                     // panel's row menu.
@@ -2327,7 +2487,11 @@ struct CopyPaletteContext {
 fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
     let Some(id) = active_file_id(app) else { return HistoryPaletteContext::default() };
     let Some(file) = app.files.get(&id) else { return HistoryPaletteContext::default() };
-    HistoryPaletteContext { can_undo: file.can_undo(), can_redo: file.can_redo() }
+    HistoryPaletteContext {
+        can_undo: file.can_undo(),
+        can_redo: file.can_redo(),
+        can_paste: file.edit_mode == crate::file::EditMode::Mutable,
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2347,6 +2511,8 @@ fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
 struct HistoryPaletteContext {
     can_undo: bool,
     can_redo: bool,
+    /// True when the active tab is mutable and would accept a paste.
+    can_paste: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2409,6 +2575,19 @@ fn build_palette_entries(
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand("redo"))
                         .with_icon(icon::ARROW_CLOCKWISE),
+                );
+            }
+            if history_ctx.can_paste {
+                out.push(
+                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-paste"), Action::InvokeCommand("paste"))
+                        .with_icon(icon::CLIPBOARD_TEXT),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("menu-edit-paste-as-hex"),
+                        Action::InvokeCommand("paste-as-hex"),
+                    )
+                    .with_icon(icon::CLIPBOARD_TEXT),
                 );
             }
             if let Some(ctx) = copy_ctx {
@@ -2496,6 +2675,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 "show-plugins" => app.show_plugins(),
                 "undo" => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
                 "redo" => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
+                "paste" => paste_active_file(app, false),
+                "paste-as-hex" => paste_active_file(app, true),
                 _ => {}
             }
         }
@@ -2958,6 +3139,9 @@ const TOGGLE_EDIT_MODE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egu
 const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
 const REDO: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z);
+const PASTE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
+const PASTE_AS_HEX: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::V);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell

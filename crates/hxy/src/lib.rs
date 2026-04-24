@@ -18,6 +18,8 @@ pub mod command_palette;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod copy_format;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod paste;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod inspector;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugins_tab;

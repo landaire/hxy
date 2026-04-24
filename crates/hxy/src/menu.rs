@@ -38,6 +38,10 @@ pub enum MenuAction {
     CopyBytes,
     CopyHex,
     CopyAs(CopyKind),
+    /// Paste clipboard text as raw UTF-8 bytes at the cursor.
+    Paste,
+    /// Paste clipboard text interpreted as hex bytes at the cursor.
+    PasteAsHex,
     ShowConsole,
     ShowInspector,
     ShowPlugins,
@@ -59,6 +63,8 @@ pub struct MenuState {
     undo_items: Vec<MenuItem>,
     /// Redo entry; greyed out when the active tab has no redo history.
     redo_items: Vec<MenuItem>,
+    /// Paste / Paste as hex; greyed out when no writable tab is active.
+    paste_items: Vec<MenuItem>,
     _menu: Menu,
 }
 
@@ -135,6 +141,19 @@ impl MenuState {
         let edit_mode_items = vec![toggle_edit];
         edit_menu.append(&PredefinedMenuItem::separator()).expect("append separator");
 
+        let paste = MenuItem::new("Paste", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyV)));
+        let paste_as_hex = MenuItem::new(
+            "Paste as hex",
+            false,
+            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV)),
+        );
+        edit_menu.append(&paste).expect("append paste");
+        edit_menu.append(&paste_as_hex).expect("append paste as hex");
+        actions.insert(paste.id().0.clone(), MenuAction::Paste);
+        actions.insert(paste_as_hex.id().0.clone(), MenuAction::PasteAsHex);
+        let paste_items = vec![paste, paste_as_hex];
+        edit_menu.append(&PredefinedMenuItem::separator()).expect("append separator");
+
         let copy_bytes = MenuItem::new("Copy bytes", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)));
         let copy_hex = MenuItem::new(
             "Copy hex",
@@ -180,7 +199,17 @@ impl MenuState {
 
         menu.init_for_nsapp();
 
-        Self { actions, bytes_items, scalar_items, save_items, edit_mode_items, undo_items, redo_items, _menu: menu }
+        Self {
+            actions,
+            bytes_items,
+            scalar_items,
+            save_items,
+            edit_mode_items,
+            undo_items,
+            redo_items,
+            paste_items,
+            _menu: menu,
+        }
     }
 
     /// Toggle the Save / Save As entries' enabled state.
@@ -204,6 +233,12 @@ impl MenuState {
 
     pub fn set_redo_enabled(&self, enabled: bool) {
         for item in &self.redo_items {
+            item.set_enabled(enabled);
+        }
+    }
+
+    pub fn set_paste_enabled(&self, enabled: bool) {
+        for item in &self.paste_items {
             item.set_enabled(enabled);
         }
     }

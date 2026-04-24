@@ -2549,6 +2549,7 @@ dependencies = [
 name = "hxy"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "dirs",
  "eframe",
  "egui",
