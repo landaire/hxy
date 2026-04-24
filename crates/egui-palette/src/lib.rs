@@ -169,6 +169,11 @@ pub struct Style {
     /// Spacing between title and subtitle on the same row.
     pub subtitle_spacing: f32,
     pub inner_margin: egui::Margin,
+    /// Per-row internal padding: x is the space reserved on each
+    /// side of the row's content (icon, title, subtitle, shortcut);
+    /// y trims the selection-fill rectangle so it doesn't hug the
+    /// row height.
+    pub row_padding: egui::Vec2,
     pub corner_radius: egui::CornerRadius,
     /// Hard ceiling for the result list height. Also the value used
     /// when the viewport is too short to derive one automatically.
@@ -249,6 +254,7 @@ impl Default for Style {
             icon_gutter: 20.0,
             subtitle_spacing: 8.0,
             inner_margin: egui::Margin::symmetric(12, 10),
+            row_padding: egui::vec2(4.0, 2.0),
             corner_radius: egui::CornerRadius::same(8),
             list_max_height: 560.0,
             list_min_height: 200.0,
@@ -500,7 +506,7 @@ fn render_row<A>(ui: &mut egui::Ui, entry: &Entry<A>, selected: bool, style: &St
         let fill = style.selected_fill.unwrap_or_else(|| ui.visuals().selection.bg_fill.gamma_multiply(0.4));
         ui.painter().rect_filled(rect, 3.0, fill);
     }
-    let inner = rect.shrink2(egui::vec2(8.0, 2.0));
+    let inner = rect.shrink2(style.row_padding);
     let body = egui::TextStyle::Body.resolve(ui.style());
     let subtitle_font = egui::FontId {
         size: style.subtitle_size.unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()).size),
