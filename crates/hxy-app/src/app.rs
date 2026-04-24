@@ -66,6 +66,11 @@ pub struct HxyApp {
     /// built-in set; user-registered decoders will be additive.
     #[cfg(not(target_arch = "wasm32"))]
     decoders: Vec<Arc<dyn crate::inspector::Decoder>>,
+    /// The most recently focused File tab. Remembered across frames
+    /// so panels like the Inspector (which take keyboard focus when
+    /// clicked) keep showing data from the file the user was last
+    /// reading, not from themselves.
+    last_active_file: Option<FileId>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -129,6 +134,7 @@ impl HxyApp {
             inspector: crate::inspector::InspectorState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             decoders: crate::inspector::default_decoders(),
+            last_active_file: None,
         }
     }
 
@@ -1513,13 +1519,19 @@ struct HxyTabViewer<'a> {
     inspector_data: Option<(u64, Vec<u8>)>,
 }
 
-/// Look up the currently active file tab's caret offset and the
-/// bytes immediately after it. Returns `None` if no file tab is
-/// active or the file has no selection.
+/// Look up the caret offset and the bytes immediately after it for
+/// the file the inspector should display. Uses the currently focused
+/// file tab when one exists; otherwise falls back to the most
+/// recently focused file (so clicking into the Inspector tab itself
+/// doesn't make its content disappear).
 #[cfg(not(target_arch = "wasm32"))]
 fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
-    let (_, tab) = app.dock.find_active_focused()?;
-    let Tab::File(id) = *tab else { return None };
+    if let Some((_, tab)) = app.dock.find_active_focused()
+        && let Tab::File(id) = *tab
+    {
+        app.last_active_file = Some(id);
+    }
+    let id = app.last_active_file?;
     let file = app.files.get(&id)?;
     let caret = file.selection?.cursor.get();
     let src_len = file.source.len().get();

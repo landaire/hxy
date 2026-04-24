@@ -29,8 +29,31 @@ pub enum IntRadix {
     Binary,
 }
 
+/// Output of a [`Decoder`]. `Text` is the default; `Color` carries
+/// enough info for the renderer to paint a swatch alongside the
+/// label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decoded {
+    Text(String),
+    Color { rgba: [u8; 4], label: String },
+}
+
+impl Decoded {
+    pub fn text(s: impl Into<String>) -> Self {
+        Self::Text(s.into())
+    }
+
+    /// Accessor for tests / consumers that only want the label form.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Text(s) => s.as_str(),
+            Self::Color { label, .. } => label.as_str(),
+        }
+    }
+}
+
 /// One row in the inspector table. Implementors decode the bytes at
-/// the caret into a single human-readable string.
+/// the caret into a [`Decoded`] value.
 pub trait Decoder: Send + Sync {
     /// Display label (e.g. "UInt32", "FILETIME").
     fn name(&self) -> &str;
@@ -41,7 +64,7 @@ pub trait Decoder: Send + Sync {
     /// Decode the bytes the caller has already read. Returns `None`
     /// if decoding fails (too few bytes, NaN-ish float, etc.) — the
     /// row renders as "—".
-    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<String>;
+    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<Decoded>;
 }
 
 pub struct InspectorState {
@@ -97,9 +120,9 @@ impl Decoder for BinaryDecoder {
     fn bytes_needed(&self) -> Option<usize> {
         Some(1)
     }
-    fn decode(&self, bytes: &[u8], _endian: Endian, _radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], _endian: Endian, _radix: IntRadix) -> Option<Decoded> {
         let b = *bytes.first()?;
-        Some(format!("{:08b}", b))
+        Some(Decoded::text(format!("{:08b}", b)))
     }
 }
 
@@ -116,15 +139,10 @@ impl Decoder for FixedInt {
     fn bytes_needed(&self) -> Option<usize> {
         Some(self.width)
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<Decoded> {
         if bytes.len() < self.width {
             return None;
         }
-        // Read into a 128-bit buffer oriented big-endian, so
-        // `u128::from_be_bytes` reconstructs the value regardless of
-        // the source's declared endianness. The top (16 - width)
-        // bytes stay zero; they're filled in by sign-extension later
-        // for signed values.
         let mut buf = [0u8; 16];
         let dest_start = 16 - self.width;
         for i in 0..self.width {
@@ -138,10 +156,10 @@ impl Decoder for FixedInt {
             let unsigned = u128::from_be_bytes(buf);
             let sign_bits = 128 - self.width as u32 * 8;
             let shifted = ((unsigned as i128) << sign_bits) >> sign_bits;
-            Some(format_signed(shifted, self.width, radix))
+            Some(Decoded::text(format_signed(shifted, self.width, radix)))
         } else {
             let unsigned = u128::from_be_bytes(buf);
-            Some(format_unsigned(unsigned, self.width, radix))
+            Some(Decoded::text(format_unsigned(unsigned, self.width, radix)))
         }
     }
 }
@@ -159,7 +177,7 @@ impl Decoder for Int24 {
     fn bytes_needed(&self) -> Option<usize> {
         Some(3)
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<Decoded> {
         if bytes.len() < 3 {
             return None;
         }
@@ -170,9 +188,9 @@ impl Decoder for Int24 {
         };
         if self.signed {
             let signed = if raw & 0x80_0000 != 0 { (raw | 0xFF00_0000) as i32 } else { raw as i32 };
-            Some(format_signed(signed as i128, 3, radix))
+            Some(Decoded::text(format_signed(signed as i128, 3, radix)))
         } else {
-            Some(format_unsigned(raw as u128, 3, radix))
+            Some(Decoded::text(format_unsigned(raw as u128, 3, radix)))
         }
     }
 }
@@ -189,7 +207,7 @@ impl Decoder for Int128 {
     fn bytes_needed(&self) -> Option<usize> {
         Some(16)
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, radix: IntRadix) -> Option<Decoded> {
         if bytes.len() < 16 {
             return None;
         }
@@ -200,9 +218,9 @@ impl Decoder for Int128 {
             Endian::Big => u128::from_be_bytes(buf),
         };
         if self.signed {
-            Some(format_signed(raw as i128, 16, radix))
+            Some(Decoded::text(format_signed(raw as i128, 16, radix)))
         } else {
-            Some(format_unsigned(raw, 16, radix))
+            Some(Decoded::text(format_unsigned(raw, 16, radix)))
         }
     }
 }
@@ -219,7 +237,7 @@ impl Decoder for LebDecoder {
     fn bytes_needed(&self) -> Option<usize> {
         None
     }
-    fn decode(&self, bytes: &[u8], _endian: Endian, radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], _endian: Endian, radix: IntRadix) -> Option<Decoded> {
         let mut result: u128 = 0;
         let mut shift = 0u32;
         let mut last: u8 = 0;
@@ -237,20 +255,17 @@ impl Decoder for LebDecoder {
             }
         }
         if last & 0x80 != 0 {
-            // Ran out of bytes before the high bit cleared.
             return None;
         }
         let width = consumed;
         if self.signed {
-            // Sign-extend: if the sign bit of the last group is set,
-            // fill remaining high bits.
             let mut signed = result as i128;
             if shift + 7 < 128 && (last & 0x40 != 0) {
                 signed |= !0i128 << (shift + 7);
             }
-            Some(format!("{} ({} bytes)", format_signed(signed, width, radix), width))
+            Some(Decoded::text(format!("{} ({} bytes)", format_signed(signed, width, radix), width)))
         } else {
-            Some(format!("{} ({} bytes)", format_unsigned(result, width, radix), width))
+            Some(Decoded::text(format!("{} ({} bytes)", format_unsigned(result, width, radix), width)))
         }
     }
 }
@@ -268,11 +283,11 @@ impl Decoder for FloatDecoder {
     fn bytes_needed(&self) -> Option<usize> {
         Some(self.width)
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<Decoded> {
         if bytes.len() < self.width {
             return None;
         }
-        Some(match self.width {
+        let text = match self.width {
             4 => {
                 let mut a = [0u8; 4];
                 a.copy_from_slice(&bytes[..4]);
@@ -291,7 +306,8 @@ impl Decoder for FloatDecoder {
                 };
                 format!("{}", v)
             }
-        })
+        };
+        Some(Decoded::text(text))
     }
 }
 
@@ -330,7 +346,7 @@ impl Decoder for TimeDecoder {
             Self::DosDate | Self::DosTime => 2,
         })
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<Decoded> {
         match self {
             Self::UnixSec32 => {
                 if bytes.len() < 4 {
@@ -382,7 +398,7 @@ impl Decoder for TimeDecoder {
                 let day = raw & 0x1F;
                 let month = (raw >> 5) & 0x0F;
                 let year = 1980 + ((raw >> 9) & 0x7F) as i32;
-                Some(format!("{year:04}-{month:02}-{day:02}"))
+                Some(Decoded::text(format!("{year:04}-{month:02}-{day:02}")))
             }
             Self::DosTime => {
                 if bytes.len() < 2 {
@@ -395,7 +411,7 @@ impl Decoder for TimeDecoder {
                 let secs = (raw & 0x1F) * 2;
                 let mins = (raw >> 5) & 0x3F;
                 let hours = (raw >> 11) & 0x1F;
-                Some(format!("{hours:02}:{mins:02}:{secs:02}"))
+                Some(Decoded::text(format!("{hours:02}:{mins:02}:{secs:02}")))
             }
             Self::OleTime => {
                 if bytes.len() < 8 {
@@ -420,11 +436,9 @@ impl Decoder for TimeDecoder {
     }
 }
 
-fn format_unix_seconds(secs: i64) -> Option<String> {
+fn format_unix_seconds(secs: i64) -> Option<Decoded> {
     let ts = jiff::Timestamp::from_second(secs).ok()?;
-    // ISO 8601 in UTC is universally readable; TZ handling is a
-    // future polish.
-    Some(ts.to_string())
+    Some(Decoded::text(ts.to_string()))
 }
 
 // ---- colours -----------------------------------------------------------
@@ -446,7 +460,7 @@ impl Decoder for ColorDecoder {
     fn bytes_needed(&self) -> Option<usize> {
         Some(4)
     }
-    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<String> {
+    fn decode(&self, bytes: &[u8], endian: Endian, _radix: IntRadix) -> Option<Decoded> {
         if bytes.len() < 4 {
             return None;
         }
@@ -470,7 +484,8 @@ impl Decoder for ColorDecoder {
                 ((raw >> 8) & 0xFF) as u8,
             ),
         };
-        Some(format!("#{rr:02X}{gg:02X}{bb:02X}  α={ar} rgba=({rr},{gg},{bb},{ar})"))
+        let label = format!("#{rr:02X}{gg:02X}{bb:02X}  α={ar} rgba=({rr},{gg},{bb},{ar})");
+        Some(Decoded::Color { rgba: [rr, gg, bb, ar], label })
     }
 }
 
@@ -509,72 +524,6 @@ fn format_signed(value: i128, width: usize, radix: IntRadix) -> String {
 /// Draw the inspector into `ui`. `caret_offset` is the cursor byte
 /// position; `bytes` is a prefetched window of data (typically 16
 /// bytes) starting at that offset.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dec(d: &dyn Decoder, bytes: &[u8], endian: Endian) -> Option<String> {
-        d.decode(bytes, endian, IntRadix::Decimal)
-    }
-
-    #[test]
-    fn int16_little_endian() {
-        let d = FixedInt { name: "Int16", width: 2, signed: true };
-        assert_eq!(dec(&d, &[0x01, 0xFF], Endian::Little).as_deref(), Some("-255"));
-        assert_eq!(dec(&d, &[0x01, 0xFF], Endian::Big).as_deref(), Some("511"));
-    }
-
-    #[test]
-    fn uint24_le() {
-        let d = Int24 { signed: false };
-        assert_eq!(dec(&d, &[0x01, 0x02, 0x03], Endian::Little).as_deref(), Some("197121"));
-    }
-
-    #[test]
-    fn int24_sign_extends() {
-        let d = Int24 { signed: true };
-        // 0xFF_FF_FF = -1 in 24-bit two's complement
-        assert_eq!(dec(&d, &[0xFF, 0xFF, 0xFF], Endian::Little).as_deref(), Some("-1"));
-    }
-
-    #[test]
-    fn uleb128_basic() {
-        let d = LebDecoder { signed: false };
-        // 0x7F fits in one byte = 127
-        assert_eq!(dec(&d, &[0x7F], Endian::Little).as_deref(), Some("127 (1 bytes)"));
-        // 0x80 0x01 = 128
-        assert_eq!(dec(&d, &[0x80, 0x01], Endian::Little).as_deref(), Some("128 (2 bytes)"));
-    }
-
-    #[test]
-    fn leb128_negative() {
-        let d = LebDecoder { signed: true };
-        // 0x7E = -2 in 7-bit signed LEB128
-        assert_eq!(dec(&d, &[0x7E], Endian::Little).as_deref(), Some("-2 (1 bytes)"));
-    }
-
-    #[test]
-    fn dos_date_unpacks_year_month_day() {
-        let d = TimeDecoder::DosDate;
-        // 2026-04-23 -> year offset 46, month 4, day 23
-        // year = 46 << 9 = 0x5C00; month = 4 << 5 = 0x80; day = 23
-        // combined = 0x5C97
-        let raw: u16 = (46 << 9) | (4 << 5) | 23;
-        let bytes = raw.to_le_bytes();
-        assert_eq!(dec(&d, &bytes, Endian::Little).as_deref(), Some("2026-04-23"));
-    }
-
-    #[test]
-    fn argb_color_decodes_to_hex_string() {
-        let d = ColorDecoder::Argb;
-        // AARRGGBB = 0x80_FF_00_00 (half-alpha red)
-        let bytes = 0x80_FF_00_00u32.to_be_bytes();
-        let out = dec(&d, &bytes, Endian::Big).unwrap();
-        assert!(out.starts_with("#FF0000"), "got {out:?}");
-        assert!(out.contains("α=128"), "got {out:?}");
-    }
-}
-
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut InspectorState,
@@ -617,8 +566,36 @@ pub fn show(
                     ui.label(dec.name());
                     let decoded = dec.decode(bytes, state.endian, state.radix);
                     match decoded {
-                        Some(s) => {
+                        Some(Decoded::Text(s)) => {
                             ui.add(egui::Label::new(egui::RichText::new(&s).monospace()).truncate());
+                        }
+                        Some(Decoded::Color { rgba, label }) => {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(14.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                let fill = egui::Color32::from_rgba_unmultiplied(
+                                    rgba[0], rgba[1], rgba[2], rgba[3],
+                                );
+                                ui.painter().rect_filled(rect, 3.0, fill);
+                                // Thin outline so light colours on a
+                                // light background still read as a
+                                // distinct swatch.
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    3.0,
+                                    egui::Stroke::new(
+                                        1.0,
+                                        ui.visuals().widgets.noninteractive.fg_stroke.color,
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&label).monospace())
+                                        .truncate(),
+                                );
+                            });
                         }
                         None => {
                             ui.weak("—");
@@ -628,4 +605,77 @@ pub fn show(
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn label(d: &dyn Decoder, bytes: &[u8], endian: Endian) -> Option<String> {
+        d.decode(bytes, endian, IntRadix::Decimal).map(|d| d.label().to_owned())
+    }
+
+    #[test]
+    fn int16_little_endian() {
+        let d = FixedInt { name: "Int16", width: 2, signed: true };
+        assert_eq!(label(&d, &[0x01, 0xFF], Endian::Little).as_deref(), Some("-255"));
+        assert_eq!(label(&d, &[0x01, 0xFF], Endian::Big).as_deref(), Some("511"));
+    }
+
+    #[test]
+    fn uint16_little_endian() {
+        let d = FixedInt { name: "UInt16", width: 2, signed: false };
+        // Regression: an earlier version dest-filled the low bytes of
+        // a 16-byte big-endian buffer by starting at buf[0] instead of
+        // buf[14], so the rendered hex had 32 digits for a 2-byte
+        // value.
+        assert_eq!(label(&d, &[0x01, 0x80], Endian::Little).as_deref(), Some("32769"));
+    }
+
+    #[test]
+    fn uint24_le() {
+        let d = Int24 { signed: false };
+        assert_eq!(label(&d, &[0x01, 0x02, 0x03], Endian::Little).as_deref(), Some("197121"));
+    }
+
+    #[test]
+    fn int24_sign_extends() {
+        let d = Int24 { signed: true };
+        assert_eq!(label(&d, &[0xFF, 0xFF, 0xFF], Endian::Little).as_deref(), Some("-1"));
+    }
+
+    #[test]
+    fn uleb128_basic() {
+        let d = LebDecoder { signed: false };
+        assert_eq!(label(&d, &[0x7F], Endian::Little).as_deref(), Some("127 (1 bytes)"));
+        assert_eq!(label(&d, &[0x80, 0x01], Endian::Little).as_deref(), Some("128 (2 bytes)"));
+    }
+
+    #[test]
+    fn leb128_negative() {
+        let d = LebDecoder { signed: true };
+        assert_eq!(label(&d, &[0x7E], Endian::Little).as_deref(), Some("-2 (1 bytes)"));
+    }
+
+    #[test]
+    fn dos_date_unpacks_year_month_day() {
+        let d = TimeDecoder::DosDate;
+        let raw: u16 = (46 << 9) | (4 << 5) | 23;
+        let bytes = raw.to_le_bytes();
+        assert_eq!(label(&d, &bytes, Endian::Little).as_deref(), Some("2026-04-23"));
+    }
+
+    #[test]
+    fn argb_color_emits_rgba_payload() {
+        let d = ColorDecoder::Argb;
+        let bytes = 0x80_FF_00_00u32.to_be_bytes();
+        let decoded = d.decode(&bytes, Endian::Big, IntRadix::Decimal).unwrap();
+        match decoded {
+            Decoded::Color { rgba, label } => {
+                assert_eq!(rgba, [0xFF, 0x00, 0x00, 0x80]);
+                assert!(label.starts_with("#FF0000"), "got {label:?}");
+            }
+            other => panic!("expected Color, got {other:?}"),
+        }
+    }
 }
