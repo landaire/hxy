@@ -314,7 +314,21 @@ impl HexEditor {
     /// editor's [`EditMode`]; writes past EOF are rejected.
     #[cfg(feature = "editor")]
     pub fn request_write(&mut self, offset: u64, bytes: Vec<u8>) -> Result<(), WriteError> {
+        self.pin_scroll_for_next_frame();
         self.edit.request_write(offset, bytes)
+    }
+
+    /// Re-pend the current scroll offset as a pending target for the
+    /// next render. The scroll area's memory has a habit of losing
+    /// its position around events that rebuild the hex pane's
+    /// geometry (fresh `byte_styler`, patch mutations, pane-focus
+    /// changes); without this pin, the view would snap back to the
+    /// top after each edit.
+    #[cfg(feature = "editor")]
+    fn pin_scroll_for_next_frame(&mut self) {
+        if self.pending_scroll.is_none() && self.scroll_offset > 0.0 {
+            self.pending_scroll = Some(self.scroll_offset);
+        }
     }
 
     /// Apply one hex-digit keystroke at the current cursor offset.
@@ -340,6 +354,7 @@ impl HexEditor {
         } else {
             (current & 0xF0) | nibble
         };
+        self.pin_scroll_for_next_frame();
         self.edit.request_write(offset, vec![new_byte])?;
         let advanced = !self.edit.edit_high_nibble;
         self.edit.edit_high_nibble = !self.edit.edit_high_nibble;
@@ -358,6 +373,7 @@ impl HexEditor {
         if offset >= self.source.len().get() {
             return Ok(false);
         }
+        self.pin_scroll_for_next_frame();
         self.edit.request_write(offset, vec![byte])?;
         Ok(true)
     }
