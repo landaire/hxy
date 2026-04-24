@@ -16,7 +16,14 @@ name = "hxy"
 path = "src/main.rs"
 required-features = ["desktop"]
 
+# Lib target uses a distinct Rust crate name so the bin can
+# `use hxy_lib::...` without colliding with its own target name.
+# Having `[lib]` and `[[bin]]` share a name forces cargo to build
+# two separate dep graphs, which ends up compiling `tokio` twice
+# with different metadata and producing "two different versions of
+# crate `tokio`" errors when the bin passes a lib-owned type back.
 [lib]
+name = "hxy_lib"
 crate-type = ["cdylib", "rlib"]
 
 [features]
