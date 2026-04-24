@@ -11,10 +11,15 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 
+use crate::ManifestError;
+use crate::PluginGrants;
+use crate::PluginKey;
+use crate::PluginManifest;
 use crate::bindings::handler_world::Plugin;
 use crate::bindings::template_world::TemplateRuntime as WitTemplateRuntime;
 use crate::handler::PluginHandler;
 use crate::host::HostState;
+use crate::manifest::Permissions;
 use crate::template::WasmTemplateRuntime;
 
 #[derive(Debug, Error)]
@@ -51,12 +56,21 @@ pub enum PluginLoadError {
         #[source]
         source: HandlerError,
     },
+    #[error("read manifest sidecar")]
+    Manifest(#[source] ManifestError),
 }
 
 /// Load every `*.wasm` component in `dir` into a [`PluginHandler`].
 /// Silently tolerates an absent directory (returns empty) -- hosts may
 /// call this with a user-config path that doesn't exist yet.
-pub fn load_plugins_from_dir(dir: &Path) -> Result<Vec<PluginHandler>, PluginLoadError> {
+///
+/// `grants` supplies per-plugin user consent decisions. The loader
+/// pairs each plugin with its sidecar manifest (when present),
+/// computes its [`PluginKey`], and stores the granted permission set
+/// on the resulting [`PluginHandler`] so the host can gate
+/// capability-providing interfaces. Plugins without a manifest get
+/// an empty permission set regardless of `grants`.
+pub fn load_plugins_from_dir(dir: &Path, grants: &PluginGrants) -> Result<Vec<PluginHandler>, PluginLoadError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -80,17 +94,38 @@ pub fn load_plugins_from_dir(dir: &Path) -> Result<Vec<PluginHandler>, PluginLoa
         if path.extension().and_then(|s| s.to_str()) != Some("wasm") {
             continue;
         }
-        let handler = load_single(&engine, linker.clone(), &path)?;
+        let handler = load_single(&engine, linker.clone(), &path, grants)?;
         handlers.push(handler);
     }
     Ok(handlers)
 }
 
-fn load_single(engine: &Engine, linker: Arc<Linker<HostState>>, path: &Path) -> Result<PluginHandler, PluginLoadError> {
+fn load_single(
+    engine: &Engine,
+    linker: Arc<Linker<HostState>>,
+    path: &Path,
+    grants: &PluginGrants,
+) -> Result<PluginHandler, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
+    let manifest = PluginManifest::load_for(path).map_err(PluginLoadError::Manifest)?;
+
+    // Use the manifest's name + version when present so the key
+    // survives renames of the .wasm file. Falling back to the file
+    // stem for the legacy / no-manifest case keeps a stable handle
+    // for plugins that haven't shipped a sidecar yet.
+    let (name, version, requested) = match &manifest {
+        Some(m) => (m.plugin.name.clone(), m.plugin.version.clone(), m.permissions),
+        None => {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_owned();
+            (stem, "0.0.0".to_owned(), Permissions::default())
+        }
+    };
+    let key = PluginKey::from_bytes(name, version, &bytes);
+    let granted = grants.get(&key).intersect(requested);
+
     let component = Component::new(engine, &bytes)
         .map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;
-    PluginHandler::new(engine.clone(), component, linker)
+    PluginHandler::new(engine.clone(), component, linker, manifest, key, granted)
         .map_err(|source| PluginLoadError::Probe { path: path.to_path_buf(), source })
 }
 

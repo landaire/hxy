@@ -2449,7 +2449,12 @@ fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Res
 #[cfg(not(target_arch = "wasm32"))]
 fn register_user_plugins(registry: &mut VfsRegistry) {
     let Some(dir) = user_plugins_dir() else { return };
-    match hxy_plugin_host::load_plugins_from_dir(&dir) {
+    // Consent storage / UI lands in a follow-up; for now every
+    // plugin loads with an empty grants record, which means any
+    // permission a manifest requests is treated as denied. Plugins
+    // that don't request permissions are unaffected.
+    let grants = hxy_plugin_host::PluginGrants::default();
+    match hxy_plugin_host::load_plugins_from_dir(&dir, &grants) {
         Ok(handlers) => {
             for h in handlers {
                 tracing::info!(name = h.name(), "loaded wasm plugin");

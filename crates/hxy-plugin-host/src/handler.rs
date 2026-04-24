@@ -18,6 +18,9 @@ use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceAny;
 
+use crate::PluginKey;
+use crate::PluginManifest;
+use crate::Permissions;
 use crate::bindings::handler_world::Plugin;
 use crate::host::HostState;
 
@@ -26,12 +29,34 @@ pub struct PluginHandler {
     engine: Engine,
     component: Component,
     linker: Arc<Linker<HostState>>,
+    /// Sidecar manifest, if one was found at load time. `None` is
+    /// the legacy / no-permissions case -- the plugin can still
+    /// mount sources (the baseline API every plugin has) but cannot
+    /// use any host-provided capability that requires consent.
+    manifest: Option<PluginManifest>,
+    /// Stable identity = name + version + sha256(wasm). Used as the
+    /// key into `PluginGrants` and `StateStore`. Populated even when
+    /// no manifest was found (using the plugin's self-reported
+    /// `name()` and a placeholder version of `"0.0.0"`).
+    key: PluginKey,
+    /// Permissions actually granted -- the manifest's request
+    /// intersected with the user's stored consent. Read-only after
+    /// construction; if the user toggles a grant the host should
+    /// reload the plugin so the linker reflects the change.
+    granted: Permissions,
 }
 
 impl PluginHandler {
     /// Instantiate once and cache the plugin's self-reported name so
     /// we don't pay for a full detection run to populate it.
-    pub fn new(engine: Engine, component: Component, linker: Arc<Linker<HostState>>) -> Result<Self, HandlerError> {
+    pub fn new(
+        engine: Engine,
+        component: Component,
+        linker: Arc<Linker<HostState>>,
+        manifest: Option<PluginManifest>,
+        key: PluginKey,
+        granted: Permissions,
+    ) -> Result<Self, HandlerError> {
         let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
         let mut store = Store::new(&engine, HostState::new(placeholder));
         let plugin = Plugin::instantiate(&mut store, &component, &linker)
@@ -40,7 +65,23 @@ impl PluginHandler {
             .hxy_vfs_handler()
             .call_name(&mut store)
             .map_err(|e| HandlerError::Internal(format!("call name: {e}")))?;
-        Ok(Self { name, engine, component, linker })
+        Ok(Self { name, engine, component, linker, manifest, key, granted })
+    }
+
+    /// Sidecar manifest, if one was found.
+    pub fn manifest(&self) -> Option<&PluginManifest> {
+        self.manifest.as_ref()
+    }
+
+    /// Stable identity used to key grants and persisted state.
+    pub fn key(&self) -> &PluginKey {
+        &self.key
+    }
+
+    /// Permissions actually granted (manifest request intersected
+    /// with stored consent).
+    pub fn granted(&self) -> Permissions {
+        self.granted
     }
 }
 

@@ -54,11 +54,112 @@ interface handler {
     mount-source: func() -> result<mount, string>;
 }
 
-/// Plugin world: exports the handler interface, imports the source
-/// interface it reads from.
+/// Opaque per-plugin storage. The host treats the blob as bytes;
+/// versioning and encoding are the plugin's problem. Wired up by the
+/// host only when the user has granted the plugin's `persist`
+/// permission; otherwise every call returns `denied`. Host enforces
+/// a fixed quota -- plugins can't ask for more.
+interface state {
+    variant state-error {
+        /// User has not granted `persist` to this plugin.
+        denied,
+        /// Blob would exceed the host-imposed quota. Carries the
+        /// limit so the plugin can report it / compact and retry.
+        quota-exceeded(u64),
+        /// Anything else (I/O, permission denied at the OS level).
+        host-error(string),
+    }
+
+    /// Previously-saved blob, if any. Returned exactly as the plugin
+    /// last passed to `save` -- the host treats it as opaque bytes.
+    /// `denied` when the plugin lacks the `persist` permission.
+    load: func() -> result<option<list<u8>>, state-error>;
+
+    /// Replace the stored blob. Atomic: a concurrent crash leaves
+    /// either the previous blob or the new one readable, never a
+    /// torn write.
+    save: func(blob: list<u8>) -> result<_, state-error>;
+
+    /// Drop the stored blob. Equivalent to a fresh install.
+    clear: func() -> result<_, state-error>;
+}
+
+/// Command palette contributions. Plugins that declare the
+/// `commands` permission export this interface; the host enumerates
+/// entries each time the palette opens and routes user picks back
+/// through `invoke`. Plugins without the permission still need to
+/// export the interface (WIT requires it) but can return an empty
+/// list and never expect their `invoke` to be called.
+interface commands {
+    record command {
+        /// Stable id the plugin recognizes when the user picks the
+        /// entry. Opaque to the host; pick something readable so
+        /// logs are useful.
+        id: string,
+        /// Displayed verbatim in the palette. The host adds a
+        /// "<plugin>: " prefix automatically -- do NOT include it
+        /// here.
+        label: string,
+        /// Optional short hint shown in the palette's secondary
+        /// text column.
+        subtitle: option<string>,
+        /// Optional single-glyph icon. Falls back to a generic
+        /// plugin icon when absent.
+        icon: option<string>,
+        /// Cosmetic hint that picking this entry will open a
+        /// sub-palette. Does not affect behavior -- the actual
+        /// outcome is decided by `invoke`'s return value.
+        has-children: bool,
+    }
+
+    /// Mount request the plugin returns when a command should open
+    /// a tab. The host opens the tab, threads `token` back into
+    /// future calls so the plugin can recognize which mount the
+    /// host is asking about. Tokens are minted by the plugin from
+    /// any source the plugin trusts; the host treats them as opaque.
+    record mount-request {
+        token: string,
+        title: string,
+    }
+
+    /// What `invoke` produced: either a side effect already executed
+    /// (close the palette), a sub-menu to push, or a mount to open.
+    variant invoke-result {
+        done,
+        cascade(list<command>),
+        mount(mount-request),
+    }
+
+    /// Top-level command list. Host calls this every time the
+    /// palette opens; plugins can synthesize dynamic entries from
+    /// their persisted state. Named `list-commands` (not `list`)
+    /// because `list` is a reserved WIT keyword.
+    list-commands: func() -> list<command>;
+
+    /// User picked an entry. The plugin decides what to do next.
+    invoke: func(id: string) -> invoke-result;
+}
+
+/// Basic plugin world: exports the handler interface, imports the
+/// source interface it reads from. Stable surface; existing plugins
+/// continue to compile against this.
 world plugin {
     import source;
     export handler;
+}
+
+/// Extended plugin world for plugins that opt into host-provided
+/// state and / or palette command contributions. All four interfaces
+/// are required at link time; permission gating happens at runtime
+/// (host returns `denied` from state-interface calls and skips
+/// invoking commands.list-commands when the relevant permission is
+/// not granted). Plugins that only need the handler should target
+/// the `plugin` world instead.
+world plugin-rich {
+    import source;
+    import state;
+    export handler;
+    export commands;
 }
 
 /// Template language runtimes (010 Editor .bt, ImHex .hexpat, etc.).

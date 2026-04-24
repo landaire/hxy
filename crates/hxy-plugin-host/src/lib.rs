@@ -11,17 +11,34 @@
 
 mod bindings;
 mod fs_impl;
+mod grants;
 mod handler;
 mod host;
+mod manifest;
 mod registry;
+mod state_store;
+mod token;
 
 pub mod template;
 
+pub use grants::GrantsError;
+pub use grants::PermissionGrants;
+pub use grants::PluginGrants;
+pub use grants::PluginKey;
 pub use handler::PluginHandler;
+pub use manifest::ManifestError;
+pub use manifest::Permissions;
+pub use manifest::PluginManifest;
+pub use manifest::PluginMeta;
 pub use registry::PluginLoadError;
 pub use registry::load_plugins_from_dir;
 pub use registry::load_template_plugins_from_dir;
 pub use registry::load_template_runtime_from_bytes;
+pub use state_store::MAX_STATE_BYTES;
+pub use state_store::StateError;
+pub use state_store::StateStore;
+pub use token::TokenError;
+pub use token::fresh as fresh_token;
 pub use template::ParsedTemplate;
 pub use template::TemplateRuntime;
 pub use template::WasmTemplateRuntime;

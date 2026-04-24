@@ -11,7 +11,15 @@ description = "Wasmtime-based host for hxy plugins (byte source, VFS handler, te
 [dependencies]
 hxy-core = { workspace = true }
 hxy-vfs = { workspace = true }
+base64 = "0.22.1"
+getrandom = "0.3.4"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
 thiserror = "2.0.18"
+toml = "0.9.12"
 tracing = "0.1.44"
 vfs = "0.13.0"
 wasmtime = { version = "44", features = ["component-model", "runtime", "cranelift"] }
+
+[dev-dependencies]
+tempfile = "3.13.0"

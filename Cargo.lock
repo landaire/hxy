@@ -2761,9 +2761,15 @@ dependencies = [
 name = "hxy-plugin-host"
 version = "0.2.0"
 dependencies = [
+ "base64",
+ "getrandom 0.3.4",
  "hxy-core",
  "hxy-vfs",
+ "serde",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "vfs",
  "wasmtime",
