@@ -1,0 +1,87 @@
+//! Thin hxy-specific wrapper around [`egui_palette`].
+//!
+//! The generic crate handles rendering, fuzzy-matching, and keyboard
+//! nav. This module defines hxy's entry / action vocabulary and the
+//! cascade mode (Main → Templates → …).
+
+#![cfg(not(target_arch = "wasm32"))]
+
+use std::path::PathBuf;
+
+use crate::file::FileId;
+
+/// Persistent state for the palette. Keeps both the hxy-specific
+/// cascade [`Mode`] and the generic [`egui_palette::State`] that
+/// owns query / selection / focus.
+pub struct PaletteState {
+    pub mode: Mode,
+    pub inner: egui_palette::State,
+}
+
+impl Default for PaletteState {
+    fn default() -> Self {
+        Self { mode: Mode::Main, inner: egui_palette::State::default() }
+    }
+}
+
+impl PaletteState {
+    pub fn open_at(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.inner.open();
+    }
+
+    pub fn close(&mut self) {
+        self.inner.close();
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.inner.open
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Everything — commands + files + the `Run Template…` entry
+    /// that cascades into [`Mode::Templates`].
+    Main,
+    /// Second-level cascade shown after the user picks `Run Template…`
+    /// from the main list. Registered templates + an install entry.
+    Templates,
+}
+
+/// Activation payload the app hands back to itself when the user
+/// picks an entry. Cloneable so it can ride back through
+/// [`egui_palette::Outcome::Picked`].
+#[derive(Clone)]
+pub enum Action {
+    InvokeCommand(&'static str),
+    FocusFile(FileId),
+    RunTemplate(PathBuf),
+    SwitchMode(Mode),
+    InstallTemplate,
+    /// Copy the active file's current selection using the given
+    /// format. Only offered when a non-empty selection exists.
+    Copy(crate::copy_format::CopyKind),
+}
+
+/// Render the palette and return an outcome if the user activated
+/// something or dismissed the panel this frame.
+pub fn show(
+    ctx: &egui::Context,
+    state: &mut PaletteState,
+    entries: Vec<egui_palette::Entry<Action>>,
+) -> Option<Outcome> {
+    let hint = match state.mode {
+        Mode::Main => "Search commands, files, templates…",
+        Mode::Templates => "Filter templates…",
+    };
+    match egui_palette::show(ctx, &mut state.inner, &entries, hint)? {
+        egui_palette::Outcome::Closed => Some(Outcome::Closed),
+        egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),
+    }
+}
+
+pub enum Outcome {
+    Picked(Action),
+    Closed,
+}

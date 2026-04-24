@@ -1,0 +1,14 @@
+[package]
+name = "egui-palette"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A Cmd+P-style command palette widget for egui: fuzzy filter, keyboard nav, modal popup."
+keywords = ["egui", "palette", "fuzzy"]
+categories = ["gui"]
+
+[dependencies]
+egui = "0.34.1"
