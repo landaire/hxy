@@ -1389,18 +1389,19 @@ fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
         egui_dock::Node::Leaf(leaf) => std::mem::take(&mut leaf.tabs),
         _ => return,
     };
+    if tabs.is_empty() {
+        return;
+    }
+    // Stash one of the tabs we're about to move so we can find
+    // the destination leaf again after remove_leaf -- it rewires
+    // node indices, so `target` is not safe to index into the tree
+    // after the remove. Looking it up by tab is robust.
+    let refocus_tab = tabs[0];
     for tab in tabs {
         tree[target].append_tab(tab);
     }
     tree.remove_leaf(path.node);
-    // remove_leaf rewires node indices, so re-resolve the target by
-    // its first tab before re-focusing. Safe to skip focus update on
-    // the rare case we can't find it back.
-    if let Some(tab) = match &tree[target] {
-        egui_dock::Node::Leaf(leaf) => leaf.tabs.first().cloned(),
-        _ => None,
-    } && let Some(found) = app.dock.find_tab(&tab)
-    {
+    if let Some(found) = app.dock.find_tab(&refocus_tab) {
         app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
     }
 }
