@@ -162,7 +162,6 @@ impl TableDelegate for TemplateTableDelegate<'_> {
     }
 
     fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
-        // The ui handed to us has max_rect set to the full row rect.
         let row_rect = ui.max_rect();
         let row_kind = self.visible.get(row_nr as usize).cloned();
 
@@ -172,36 +171,37 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             _ => None,
         };
 
-        // Interact on the whole row rect so clicks on any column
-        // register, including empty ones.
-        let row_id = egui::Id::new(("hxy-tmpl-row", row_nr));
-        let resp = ui.interact(row_rect, row_id, egui::Sense::click());
-        if resp.hovered()
-            && let Some(idx) = node_idx {
+        // Push a row-scoped id before anything that registers a widget
+        // so interact, context-menu popups, and the painter can't
+        // collide with widgets further down the id tree (egui_table
+        // gives cells their own salt, but the row-level interact I do
+        // here needs a unique parent scope too).
+        ui.push_id(("hxy-tmpl-row", row_nr), |ui| {
+            let row_id = ui.id().with("interact");
+            let resp = ui.interact(row_rect, row_id, egui::Sense::click());
+            if resp.hovered()
+                && let Some(idx) = node_idx
+            {
                 *self.any_hover = Some(idx);
             }
-        if resp.clicked()
-            && let Some(idx) = node_idx {
+            if resp.clicked()
+                && let Some(idx) = node_idx
+            {
                 self.events.push(TemplateEvent::Select(idx));
             }
+            if let Some(idx) = node_idx {
+                resp.context_menu(|ui| self.row_context_menu(ui, idx));
+            }
 
-        // Right-click context menu. Offered only for real Node rows;
-        // array placeholders and elements can grow their own menu
-        // later.
-        if let Some(idx) = node_idx {
-            resp.context_menu(|ui| self.row_context_menu(ui, idx));
-        }
-
-        // Highlight the row background when it's this-frame's active
-        // hover (what the hex view is using).
-        let this_row_highlighted = node_idx == self.state.hovered_node && node_idx.is_some();
-        if this_row_highlighted {
-            ui.painter().rect_filled(
-                row_rect,
-                0.0,
-                ui.visuals().selection.bg_fill.gamma_multiply(0.35),
-            );
-        }
+            let this_row_highlighted = node_idx == self.state.hovered_node && node_idx.is_some();
+            if this_row_highlighted {
+                ui.painter().rect_filled(
+                    row_rect,
+                    0.0,
+                    ui.visuals().selection.bg_fill.gamma_multiply(0.35),
+                );
+            }
+        });
     }
 
     fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
