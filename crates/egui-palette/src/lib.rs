@@ -369,9 +369,17 @@ pub fn show_with_style<A: Clone>(
                 let text_edit =
                     egui::TextEdit::singleline(&mut state.query).hint_text(hint).desired_width(f32::INFINITY);
                 let resp = ui.add(text_edit);
+                // Keep focus glued to the query field the whole time
+                // the palette is open, so arrow-key list navigation
+                // doesn't steal typing focus and Left/Right still
+                // drive the text cursor. `pending_focus` is the
+                // first-frame trigger; after that we simply refuse
+                // to let focus drift.
                 if state.pending_focus {
                     resp.request_focus();
                     state.pending_focus = false;
+                } else if !resp.has_focus() {
+                    resp.request_focus();
                 }
 
                 ui.add_space(6.0);
