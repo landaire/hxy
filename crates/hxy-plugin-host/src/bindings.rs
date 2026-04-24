@@ -6,7 +6,7 @@
 pub mod handler_world {
     wasmtime::component::bindgen!({
         world: "plugin",
-        path: "../../wit",
+        path: "wit",
     });
 }
 
@@ -15,7 +15,7 @@ pub mod template_world {
     // world so the host only implements `SourceHost` once.
     wasmtime::component::bindgen!({
         world: "template-runtime",
-        path: "../../wit",
+        path: "wit",
         with: {
             "hxy:vfs/source@0.1.0": super::handler_world::hxy::vfs::source,
         },
