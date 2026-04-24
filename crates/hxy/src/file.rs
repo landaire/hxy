@@ -73,6 +73,12 @@ pub struct OpenFile {
     /// `None` when no library entry matches.
     #[cfg(not(target_arch = "wasm32"))]
     pub suggested_template: Option<SuggestedTemplate>,
+    /// Per-tab override for the hex view's column count. `None` means
+    /// follow the global `AppSettings::hex_columns` default; `Some`
+    /// pins this buffer to a specific width regardless of the global
+    /// setting. Set via the `Set hex columns (this buffer)` palette
+    /// command and not currently persisted across restarts.
+    pub hex_columns_override: Option<hxy_core::ColumnCount>,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -220,6 +226,7 @@ impl OpenFile {
             template_running: None,
             #[cfg(not(target_arch = "wasm32"))]
             suggested_template: None,
+            hex_columns_override: None,
         }
     }
 

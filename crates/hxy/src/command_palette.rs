@@ -62,6 +62,27 @@ pub enum Mode {
     SelectFromOffset,
     /// Prompt for a `<start>, <end>` (or `<start>..<end>`) range.
     SelectRange,
+    /// Prompt for a hex-view column count to apply to the active
+    /// buffer only. The value overrides
+    /// `AppSettings::hex_columns` for that tab without touching the
+    /// global default.
+    SetColumnsLocal,
+    /// Prompt for a hex-view column count to apply globally
+    /// (overwrites `AppSettings::hex_columns`). Existing per-tab
+    /// overrides from [`Mode::SetColumnsLocal`] continue to win for
+    /// their own tabs.
+    SetColumnsGlobal,
+}
+
+/// Which scope a [`Mode::SetColumnsLocal`] / [`Mode::SetColumnsGlobal`]
+/// pick should write its column count to. Carried by
+/// [`Action::SetColumns`] so dispatch in `apply_palette_action` can
+/// fan out to either the active `OpenFile` or the persisted
+/// `AppSettings`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnScope {
+    Local,
+    Global,
 }
 
 impl Mode {
@@ -78,7 +99,9 @@ impl Mode {
             | Mode::Recent
             | Mode::GoToOffset
             | Mode::SelectFromOffset
-            | Mode::SelectRange => Some(Mode::Main),
+            | Mode::SelectRange
+            | Mode::SetColumnsLocal
+            | Mode::SetColumnsGlobal => Some(Mode::Main),
         }
     }
 }
@@ -146,6 +169,11 @@ pub enum Action {
     /// Replace the active tab's selection with `[start, end_exclusive)`.
     /// Covers both "Select N bytes from cursor" and "Select range".
     SetSelection { start: u64, end_exclusive: u64 },
+    /// Set the hex view's column count, either for the active tab
+    /// (`Local`) or the global default (`Global`). Validated to a
+    /// non-zero `u16` before the action is emitted, so the dispatch
+    /// can take the value verbatim.
+    SetColumns { scope: ColumnScope, count: hxy_core::ColumnCount },
     /// Intentionally does nothing. Used for non-actionable
     /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
     /// when the query doesn't parse).
@@ -167,6 +195,8 @@ pub fn show(
         Mode::GoToOffset => hxy_i18n::t("palette-hint-go-to-offset"),
         Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),
         Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),
+        Mode::SetColumnsLocal => hxy_i18n::t("palette-hint-set-columns-local"),
+        Mode::SetColumnsGlobal => hxy_i18n::t("palette-hint-set-columns-global"),
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw
@@ -174,7 +204,14 @@ pub fn show(
     // subsequence of the human-readable row label (e.g. hex args
     // with `0x` + commas that don't appear in the `Select .. ..`
     // output format).
-    state.inner.bypass_filter = matches!(state.mode, Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange);
+    state.inner.bypass_filter = matches!(
+        state.mode,
+        Mode::GoToOffset
+            | Mode::SelectFromOffset
+            | Mode::SelectRange
+            | Mode::SetColumnsLocal
+            | Mode::SetColumnsGlobal
+    );
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),

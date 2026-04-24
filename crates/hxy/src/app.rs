@@ -2158,7 +2158,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
 
     let modified_ranges = file.editor.modified_ranges();
     let tab_id = file.id.get();
-    let columns = state.app.hex_columns;
+    let columns = file.hex_columns_override.unwrap_or(state.app.hex_columns);
     let need_styler = field_colors.is_some() || !modified_ranges.is_empty();
     let styler_data = if need_styler {
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
@@ -3002,7 +3002,21 @@ fn build_palette_entries(
                     )
                     .with_icon(icon::BRACKETS_CURLY),
                 );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-set-columns-local-entry"),
+                        Action::SwitchMode(Mode::SetColumnsLocal),
+                    )
+                    .with_icon(icon::COLUMNS),
+                );
             }
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-set-columns-global-entry"),
+                    Action::SwitchMode(Mode::SetColumnsGlobal),
+                )
+                .with_icon(icon::COLUMNS_PLUS_RIGHT),
+            );
             if history_ctx.can_undo {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Undo))
@@ -3241,6 +3255,17 @@ fn build_palette_entries(
                 build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
             }
         }
+        Mode::SetColumnsLocal | Mode::SetColumnsGlobal => {
+            let query = app.palette.inner.query.trim();
+            // Local needs an active tab to write into; Global writes
+            // straight into the persisted settings so it's always
+            // available.
+            if matches!(app.palette.mode, Mode::SetColumnsLocal) && !offset_ctx.available {
+                invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
+            } else {
+                build_columns_entries(&mut out, app.palette.mode, query);
+            }
+        }
     }
     out
 }
@@ -3328,6 +3353,74 @@ fn build_offset_entries(
         },
         _ => {}
     }
+}
+
+/// Match the Settings panel's slider cap so a user can't end up
+/// with a hex view they can't comfortably read. The underlying
+/// [`hxy_core::ColumnCount`] allows up to `u16::MAX`, but anything
+/// above this overflows even ultrawide monitors at sane font sizes.
+#[cfg(not(target_arch = "wasm32"))]
+const PALETTE_MAX_COLUMNS: u16 = 64;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_columns_entries(
+    out: &mut Vec<egui_palette::Entry<crate::command_palette::Action>>,
+    mode: crate::command_palette::Mode,
+    query: &str,
+) {
+    use crate::command_palette::Action;
+    use crate::command_palette::ColumnScope;
+    use crate::command_palette::Mode;
+    use egui_phosphor::regular as icon;
+
+    if query.is_empty() {
+        return;
+    }
+    let scope = match mode {
+        Mode::SetColumnsLocal => ColumnScope::Local,
+        Mode::SetColumnsGlobal => ColumnScope::Global,
+        _ => return,
+    };
+    let parsed = match crate::goto::parse_number(query) {
+        Ok(crate::goto::Number::Absolute(n)) => n,
+        Ok(crate::goto::Number::Relative(_)) => {
+            invalid_entry(out, query, "column count must be absolute (no + / - prefix)");
+            return;
+        }
+        Err(e) => {
+            invalid_entry(out, query, &e.to_string());
+            return;
+        }
+    };
+    let n_u16 = match u16::try_from(parsed) {
+        Ok(n) if (1..=u64::from(PALETTE_MAX_COLUMNS)).contains(&parsed) => n,
+        _ => {
+            invalid_entry(
+                out,
+                query,
+                &hxy_i18n::t_args("palette-invalid-columns-range", &[("max", &PALETTE_MAX_COLUMNS.to_string())]),
+            );
+            return;
+        }
+    };
+    let count = match hxy_core::ColumnCount::new(n_u16) {
+        Ok(c) => c,
+        Err(e) => {
+            invalid_entry(out, query, &e.to_string());
+            return;
+        }
+    };
+    let (key, scope_icon) = match scope {
+        ColumnScope::Local => ("palette-set-columns-local-fmt", icon::COLUMNS),
+        ColumnScope::Global => ("palette-set-columns-global-fmt", icon::COLUMNS_PLUS_RIGHT),
+    };
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args(key, &[("count", &n_u16.to_string())]),
+            Action::SetColumns { scope, count },
+        )
+        .with_icon(scope_icon),
+    );
 }
 
 /// Push a non-actionable "Invalid: {reason}" row. Activating it
@@ -3450,6 +3543,22 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor: hxy_core::ByteOffset::new(last) }));
                 if !file.editor.is_offset_visible(anchor) {
                     file.editor.set_scroll_to_byte(anchor);
+                }
+            }
+        }
+        crate::command_palette::Action::SetColumns { scope, count } => {
+            use crate::command_palette::ColumnScope;
+            app.palette.close();
+            match scope {
+                ColumnScope::Local => {
+                    if let Some(id) = active_file_id(app)
+                        && let Some(file) = app.files.get_mut(&id)
+                    {
+                        file.hex_columns_override = Some(count);
+                    }
+                }
+                ColumnScope::Global => {
+                    app.state.write().app.hex_columns = count;
                 }
             }
         }
