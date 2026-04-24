@@ -921,11 +921,13 @@ impl HexViewLayout {
 }
 
 fn row_count(len: ByteLen, columns: ColumnCount) -> usize {
+    // Always reserve a slot for the EOF insertion cursor. An empty
+    // source still gets one row so a fresh anonymous buffer can show
+    // a caret; a full row's worth of bytes gets an extra empty row
+    // so the cursor can park past the last byte.
     let len = len.get();
-    if len == 0 {
-        return 0;
-    }
-    let rows = len.div_ceil(columns.as_u64());
+    let cols = columns.as_u64();
+    let rows = len.saturating_add(1).div_ceil(cols).max(1);
     usize::try_from(rows).unwrap_or(usize::MAX)
 }
 
@@ -1074,6 +1076,11 @@ struct PaintCtx<'a> {
     hover_offset: Option<ByteOffset>,
     hover_span: Option<ByteRange>,
     field_boundaries: &'a [(ByteOffset, ByteLen)],
+    /// Total bytes in the source. Needed so `paint_row_marks` can
+    /// paint the EOF cursor at `cursor_offset == source_len`
+    /// (the insertion point past the last byte, used by empty
+    /// anonymous buffers and by `ctrl+end`-style navigation).
+    source_len: ByteLen,
 }
 
 /// Geometry + source metadata used for pointer hit-testing against the
@@ -1184,6 +1191,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         hover_offset,
         hover_span,
         field_boundaries,
+        source_len,
     };
     let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
@@ -1382,6 +1390,37 @@ fn paint_row_marks(
         } else if ctx.hover_offset == Some(byte_offset) {
             painter.rect_stroke(hex_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
             painter.rect_stroke(ascii_mark, 2.0, ctx.colors.hover_stroke, StrokeKind::Middle);
+        }
+    }
+
+    // Paint the "insertion point past the last byte" cursor so empty
+    // anonymous buffers still show a caret and typing at EOF has a
+    // visible target. It sits in the column immediately after the
+    // last real byte (or column 0 for an empty source), as a thin
+    // I-beam rather than a full cell outline -- there's no byte to
+    // frame.
+    let eof_offset = ctx.source_len.get();
+    if ctx.cursor_offset == Some(ByteOffset::new(eof_offset)) {
+        let eof_row_first = row_first_offset.get();
+        let eof_col = eof_offset.checked_sub(eof_row_first);
+        if let Some(col) = eof_col
+            && col <= cols as u64
+            && eof_row_first == (eof_offset / cols as u64) * cols as u64
+        {
+            let col = col as usize;
+            let hex_rect = ctx.layout.hex_cell_rect(row_origin, col.min(cols - 1), ctx.row_height);
+            let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, col.min(cols - 1), ctx.row_height);
+            let hex_x = if col < cols { hex_rect.left() } else { hex_rect.right() };
+            let ascii_x = if col < cols { ascii_rect.left() } else { ascii_rect.right() };
+            let (hex_stroke, ascii_stroke) = (hex_cursor_stroke, ascii_cursor_stroke);
+            painter.line_segment(
+                [Pos2::new(hex_x, hex_rect.top() + 1.0), Pos2::new(hex_x, hex_rect.bottom() - 1.0)],
+                hex_stroke,
+            );
+            painter.line_segment(
+                [Pos2::new(ascii_x, ascii_rect.top() + 1.0), Pos2::new(ascii_x, ascii_rect.bottom() - 1.0)],
+                ascii_stroke,
+            );
         }
     }
 }
@@ -1588,10 +1627,14 @@ fn apply_interaction(
 
 fn hit_to_offset(hit: HitRowCol, cols: usize, source_len: ByteLen) -> Option<ByteOffset> {
     let offset = (hit.row as u64).checked_mul(cols as u64)?.checked_add(hit.col as u64)?;
+    if source_len.get() == 0 {
+        // Empty buffer: the only valid cursor position is the EOF
+        // insertion point at 0. Clicking anywhere in the empty
+        // canvas parks the caret there so the user can start
+        // typing into a fresh anonymous tab.
+        return Some(ByteOffset::new(0));
+    }
     if offset >= source_len.get() {
-        if source_len.get() == 0 {
-            return None;
-        }
         return Some(ByteOffset::new(source_len.get() - 1));
     }
     Some(ByteOffset::new(offset))
@@ -2122,12 +2165,18 @@ mod tests {
     }
 
     #[test]
-    fn row_count_handles_partial_row() {
+    fn row_count_reserves_room_for_eof_cursor() {
+        // Empty source still gets one row so the insertion caret
+        // has somewhere to render; a full row's worth of bytes
+        // gets an extra row so the cursor can park past the last
+        // byte instead of getting clamped onto the final byte.
         let cols = ColumnCount::new(16).unwrap();
-        assert_eq!(row_count(ByteLen::new(0), cols), 0);
+        assert_eq!(row_count(ByteLen::new(0), cols), 1);
         assert_eq!(row_count(ByteLen::new(1), cols), 1);
-        assert_eq!(row_count(ByteLen::new(16), cols), 1);
+        assert_eq!(row_count(ByteLen::new(15), cols), 1);
+        assert_eq!(row_count(ByteLen::new(16), cols), 2);
         assert_eq!(row_count(ByteLen::new(17), cols), 2);
+        assert_eq!(row_count(ByteLen::new(32), cols), 3);
     }
 
     #[test]
