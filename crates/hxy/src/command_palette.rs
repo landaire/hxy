@@ -93,6 +93,15 @@ pub enum PaletteCommand {
     MergeUp,
     MergeDown,
     ToggleEditMode,
+    /// Copy the active tab's caret offset as a formatted number.
+    CopyCaretOffset,
+    /// Copy `start-end (N bytes)` for the active tab's non-empty
+    /// selection.
+    CopySelectionRange,
+    /// Copy just the selection length (the number of bytes it spans).
+    CopySelectionLength,
+    /// Copy the active tab's total source length.
+    CopyFileLength,
 }
 
 #[derive(Clone)]

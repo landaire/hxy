@@ -2553,6 +2553,53 @@ struct OffsetPaletteContext {
     cursor: u64,
     source_len: u64,
     available: bool,
+    /// `Some((start, end_exclusive))` when the active tab has a
+    /// non-empty selection (including a single-byte caret). `None`
+    /// means no selection exists -- caret-specific copy entries
+    /// skip themselves in that case.
+    selection: Option<(u64, u64)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+enum OffsetCopy {
+    Caret,
+    SelectionRange,
+    SelectionLength,
+    FileLength,
+}
+
+/// Copy a formatted offset / length / range from the active tab to
+/// the clipboard. Used by the palette's Copy-caret / Copy-selection
+/// / Copy-file-length entries; formatting matches the status bar
+/// (current `OffsetBase` setting).
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: OffsetCopy) {
+    let Some(id) = active_file_id(app) else { return };
+    let base = app.state.read().app.offset_base;
+    let Some(file) = app.files.get(&id) else { return };
+    let source_len = file.editor.source().len().get();
+    let sel = file.editor.selection();
+    let text = match kind {
+        OffsetCopy::Caret => {
+            let Some(sel) = sel else { return };
+            format_offset(sel.cursor.get(), base)
+        }
+        OffsetCopy::SelectionRange => {
+            let Some(sel) = sel else { return };
+            let range = sel.range();
+            let last_inclusive = range.end().get().saturating_sub(1);
+            let len = range.len().get();
+            format!("{}-{} ({} bytes)", format_offset(range.start().get(), base), format_offset(last_inclusive, base), len)
+        }
+        OffsetCopy::SelectionLength => {
+            let Some(sel) = sel else { return };
+            format!("{}", sel.range().len().get())
+        }
+        OffsetCopy::FileLength => format_offset(source_len, base),
+    };
+    ctx.copy_text(text);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2560,8 +2607,13 @@ fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
     let Some(id) = active_file_id(app) else { return OffsetPaletteContext::default() };
     let Some(file) = app.files.get(&id) else { return OffsetPaletteContext::default() };
     let source_len = file.editor.source().len().get();
-    let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-    OffsetPaletteContext { cursor, source_len, available: true }
+    let sel = file.editor.selection();
+    let cursor = sel.map(|s| s.cursor.get()).unwrap_or(0);
+    let selection = sel.map(|s| {
+        let r = s.range();
+        (r.start().get(), r.end().get())
+    });
+    OffsetPaletteContext { cursor, source_len, available: true, selection }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2740,6 +2792,57 @@ fn build_palette_entries(
                     )
                     .with_icon(icon::CLIPBOARD_TEXT)
                     .with_shortcut(fmt(&PASTE_AS_HEX)),
+                );
+            }
+            if history_ctx.has_active_file {
+                // Subtitles preview what would hit the clipboard so
+                // the user doesn't have to guess between hex and
+                // decimal or inclusive vs exclusive end.
+                let base = app.state.read().app.offset_base;
+                if let Some((start, end_exclusive)) = offset_ctx.selection {
+                    let last_inclusive = end_exclusive.saturating_sub(1);
+                    let len = end_exclusive.saturating_sub(start);
+                    let caret_preview = format_offset(offset_ctx.cursor, base);
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t("palette-copy-caret-offset"),
+                            Action::InvokeCommand(crate::command_palette::PaletteCommand::CopyCaretOffset),
+                        )
+                        .with_icon(icon::COPY)
+                        .with_subtitle(caret_preview),
+                    );
+                    if len > 1 {
+                        let range_preview = format!(
+                            "{}-{} ({} bytes)",
+                            format_offset(start, base),
+                            format_offset(last_inclusive, base),
+                            len
+                        );
+                        out.push(
+                            egui_palette::Entry::new(
+                                hxy_i18n::t("palette-copy-selection-range"),
+                                Action::InvokeCommand(crate::command_palette::PaletteCommand::CopySelectionRange),
+                            )
+                            .with_icon(icon::COPY)
+                            .with_subtitle(range_preview),
+                        );
+                        out.push(
+                            egui_palette::Entry::new(
+                                hxy_i18n::t("palette-copy-selection-length"),
+                                Action::InvokeCommand(crate::command_palette::PaletteCommand::CopySelectionLength),
+                            )
+                            .with_icon(icon::COPY)
+                            .with_subtitle(format!("{len}")),
+                        );
+                    }
+                }
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-copy-file-length"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::CopyFileLength),
+                    )
+                    .with_icon(icon::COPY)
+                    .with_subtitle(format_offset(offset_ctx.source_len, base)),
                 );
             }
             out.push(
@@ -3021,6 +3124,10 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::MergeUp => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Up)),
                     PaletteCommand::MergeDown => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down)),
                     PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
+                    PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
+                    PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
+                    PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
+                    PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
                 }
             }
         }
