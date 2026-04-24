@@ -72,6 +72,12 @@ impl EditEntry {
 /// would balloon memory.
 const UNDO_HISTORY_CAP: usize = 1000;
 
+/// Idle interval after which a new write stops coalescing into the
+/// previous undo entry. Matches the "pause to think" cadence so a
+/// short run of typing stays one undo unit but a deliberate second
+/// edit made after a beat reads as a separate logical change.
+const EDIT_COALESCE_IDLE: std::time::Duration = std::time::Duration::from_millis(800);
+
 pub struct OpenFile {
     pub id: FileId,
     pub display_name: String,
@@ -113,6 +119,13 @@ pub struct OpenFile {
     /// `push_history_boundary`, `undo`, `redo`, and `revert` (which
     /// also clears both stacks).
     pub history_break: bool,
+    /// Monotonic instant of the most recent successful write. Used
+    /// by the coalescing rule to push a fresh undo entry whenever
+    /// enough idle time has passed between keystrokes (see
+    /// [`EDIT_COALESCE_IDLE`]). Monotonic (not wall-clock) so NTP
+    /// adjustments can't accidentally collapse or split entries.
+    /// `None` until the first write lands.
+    pub last_edit_at: Option<std::time::Instant>,
     pub selection: Option<Selection>,
     /// Last-hovered byte offset reported by the hex view -- surfaced in
     /// the status bar. Cleared each frame (set from `HexViewResponse`).
@@ -297,6 +310,7 @@ impl OpenFile {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             history_break: false,
+            last_edit_at: None,
             selection: None,
             hovered: None,
             scroll_offset: 0.0,
@@ -350,8 +364,11 @@ impl OpenFile {
             .write(offset, bytes.clone())
             .map_err(|e| WriteError::Rejected(e.to_string()))?;
         self.redo_stack.clear();
+        let now = std::time::Instant::now();
+        let idle_break = self.last_edit_at.is_some_and(|last| now.duration_since(last) >= EDIT_COALESCE_IDLE);
         let entry = EditEntry { offset, old_bytes, new_bytes: bytes };
         if !self.history_break
+            && !idle_break
             && let Some(last) = self.undo_stack.last_mut()
             && ranges_touch(last.offset, last.end(), entry.offset, entry.end())
         {
@@ -363,6 +380,7 @@ impl OpenFile {
             }
         }
         self.history_break = false;
+        self.last_edit_at = Some(now);
         Ok(())
     }
 
@@ -578,6 +596,29 @@ mod tests {
         f.push_history_boundary();
         f.request_write(2, vec![0xBB]).unwrap();
         assert_eq!(f.undo_stack.len(), 2);
+    }
+
+    #[test]
+    fn idle_gap_starts_a_new_entry() {
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        // Back-date last_edit_at so the next write looks like it came
+        // after the idle cutoff. 2s stays safely above the 800ms
+        // threshold even on slow CI runners.
+        let backdated = f.last_edit_at.unwrap() - std::time::Duration::from_secs(2);
+        f.last_edit_at = Some(backdated);
+        f.request_write(2, vec![0xBB]).unwrap();
+        assert_eq!(f.undo_stack.len(), 2);
+    }
+
+    #[test]
+    fn fast_writes_still_coalesce() {
+        // Without an idle gap or explicit boundary, adjacent writes
+        // merge into a single undo entry.
+        let mut f = sample();
+        f.request_write(1, vec![0xAA]).unwrap();
+        f.request_write(2, vec![0xBB]).unwrap();
+        assert_eq!(f.undo_stack.len(), 1);
     }
 
     #[test]
