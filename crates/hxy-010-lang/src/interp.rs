@@ -761,6 +761,7 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(Some(Value::Bool(has)))
             }
             "RequiresVersion" => Ok(Some(Value::Void)),
+            "FindFirst" => Ok(Some(self.find_first(args)?)),
             _ => Ok(None),
         }
     }
@@ -776,6 +777,49 @@ impl<S: HexSource> Interpreter<S> {
             PrimKind { class: PrimClass::Int, width, signed },
             self.endian,
         )
+    }
+
+    /// `FindFirst(data, matchcase, wholeword, method, tolerance, dir,
+    /// start, size, wildcardMatch) -> int64`
+    ///
+    /// Only the common path — integer needle, optional `start`/`size`
+    /// — is implemented. Other args are accepted and ignored so
+    /// templates that pass the full 010 argument vector work.
+    /// Returns -1 when the needle isn't found.
+    fn find_first(&self, args: &[Value]) -> Result<Value, RuntimeError> {
+        let not_found = Value::SInt { value: -1, kind: PrimKind::i64() };
+        let Some(needle_val) = args.first() else { return Ok(not_found) };
+        let Some(needle_i) = needle_val.to_i128() else { return Ok(not_found) };
+        let start = args.get(6).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as u64;
+        let size_arg = args.get(7).and_then(|v| v.to_i128()).unwrap_or(0);
+        let source_len = self.cursor.len();
+        let end = if size_arg <= 0 {
+            source_len
+        } else {
+            (start + size_arg as u64).min(source_len)
+        };
+        if start >= end {
+            return Ok(not_found);
+        }
+
+        // Pick the shortest LE byte representation that fits the
+        // needle. Matches how 010 encodes integer search values:
+        // `uchar` -> 1 byte, `ushort` -> 2, `uint` -> 4, `uint64` -> 8.
+        let pattern: Vec<u8> = if let Ok(v) = u8::try_from(needle_i) {
+            vec![v]
+        } else if let Ok(v) = u16::try_from(needle_i) {
+            v.to_le_bytes().to_vec()
+        } else if let Ok(v) = u32::try_from(needle_i) {
+            v.to_le_bytes().to_vec()
+        } else {
+            (needle_i as i64).to_le_bytes().to_vec()
+        };
+        let bytes = self.cursor.read_at(start, end - start)?;
+        let offset = bytes.windows(pattern.len()).position(|w| w == pattern);
+        match offset {
+            Some(pos) => Ok(Value::SInt { value: (start + pos as u64) as i128, kind: PrimKind::i64() }),
+            None => Ok(not_found),
+        }
     }
 }
 

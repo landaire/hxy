@@ -406,14 +406,24 @@ pub fn toggle_collapse(state: &mut TemplateState, idx: TemplateNodeIdx) {
 
 pub fn new_state(parsed: std::sync::Arc<ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
     let tree = parsed.execute(&[])?;
-    Ok(TemplateState {
+    Ok(new_state_from(parsed, tree))
+}
+
+/// Build a [`TemplateState`] from an already-computed tree. Used by
+/// the background-run path where the worker thread executes the
+/// template and sends the result back to the UI.
+pub fn new_state_from(
+    parsed: std::sync::Arc<ParsedTemplate>,
+    tree: hxy_plugin_host::ResultTree,
+) -> TemplateState {
+    TemplateState {
         parsed: Some(parsed),
         tree,
         show_panel: true,
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
-    })
+    }
 }
 
 pub fn error_state(message: String) -> TemplateState {

@@ -59,6 +59,31 @@ pub struct OpenFile {
     /// template. `None` until the first successful run.
     #[cfg(not(target_arch = "wasm32"))]
     pub template: Option<TemplateState>,
+    /// Background parse+execute in flight. Mutually exclusive with
+    /// `template` in practice — when a run starts we clear the old
+    /// tree; when the run finishes we swap the result in here.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub template_running: Option<TemplateRun>,
+}
+
+/// In-flight template run on a worker thread. Receives the full
+/// parse+execute result via an [`egui_inbox::UiInbox`]; sending into
+/// the inbox triggers a repaint automatically, so the UI picks up
+/// the result on the very next frame.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TemplateRun {
+    pub inbox: egui_inbox::UiInbox<TemplateRunOutcome>,
+    pub template_name: String,
+    pub started: jiff::Timestamp,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub enum TemplateRunOutcome {
+    Ok {
+        parsed: std::sync::Arc<hxy_plugin_host::ParsedTemplate>,
+        tree: hxy_plugin_host::ResultTree,
+    },
+    Err(String),
 }
 
 /// Result of applying a template-language runtime to the tab's byte
@@ -125,6 +150,8 @@ impl OpenFile {
             show_vfs_tree: false,
             #[cfg(not(target_arch = "wasm32"))]
             template: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            template_running: None,
         }
     }
 

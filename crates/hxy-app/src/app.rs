@@ -426,6 +426,8 @@ impl eframe::App for HxyApp {
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_template_runs(ui.ctx(), self);
         dispatch_copy_shortcut(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
 
@@ -734,14 +736,14 @@ fn render_toolbar_and_apply(ui: &mut egui::Ui, app: &mut HxyApp) {
     }
 }
 
-fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
+fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
     use crate::commands::CommandEffect;
     match effect {
         CommandEffect::OpenFileDialog => handle_open_file(app),
         CommandEffect::MountActiveFile => mount_active_file(app),
         CommandEffect::RunTemplateDialog => {
             #[cfg(not(target_arch = "wasm32"))]
-            run_template_dialog(app);
+            run_template_dialog(ctx, app);
         }
         CommandEffect::OpenRecent(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -765,7 +767,7 @@ fn apply_command_effect(_ctx: &egui::Context, app: &mut HxyApp, effect: crate::c
 /// browsable VFS. On success, the tree panel picks it up automatically
 /// because it reads `file.mount`.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_template_dialog(app: &mut HxyApp) {
+fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(path) = rfd::FileDialog::new().pick_file() else { return };
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
@@ -778,7 +780,7 @@ fn run_template_dialog(app: &mut HxyApp) {
         .map(|f| f.display_name.clone())
         .unwrap_or_else(|| format!("file-{}", id.get()));
     let tpl_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-    let ctx = format!("{data_name} / {tpl_name}");
+    let console_ctx = format!("{data_name} / {tpl_name}");
 
     let Some(runtime) = app.template_runtime_for(&ext) else {
         let dir = user_template_runtimes_dir()
@@ -787,7 +789,7 @@ fn run_template_dialog(app: &mut HxyApp) {
         let msg = format!(
             "No template runtime is registered for .{ext} files.\nInstall a matching runtime component (.wasm) into:\n{dir}"
         );
-        app.console_log(ConsoleSeverity::Error, &ctx, &msg);
+        app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
         if let Some(file) = app.files.get_mut(&id) {
             file.template = Some(crate::template_panel::error_state(msg));
         }
@@ -798,7 +800,7 @@ fn run_template_dialog(app: &mut HxyApp) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("Failed to read template source {}: {e}", path.display());
-            app.console_log(ConsoleSeverity::Error, &ctx, &msg);
+            app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
             if let Some(file) = app.files.get_mut(&id) {
                 file.template = Some(crate::template_panel::error_state(msg));
             }
@@ -806,50 +808,113 @@ fn run_template_dialog(app: &mut HxyApp) {
         }
     };
 
-    let (state, diags_for_console) = {
-        let Some(file) = app.files.get_mut(&id) else { return };
-        match runtime.parse(file.source.clone(), &template_source) {
-            Ok(parsed) => match crate::template_panel::new_state(Arc::new(parsed)) {
-                Ok(state) => {
-                    let diags: Vec<_> = state.tree.diagnostics.clone();
-                    (state, diags)
+    // Spawn parse+execute on a worker. UI thread keeps rendering
+    // while the template runs — a big file can take seconds, which
+    // would otherwise freeze pan / scroll / input. The `UiInbox`
+    // triggers a repaint when the worker sends, so we don't poll.
+    let Some(file) = app.files.get_mut(&id) else { return };
+    let source = file.source.clone();
+    file.template = None;
+    let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
+    file.template_running = Some(crate::file::TemplateRun {
+        inbox,
+        template_name: tpl_name.clone(),
+        started: jiff::Timestamp::now(),
+    });
+
+    std::thread::spawn(move || {
+        let outcome = match runtime.parse(source, &template_source) {
+            Ok(parsed) => {
+                let parsed = Arc::new(parsed);
+                match parsed.execute(&[]) {
+                    Ok(tree) => crate::file::TemplateRunOutcome::Ok { parsed, tree },
+                    Err(e) => crate::file::TemplateRunOutcome::Err(format!("Execute failed: {e}")),
                 }
-                Err(e) => (
-                    crate::template_panel::error_state(format!("Execute failed: {e}")),
-                    Vec::new(),
-                ),
-            },
-            Err(e) => (
-                crate::template_panel::error_state(format!("Parse failed: {e}")),
-                Vec::new(),
-            ),
+            }
+            Err(e) => crate::file::TemplateRunOutcome::Err(format!("Parse failed: {e}")),
+        };
+        // Best-effort — if the tab closed first the sender's inbox is
+        // dropped and this returns Err, which is fine.
+        let _ = sender.send(outcome);
+    });
+
+    app.console_log(
+        ConsoleSeverity::Info,
+        &console_ctx,
+        format!("running template `{tpl_name}`…"),
+    );
+}
+
+/// Pop completed template-run results off each file's inbox and
+/// swap them into the file's [`TemplateState`]. Called once per
+/// frame; `UiInbox::read` is non-blocking and yields only items
+/// that the worker has already sent.
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
+    // Collect completed (file_id, outcome, tpl_name) first so we can
+    // access `app.console_log` and mutate `files` sequentially
+    // without borrow conflicts.
+    let mut done: Vec<(FileId, crate::file::TemplateRunOutcome, String)> = Vec::new();
+    for (id, file) in app.files.iter_mut() {
+        let Some(run) = file.template_running.as_ref() else { continue };
+        let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+        if outcomes.is_empty() {
+            continue;
         }
-    };
-    if let Some(file) = app.files.get_mut(&id) {
-        file.template = Some(state);
+        let tpl = run.template_name.clone();
+        file.template_running = None;
+        // A run only sends one outcome; if more land somehow, the
+        // final one wins.
+        for outcome in outcomes {
+            done.push((*id, outcome, tpl.clone()));
+        }
     }
 
-    // Stream the template's own diagnostics into the console too —
-    // per-tab panel stays the primary surface, console gives a
-    // cross-tab history.
-    for d in &diags_for_console {
-        let severity = match d.severity {
-            hxy_plugin_host::Severity::Error => ConsoleSeverity::Error,
-            hxy_plugin_host::Severity::Warning => ConsoleSeverity::Warning,
-            hxy_plugin_host::Severity::Info => ConsoleSeverity::Info,
-        };
-        let loc = match d.file_offset {
-            Some(off) => format!(" @ {off:#x}"),
-            None => String::new(),
-        };
-        app.console_log(severity, &ctx, format!("{}{}", d.message, loc));
+    for (id, outcome, tpl) in done {
+        let data_name = app
+            .files
+            .get(&id)
+            .map(|f| f.display_name.clone())
+            .unwrap_or_else(|| format!("file-{}", id.get()));
+        let console_ctx = format!("{data_name} / {tpl}");
+        match outcome {
+            crate::file::TemplateRunOutcome::Ok { parsed, tree } => {
+                let diagnostics = tree.diagnostics.clone();
+                let state = crate::template_panel::new_state_from(parsed, tree);
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.template = Some(state);
+                }
+                for d in &diagnostics {
+                    let severity = match d.severity {
+                        hxy_plugin_host::Severity::Error => ConsoleSeverity::Error,
+                        hxy_plugin_host::Severity::Warning => ConsoleSeverity::Warning,
+                        hxy_plugin_host::Severity::Info => ConsoleSeverity::Info,
+                    };
+                    let loc = match d.file_offset {
+                        Some(off) => format!(" @ {off:#x}"),
+                        None => String::new(),
+                    };
+                    app.console_log(severity, &console_ctx, format!("{}{}", d.message, loc));
+                }
+                if diagnostics.is_empty() {
+                    app.console_log(
+                        ConsoleSeverity::Info,
+                        &console_ctx,
+                        "template executed successfully",
+                    );
+                }
+            }
+            crate::file::TemplateRunOutcome::Err(msg) => {
+                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.template = Some(crate::template_panel::error_state(msg));
+                }
+            }
+        }
     }
-    if diags_for_console.is_empty()
-        && app.files.get(&id).and_then(|f| f.template.as_ref()).is_some_and(|t| !t.tree.nodes.is_empty())
-    {
-        app.console_log(ConsoleSeverity::Info, &ctx, "template executed successfully");
-    }
+    let _ = ctx;
 }
+
 
 fn mount_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
@@ -940,8 +1005,9 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
-    let show = file.template.as_ref().is_some_and(|t| t.show_panel);
-    if !show {
+    let show_ready = file.template.as_ref().is_some_and(|t| t.show_panel);
+    let show_running = file.template_running.is_some();
+    if !show_ready && !show_running {
         return;
     }
     egui::Panel::right(egui::Id::new(("hxy-template-panel", id.get())))
@@ -949,6 +1015,10 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
         .default_size(320.0)
         .min_size(240.0)
         .show_inside(ui, |ui| {
+            if let Some(run) = file.template_running.as_ref() {
+                render_template_running(ui, run);
+                return;
+            }
             let Some(state) = file.template.as_mut() else { return };
             let events = crate::template_panel::show(ui, id.get(), state);
             for e in events {
@@ -966,6 +1036,25 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
                 }
             }
         });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_template_running(ui: &mut egui::Ui, run: &crate::file::TemplateRun) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(24.0);
+        ui.label(egui::RichText::new(format!("{} Template", egui_phosphor::regular::SCROLL)).strong());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(format!("Running `{}`…", run.template_name));
+        });
+        let elapsed_ms = jiff::Timestamp::now()
+            .duration_since(run.started)
+            .as_millis()
+            .max(0);
+        ui.add_space(4.0);
+        ui.weak(format!("{} ms", elapsed_ms));
+    });
 }
 
 fn render_tree_panel_header(ui: &mut egui::Ui, show: &mut bool) {
