@@ -30,7 +30,6 @@ pub struct HxyApp {
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
-    commands: Vec<Box<dyn crate::commands::ToolbarCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
     sink: Option<crate::persist::SaveSink>,
@@ -181,7 +180,6 @@ impl HxyApp {
             registry,
             #[cfg(not(target_arch = "wasm32"))]
             template_plugins,
-            commands: crate::commands::default_commands(),
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
@@ -616,7 +614,6 @@ impl eframe::App for HxyApp {
 
         #[cfg(not(target_os = "macos"))]
         top_menu_bar(ui, self);
-        render_toolbar_and_apply(ui, self);
 
         // Pre-read the 16-byte window at the active file's caret so
         // the Inspector tab can render without needing to reborrow
@@ -1323,56 +1320,6 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
 
 #[cfg(target_arch = "wasm32")]
 fn drain_pending_vfs_opens(_ctx: &egui::Context, _app: &mut HxyApp) {}
-
-fn render_toolbar_and_apply(ui: &mut egui::Ui, app: &mut HxyApp) {
-    use crate::commands::CommandEffect;
-    use crate::commands::ToolbarCtx;
-
-    let active_file_id = active_file_id(app);
-    // Resolve styles + icon font once outside the borrow so the command
-    // trait objects can read them via the context below.
-    let mut effects: Vec<CommandEffect> = Vec::new();
-
-    // Snapshot the command list off `app` so we can borrow other fields
-    // of `app` through `ToolbarCtx`. Commands are `Send + Sync` and are
-    // owned trait objects -- moving them out and back is cheap (they're
-    // zero-size types in practice).
-    let commands = std::mem::take(&mut app.commands);
-
-    egui::Panel::top("hxy_toolbar")
-        .resizable(false)
-        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)))
-        .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                let mut state_guard = app.state.write();
-                let active_file = active_file_id.and_then(|id| app.files.get_mut(&id));
-                let ctx_handle = ui.ctx().clone();
-                let mut cx = ToolbarCtx {
-                    ctx: &ctx_handle,
-                    state: &mut state_guard,
-                    active_file,
-                    active_file_id,
-                    effects: &mut effects,
-                };
-                for cmd in &commands {
-                    let enabled = cmd.enabled(&cx);
-                    let label = cmd.label(&cx);
-                    let icon = cmd.icon();
-                    let btn = egui::Button::new(egui::RichText::new(icon).size(16.0)).frame(false);
-                    let r = ui.add_enabled(enabled, btn).on_hover_text(&label);
-                    if r.clicked() {
-                        cmd.invoke(&mut cx);
-                    }
-                }
-            });
-        });
-
-    app.commands = commands;
-
-    for effect in effects {
-        apply_command_effect(ui.ctx(), app, effect);
-    }
-}
 
 fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
     use crate::commands::CommandEffect;
