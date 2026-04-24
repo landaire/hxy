@@ -480,7 +480,30 @@ pub fn show_with_style<A: Clone>(
     let list_max_height =
         (screen_rect.height() - panel_y - style.row_reserve).clamp(style.list_min_height, style.list_max_height);
 
-    egui::Area::new(egui::Id::new("egui_palette"))
+    // Decide scroll vs shrink-to-fit before opening the Area so
+    // we can pick a per-mode Area id. egui's `Area` caches
+    // `AreaState::size` across frames and uses it as the inner
+    // Ui's `max_rect` on the next frame; a single id would trap
+    // us at the smaller shrink-mode size when the user widens the
+    // filter back to a scroll-mode result set. Two stable ids keep
+    // each mode's cached size on its own track.
+    let row_stride = style.row_height + ctx.global_style().spacing.item_spacing.y;
+    let content_height = if filtered.is_empty() {
+        // "No matches." block: two 16 px spacers around a body-
+        // text line. Over-estimating by a few pixels just nudges
+        // the mode boundary; it stays visually correct either way.
+        48.0
+    } else {
+        filtered.len() as f32 * row_stride
+    };
+    let scroll_needed = !style.list_shrink_to_fit || content_height > list_max_height;
+    let area_id = if scroll_needed {
+        egui::Id::new("egui_palette_scroll")
+    } else {
+        egui::Id::new("egui_palette_shrink")
+    };
+
+    egui::Area::new(area_id)
         .fixed_pos(egui::pos2(panel_x, panel_y))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -556,28 +579,13 @@ pub fn show_with_style<A: Clone>(
                         ui.add_space(16.0);
                     }
                 };
-                // Decide whether we even need a ScrollArea. When
-                // `list_shrink_to_fit` is on and the rows comfortably
-                // fit in `list_max_height`, rendering them straight
-                // into the parent Ui lets the outer `Area`
-                // re-measure its content every frame, so the panel
-                // both shrinks and grows back cleanly as the filter
-                // widens or narrows. Wrapping in a ScrollArea even
-                // when no scrolling is needed traps the Area in a
-                // "stuck small" state in egui 0.34 -- the ScrollArea
-                // remembers its shrunken allocation from the prior
-                // frame and won't grow past it when content does.
-                let row_stride = style.row_height + ui.spacing().item_spacing.y;
-                let content_height = if filtered.is_empty() {
-                    // Empty-state block: two 16 px spacers + one
-                    // body-text line. Over-estimating by a few pixels
-                    // just means the ScrollArea path is chosen a bit
-                    // earlier; it stays visually correct either way.
-                    48.0
-                } else {
-                    (filtered.len() as f32) * row_stride
-                };
-                let scroll_needed = !style.list_shrink_to_fit || content_height > list_max_height;
+                // `scroll_needed` was computed up-front so we could
+                // pick a per-mode Area id; reuse it here to choose
+                // the rendering path. Skipping the ScrollArea
+                // entirely in shrink mode lets the parent Ui
+                // re-measure to the rows' actual height each frame,
+                // which combined with the per-mode Area id keeps
+                // shrink-mode growth tracking the filter cleanly.
                 if scroll_needed {
                     egui::ScrollArea::vertical().max_height(list_max_height).auto_shrink([false, false]).show(
                         ui,
