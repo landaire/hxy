@@ -2511,17 +2511,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hxy-010-lang"
-version = "0.1.0"
-dependencies = [
- "arbitrary",
- "insta",
- "thiserror 2.0.18",
- "winnow 0.7.15",
-]
-
-[[package]]
-name = "hxy-app"
+name = "hxy"
 version = "0.1.0"
 dependencies = [
  "dirs",
@@ -2560,6 +2550,16 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "hxy-010-lang"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "insta",
+ "thiserror 2.0.18",
+ "winnow 0.7.15",
 ]
 
 [[package]]

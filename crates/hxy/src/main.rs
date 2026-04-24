@@ -4,10 +4,10 @@
 fn main() -> eframe::Result<()> {
     use std::sync::Arc;
 
-    use hxy_app::persist;
-    use hxy_app::persist::SaveSink;
-    use hxy_app::state::PersistedState;
-    use hxy_app::state::shared;
+    use hxy::persist;
+    use hxy::persist::SaveSink;
+    use hxy::state::PersistedState;
+    use hxy::state::shared;
     use tokio::runtime::Runtime;
     use tracing_subscriber::EnvFilter;
 
@@ -62,7 +62,7 @@ fn main() -> eframe::Result<()> {
     });
 
     let viewport = egui::ViewportBuilder::default()
-        .with_title(hxy_app::APP_NAME)
+        .with_title(hxy::APP_NAME)
         .with_min_inner_size([480.0, 320.0])
         .with_drag_and_drop(true);
     let viewport = state.read().window.apply_to_builder(viewport, [1200.0, 800.0]);
@@ -72,10 +72,10 @@ fn main() -> eframe::Result<()> {
     let state_for_app = Arc::clone(&state);
 
     eframe::run_native(
-        hxy_app::APP_NAME,
+        hxy::APP_NAME,
         options,
         Box::new(move |cc| {
-            let mut app = hxy_app::HxyApp::new(cc, state_for_app);
+            let mut app = hxy::HxyApp::new(cc, state_for_app);
             if let Some(sink) = sink {
                 app = app.with_sink(sink);
             }

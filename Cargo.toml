@@ -5,7 +5,7 @@ members = [
     "crates/hxy-i18n",
     "crates/hxy-view",
     "crates/hxy-vfs",
-    "crates/hxy-app",
+    "crates/hxy",
     "crates/hxy-plugin-host",
     "crates/hxy-plugin-api",
     "crates/hxy-010-lang",

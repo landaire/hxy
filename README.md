@@ -21,10 +21,8 @@ Command palette:
 ## Install
 
 ```
-cargo install hxy-app
+cargo install hxy
 ```
-
-Binary is named `hxy`.
 
 ## What's in the box
 

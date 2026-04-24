@@ -33,7 +33,7 @@ existing ecosystem of text templates to reuse.
 
 See [`bt-runtime/`](./bt-runtime) -- reference implementation of the
 WIT world wrapping `hxy-010-lang`. The *same* interpreter also ships
-linked-in natively as part of `hxy-app`; the WASM version is kept as
+linked-in natively as part of `hxy`; the WASM version is kept as
 a dogfood target.
 
 ## VFS handler plugins
