@@ -1082,10 +1082,7 @@ impl HxyApp {
                     restore_scroll,
                 );
                 if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
-                    workspace
-                        .dock
-                        .main_surface_mut()
-                        .push_to_focused_leaf(crate::file::WorkspaceTab::Entry(id));
+                    push_workspace_entry(workspace, id);
                 } else {
                     // Workspace vanished between schedule and apply.
                     // Fall back to a top-level tab so the user doesn't
@@ -2184,6 +2181,26 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
 /// Remove any [`Tab::Welcome`] entry from the given leaf. Used by
 /// the file-open and tab-move paths so the Welcome placeholder
 /// quietly steps aside whenever a real tab takes over its pane.
+/// Push a freshly-opened VFS entry into the leaf that holds the
+/// workspace's `Editor` sub-tab so the entry stacks alongside the
+/// parent file rather than landing wherever the user was last
+/// clicking (typically the VFS-tree leaf, since the click that
+/// triggered the open came from there). The tree stays in its own
+/// dedicated leaf as a tool panel.
+#[cfg(not(target_arch = "wasm32"))]
+fn push_workspace_entry(workspace: &mut crate::file::Workspace, file_id: FileId) {
+    let entry = crate::file::WorkspaceTab::Entry(file_id);
+    if let Some(editor_path) = workspace.dock.find_tab(&crate::file::WorkspaceTab::Editor)
+        && let Ok(leaf) = workspace.dock.leaf_mut(editor_path.node_path())
+    {
+        leaf.append_tab(entry);
+        return;
+    }
+    // Editor's gone (shouldn't happen during normal use). Fall back
+    // to focused leaf so the file isn't lost.
+    workspace.dock.push_to_focused_leaf(entry);
+}
+
 /// Tabs that belong in the right-hand "tool" panel: the plugin manager
 /// and any live plugin VFS browser. Adding a new tool-class tab type
 /// (e.g. a hypothetical `Tab::Workspace`) means listing it here so the
@@ -6050,11 +6067,11 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Workspace(workspace_id) => match self.workspaces.get(workspace_id) {
                 Some(w) => match self.files.get(&w.editor_id) {
                     Some(f) => {
-                        // Same dirty / readonly indicators as Tab::File: the
-                        // workspace's outer label tracks the underlying
-                        // editor file, since that's what "save / close"
-                        // operates against.
-                        let mut prefix = String::new();
+                        // Same dirty / readonly indicators as Tab::File,
+                        // plus a tree-structure icon so the user can tell
+                        // at a glance that this tab nests sub-tabs.
+                        let mut prefix = String::from(egui_phosphor::regular::TREE_STRUCTURE);
+                        prefix.push(' ');
                         if matches!(f.editor.edit_mode(), crate::file::EditMode::Readonly) {
                             prefix.push_str(egui_phosphor::regular::LOCK);
                             prefix.push(' ');
@@ -6335,7 +6352,12 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
         match tab {
             crate::file::WorkspaceTab::Editor => match self.files.get(&self.editor_id) {
                 Some(f) => {
-                    let mut prefix = String::new();
+                    // House icon marks the workspace's parent file --
+                    // visually distinct from Entry sub-tabs (which are
+                    // unprefixed), so the user can spot the root tab
+                    // even when several entries are open beside it.
+                    let mut prefix = String::from(egui_phosphor::regular::HOUSE);
+                    prefix.push(' ');
                     if matches!(f.editor.edit_mode(), crate::file::EditMode::Readonly) {
                         prefix.push_str(egui_phosphor::regular::LOCK);
                         prefix.push(' ');
