@@ -22,9 +22,26 @@ use crate::state::SharedPersistedState;
 use crate::tabs::Tab;
 use crate::window::WindowSettings;
 
+use hxy_vfs::MountedVfs;
+
+/// Where `open_with_target` should push the new tab.
+#[derive(Clone, Copy, Debug)]
+pub enum OpenTarget {
+    /// Push as a top-level `Tab::File` in the main dock.
+    Toplevel,
+    /// Push as `WorkspaceTab::Entry` inside the named workspace's
+    /// inner dock.
+    Workspace(crate::file::WorkspaceId),
+}
+
 pub struct HxyApp {
     dock: DockState<Tab>,
     files: HashMap<FileId, OpenFile>,
+    /// File-mounted VFS workspaces, keyed by `WorkspaceId`. Each entry
+    /// backs a `Tab::Workspace` and owns a nested `DockState` plus the
+    /// `MountedVfs` that supplies child entries.
+    workspaces: std::collections::BTreeMap<crate::file::WorkspaceId, crate::file::Workspace>,
+    next_workspace_id: u64,
     /// Active plugin VFS mounts, keyed by `MountId`. Each entry backs a
     /// `Tab::PluginMount` and supplies the byte source for child VFS
     /// entry tabs the user opens from the tree.
@@ -138,6 +155,14 @@ pub struct HxyApp {
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
     pending_close_tab: Option<PendingCloseTab>,
+    /// Same shape as `pending_close_tab` but written from the inner
+    /// workspace dock's `on_close`. Drained alongside the regular
+    /// pending-close slot; the modal treats them identically.
+    pending_close_workspace_entry: Option<PendingCloseTab>,
+    /// `WorkspaceId`s the inner dock drained to "no tabs left except
+    /// the editor". Drained post-dock to collapse the workspace back
+    /// to a plain `Tab::File` in the outer dock.
+    pending_collapse_workspace: Vec<crate::file::WorkspaceId>,
     /// Set when the user X-clicks a `Tab::PluginMount`; drained after
     /// the dock pass to remove the mount entry from `mounts` and any
     /// matching record from `state.open_tabs`.
@@ -248,6 +273,8 @@ impl HxyApp {
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
+            workspaces: std::collections::BTreeMap::new(),
+            next_workspace_id: 1,
             #[cfg(not(target_arch = "wasm32"))]
             mounts: std::collections::BTreeMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -289,6 +316,8 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
             pending_close_tab: None,
+            pending_close_workspace_entry: None,
+            pending_collapse_workspace: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_close_mount: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -652,21 +681,49 @@ impl HxyApp {
 
     /// Move dock focus to the tab backing `file_id`, if found.
     fn focus_file_tab(&mut self, file_id: FileId) {
-        let Some(path) = self.dock.find_tab(&Tab::File(file_id)) else { return };
-        let node_path = path.node_path();
-        // Ignore errors -- the worst case is the tab isn't focused.
-        let _ = self.dock.set_active_tab(path);
-        self.dock.set_focused_node_and_surface(node_path);
+        if let Some(path) = self.dock.find_tab(&Tab::File(file_id)) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        // The file might live inside a workspace either as the
+        // editor or as an opened entry. Focus the workspace tab in
+        // the outer dock and the matching sub-tab in the inner dock.
+        let workspace_target: Option<(crate::file::WorkspaceId, crate::file::WorkspaceTab)> = self
+            .workspaces
+            .values()
+            .find_map(|w| {
+                if w.editor_id == file_id {
+                    Some((w.id, crate::file::WorkspaceTab::Editor))
+                } else if w.dock.find_tab(&crate::file::WorkspaceTab::Entry(file_id)).is_some() {
+                    Some((w.id, crate::file::WorkspaceTab::Entry(file_id)))
+                } else {
+                    None
+                }
+            });
+        if let Some((workspace_id, sub_tab)) = workspace_target {
+            if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
+                let node_path = path.node_path();
+                let _ = self.dock.set_active_tab(path);
+                self.dock.set_focused_node_and_surface(node_path);
+            }
+            if let Some(workspace) = self.workspaces.get_mut(&workspace_id)
+                && let Some(inner_path) = workspace.dock.find_tab(&sub_tab)
+            {
+                let _ = workspace.dock.set_active_tab(inner_path);
+            }
+        }
     }
 
-    /// Open a new file tab with the given display name, persistent
-    /// source identity, and byte contents. Runs format detection
-    /// against the source's first bytes and caches the matching handler
-    /// (if any) on the tab so the toolbar command can enable itself.
-    /// When `restore_show_vfs_tree` is true and a handler matches, the
-    /// source is mounted and the tree panel opens immediately -- used by
-    /// restore-on-launch so children of mounted VFS sources can find their
-    /// parent mount.
+    /// Open a new top-level file tab with the given display name,
+    /// persistent source identity, and byte contents. Runs format
+    /// detection against the source's first bytes and caches the
+    /// matching handler (if any) on the tab so the "Browse VFS"
+    /// command can enable itself. When `as_workspace` is true and a
+    /// handler matches, the file is mounted and the tab is wrapped in
+    /// a `Tab::Workspace` immediately; otherwise it lands as a plain
+    /// `Tab::File`.
     pub fn open(
         &mut self,
         display_name: impl Into<String>,
@@ -674,12 +731,72 @@ impl HxyApp {
         bytes: Vec<u8>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
-        restore_show_vfs_tree: bool,
+        as_workspace: bool,
+    ) -> FileId {
+        let id = self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
+
+        let pushed_workspace = if as_workspace { self.try_push_as_workspace(id) } else { false };
+        if !pushed_workspace {
+            self.dock.push_to_focused_leaf(Tab::File(id));
+            if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+                remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+            }
+        }
+
+        // Look for an unsaved-edits sidecar from a previous session
+        // and offer it back to the user. The actual restore happens
+        // after the modal returns; this just stages the prompt.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(TabSource::Filesystem(path)) = source_kind.as_ref()
+            && let Some(dir) = unsaved_edits_dir()
+        {
+            match crate::patch_persist::load(&dir, path) {
+                Ok(Some(sidecar)) => {
+                    let integrity = sidecar.integrity();
+                    self.pending_patch_restore =
+                        Some(PendingPatchRestore { file_id: id, sidecar, integrity });
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, path = %path.display(), "load patch sidecar"),
+            }
+        }
+
+        if let Some(source) = source_kind {
+            let mut g = self.state.write();
+            if let TabSource::Filesystem(p) = &source {
+                g.app.record_recent(p.clone());
+            }
+            if !g.open_tabs.iter().any(|t| t.source == source) {
+                g.open_tabs.push(crate::state::OpenTabState {
+                    source,
+                    selection: restore_selection,
+                    scroll_offset: restore_scroll.unwrap_or(0.0),
+                    as_workspace: pushed_workspace,
+                });
+            }
+        }
+        id
+    }
+
+    /// Allocate a `FileId`, build an `OpenFile`, run handler / template
+    /// detection against the first ~4 KiB, and insert into `app.files`.
+    /// Doesn't touch the dock -- callers decide whether to push a
+    /// `Tab::File`, wrap in a `Tab::Workspace`, or graft into an
+    /// existing workspace's inner dock.
+    fn create_open_file(
+        &mut self,
+        display_name: impl Into<String>,
+        source_kind: Option<TabSource>,
+        bytes: Vec<u8>,
+        restore_selection: Option<hxy_core::Selection>,
+        restore_scroll: Option<f32>,
     ) -> FileId {
         let id = self.fresh_file_id();
-        let mut file = OpenFile::from_bytes(id, display_name, source_kind.clone(), bytes);
-        file.editor.set_selection(restore_selection);        if let Some(s) = restore_scroll {
-            file.editor.set_scroll_to(s);        }
+        let mut file = OpenFile::from_bytes(id, display_name, source_kind, bytes);
+        file.editor.set_selection(restore_selection);
+        if let Some(s) = restore_scroll {
+            file.editor.set_scroll_to(s);
+        }
 
         // Detect a matching VFS handler against the first ~4 KiB.
         if let Ok(range) = hxy_core::ByteRange::new(
@@ -704,62 +821,42 @@ impl HxyApp {
             }
         }
 
-        if restore_show_vfs_tree && let Some(handler) = file.detected_handler.clone() {
-            match handler.mount(file.editor.source().clone()) {
-                Ok(mount) => {
-                    file.mount = Some(Arc::new(mount));
-                    file.show_vfs_tree = true;
-                }
-                Err(e) => tracing::warn!(error = %e, handler = handler.name(), "restore mount"),
-            }
-        }
-
         self.files.insert(id, file);
-        self.dock.push_to_focused_leaf(Tab::File(id));
-        // If the focused leaf had a Welcome placeholder, replace it
-        // -- the new file is what the user actually wanted in this
-        // pane. Welcome tabs in *other* panes stay put, so a user
-        // who split a Welcome off into its own pane keeps it as a
-        // launcher for additional files.
-        if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+        id
+    }
+
+    /// Attempt to wrap the freshly-created file `id` in a `Tab::Workspace`
+    /// by mounting its detected handler. Returns `true` if the workspace
+    /// was created and pushed; `false` falls back to the plain
+    /// `Tab::File` path (no detected handler, or mount failed).
+    fn try_push_as_workspace(&mut self, id: FileId) -> bool {
+        let Some(file) = self.files.get(&id) else { return false };
+        let Some(handler) = file.detected_handler.clone() else { return false };
+        let source = file.editor.source().clone();
+        let mount = match handler.mount(source) {
+            Ok(m) => Arc::new(m),
+            Err(e) => {
+                tracing::warn!(error = %e, handler = handler.name(), "mount as workspace");
+                return false;
+            }
+        };
+        let workspace_id = self.spawn_workspace(id, mount);
+        self.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
+        if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
             remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
         }
+        true
+    }
 
-        // Look for an unsaved-edits sidecar from a previous session
-        // and offer it back to the user. The actual restore happens
-        // after the modal returns; this just stages the prompt.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(TabSource::Filesystem(path)) = source_kind.as_ref()
-            && let Some(dir) = unsaved_edits_dir()
-        {
-            match crate::patch_persist::load(&dir, path) {
-                Ok(Some(sidecar)) => {
-                    // Surface every sidecar; the modal reports the
-                    // integrity status so the user can decide to
-                    // restore, restore-anyway, or discard.
-                    let integrity = sidecar.integrity();
-                    self.pending_patch_restore =
-                        Some(PendingPatchRestore { file_id: id, sidecar, integrity });
-                }
-                Ok(None) => {}
-                Err(e) => tracing::warn!(error = %e, path = %path.display(), "load patch sidecar"),
-            }
-        }
-
-        if let Some(source) = source_kind {
-            let mut g = self.state.write();
-            if let TabSource::Filesystem(p) = &source {
-                g.app.record_recent(p.clone());
-            }
-            if !g.open_tabs.iter().any(|t| t.source == source) {
-                g.open_tabs.push(crate::state::OpenTabState {
-                    source,
-                    selection: restore_selection,
-                    scroll_offset: restore_scroll.unwrap_or(0.0),
-                    show_vfs_tree: restore_show_vfs_tree,
-                });
-            }
-        }
+    /// Allocate a `WorkspaceId`, build a `Workspace`, and register it.
+    /// Does not push a tab -- the caller decides whether the workspace
+    /// is fresh (push `Tab::Workspace`) or replacing an existing
+    /// `Tab::File` for the same `editor_id` (swap the dock tab).
+    fn spawn_workspace(&mut self, editor_id: FileId, mount: Arc<MountedVfs>) -> crate::file::WorkspaceId {
+        let id = crate::file::WorkspaceId::new(self.next_workspace_id);
+        self.next_workspace_id += 1;
+        let workspace = crate::file::Workspace::new(id, editor_id, mount);
+        self.workspaces.insert(id, workspace);
         id
     }
 
@@ -806,7 +903,10 @@ impl HxyApp {
         tab: &crate::state::OpenTabState,
         must_mount: bool,
     ) -> Result<(), crate::file::FileOpenError> {
-        let show_tree = tab.show_vfs_tree || must_mount;
+        // A parent of any persisted VfsEntry must restore as a
+        // workspace so the children can find a mount; user-saved
+        // workspace state forces the same path.
+        let as_workspace = tab.as_workspace || must_mount;
         match &tab.source {
             TabSource::Filesystem(path) => {
                 let bytes = std::fs::read(path)
@@ -815,36 +915,27 @@ impl HxyApp {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), show_tree);
+                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), as_workspace);
                 Ok(())
             }
             TabSource::VfsEntry { parent, entry_path } => {
-                // Resolve the parent's `MountedVfs`. PluginMount parents
-                // live in `app.mounts` (no File tab); other VFS-bearing
-                // sources are File tabs whose `mount` field carries it.
-                let parent_mount = match parent.as_ref() {
-                    TabSource::PluginMount { plugin_name, token, .. } => self
-                        .mounts
-                        .values()
-                        .find(|m| m.plugin_name == *plugin_name && m.token == *token)
-                        .map(|m| m.mount.clone())
-                        .ok_or_else(|| parent_missing(parent.as_ref()))?,
-                    other => {
-                        let parent_file_id = self
-                            .files
-                            .iter()
-                            .find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))
-                            .ok_or_else(|| parent_missing(other))?;
-                        self.files
-                            .get(&parent_file_id)
-                            .and_then(|f| f.mount.clone())
-                            .ok_or_else(|| parent_missing(other))?
-                    }
-                };
+                let parent_mount = self.find_mount_for_source(parent.as_ref())
+                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
                 let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
                     .map_err(|e| crate::file::FileOpenError::Read { path: entry_path.into(), source: e })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
-                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), show_tree);
+                let target = self
+                    .workspace_for_source(parent.as_ref())
+                    .map(OpenTarget::Workspace)
+                    .unwrap_or(OpenTarget::Toplevel);
+                self.open_with_target(
+                    name,
+                    Some(tab.source.clone()),
+                    bytes,
+                    tab.selection,
+                    Some(tab.scroll_offset),
+                    target,
+                );
                 Ok(())
             }
             TabSource::Anonymous { id, title } => {
@@ -894,12 +985,104 @@ impl HxyApp {
                         mount: Arc::new(mount),
                     },
                 );
-                let _ = show_tree; // mount tabs always show the tree
+                let _ = as_workspace; // plugin mount tabs always show the tree
                 let _ = push_tool_tab(&mut self.dock, Tab::PluginMount(mount_id));
                 if let Some(path) = self.dock.find_tab(&Tab::PluginMount(mount_id)) {
                     remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
                 }
                 Ok(())
+            }
+        }
+    }
+
+    /// Locate the `MountedVfs` for the given source, regardless of
+    /// where the mount lives -- workspace (file-rooted) or plugin
+    /// (rootless). Returns `None` if no live mount currently provides
+    /// that source.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn find_mount_for_source(&self, source: &TabSource) -> Option<Arc<MountedVfs>> {
+        match source {
+            TabSource::PluginMount { plugin_name, token, .. } => self
+                .mounts
+                .values()
+                .find(|m| m.plugin_name == *plugin_name && m.token == *token)
+                .map(|m| m.mount.clone()),
+            other => {
+                let editor_id = self
+                    .files
+                    .iter()
+                    .find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))?;
+                self.workspaces
+                    .values()
+                    .find(|w| w.editor_id == editor_id)
+                    .map(|w| w.mount.clone())
+            }
+        }
+    }
+
+    /// Find the `WorkspaceId` whose editor file has the given source,
+    /// if any. Used by VfsEntry restore to graft the entry into the
+    /// parent's workspace's inner dock instead of opening it as a
+    /// top-level tab.
+    fn workspace_for_source(&self, source: &TabSource) -> Option<crate::file::WorkspaceId> {
+        let editor_id = self
+            .files
+            .iter()
+            .find_map(|(id, f)| (f.source_kind.as_ref() == Some(source)).then_some(*id))?;
+        self.workspaces
+            .values()
+            .find(|w| w.editor_id == editor_id)
+            .map(|w| w.id)
+    }
+
+    /// `app.open` plus an explicit target: top-level dock leaf or a
+    /// specific workspace's inner dock. Used by VfsEntry restore +
+    /// runtime VFS-tree clicks to push entries inside their parent
+    /// workspace rather than fragmenting them out as siblings.
+    pub fn open_with_target(
+        &mut self,
+        display_name: impl Into<String>,
+        source_kind: Option<TabSource>,
+        bytes: Vec<u8>,
+        restore_selection: Option<hxy_core::Selection>,
+        restore_scroll: Option<f32>,
+        target: OpenTarget,
+    ) -> FileId {
+        match target {
+            OpenTarget::Toplevel => {
+                self.open(display_name, source_kind, bytes, restore_selection, restore_scroll, false)
+            }
+            OpenTarget::Workspace(workspace_id) => {
+                let id = self.create_open_file(
+                    display_name,
+                    source_kind.clone(),
+                    bytes,
+                    restore_selection,
+                    restore_scroll,
+                );
+                if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                    workspace
+                        .dock
+                        .main_surface_mut()
+                        .push_to_focused_leaf(crate::file::WorkspaceTab::Entry(id));
+                } else {
+                    // Workspace vanished between schedule and apply.
+                    // Fall back to a top-level tab so the user doesn't
+                    // lose the file.
+                    self.dock.push_to_focused_leaf(Tab::File(id));
+                }
+                if let Some(source) = source_kind {
+                    let mut g = self.state.write();
+                    if !g.open_tabs.iter().any(|t| t.source == source) {
+                        g.open_tabs.push(crate::state::OpenTabState {
+                            source,
+                            selection: restore_selection,
+                            scroll_offset: restore_scroll.unwrap_or(0.0),
+                            as_workspace: false,
+                        });
+                    }
+                }
+                id
             }
         }
     }
@@ -982,6 +1165,9 @@ impl eframe::App for HxyApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_plugin_events: &mut self.pending_plugin_events,
                 pending_close_tab: &mut self.pending_close_tab,
+                workspaces: &mut self.workspaces,
+                pending_close_workspace_entry: &mut self.pending_close_workspace_entry,
+                pending_collapse_workspace: &mut self.pending_collapse_workspace,
             };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock)
@@ -1009,6 +1195,23 @@ impl eframe::App for HxyApp {
                 title: removed.display_name,
             };
             self.state.write().open_tabs.retain(|t| t.source != target);
+        }
+
+        // Workspace entry close that hit a dirty file gets folded into
+        // the regular pending-close-tab modal slot. The modal handler
+        // already drives `close_file_tab_by_id`, which now also walks
+        // workspace inner docks.
+        if let Some(pending) = self.pending_close_workspace_entry.take()
+            && self.pending_close_tab.is_none()
+        {
+            self.pending_close_tab = Some(pending);
+        }
+
+        // Collapse-back: any workspace whose inner dock now contains
+        // only the Editor sub-tab gets unwrapped to a plain Tab::File.
+        let to_collapse = std::mem::take(&mut self.pending_collapse_workspace);
+        for workspace_id in to_collapse {
+            collapse_workspace_to_file(self, workspace_id);
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1709,14 +1912,15 @@ fn capture_window_on_drag_end(
 const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
 
 /// One pending "open this entry as a new tab" request, queued from a
-/// VFS panel during render. `File` carries the parent file id (for
-/// in-file mounts like a ZIP); `Mount` carries a `MountId` (plugin
-/// VFS tabs whose mount lives in `app.mounts`, not in any file).
-#[cfg(not(target_arch = "wasm32"))]
+/// VFS panel during render. `Workspace` carries a `WorkspaceId` (the
+/// file-rooted workspaces like zip / minidump); `PluginMount` carries
+/// a `MountId` (plugin VFS tabs whose mount lives in `app.mounts`,
+/// not in any file).
 #[derive(Clone, Debug)]
 pub enum PendingVfsOpen {
-    File { parent_id: FileId, entry_path: String },
-    Mount { mount_id: crate::file::MountId, entry_path: String },
+    Workspace { workspace_id: crate::file::WorkspaceId, entry_path: String },
+    #[cfg(not(target_arch = "wasm32"))]
+    PluginMount { mount_id: crate::file::MountId, entry_path: String },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1726,11 +1930,14 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
         .unwrap_or_default();
     for req in pending {
         match req {
-            PendingVfsOpen::File { parent_id, entry_path } => {
-                let Some(parent) = app.files.get(&parent_id) else { continue };
-                let parent_source = parent.source_kind.clone();
-                let Some(parent_source) = parent_source else { continue };
-                let Some(mount) = parent.mount.clone() else { continue };
+            PendingVfsOpen::Workspace { workspace_id, entry_path } => {
+                let Some(workspace) = app.workspaces.get(&workspace_id) else { continue };
+                let parent_id = workspace.editor_id;
+                let mount = workspace.mount.clone();
+                let parent_source = match app.files.get(&parent_id).and_then(|f| f.source_kind.clone()) {
+                    Some(s) => s,
+                    None => continue,
+                };
                 let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
                     Ok(b) => b,
                     Err(e) => {
@@ -1740,9 +1947,9 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 };
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
-                app.open(name, Some(source), bytes, None, None, false);
+                app.open_with_target(name, Some(source), bytes, None, None, OpenTarget::Workspace(workspace_id));
             }
-            PendingVfsOpen::Mount { mount_id, entry_path } => {
+            PendingVfsOpen::PluginMount { mount_id, entry_path } => {
                 let Some(entry) = app.mounts.get(&mount_id) else { continue };
                 let parent_source = TabSource::PluginMount {
                     plugin_name: entry.plugin_name.clone(),
@@ -2431,21 +2638,78 @@ fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::global_search
     }
 }
 
+/// "Browse VFS" entry point. Converts the active tab into a workspace
+/// view, mounting the file's detected handler if one isn't already
+/// mounted. Three resolutions:
+/// * Active is `Tab::File(id)` with a detected handler -> mount, build
+///   a `Workspace`, and swap the dock tab for `Tab::Workspace`. The
+///   user's persisted state is updated to record `as_workspace = true`
+///   so the next launch restores the same shape.
+/// * Active is already `Tab::Workspace(id)` -> ensure `WorkspaceTab::VfsTree`
+///   is present in the inner dock (re-add it if the user closed it).
+/// * Anything else (no detected handler, no active file) -> no-op.
 fn mount_active_file(app: &mut HxyApp) {
-    let Some(id) = active_file_id(app) else { return };
-    let Some(file) = app.files.get_mut(&id) else { return };
-    if file.mount.is_some() {
-        file.show_vfs_tree = true;
+    if let Some(workspace_id) = active_workspace_id(app) {
+        ensure_vfs_tree_visible(app, workspace_id);
         return;
     }
+    let Some(file_id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get(&file_id) else { return };
     let Some(handler) = file.detected_handler.clone() else { return };
-    match handler.mount(file.editor.source().clone()) {
-        Ok(mount) => {
-            file.mount = Some(Arc::new(mount));
-            file.show_vfs_tree = true;
+    let source = file.editor.source().clone();
+    let mount = match handler.mount(source) {
+        Ok(m) => Arc::new(m),
+        Err(e) => {
+            tracing::warn!(error = %e, handler = handler.name(), "mount vfs");
+            return;
         }
-        Err(e) => tracing::warn!(error = %e, handler = handler.name(), "mount vfs"),
+    };
+    let workspace_id = app.spawn_workspace(file_id, mount);
+
+    // Swap the existing Tab::File(file_id) for Tab::Workspace(workspace_id)
+    // in the same dock leaf, so the user's pane layout is preserved.
+    if let Some(path) = app.dock.find_tab(&Tab::File(file_id)) {
+        let _ = app.dock.remove_tab(path);
     }
+    app.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
+    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
+        let _ = app.dock.set_active_tab(path);
+        app.dock.set_focused_node_and_surface(path.node_path());
+    }
+
+    // Persist the workspace flag against the file's source so restart
+    // restores the same nested-dock shape.
+    if let Some(source) = app.files.get(&file_id).and_then(|f| f.source_kind.clone()) {
+        let mut g = app.state.write();
+        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
+            entry.as_workspace = true;
+        }
+    }
+}
+
+/// Returns the workspace id of the active workspace tab, if any.
+fn active_workspace_id(app: &mut HxyApp) -> Option<crate::file::WorkspaceId> {
+    let (_, tab) = app.dock.find_active_focused()?;
+    match tab {
+        Tab::Workspace(id) => Some(*id),
+        _ => None,
+    }
+}
+
+/// Re-add `WorkspaceTab::VfsTree` to the workspace's inner dock if the
+/// user previously closed it. No-op when the tree is already present.
+fn ensure_vfs_tree_visible(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId) {
+    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
+    let already_present =
+        workspace.dock.iter_all_tabs().any(|(_, t)| matches!(t, crate::file::WorkspaceTab::VfsTree));
+    if already_present {
+        return;
+    }
+    workspace.dock.main_surface_mut().split_left(
+        egui_dock::NodeIndex::root(),
+        0.3,
+        vec![crate::file::WorkspaceTab::VfsTree],
+    );
 }
 
 /// Render a `Tab::PluginMount`. The whole tab body is the VFS tree
@@ -2467,7 +2731,7 @@ fn render_plugin_mount_tab(
         ui.ctx().data_mut(|d| {
             let queue: &mut Vec<PendingVfsOpen> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
             for p in to_open {
-                queue.push(PendingVfsOpen::Mount { mount_id, entry_path: p });
+                queue.push(PendingVfsOpen::PluginMount { mount_id, entry_path: p });
             }
         });
     }
@@ -2511,25 +2775,6 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
         egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
     );
 
-    let mut open_entries: Vec<String> = Vec::new();
-    if file.mount.is_some() && file.show_vfs_tree {
-        egui::Panel::left(egui::Id::new(("hxy-vfs-panel", id.get())))
-            .resizable(true)
-            .default_size(220.0)
-            .min_size(140.0)
-            .show_inside(ui, |ui| {
-                render_tree_panel_header(ui, &mut file.show_vfs_tree);
-                ui.separator();
-                if let Some(mount) = file.mount.clone() {
-                    let events = crate::vfs_panel::show(ui, id.get(), &*mount.fs);
-                    for e in events {
-                        let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
-                        open_entries.push(path);
-                    }
-                }
-            });
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     render_template_panel(ui, id, file);
 
@@ -2541,15 +2786,6 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
     if let Some(kind) = copy_request {
         do_copy(ui.ctx(), file, kind);
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    for entry_path in open_entries {
-        ui.ctx().data_mut(|d| {
-            let queue: &mut Vec<PendingVfsOpen> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
-            queue.push(PendingVfsOpen::File { parent_id: id, entry_path });
-        });
-    }
-    #[cfg(target_arch = "wasm32")]
-    drop(open_entries);
 
     if new_base != settings_base {
         state.app.offset_base = new_base;
@@ -2919,18 +3155,6 @@ fn render_template_running(ui: &mut egui::Ui, run: &crate::file::TemplateRun) {
         let elapsed_ms = jiff::Timestamp::now().duration_since(run.started).as_millis().max(0);
         ui.add_space(4.0);
         ui.weak(format!("{} ms", elapsed_ms));
-    });
-}
-
-fn render_tree_panel_header(ui: &mut egui::Ui, show: &mut bool) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{} Tree", egui_phosphor::regular::TREE_STRUCTURE)).strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let close = egui::Button::new(egui_phosphor::regular::X).frame(false);
-            if ui.add(close).on_hover_text("Hide tree").clicked() {
-                *show = false;
-            }
-        });
     });
 }
 
@@ -3530,8 +3754,20 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
 /// gating on dirtiness -- this helper is the unconditional path
 /// the modal's "Don't Save" branch uses.
 fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
+    // Top-level Tab::File case: the simple path -- remove the dock
+    // tab and drop the file.
     if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
         let _ = app.dock.remove_tab(path);
+    }
+    // Workspace-entry case: scan every workspace's inner dock for
+    // a `WorkspaceTab::Entry(id)` and remove it. The workspace
+    // editor itself never closes through this path -- it goes
+    // through `close_workspace_by_id`.
+    for workspace in app.workspaces.values_mut() {
+        if let Some(path) = workspace.dock.find_tab(&crate::file::WorkspaceTab::Entry(id)) {
+            let _ = workspace.dock.remove_tab(path);
+            break;
+        }
     }
     if let Some(removed) = app.files.remove(&id)
         && let Some(source) = removed.source_kind
@@ -3591,6 +3827,72 @@ fn request_close_active_tab(app: &mut HxyApp) {
                 let _ = app.dock.remove_tab(path);
             }
             app.global_search.open = false;
+        }
+        Tab::Workspace(workspace_id) => {
+            close_workspace_by_id(app, workspace_id);
+        }
+    }
+}
+
+/// Collapse a workspace whose inner dock has been emptied of
+/// everything except the Editor sub-tab back to a plain `Tab::File`
+/// in the outer dock. The workspace entry is dropped from
+/// `app.workspaces` and the persisted `as_workspace` flag is cleared.
+fn collapse_workspace_to_file(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId) {
+    let Some(workspace) = app.workspaces.remove(&workspace_id) else { return };
+    let editor_id = workspace.editor_id;
+
+    // Replace the outer Tab::Workspace with Tab::File(editor_id) in
+    // the same leaf so the user's pane layout doesn't shift.
+    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
+        let _ = app.dock.remove_tab(path);
+    }
+    app.dock.push_to_focused_leaf(Tab::File(editor_id));
+    if let Some(path) = app.dock.find_tab(&Tab::File(editor_id)) {
+        let _ = app.dock.set_active_tab(path);
+    }
+
+    // Clear the persisted as_workspace flag so the next launch
+    // restores the file as a plain tab rather than spawning an
+    // empty workspace.
+    if let Some(source) = app.files.get(&editor_id).and_then(|f| f.source_kind.clone()) {
+        let mut g = app.state.write();
+        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
+            entry.as_workspace = false;
+        }
+    }
+}
+
+/// Close the entire `Tab::Workspace(workspace_id)` -- the editor
+/// itself plus any open VFS entries inside the inner dock. Each
+/// closing file is dirty-checked against `pending_close_tab` the
+/// same way single-file closes are; if any sub-file is dirty the
+/// close stalls until the modal returns.
+#[cfg(not(target_arch = "wasm32"))]
+fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId) {
+    let workspace = match app.workspaces.remove(&workspace_id) {
+        Some(w) => w,
+        None => return,
+    };
+    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
+        let _ = app.dock.remove_tab(path);
+    }
+
+    // Remove the editor file + any entry files. Also drop their
+    // persistence rows so the next launch doesn't try to restore them
+    // into a vanished workspace.
+    let mut to_drop: Vec<FileId> = vec![workspace.editor_id];
+    for (_, t) in workspace.dock.iter_all_tabs() {
+        if let crate::file::WorkspaceTab::Entry(file_id) = t {
+            to_drop.push(*file_id);
+        }
+    }
+    let mut state = app.state.write();
+    for file_id in &to_drop {
+        if let Some(removed) = app.files.remove(file_id)
+            && let Some(source) = removed.source_kind
+        {
+            state.open_tabs.retain(|t| t.source != source);
         }
     }
 }
@@ -4998,6 +5300,25 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
     app.reload_plugins();
 }
 
+/// Pick the FileId that should drive commands gated on the active
+/// file when the user is focused on a `Tab::Workspace`. Prefers the
+/// inner-dock active tab (Editor or Entry); falls back to the
+/// workspace's editor when the focused inner tab is the VfsTree (no
+/// file backs the tree itself).
+fn inner_active_file(workspace: &crate::file::Workspace) -> FileId {
+    if let Some((_rect, tab)) = workspace.dock.iter_all_tabs().find_map(|(path, tab)| {
+        let leaf = workspace.dock.leaf(path.node_path()).ok()?;
+        (leaf.active.0 == path.tab.0).then_some(((), tab))
+    }) {
+        match tab {
+            crate::file::WorkspaceTab::Entry(file_id) => return *file_id,
+            crate::file::WorkspaceTab::Editor => return workspace.editor_id,
+            crate::file::WorkspaceTab::VfsTree => {}
+        }
+    }
+    workspace.editor_id
+}
+
 /// Best guess at which file tab the user is "in" right now. Tries in
 /// order: the egui_dock-focused tab (exact), the most recently
 /// focused file (so clicking into the Inspector / Console doesn't
@@ -5005,11 +5326,25 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
 /// open -- that sole file. Returning `None` means there's genuinely
 /// no file to act on.
 fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
-    if let Some((_, tab)) = app.dock.find_active_focused()
-        && let Tab::File(id) = *tab
-    {
-        app.last_active_file = Some(id);
-        return Some(id);
+    if let Some((_, tab)) = app.dock.find_active_focused() {
+        match *tab {
+            Tab::File(id) => {
+                app.last_active_file = Some(id);
+                return Some(id);
+            }
+            Tab::Workspace(workspace_id) => {
+                // The active "file" for a workspace is whatever sub-
+                // tab is currently active in its inner dock: the
+                // editor, an opened entry, or (when the user has
+                // focused the tree) the editor as a fallback.
+                if let Some(workspace) = app.workspaces.get(&workspace_id) {
+                    let id = inner_active_file(workspace);
+                    app.last_active_file = Some(id);
+                    return Some(id);
+                }
+            }
+            _ => {}
+        }
     }
     if let Some(id) = app.last_active_file
         && app.files.contains_key(&id)
@@ -5153,7 +5488,7 @@ fn install_mount_tab(
                 source,
                 selection: None,
                 scroll_offset: 0.0,
-                show_vfs_tree: true,
+                as_workspace: false,
             });
         }
     }
@@ -5250,26 +5585,17 @@ fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
     let display = file.display_name.clone();
     let ctx = format!("Save {display}");
 
-    // Find the parent file (the mount-tab) so we can reach its writer.
-    let parent_id = match app
-        .files
-        .iter()
-        .find_map(|(fid, f)| (f.source_kind.as_ref() == Some(&parent_source)).then_some(*fid))
-    {
-        Some(p) => p,
+    // Resolve the parent's mount: file-rooted parents live in
+    // `app.workspaces`, plugin parents in `app.mounts`. Both paths
+    // are unified by `find_mount_for_source`.
+    let mount = match app.find_mount_for_source(&parent_source) {
+        Some(m) => m,
         None => {
             app.console_log(
                 ConsoleSeverity::Error,
                 &ctx,
                 "parent VFS tab is gone -- close + reopen this tab",
             );
-            return false;
-        }
-    };
-    let mount = match app.files.get(&parent_id).and_then(|f| f.mount.clone()) {
-        Some(m) => m,
-        None => {
-            app.console_log(ConsoleSeverity::Error, &ctx, "parent VFS lost its mount");
             return false;
         }
     };
@@ -5474,7 +5800,7 @@ fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool {
                 source: new_source,
                 selection: None,
                 scroll_offset: 0.0,
-                show_vfs_tree: false,
+                as_workspace: false,
             });
         }
     }
@@ -5554,6 +5880,18 @@ struct HxyTabViewer<'a> {
     /// X-clicks a dirty File tab. The app drains this after the
     /// dock pass and renders the save-prompt modal next frame.
     pending_close_tab: &'a mut Option<PendingCloseTab>,
+    /// File-mounted VFS workspaces. The viewer renders each
+    /// `Tab::Workspace` by spinning up an inner `DockArea` against
+    /// `workspace.dock`.
+    workspaces: &'a mut std::collections::BTreeMap<crate::file::WorkspaceId, crate::file::Workspace>,
+    /// Slot the inner workspace dock writes to when the user closes a
+    /// `WorkspaceTab::Entry` whose file is dirty. Same shape as
+    /// `pending_close_tab` (the modal handler treats them identically).
+    pending_close_workspace_entry: &'a mut Option<PendingCloseTab>,
+    /// `WorkspaceId`s the viewer drained to "no tabs left except the
+    /// editor." The post-dock pass collapses these back to plain
+    /// `Tab::File` entries in the outer dock.
+    pending_collapse_workspace: &'a mut Vec<crate::file::WorkspaceId>,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -5613,6 +5951,27 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::SearchResults => {
                 format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS).into()
             }
+            Tab::Workspace(workspace_id) => match self.workspaces.get(workspace_id) {
+                Some(w) => match self.files.get(&w.editor_id) {
+                    Some(f) => {
+                        // Same dirty / readonly indicators as Tab::File: the
+                        // workspace's outer label tracks the underlying
+                        // editor file, since that's what "save / close"
+                        // operates against.
+                        let mut prefix = String::new();
+                        if matches!(f.editor.edit_mode(), crate::file::EditMode::Readonly) {
+                            prefix.push_str(egui_phosphor::regular::LOCK);
+                            prefix.push(' ');
+                        }
+                        if f.editor.is_dirty() {
+                            prefix.push_str("\u{2022} ");
+                        }
+                        format!("{prefix}{}", f.display_name).into()
+                    }
+                    None => format!("workspace-{}", workspace_id.get()).into(),
+                },
+                None => format!("workspace-{}", workspace_id.get()).into(),
+            },
         }
     }
 
@@ -5669,12 +6028,23 @@ impl TabViewer for HxyTabViewer<'_> {
                 let events = crate::global_search::show(ui, self.global_search, &names);
                 self.pending_global_search_events.extend(events);
             }
+            Tab::Workspace(workspace_id) => {
+                render_workspace_tab(
+                    ui,
+                    *workspace_id,
+                    self.workspaces,
+                    self.files,
+                    self.state,
+                    self.pending_close_workspace_entry,
+                    self.pending_collapse_workspace,
+                );
+            }
         }
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
         match tab {
-            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins => true,
+            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Workspace(_) => true,
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => true,
             _ => false,
@@ -5684,9 +6054,10 @@ impl TabViewer for HxyTabViewer<'_> {
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
         // File tabs and the console/inspector manage their own
         // scrolling; outer dock scrollbar off for those. Plugin mount
-        // tabs render the VFS tree's own scroll area.
+        // tabs render the VFS tree's own scroll area. Workspace tabs
+        // host an inner DockArea that takes the full body.
         match tab {
-            Tab::File(_) | Tab::Console | Tab::Inspector => [false, false],
+            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Workspace(_) => [false, false],
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => [false, false],
             _ => [true, true],
@@ -5722,18 +6093,238 @@ impl TabViewer for HxyTabViewer<'_> {
             // matching `state.open_tabs` record.
             *self.pending_close_mount = Some(*mount_id);
         }
+        if let Tab::Workspace(workspace_id) = tab {
+            // Workspace close = editor + every entry sub-tab. Bail to
+            // the modal if any of them is dirty; the modal handler is
+            // responsible for tearing down the workspace once the
+            // user confirms.
+            let Some(workspace) = self.workspaces.get(workspace_id) else {
+                return OnCloseResponse::Close;
+            };
+            let mut dirty: Option<(FileId, String)> = None;
+            if let Some(editor) = self.files.get(&workspace.editor_id)
+                && editor.editor.is_dirty()
+            {
+                dirty = Some((workspace.editor_id, editor.display_name.clone()));
+            } else {
+                for (_, t) in workspace.dock.iter_all_tabs() {
+                    if let crate::file::WorkspaceTab::Entry(file_id) = t
+                        && let Some(f) = self.files.get(file_id)
+                        && f.editor.is_dirty()
+                    {
+                        dirty = Some((*file_id, f.display_name.clone()));
+                        break;
+                    }
+                }
+            }
+            if let Some((file_id, display_name)) = dirty {
+                *self.pending_close_tab = Some(PendingCloseTab { file_id, display_name });
+                return OnCloseResponse::Ignore;
+            }
+            // Drain workspace contents from `app.files` + persistence;
+            // the modal handler does the same on confirmed close.
+            let workspace = self.workspaces.remove(workspace_id).expect("just looked up");
+            let mut to_drop: Vec<FileId> = vec![workspace.editor_id];
+            for (_, t) in workspace.dock.iter_all_tabs() {
+                if let crate::file::WorkspaceTab::Entry(file_id) = t {
+                    to_drop.push(*file_id);
+                }
+            }
+            for file_id in &to_drop {
+                if let Some(removed) = self.files.remove(file_id)
+                    && let Some(source) = removed.source_kind
+                {
+                    self.state.open_tabs.retain(|t| t.source != source);
+                }
+            }
+        }
+        OnCloseResponse::Close
+    }
+}
+
+/// Render a `Tab::Workspace` body: spin up an inner DockArea against
+/// the workspace's `dock` and dispatch to `WorkspaceTabViewer` for
+/// each sub-tab (Editor, VfsTree, Entry).
+fn render_workspace_tab(
+    ui: &mut egui::Ui,
+    workspace_id: crate::file::WorkspaceId,
+    workspaces: &mut std::collections::BTreeMap<crate::file::WorkspaceId, crate::file::Workspace>,
+    files: &mut HashMap<FileId, OpenFile>,
+    state: &mut PersistedState,
+    pending_close_workspace_entry: &mut Option<PendingCloseTab>,
+    pending_collapse_workspace: &mut Vec<crate::file::WorkspaceId>,
+) {
+    let Some(workspace) = workspaces.get_mut(&workspace_id) else {
+        ui.colored_label(egui::Color32::RED, format!("missing workspace {workspace_id:?}"));
+        return;
+    };
+    let editor_id = workspace.editor_id;
+    let mount = workspace.mount.clone();
+    let inner_dock = &mut workspace.dock;
+
+    let mut viewer = WorkspaceTabViewer {
+        files,
+        state,
+        editor_id,
+        workspace_id,
+        mount: &mount,
+        pending_close_workspace_entry,
+    };
+    let style = egui_dock::Style::from_egui(ui.style());
+    egui_dock::DockArea::new(inner_dock)
+        .id(egui::Id::new(("hxy-workspace-dock", workspace_id.get())))
+        .style(style)
+        .show_leaf_collapse_buttons(false)
+        .show_inside(ui, &mut viewer);
+
+    // Collapse-back trigger: if the workspace is left with only its
+    // Editor sub-tab (user closed the tree + every entry), schedule a
+    // post-dock collapse to a plain `Tab::File`.
+    let only_editor = workspace.dock.iter_all_tabs().count() == 1
+        && workspace
+            .dock
+            .iter_all_tabs()
+            .all(|(_, t)| matches!(t, crate::file::WorkspaceTab::Editor));
+    if only_editor && !pending_collapse_workspace.contains(&workspace_id) {
+        pending_collapse_workspace.push(workspace_id);
+    }
+}
+
+/// Inner-dock viewer for `Tab::Workspace`. Renders the editor (the
+/// workspace's underlying file), the VFS tree, and any opened VFS
+/// entries. Dirty closes funnel through `pending_close_workspace_entry`
+/// the same way top-level dirty closes funnel through
+/// `pending_close_tab`.
+struct WorkspaceTabViewer<'a> {
+    files: &'a mut HashMap<FileId, OpenFile>,
+    state: &'a mut PersistedState,
+    editor_id: FileId,
+    workspace_id: crate::file::WorkspaceId,
+    mount: &'a Arc<MountedVfs>,
+    pending_close_workspace_entry: &'a mut Option<PendingCloseTab>,
+}
+
+impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
+    type Tab = crate::file::WorkspaceTab;
+
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        // Distinct ids per workspace so two open workspaces don't
+        // share `WorkspaceTab::Editor` when egui_dock interns the tab.
+        match tab {
+            crate::file::WorkspaceTab::Editor => egui::Id::new(("ws-editor", self.workspace_id.get())),
+            crate::file::WorkspaceTab::VfsTree => egui::Id::new(("ws-tree", self.workspace_id.get())),
+            crate::file::WorkspaceTab::Entry(file_id) => {
+                egui::Id::new(("ws-entry", self.workspace_id.get(), file_id.get()))
+            }
+        }
+    }
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        match tab {
+            crate::file::WorkspaceTab::Editor => match self.files.get(&self.editor_id) {
+                Some(f) => {
+                    let mut prefix = String::new();
+                    if matches!(f.editor.edit_mode(), crate::file::EditMode::Readonly) {
+                        prefix.push_str(egui_phosphor::regular::LOCK);
+                        prefix.push(' ');
+                    }
+                    if f.editor.is_dirty() {
+                        prefix.push_str("\u{2022} ");
+                    }
+                    format!("{prefix}{}", f.display_name).into()
+                }
+                None => format!("file-{}", self.editor_id.get()).into(),
+            },
+            crate::file::WorkspaceTab::VfsTree => {
+                format!("{} VFS", egui_phosphor::regular::TREE_STRUCTURE).into()
+            }
+            crate::file::WorkspaceTab::Entry(file_id) => match self.files.get(file_id) {
+                Some(f) => {
+                    let mut prefix = String::new();
+                    if f.editor.is_dirty() {
+                        prefix.push_str("\u{2022} ");
+                    }
+                    format!("{prefix}{}", f.display_name).into()
+                }
+                None => format!("entry-{}", file_id.get()).into(),
+            },
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        match tab {
+            crate::file::WorkspaceTab::Editor => match self.files.get_mut(&self.editor_id) {
+                Some(file) => render_file_tab(ui, self.editor_id, file, self.state),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing editor {:?}", self.editor_id));
+                }
+            },
+            crate::file::WorkspaceTab::VfsTree => {
+                let events = crate::vfs_panel::show(ui, self.workspace_id.get(), &*self.mount.fs);
+                let mut to_open: Vec<String> = Vec::new();
+                for e in events {
+                    let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
+                    to_open.push(path);
+                }
+                if !to_open.is_empty() {
+                    let workspace_id = self.workspace_id;
+                    ui.ctx().data_mut(|d| {
+                        let queue: &mut Vec<PendingVfsOpen> =
+                            d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+                        for p in to_open {
+                            queue.push(PendingVfsOpen::Workspace { workspace_id, entry_path: p });
+                        }
+                    });
+                }
+            }
+            crate::file::WorkspaceTab::Entry(file_id) => match self.files.get_mut(file_id) {
+                Some(file) => render_file_tab(ui, *file_id, file, self.state),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing entry {file_id:?}"));
+                }
+            },
+        }
+    }
+
+    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
+        // Editor is non-closeable from inside the workspace -- the
+        // user closes the whole workspace via the outer Tab::Workspace
+        // tab. Tree / Entry are individually closeable.
+        !matches!(tab, crate::file::WorkspaceTab::Editor)
+    }
+
+    fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
+        [false, false]
+    }
+
+    fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
+        if let crate::file::WorkspaceTab::Entry(file_id) = tab {
+            if let Some(f) = self.files.get(file_id)
+                && f.editor.is_dirty()
+            {
+                *self.pending_close_workspace_entry =
+                    Some(PendingCloseTab { file_id: *file_id, display_name: f.display_name.clone() });
+                return OnCloseResponse::Ignore;
+            }
+            if let Some(removed) = self.files.remove(file_id)
+                && let Some(source) = removed.source_kind
+            {
+                self.state.open_tabs.retain(|t| t.source != source);
+            }
+        }
         OnCloseResponse::Close
     }
 }
 
 /// Mirror the tab's in-memory selection + scroll into
 /// [`PersistedState::open_tabs`] so the save-on-dirty path picks it up.
+/// `as_workspace` is set elsewhere (when a workspace is created or
+/// torn down) and not touched here.
 fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
     let Some(source) = &file.source_kind else { return };
     if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
         entry.selection = file.editor.selection();
         entry.scroll_offset = file.editor.scroll_offset();
-        entry.show_vfs_tree = file.show_vfs_tree;
     }
 }
 

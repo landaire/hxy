@@ -63,6 +63,66 @@ pub struct MountedPlugin {
     pub mount: Arc<MountedVfs>,
 }
 
+/// Identifier for a `Workspace` -- the nested-dock representation of a
+/// file with a live VFS handler. Each workspace owns one parent
+/// `OpenFile` (the underlying file) plus a `MountedVfs` plus an inner
+/// `DockState<WorkspaceTab>` whose tabs can include the editor, the
+/// VFS tree, and any number of opened entries. Available on every
+/// target -- the built-in ZIP handler runs in the browser too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WorkspaceId(u64);
+
+impl WorkspaceId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Sub-tabs rendered inside a `Tab::Workspace`'s nested dock area.
+/// `Editor` and `VfsTree` are workspace-scoped singletons; multiple
+/// `Entry` tabs can coexist (one per opened VFS entry).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum WorkspaceTab {
+    /// The workspace's underlying file (a regular hex view).
+    Editor,
+    /// The mount's VFS tree. The user can move it anywhere within
+    /// the workspace's dock or close it.
+    VfsTree,
+    /// A file entry opened from the VFS tree. Carries the FileId of
+    /// the entry's `OpenFile`, which the host stores in `app.files`
+    /// the same way it does for top-level file tabs.
+    Entry(FileId),
+}
+
+/// A file-rooted VFS workspace. Owns the file's identity, the mount,
+/// and the inner dock that arranges the editor + tree + opened entries.
+pub struct Workspace {
+    pub id: WorkspaceId,
+    /// FileId of the workspace's underlying file. The `OpenFile` lives
+    /// in `app.files`, same as for any top-level file tab.
+    pub editor_id: FileId,
+    pub mount: Arc<MountedVfs>,
+    pub dock: egui_dock::DockState<WorkspaceTab>,
+}
+
+impl Workspace {
+    /// Default layout: editor on the right, VFS tree as a left split
+    /// at ~30% width. Matches what the previous side-panel layout
+    /// looked like; the user can re-dock as they please.
+    pub fn new(id: WorkspaceId, editor_id: FileId, mount: Arc<MountedVfs>) -> Self {
+        let mut dock = egui_dock::DockState::new(vec![WorkspaceTab::Editor]);
+        dock.main_surface_mut().split_left(
+            egui_dock::NodeIndex::root(),
+            0.3,
+            vec![WorkspaceTab::VfsTree],
+        );
+        Self { id, editor_id, mount, dock }
+    }
+}
+
 pub struct OpenFile {
     pub id: FileId,
     pub display_name: String,
@@ -78,17 +138,11 @@ pub struct OpenFile {
     pub hovered: Option<ByteOffset>,
     /// VFS handler detected for this file's byte source, if any. Cached
     /// from the first-frame detection so the toolbar command can check
-    /// availability without re-scanning on each frame.
+    /// availability without re-scanning on each frame. When the user
+    /// invokes "Browse VFS" the host wraps this file in a `Workspace`
+    /// (see `HxyApp::workspaces`) using `detected_handler` to construct
+    /// the mount; `OpenFile` itself does not own a mount.
     pub detected_handler: Option<Arc<dyn VfsHandler>>,
-    /// Mounted VFS for this file, if the user has opened it via the
-    /// "Browse VFS" command. Shared so descendant entry tabs can read
-    /// their bytes against the same mount. Plugin mounts live in
-    /// `HxyApp::mounts` instead and aren't represented here.
-    pub mount: Option<Arc<MountedVfs>>,
-    /// Whether the VFS tree side panel should render for this tab. Only
-    /// meaningful when `mount` is `Some`. Starts true on mount; the
-    /// user can hide the panel via its close button.
-    pub show_vfs_tree: bool,
     /// Template run state for this tab, if the user has applied a
     /// template. `None` until the first successful run.
     #[cfg(not(target_arch = "wasm32"))]
@@ -253,8 +307,6 @@ impl OpenFile {
             editor,
             hovered: None,
             detected_handler: None,
-            mount: None,
-            show_vfs_tree: false,
             #[cfg(not(target_arch = "wasm32"))]
             template: None,
             #[cfg(not(target_arch = "wasm32"))]

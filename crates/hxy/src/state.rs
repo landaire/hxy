@@ -25,10 +25,13 @@ pub struct OpenTabState {
     pub selection: Option<Selection>,
     #[serde(default)]
     pub scroll_offset: f32,
-    /// Whether the VFS tree side panel was open last time this tab was
-    /// active. Only meaningful for tabs that mount a VFS.
+    /// Whether this tab was wrapped in a `Tab::Workspace` (file plus
+    /// mounted VFS, nested dock area) instead of a plain `Tab::File`.
+    /// Only meaningful for filesystem-rooted tabs whose detected
+    /// handler can mount the source. `VfsEntry` children always
+    /// restore inside their parent's workspace and ignore this flag.
     #[serde(default)]
-    pub show_vfs_tree: bool,
+    pub as_workspace: bool,
 }
 
 #[derive(Clone, Default, PartialEq)]

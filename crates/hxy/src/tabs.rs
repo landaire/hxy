@@ -6,11 +6,18 @@ use serde::Serialize;
 use crate::file::FileId;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::file::MountId;
+use crate::file::WorkspaceId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tab {
     Welcome,
+    /// A plain file with no VFS handler -- the dock tab is the hex
+    /// view itself, no nested layout. Files that grow VFS structure
+    /// (zip, minidump, etc.) are wrapped in `Workspace` instead.
     File(FileId),
+    /// A file plus its mounted VFS, rendered as a nested dock area
+    /// inside this tab. Indexes into `HxyApp::workspaces`.
+    Workspace(WorkspaceId),
     Settings,
     /// Append-only log of plugin / template output. Opened from the
     /// View menu; closeable and persists across sessions via the
@@ -53,6 +60,18 @@ impl Serialize for MountId {
 impl<'de> Deserialize<'de> for MountId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         u64::deserialize(d).map(MountId::new)
+    }
+}
+
+impl Serialize for WorkspaceId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(self.get())
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkspaceId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        u64::deserialize(d).map(WorkspaceId::new)
     }
 }
 
