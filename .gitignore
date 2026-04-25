@@ -2,6 +2,7 @@ target/
 dist/
 .cargo/config.toml
 .claude/
+.DS_Store
 *.log
 *.json.gz
 
