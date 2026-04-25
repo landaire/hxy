@@ -89,8 +89,8 @@ impl PluginHandler {
 
     /// Permissions actually granted (manifest request intersected
     /// with stored consent).
-    pub fn granted(&self) -> Permissions {
-        self.granted
+    pub fn granted(&self) -> &Permissions {
+        &self.granted
     }
 
     /// Build the `HostState` that backs a fresh `Store` for this
@@ -105,8 +105,8 @@ impl PluginHandler {
         {
             state = state.with_persist(self.key.name.clone(), true, store);
         }
-        if self.granted.network {
-            state = state.with_network(true);
+        if !self.granted.network.is_empty() {
+            state = state.with_network_allowlist(self.granted.network.clone());
         }
         state
     }

@@ -77,7 +77,7 @@ commands = true
     // and the commands list would come back empty.
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
-    grants.set(key, PermissionGrants { persist: true, commands: true, network: false });
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
@@ -192,7 +192,12 @@ fn network_grant_lets_plugin_open_tcp_connection() {
     let dir = tempfile::tempdir().expect("tempdir");
     let wasm_path = dir.path().join("test-statecmd.wasm");
     std::fs::write(&wasm_path, &bytes).expect("write wasm");
-    let manifest = r#"
+    // Manifest declares the wildcard pattern + a tighter one
+    // limited to the listener's localhost. Both are listed so
+    // the test can show that the user only needs to grant the
+    // narrower pattern for the connect to succeed.
+    let manifest = format!(
+        r#"
 [plugin]
 name = "test-statecmd"
 version = "0.1.0"
@@ -200,13 +205,26 @@ version = "0.1.0"
 [permissions]
 persist = true
 commands = true
-network = true
-"#;
+network = ["127.0.0.1:{port}", "*:443"]
+"#
+    );
     std::fs::write(dir.path().join("test-statecmd.hxy.toml"), manifest).expect("write manifest");
 
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
-    grants.set(key, PermissionGrants { persist: true, commands: true, network: true });
+    // User grants only the specific localhost pattern -- not
+    // the broader `*:443`. The host's intersect drops anything
+    // the user didn't approve, so connecting to a port other
+    // than `port` will be denied even though the manifest asked
+    // for `*:443`.
+    grants.set(
+        key,
+        PermissionGrants {
+            persist: true,
+            commands: true,
+            network: vec![format!("127.0.0.1:{port}")],
+        },
+    );
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
@@ -235,6 +253,64 @@ network = true
 }
 
 #[test]
+fn network_pattern_outside_allowlist_is_denied() {
+    let path = component_path();
+    if !path.exists() {
+        eprintln!("skipping: {} not built", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read component");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("test-statecmd.wasm"), &bytes).expect("write wasm");
+    // Manifest only allows :443; user grants the same. The
+    // plugin then tries to connect to :9999 which doesn't match
+    // any granted pattern, so the host returns a denial that
+    // the plugin saves as "ERR: ...".
+    let manifest = r#"
+[plugin]
+name = "test-statecmd"
+version = "0.1.0"
+
+[permissions]
+persist = true
+commands = true
+network = ["*:443"]
+"#;
+    std::fs::write(dir.path().join("test-statecmd.hxy.toml"), manifest).expect("write manifest");
+
+    let mut grants = PluginGrants::default();
+    let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
+    grants.set(
+        key,
+        PermissionGrants {
+            persist: true,
+            commands: true,
+            network: vec!["*:443".to_string()],
+        },
+    );
+
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
+        .expect("load plugins");
+    let plugin = handlers
+        .into_iter()
+        .find(|p| p.name() == "test-statecmd")
+        .expect("test-statecmd handler present");
+
+    let _ = plugin.invoke_command("network").expect("invoke");
+    let outcome = plugin.respond_to_prompt("network", "127.0.0.1:9999").expect("respond");
+    assert!(matches!(outcome, InvokeOutcome::Done));
+
+    let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
+    let saved_str = String::from_utf8_lossy(&saved);
+    assert!(
+        saved_str.starts_with("ERR: network permission denied"),
+        "expected denial for out-of-allowlist port, got {saved_str:?}"
+    );
+}
+
+#[test]
 fn network_denied_returns_error_string() {
     let path = component_path();
     if !path.exists() {
@@ -257,14 +333,16 @@ version = "0.1.0"
 [permissions]
 persist = true
 commands = true
-network = true
+network = ["*:*"]
 "#;
     std::fs::write(dir.path().join("test-statecmd.hxy.toml"), manifest).expect("write manifest");
 
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
-    // Explicitly grant persist + commands but NOT network.
-    grants.set(key, PermissionGrants { persist: true, commands: true, network: false });
+    // Explicitly grant persist + commands but NOT network. The
+    // empty network grant means no patterns are approved even
+    // though the manifest asked for the wildcard.
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))

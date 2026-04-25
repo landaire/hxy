@@ -95,7 +95,7 @@ fn render_consent_card(
     let Some(manifest) = plugin.manifest() else { return };
     let key = plugin.key().clone();
     let granted = plugin.granted();
-    let requested = manifest.permissions;
+    let requested = &manifest.permissions;
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -113,7 +113,7 @@ fn render_consent_card(
         let mut next = PermissionGrants {
             persist: granted.persist,
             commands: granted.commands,
-            network: granted.network,
+            network: granted.network.clone(),
         };
         let mut changed = false;
         if requested.persist
@@ -128,12 +128,22 @@ fn render_consent_card(
         {
             changed = true;
         }
-        if requested.network
-            && ui
-                .checkbox(&mut next.network, "Network (open outbound TCP connections)")
-                .changed()
-        {
-            changed = true;
+        if !requested.network.is_empty() {
+            ui.label("Network: outbound TCP allowed for these patterns:");
+            // One checkbox per requested pattern. The grant Vec
+            // is a subset of the requested list, so toggling
+            // adds / removes the pattern from `next.network`.
+            for pattern in &requested.network {
+                let mut checked = next.network.iter().any(|p| p == pattern);
+                if ui.checkbox(&mut checked, pattern).changed() {
+                    if checked {
+                        next.network.push(pattern.clone());
+                    } else {
+                        next.network.retain(|p| p != pattern);
+                    }
+                    changed = true;
+                }
+            }
         }
         if changed {
             events.push(PluginsEvent::SetGrant { key: key.clone(), grants: next });

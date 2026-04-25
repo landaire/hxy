@@ -68,7 +68,7 @@ pub struct PluginMeta {
 /// single-world wiring every interface is always linked; gating
 /// happens at the host's interface impl, which returns a denial
 /// (or empty list) when the corresponding flag is `false`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Permissions {
     /// Allow the plugin to load and save an opaque per-plugin blob
@@ -81,13 +81,19 @@ pub struct Permissions {
     /// effectively passive (only acts when the user navigates to
     /// a path it claims via the handler interface).
     pub commands: bool,
-    /// Allow the plugin to open outbound TCP connections via the
-    /// `tcp` interface. Off means `tcp.connect` always returns a
-    /// `forbidden` error string. Reads / writes against an already-
-    /// established connection (granted before, then revoked) are
-    /// not retroactively blocked, but the next instantiation will
-    /// not be able to reconnect.
-    pub network: bool,
+    /// Outbound-TCP allowlist: each entry is a `host:port` pattern
+    /// the plugin wants to connect to. `*` matches anything in
+    /// either field, e.g. `"*:443"` (any host, port 443),
+    /// `"github.com:*"` (any port on github.com),
+    /// `"192.168.1.50:730"` (one specific endpoint).
+    ///
+    /// Empty list = no network access requested. Matching is on the
+    /// *literal host string* the plugin passes to `tcp.connect` --
+    /// the host does not resolve and re-check, so a plugin that
+    /// passes `"localhost"` will not match a `"127.0.0.1:*"`
+    /// pattern. Plugin authors should declare the names they will
+    /// actually use.
+    pub network: Vec<String>,
 }
 
 impl PluginManifest {
@@ -132,6 +138,7 @@ description = "Browse modules on a remote Xbox 360 over xbdm."
 [permissions]
 persist = true
 commands = true
+network = ["xbox.local:730", "*:443"]
 "#;
         let m: PluginManifest = toml::from_str(toml_src).expect("parse");
         assert_eq!(m.plugin.name, "xeedee");
@@ -139,6 +146,10 @@ commands = true
         assert_eq!(m.plugin.authors, vec!["lander".to_string()]);
         assert!(m.permissions.persist);
         assert!(m.permissions.commands);
+        assert_eq!(
+            m.permissions.network,
+            vec!["xbox.local:730".to_string(), "*:443".to_string()]
+        );
     }
 
     #[test]

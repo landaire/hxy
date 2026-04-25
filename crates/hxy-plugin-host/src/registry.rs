@@ -122,14 +122,14 @@ fn load_single(
     // stem for the legacy / no-manifest case keeps a stable handle
     // for plugins that haven't shipped a sidecar yet.
     let (name, version, requested) = match &manifest {
-        Some(m) => (m.plugin.name.clone(), m.plugin.version.clone(), m.permissions),
+        Some(m) => (m.plugin.name.clone(), m.plugin.version.clone(), m.permissions.clone()),
         None => {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_owned();
             (stem, "0.0.0".to_owned(), Permissions::default())
         }
     };
     let key = PluginKey::from_bytes(name, version, &bytes);
-    let granted = grants.get(&key).intersect(requested);
+    let granted = grants.get(&key).intersect(&requested);
 
     let component = Component::new(engine, &bytes)
         .map_err(|source| PluginLoadError::Compile { path: path.to_path_buf(), source })?;

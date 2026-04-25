@@ -65,13 +65,20 @@ impl PluginKey {
 }
 
 /// Per-permission user decisions. Mirror of [`Permissions`]; absent
-/// entries default to `false` (deny).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// entries default to denied.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PermissionGrants {
     pub persist: bool,
     pub commands: bool,
-    pub network: bool,
+    /// Subset of [`Permissions::network`] the user has approved.
+    /// Each entry must appear verbatim in the manifest's
+    /// requested list -- the consent UI surfaces the requested
+    /// patterns as checkboxes; the user can toggle each but
+    /// cannot type free-form patterns the plugin author didn't
+    /// declare. Patterns not present here are denied at
+    /// `tcp.connect` time.
+    pub network: Vec<String>,
 }
 
 impl PermissionGrants {
@@ -79,12 +86,15 @@ impl PermissionGrants {
     /// Used at linker-wiring time: the host walks the manifest's
     /// declared permissions through this filter so a plugin that
     /// asked for `persist` but was denied gets the same treatment
-    /// as one that never asked.
-    pub fn intersect(self, requested: Permissions) -> Permissions {
+    /// as one that never asked. For `network`, the result is the
+    /// patterns that appear in *both* the requested list and the
+    /// granted list -- a granted pattern that is no longer in the
+    /// manifest (plugin upgrade dropped it) silently disappears.
+    pub fn intersect(&self, requested: &Permissions) -> Permissions {
         Permissions {
             persist: self.persist && requested.persist,
             commands: self.commands && requested.commands,
-            network: self.network && requested.network,
+            network: requested.network.iter().filter(|p| self.network.iter().any(|g| g == *p)).cloned().collect(),
         }
     }
 }
@@ -111,8 +121,13 @@ impl PluginGrants {
     /// Look up the recorded decisions for `key`. Returns
     /// [`PermissionGrants::default`] (all false) when no record
     /// exists yet -- the caller should treat that as "needs consent."
+    /// Cloned to keep the borrow chain short for the typical
+    /// startup loop, which iterates plugins and intersects each
+    /// against its manifest; the per-plugin allowlist Vec is
+    /// short enough that cloning is cheaper than rearranging
+    /// lifetimes.
     pub fn get(&self, key: &PluginKey) -> PermissionGrants {
-        self.plugins.get(&key.map_key()).map(|e| e.grants).unwrap_or_default()
+        self.plugins.get(&key.map_key()).map(|e| e.grants.clone()).unwrap_or_default()
     }
 
     /// Whether we have *any* recorded decision for `key`. Distinct
@@ -136,8 +151,8 @@ impl PluginGrants {
 
     /// Iterate every (key, grants) pair currently recorded. Used
     /// by the consent UI to render existing decisions.
-    pub fn iter(&self) -> impl Iterator<Item = (&PluginKey, PermissionGrants)> {
-        self.plugins.values().map(|e| (&e.key, e.grants))
+    pub fn iter(&self) -> impl Iterator<Item = (&PluginKey, &PermissionGrants)> {
+        self.plugins.values().map(|e| (&e.key, &e.grants))
     }
 }
 
@@ -155,39 +170,60 @@ mod tests {
 
     #[test]
     fn intersect_drops_denied_permissions() {
-        let granted = PermissionGrants { persist: true, commands: false, network: false };
-        let requested = Permissions { persist: true, commands: true, network: false };
-        let actual = granted.intersect(requested);
+        let granted = PermissionGrants { persist: true, commands: false, network: vec![] };
+        let requested = Permissions { persist: true, commands: true, network: vec![] };
+        let actual = granted.intersect(&requested);
         assert!(actual.persist);
         assert!(!actual.commands);
     }
 
     #[test]
     fn intersect_drops_unrequested_permissions() {
-        let granted = PermissionGrants { persist: true, commands: true, network: false };
-        let requested = Permissions { persist: false, commands: true, network: false };
-        let actual = granted.intersect(requested);
+        let granted = PermissionGrants { persist: true, commands: true, network: vec![] };
+        let requested = Permissions { persist: false, commands: true, network: vec![] };
+        let actual = granted.intersect(&requested);
         assert!(!actual.persist);
         assert!(actual.commands);
+    }
+
+    #[test]
+    fn intersect_keeps_only_overlapping_network_patterns() {
+        let granted = PermissionGrants {
+            persist: false,
+            commands: false,
+            // User left two of the three originally-requested patterns
+            // checked. The third (`evil.example.com:*`) shouldn't
+            // leak through, and a granted pattern that was dropped
+            // from the manifest in a plugin upgrade
+            // (`old-removed:80`) shouldn't either.
+            network: vec!["192.168.1.50:730".into(), "*:443".into(), "old-removed:80".into()],
+        };
+        let requested = Permissions {
+            persist: false,
+            commands: false,
+            network: vec!["192.168.1.50:730".into(), "*:443".into(), "evil.example.com:*".into()],
+        };
+        let actual = granted.intersect(&requested);
+        assert_eq!(actual.network, vec!["192.168.1.50:730".to_string(), "*:443".to_string()]);
     }
 
     #[test]
     fn json_roundtrip_preserves_records() {
         let mut g = PluginGrants::default();
         let key = PluginKey::from_bytes("xeedee", "0.1.0", b"\0asm\x01\x00\x00\x00");
-        g.set(key.clone(), PermissionGrants { persist: true, commands: false, network: false });
+        g.set(key.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
 
         let json = serde_json::to_string(&g).expect("serialize");
         let loaded: PluginGrants = serde_json::from_str(&json).expect("deserialize");
         assert!(loaded.has_record(&key));
-        assert_eq!(loaded.get(&key), PermissionGrants { persist: true, commands: false, network: false });
+        assert_eq!(loaded.get(&key), PermissionGrants { persist: true, commands: false, network: vec![] });
     }
 
     #[test]
     fn forget_removes_record() {
         let mut g = PluginGrants::default();
         let key = PluginKey::from_bytes("xeedee", "0.1.0", b"hello");
-        g.set(key.clone(), PermissionGrants { persist: true, commands: true, network: false });
+        g.set(key.clone(), PermissionGrants { persist: true, commands: true, network: vec![] });
         assert!(g.has_record(&key));
         g.forget(&key);
         assert!(!g.has_record(&key));
@@ -199,7 +235,7 @@ mod tests {
         let k2 = PluginKey::from_bytes("p", "1.0.0", b"second");
         assert_ne!(k1, k2);
         let mut g = PluginGrants::default();
-        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: false });
+        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
         assert!(g.has_record(&k1));
         assert!(!g.has_record(&k2));
     }

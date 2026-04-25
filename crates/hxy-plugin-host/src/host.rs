@@ -40,11 +40,14 @@ pub struct HostState {
     /// `persist_granted = false` -- the host may decide not to wire
     /// up a store at all (e.g. in tests).
     pub state_store: Option<Arc<dyn StateStore>>,
-    /// Whether the user granted this plugin the `network` permission.
-    /// Drives the gate for every `tcp.connect` call; once a
-    /// connection exists it stays usable until dropped (no per-call
-    /// re-check on `read` / `write-all`).
-    pub network_granted: bool,
+    /// Granted outbound-TCP allowlist patterns. Each entry is a
+    /// `host:port` string with optional `*` wildcards on either
+    /// side; `tcp.connect(host, port)` succeeds only when at
+    /// least one pattern matches the literal host string the
+    /// plugin passed (no DNS re-check). Empty list = network
+    /// fully denied. Once a connection is established subsequent
+    /// reads / writes don't re-check.
+    pub network_allowlist: Vec<String>,
     /// Owns every live TCP connection the plugin opens during the
     /// lifetime of this store. wasmtime hands the plugin opaque
     /// `Resource` handles backed by entries in this table; dropping
@@ -65,7 +68,7 @@ impl HostState {
             plugin_name: String::new(),
             persist_granted: false,
             state_store: None,
-            network_granted: false,
+            network_allowlist: Vec::new(),
             resources: ResourceTable::new(),
         }
     }
@@ -86,14 +89,36 @@ impl HostState {
         self
     }
 
-    /// Toggle the network grant. Granted = `tcp.connect` resolves
-    /// addresses normally and returns a connection; denied =
-    /// `tcp.connect` returns a `forbidden` error string with the
-    /// requested host:port for diagnostics.
-    pub fn with_network(mut self, granted: bool) -> Self {
-        self.network_granted = granted;
+    /// Install the granted outbound-TCP allowlist. Each pattern
+    /// is `host:port` with `*` wildcards permitted in either
+    /// half; an empty list leaves the connection denied for all
+    /// addresses.
+    pub fn with_network_allowlist(mut self, patterns: Vec<String>) -> Self {
+        self.network_allowlist = patterns;
         self
     }
+}
+
+/// Whether `host:port` is allowed by *any* pattern in `patterns`.
+/// Pattern syntax: `<host_pattern>:<port_pattern>` where each
+/// half is either a literal or `*`. Host comparison is ASCII case-
+/// insensitive; port is matched after parsing the pattern half as
+/// a `u16`. Malformed patterns silently never match -- callers
+/// should validate at consent time, not here.
+pub(crate) fn allowlist_matches(patterns: &[String], host: &str, port: u16) -> bool {
+    patterns.iter().any(|p| pattern_matches(p, host, port))
+}
+
+fn pattern_matches(pattern: &str, host: &str, port: u16) -> bool {
+    let Some((p_host, p_port)) = pattern.rsplit_once(':') else {
+        return false;
+    };
+    let host_ok = p_host == "*" || p_host.eq_ignore_ascii_case(host);
+    let port_ok = match p_port {
+        "*" => true,
+        s => s.parse::<u16>().is_ok_and(|p| p == port),
+    };
+    host_ok && port_ok
 }
 
 /// Live TCP connection backing a plugin-side `connection` resource.
@@ -163,7 +188,7 @@ impl HostState {
 
 impl TcpHost for HostState {
     fn connect(&mut self, host: String, port: u16) -> Result<Resource<TcpConnection>, String> {
-        if !self.network_granted {
+        if !allowlist_matches(&self.network_allowlist, &host, port) {
             return Err(format!("network permission denied for {host}:{port}"));
         }
         // OS resolver. Errors propagate as-is so a plugin user
@@ -237,11 +262,75 @@ impl TcpHostConnection for HostState {
 fn map_state_error(e: StateError) -> WitStateError {
     match e {
         StateError::QuotaExceeded { limit, .. } => WitStateError::QuotaExceeded(limit),
-        // Name-policy violations are a host-side bug -- the plugin
-        // doesn't pick its name -- so surfacing them as opaque
-        // host-error keeps the public surface honest about who's at
-        // fault.
         StateError::InvalidName { name } => WitStateError::HostError(format!("invalid plugin name: {name:?}")),
         StateError::Backend(source) => WitStateError::HostError(format!("backend: {source}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::allowlist_matches;
+
+    #[test]
+    fn empty_allowlist_denies_everything() {
+        assert!(!allowlist_matches(&[], "127.0.0.1", 80));
+        assert!(!allowlist_matches(&[], "anywhere.example", 65535));
+    }
+
+    #[test]
+    fn literal_matches_exact_host_and_port() {
+        let pats = vec!["192.168.1.50:730".to_string()];
+        assert!(allowlist_matches(&pats, "192.168.1.50", 730));
+        assert!(!allowlist_matches(&pats, "192.168.1.51", 730));
+        assert!(!allowlist_matches(&pats, "192.168.1.50", 731));
+    }
+
+    #[test]
+    fn host_wildcard_matches_any_host_on_specific_port() {
+        let pats = vec!["*:443".to_string()];
+        assert!(allowlist_matches(&pats, "github.com", 443));
+        assert!(allowlist_matches(&pats, "1.1.1.1", 443));
+        assert!(!allowlist_matches(&pats, "github.com", 80));
+    }
+
+    #[test]
+    fn port_wildcard_matches_any_port_on_specific_host() {
+        let pats = vec!["xbox.local:*".to_string()];
+        assert!(allowlist_matches(&pats, "xbox.local", 730));
+        assert!(allowlist_matches(&pats, "xbox.local", 65535));
+        assert!(!allowlist_matches(&pats, "other.local", 730));
+    }
+
+    #[test]
+    fn full_wildcard_matches_everything() {
+        let pats = vec!["*:*".to_string()];
+        assert!(allowlist_matches(&pats, "anything", 0));
+        assert!(allowlist_matches(&pats, "127.0.0.1", 8080));
+    }
+
+    #[test]
+    fn host_match_is_case_insensitive() {
+        let pats = vec!["GitHub.com:443".to_string()];
+        assert!(allowlist_matches(&pats, "github.com", 443));
+        assert!(allowlist_matches(&pats, "GITHUB.COM", 443));
+    }
+
+    #[test]
+    fn malformed_patterns_silently_dont_match() {
+        // No colon -> no match. Stops the matcher from panicking
+        // on a hand-rolled / corrupted grant blob.
+        let pats = vec!["nope-no-port".to_string(), "host:not-a-number".to_string()];
+        assert!(!allowlist_matches(&pats, "nope-no-port", 80));
+        assert!(!allowlist_matches(&pats, "host", 80));
+    }
+
+    #[test]
+    fn ipv6_with_brackets_works_via_rsplit_once() {
+        // rsplit_once finds the LAST `:`, so [::1]:443 splits as
+        // host="[::1]" / port="443" -- IPv6 literals work as long
+        // as the user / plugin author wraps them in brackets.
+        let pats = vec!["[::1]:443".to_string()];
+        assert!(allowlist_matches(&pats, "[::1]", 443));
+    }
+}
+
