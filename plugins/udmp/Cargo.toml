@@ -11,8 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
-# Path-dep so the wasm shim added to map.rs travels with the plugin.
-udmp-parser = { path = "../../../../src/udmp-parser-rs" }
 
 [profile.release]
 opt-level = "s"

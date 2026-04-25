@@ -53,7 +53,6 @@ name = "hxy-udmp-plugin"
 version = "0.1.0"
 dependencies = [
  "hxy-plugin-api",
- "udmp-parser",
 ]
 
 [[package]]
@@ -195,10 +194,6 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
-
-[[package]]
-name = "udmp-parser"
-version = "0.2.0"
 
 [[package]]
 name = "unicode-ident"
