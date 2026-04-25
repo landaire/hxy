@@ -33,6 +33,8 @@ use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;
 
+use std::collections::HashMap;
+
 use std::io;
 use std::net::SocketAddr;
 use std::net::Shutdown;
@@ -60,7 +62,6 @@ use xeedee::Connected;
 use xeedee::commands::DirEntry;
 use xeedee::commands::DirList;
 use xeedee::commands::DriveList;
-use xeedee::commands::GetFileAttributes;
 use xeedee::discovery::DiscoveryAction;
 use xeedee::discovery::{DiscoveredConsole, Discovery, DiscoveryConfig};
 
@@ -219,6 +220,14 @@ pub struct ConsoleMount {
     /// `RefCell` because the WIT trait methods take `&self` but we
     /// need exclusive access to drive the client's reads/writes.
     client: RefCell<Client<BlockingTcp, Connected>>,
+    /// Per-path metadata (size + folder/file) cached from the most
+    /// recent `dirlist` of each parent. The host renders directory
+    /// entries by listing the parent then querying `metadata()` for
+    /// each child -- without the cache that's `1 + N` round trips
+    /// per folder; with it, just the one `dirlist`. Entries are
+    /// overwritten on every `read_dir` of their parent, so a stale
+    /// cache hit is at most one navigation old.
+    metadata_cache: RefCell<HashMap<String, Metadata>>,
 }
 
 impl ConsoleMount {
@@ -230,7 +239,10 @@ impl ConsoleMount {
         let transport = BlockingTcp::new(stream);
         let client = block_on(Client::new(transport).read_banner())
             .map_err(|e| format!("xbdm banner: {e}"))?;
-        Ok(Self { client: RefCell::new(client) })
+        Ok(Self {
+            client: RefCell::new(client),
+            metadata_cache: RefCell::new(HashMap::new()),
+        })
     }
 }
 
@@ -245,39 +257,62 @@ impl GuestMount for ConsoleMount {
                 // navigates into `/E:` and we know to dirlist `E:\`.
                 let drives = block_on(client.run(DriveList))
                     .map_err(|e| format!("drivelist: {e}"))?;
-                Ok(drives.into_iter().map(|d| format!("{d}:")).collect())
+                let names: Vec<String> = drives.into_iter().map(|d| format!("{d}:")).collect();
+                // Pre-populate metadata so `metadata("/E:")` doesn't
+                // need a round trip either.
+                let mut cache = self.metadata_cache.borrow_mut();
+                for name in &names {
+                    cache.insert(
+                        format!("/{name}"),
+                        Metadata { file_type: FileType::Directory, length: 0 },
+                    );
+                }
+                Ok(names)
             }
             PathKind::Drive(_) | PathKind::Path(_) => {
                 let xbdm = path_to_xbdm(&path);
                 let entries = block_on(client.run(DirList { path: xbdm.clone() }))
                     .map_err(|e| format!("dirlist {xbdm}: {e}"))?;
+                // Cache size + folder/file for every entry so the
+                // host's per-child `metadata()` queries don't go
+                // back to the kit. `dirlist` already returns this
+                // in the same response -- one round trip, N
+                // metadata answers.
+                let parent = path.trim_end_matches('/').to_string();
+                let mut cache = self.metadata_cache.borrow_mut();
+                for entry in &entries {
+                    let child_path = format!("{parent}/{}", entry.name);
+                    let file_type = if entry.is_directory {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    };
+                    cache.insert(child_path, Metadata { file_type, length: entry.size });
+                }
                 Ok(entries.into_iter().map(|e: DirEntry| e.name).collect())
             }
         }
     }
 
     fn metadata(&self, path: String) -> Result<Metadata, String> {
-        let kind = classify_path(&path);
-        match kind {
-            PathKind::Root | PathKind::Drive(_) => {
-                // Synthetic directories -- no XBDM call needed and
-                // `getfileattributes` on a drive root often returns
-                // an error anyway.
-                Ok(Metadata { file_type: FileType::Directory, length: 0 })
-            }
-            PathKind::Path(_) => {
-                let xbdm = path_to_xbdm(&path);
-                let mut client = self.client.borrow_mut();
-                let attrs = block_on(client.run(GetFileAttributes { path: xbdm.clone() }))
-                    .map_err(|e| format!("getfileattributes {xbdm}: {e}"))?;
-                let file_type = if attrs.is_directory {
-                    FileType::Directory
-                } else {
-                    FileType::RegularFile
-                };
-                Ok(Metadata { file_type, length: attrs.size })
-            }
+        // Synthetic root is always a directory; no XBDM call needed.
+        if matches!(classify_path(&path), PathKind::Root) {
+            return Ok(Metadata { file_type: FileType::Directory, length: 0 });
         }
+        // Cache populated by the most recent `read_dir` of the
+        // parent -- the typical browse flow visits a folder before
+        // the user clicks anything inside it, so the hit rate is
+        // ~100% in practice.
+        if let Some(cached) = self.metadata_cache.borrow().get(&path).cloned() {
+            return Ok(cached);
+        }
+        // Cache miss -- the host asked about a path it never
+        // listed. Rather than spending a round trip on
+        // `getfileattributes`, return a conservative
+        // RegularFile/0-length placeholder. The user can still
+        // open it (read_file works without metadata) and any
+        // listing of the parent will fix the cache.
+        Ok(Metadata { file_type: FileType::RegularFile, length: 0 })
     }
 
     fn read_file(&self, path: String) -> Result<Vec<u8>, String> {
