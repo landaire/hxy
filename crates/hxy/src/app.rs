@@ -6435,7 +6435,7 @@ impl TabViewer for HxyTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             Tab::Welcome => welcome_ui(ui, self.state),
-            Tab::Settings => settings_ui(ui, &mut self.state.app),
+            Tab::Settings => settings_ui(ui, &mut self.state.app, self.files),
             Tab::Console => console_ui(ui, self.console),
             Tab::Inspector => {
                 let (caret, bytes) = match &self.inspector_data {
@@ -6851,7 +6851,12 @@ fn status_bar_ui(
                 hxy_view::VimMode::VisualLine => {
                     ("V-LINE", "Vim Visual-line mode -- selection snaps to whole rows")
                 }
-                hxy_view::VimMode::Insert => ("INSERT", "Vim Insert mode -- typing edits bytes; Esc to return"),
+                hxy_view::VimMode::Insert => {
+                    ("INSERT", "Vim Insert mode -- typing splices new bytes; Esc to return")
+                }
+                hxy_view::VimMode::Replace => {
+                    ("REPLACE", "Vim Replace mode -- typing overwrites; extends past EOF; Esc to return")
+                }
             };
             ui.label(format!("[{label}]")).on_hover_text(tooltip);
             ui.separator();
@@ -7144,12 +7149,42 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     });
 }
 
-fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings) {
+fn settings_ui(
+    ui: &mut egui::Ui,
+    settings: &mut crate::settings::AppSettings,
+    files: &mut HashMap<FileId, OpenFile>,
+) {
     ui.heading(hxy_i18n::t("settings-general-header"));
     ui.separator();
     egui::Grid::new("hxy-general-settings").num_columns(2).striped(true).show(ui, |ui| {
         ui.label(hxy_i18n::t("settings-zoom"));
         ui.add(egui::Slider::new(&mut settings.zoom_factor, 0.5..=2.0).step_by(0.1));
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-input-mode"));
+        let prev_mode = settings.input_mode;
+        egui::ComboBox::from_id_salt("hxy-input-mode")
+            .selected_text(match settings.input_mode {
+                hxy_view::InputMode::Default => hxy_i18n::t("settings-input-mode-default"),
+                hxy_view::InputMode::Vim => hxy_i18n::t("settings-input-mode-vim"),
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut settings.input_mode,
+                    hxy_view::InputMode::Default,
+                    hxy_i18n::t("settings-input-mode-default"),
+                );
+                ui.selectable_value(
+                    &mut settings.input_mode,
+                    hxy_view::InputMode::Vim,
+                    hxy_i18n::t("settings-input-mode-vim"),
+                );
+            });
+        if settings.input_mode != prev_mode {
+            for file in files.values_mut() {
+                file.editor.set_input_mode(settings.input_mode);
+            }
+        }
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-columns"));

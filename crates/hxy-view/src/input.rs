@@ -65,6 +65,11 @@ pub(crate) enum EditPress {
     /// Collapse the selection to a caret at the current cursor and
     /// reset any half-typed-nibble pointer. Bound to Escape.
     ClearSelection,
+    /// Insert-mode Backspace: delete the byte before the cursor and
+    /// step back. Only emitted when the editor's typing mode is
+    /// `Insert` -- in `Replace` mode Backspace falls through.
+    #[cfg(feature = "editor")]
+    Backspace,
 }
 
 impl EditPress {
@@ -119,6 +124,8 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
     let mutable = editor.edit.mode == crate::editor::EditMode::Mutable;
     #[cfg(not(feature = "editor"))]
     let mutable = false;
+    #[cfg(feature = "editor")]
+    let inserting = editor.edit.typing_mode == crate::editor::TypingMode::Insert;
     let pane = editor.active_pane;
 
     let presses: Vec<EditPress> = ctx.input_mut(|i| {
@@ -160,6 +167,11 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                     }
                     egui::Key::Escape => {
                         out.push(EditPress::ClearSelection);
+                        false
+                    }
+                    #[cfg(feature = "editor")]
+                    egui::Key::Backspace if mutable && inserting => {
+                        out.push(EditPress::Backspace);
                         false
                     }
                     _ => true,
@@ -221,6 +233,11 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                 #[cfg(feature = "editor")]
                 editor.reset_edit_nibble();
             }
+            #[cfg(feature = "editor")]
+            EditPress::Backspace => match editor.backspace_byte() {
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "backspace"),
+            },
         }
     }
     editor.last_cursor_offset = editor.selection.as_ref().map(|s| s.cursor.get());

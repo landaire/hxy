@@ -54,6 +54,9 @@ settings-byte-highlight-scheme-class = By class
 settings-byte-highlight-scheme-value = By value
 settings-minimap = Show minimap
 settings-minimap-colored = Colored minimap
+settings-input-mode = Input bindings
+settings-input-mode-default = Standard
+settings-input-mode-vim = Vim
 
 welcome-recent = Recent files
 welcome-recent-empty = No recent files yet.

@@ -27,6 +27,19 @@ pub enum EditMode {
     Mutable,
 }
 
+/// How [`crate::HexEditor::type_hex_digit`] /
+/// [`crate::HexEditor::type_ascii_byte`] interpret each keystroke.
+/// Default `Replace` is the hex-editor convention -- typing
+/// overwrites in place and only grows the buffer past EOF, matching
+/// vim's `R` mode. `Insert` is vim's `i`: every keystroke splices a
+/// new byte at the cursor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TypingMode {
+    #[default]
+    Replace,
+    Insert,
+}
+
 #[derive(Debug, Error)]
 pub enum WriteError {
     #[error("editor is read-only; enable edit mode first")]
@@ -85,6 +98,10 @@ pub(crate) struct EditState {
     /// `undo_stack` after any change.
     pub(crate) patch: Arc<RwLock<Patch>>,
     pub(crate) mode: EditMode,
+    /// How [`crate::HexEditor::type_hex_digit`] /
+    /// [`crate::HexEditor::type_ascii_byte`] interpret each press.
+    /// `Replace` is the hex-editor default; `Insert` is vim's `i`.
+    pub(crate) typing_mode: TypingMode,
     /// Two-press hex-digit input state. `true` means the next typed
     /// digit overwrites the high nibble.
     pub(crate) edit_high_nibble: bool,
@@ -111,6 +128,7 @@ impl EditState {
             patched_source,
             patch,
             mode: EditMode::Mutable,
+            typing_mode: TypingMode::Replace,
             edit_high_nibble: true,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),

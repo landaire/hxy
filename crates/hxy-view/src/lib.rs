@@ -23,6 +23,8 @@ pub use editor::EditEntry;
 #[cfg(feature = "editor")]
 pub use editor::EditMode;
 #[cfg(feature = "editor")]
+pub use editor::TypingMode;
+#[cfg(feature = "editor")]
 pub use editor::WriteError;
 pub use vim::InputMode;
 pub use vim::VimMode;
@@ -205,6 +207,13 @@ impl HexEditor {
             self.vim.mode = VimMode::Normal;
             self.vim.clear_pending();
         }
+        // Reset typing back to Replace whenever the input mode is
+        // toggled. Vim Insert mode flips this to Insert on entry and
+        // back to Replace on Esc, but a mid-Insert toggle of the
+        // input mode itself shouldn't leave the editor stuck in the
+        // splice-on-every-keystroke path.
+        #[cfg(feature = "editor")]
+        self.set_typing_mode(crate::editor::TypingMode::Replace);
     }
 
     /// Read-only access to the Vim state (current sub-mode, count
@@ -407,18 +416,23 @@ impl HexEditor {
         let Some(sel) = self.selection else { return Ok(false) };
         let offset = sel.cursor.get();
         let source_len = self.source.len().get();
-        // At EOF, high-nibble press extends the buffer by one zeroed
-        // byte so anonymous (scratch) tabs that start empty can grow
-        // as the user types. The low nibble of the just-inserted byte
-        // is filled by the subsequent keystroke via the overwrite
-        // branch below.
-        if offset >= source_len {
-            if !self.edit.edit_high_nibble {
-                return Ok(false);
-            }
+        // First-nibble press creates a new byte when typing-mode is
+        // Insert *or* the cursor is past EOF. The follow-up
+        // low-nibble press fills its low half via the in-place
+        // rewrite branch below (the just-created byte is now
+        // in-bounds).
+        let creating_new_byte = self.edit.edit_high_nibble
+            && (self.edit.typing_mode == TypingMode::Insert || offset >= source_len);
+        if creating_new_byte {
             self.pin_scroll_for_next_frame();
             self.edit.insert_at(offset, vec![nibble << 4])?;
             self.edit.edit_high_nibble = false;
+            return Ok(false);
+        }
+        if offset >= source_len {
+            // Defensive: a low-nibble press past EOF in Replace mode
+            // shouldn't reach here since `edit_high_nibble` resets to
+            // true on cursor moves, but bail safely if it does.
             return Ok(false);
         }
         let current = self.edit.read_byte_at(offset)?;
@@ -443,15 +457,54 @@ impl HexEditor {
         }
         let Some(sel) = self.selection else { return Ok(false) };
         let offset = sel.cursor.get();
+        let source_len = self.source.len().get();
         self.pin_scroll_for_next_frame();
-        if offset >= self.source.len().get() {
-            // Grow the buffer at EOF so anonymous tabs can be typed
-            // into from an empty start.
+        let insert = offset >= source_len || self.edit.typing_mode == TypingMode::Insert;
+        if insert {
             self.edit.insert_at(offset, vec![byte])?;
         } else {
             self.edit.request_write(offset, vec![byte])?;
         }
         Ok(true)
+    }
+
+    /// Insert-mode Backspace: splice out the byte before the cursor
+    /// and step back. No-op at offset 0. Returns `true` if a byte
+    /// was removed (callers may want to refresh layout / scroll).
+    #[cfg(feature = "editor")]
+    pub fn backspace_byte(&mut self) -> Result<bool, WriteError> {
+        if self.edit.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let Some(sel) = self.selection else { return Ok(false) };
+        let offset = sel.cursor.get();
+        if offset == 0 {
+            return Ok(false);
+        }
+        self.pin_scroll_for_next_frame();
+        self.edit.splice(offset - 1, 1, Vec::new())?;
+        if let Some(sel) = self.selection.as_mut() {
+            sel.cursor = ByteOffset::new(offset - 1);
+            sel.anchor = sel.cursor;
+        }
+        self.edit.edit_high_nibble = true;
+        Ok(true)
+    }
+
+    /// Current typing mode -- whether keystrokes overwrite in place
+    /// or splice in new bytes.
+    #[cfg(feature = "editor")]
+    pub fn typing_mode(&self) -> TypingMode {
+        self.edit.typing_mode
+    }
+
+    /// Switch typing mode. Resets the half-typed-nibble state so a
+    /// mode flip mid-byte doesn't leave a stale low-nibble pointer.
+    #[cfg(feature = "editor")]
+    pub fn set_typing_mode(&mut self, mode: TypingMode) {
+        self.edit.typing_mode = mode;
+        self.edit.edit_high_nibble = true;
+        self.edit.history_break = true;
     }
 
     /// Pop the most recent undo entry, revert the patch to match
@@ -2590,5 +2643,80 @@ mod tests {
         let below = Pos2::new(layout.hex_start_x + 5.0, 1000.0);
         let hit = layout.hit_test(block, below, 20.0, 3).unwrap();
         assert_eq!(hit.row, 2);
+    }
+
+    #[cfg(feature = "editor")]
+    fn ed_with(bytes: &[u8], cursor: u64) -> HexEditor {
+        let source: Arc<dyn HexSource> = Arc::new(hxy_core::MemorySource::new(bytes.to_vec()));
+        let mut ed = HexEditor::new(source);
+        ed.set_active_pane(Pane::Ascii);
+        ed.selection = Some(hxy_core::Selection::caret(ByteOffset::new(cursor)));
+        ed
+    }
+
+    #[cfg(feature = "editor")]
+    fn read_all_bytes(ed: &HexEditor) -> Vec<u8> {
+        let len = ed.source.len().get();
+        if len == 0 {
+            return Vec::new();
+        }
+        let r = ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap();
+        ed.source.read(r).unwrap()
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn replace_typing_overwrites_in_place() {
+        let mut ed = ed_with(b"abcde", 1);
+        ed.set_typing_mode(TypingMode::Replace);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"aXcde");
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn replace_typing_grows_past_eof() {
+        let mut ed = ed_with(b"abc", 3);
+        ed.set_typing_mode(TypingMode::Replace);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"abcX");
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn insert_typing_splices_in_bounds() {
+        let mut ed = ed_with(b"abcde", 1);
+        ed.set_typing_mode(TypingMode::Insert);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"aXbcde");
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn backspace_byte_deletes_before_cursor() {
+        let mut ed = ed_with(b"abcde", 3);
+        ed.backspace_byte().unwrap();
+        assert_eq!(read_all_bytes(&ed), b"abde");
+        assert_eq!(ed.selection.unwrap().cursor.get(), 2);
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn backspace_byte_at_zero_is_noop() {
+        let mut ed = ed_with(b"abc", 0);
+        let removed = ed.backspace_byte().unwrap();
+        assert!(!removed);
+        assert_eq!(read_all_bytes(&ed), b"abc");
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn insert_hex_first_nibble_grows_then_low_nibble_fills() {
+        let mut ed = ed_with(&[0xAA, 0xBB, 0xCC], 1);
+        ed.set_typing_mode(TypingMode::Insert);
+        ed.type_hex_digit(0x3).unwrap();
+        assert_eq!(read_all_bytes(&ed), &[0xAA, 0x30, 0xBB, 0xCC]);
+        ed.type_hex_digit(0xC).unwrap();
+        assert_eq!(read_all_bytes(&ed), &[0xAA, 0x3C, 0xBB, 0xCC]);
     }
 }

@@ -52,9 +52,14 @@ pub enum VimMode {
     /// Linewise visual: selection snaps to whole rows in the hex view
     /// (or whole text-lines in the ASCII pane). (Stage 3.)
     VisualLine,
-    /// Insert mode -- typing flows through the standard hex/ASCII
-    /// editor dispatch. `Esc` returns to Normal.
+    /// Insert mode -- each keystroke splices a new byte at the
+    /// cursor, growing the buffer (vim's `i`). `Esc` returns to
+    /// Normal.
     Insert,
+    /// Replace mode -- each keystroke overwrites the byte under the
+    /// cursor in place; typing past EOF extends. Matches vim's `R`
+    /// and is the hex-editor convention. `Esc` returns to Normal.
+    Replace,
 }
 
 /// Per-editor Vim state. Lives on `HexEditor` whether or not Vim
@@ -141,17 +146,22 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         return;
     }
 
-    // Insert mode delegates entirely to the standard dispatcher --
-    // hex digits, ASCII typing, arrow keys, copy/paste, selection
-    // clearing, the lot. We just intercept Esc first to pop back to
+    // Insert / Replace both delegate typing to the standard
+    // dispatcher -- hex digits, ASCII typing, arrows, copy/paste --
+    // and rely on the editor's `typing_mode` to decide whether each
+    // keystroke splices in a new byte (Insert) or overwrites in
+    // place (Replace). We just intercept Esc first to pop back to
     // Normal so the editor's own Esc handler doesn't also clear the
     // selection on the same press.
-    if editor.vim.mode == VimMode::Insert {
+    if matches!(editor.vim.mode, VimMode::Insert | VimMode::Replace) {
         let escape = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         if escape {
             editor.vim.mode = VimMode::Normal;
             #[cfg(feature = "editor")]
-            editor.reset_edit_nibble();
+            {
+                editor.set_typing_mode(crate::editor::TypingMode::Replace);
+                editor.reset_edit_nibble();
+            }
             return;
         }
         input::dispatch(editor, ctx);
@@ -260,6 +270,10 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                             } else {
                                 out.push(VimPress::EnterInsert);
                             }
+                            false
+                        }
+                        Key::R if shift => {
+                            out.push(VimPress::EnterReplace);
                             false
                         }
                         Key::A if matches!(frame_start_mode, VimMode::Visual | VimMode::VisualLine) => {
@@ -406,6 +420,14 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
             VimPress::EnterInsert => {
                 editor.vim.mode = VimMode::Insert;
                 editor.vim.clear_pending();
+                #[cfg(feature = "editor")]
+                editor.set_typing_mode(crate::editor::TypingMode::Insert);
+            }
+            VimPress::EnterReplace => {
+                editor.vim.mode = VimMode::Replace;
+                editor.vim.clear_pending();
+                #[cfg(feature = "editor")]
+                editor.set_typing_mode(crate::editor::TypingMode::Replace);
             }
             VimPress::Digit(d) => {
                 if d == 0 && editor.vim.count.is_none() {
@@ -552,6 +574,7 @@ enum VimPress {
     Escape,
     TogglePane,
     EnterInsert,
+    EnterReplace,
     EnterVisual,
     EnterVisualLine,
     Digit(u8),
