@@ -114,11 +114,16 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             let mut app = hxy_lib::HxyApp::new(cc, state_for_app);
-            if let Some(sink) = sink {
-                app = app.with_sink(sink);
-            }
+            // Wire plugin persistence *before* the sink. The sink's
+            // `restore_open_tabs` step may try to remount a plugin-
+            // backed tab via `mount_by_token`; if the state store
+            // isn't wired yet the plugin would see `denied` from
+            // `state::load` and could misbehave.
             if let Some(state_store) = plugin_state_store {
                 app = app.with_plugin_persistence(state_store);
+            }
+            if let Some(sink) = sink {
+                app = app.with_sink(sink);
             }
             // The IPC inbox needs the egui Context to schedule
             // repaints when a forwarded batch arrives, so spin up

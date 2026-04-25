@@ -31,31 +31,40 @@ pub enum TabSource {
     /// `title` keeps the user-visible name (e.g. `Untitled 3`)
     /// stable across restarts.
     Anonymous { id: AnonymousId, title: String },
+    /// A tab whose VFS comes from a plugin's `mount-by-token`. The
+    /// `plugin_name` matches what the plugin's WIT `name()` returns;
+    /// `token` is whatever opaque value the plugin handed back via
+    /// its `Mount` invoke outcome. Restoration is best-effort: if
+    /// the plugin is no longer installed or its `mount_by_token`
+    /// rejects the saved token, the host drops the tab from
+    /// `open_tabs` instead of leaving an orphaned shell.
+    PluginMount { plugin_name: String, token: String, title: String },
 }
 
 impl TabSource {
-    /// Depth of the nesting chain. `Filesystem` and `Anonymous` are
-    /// depth 0; each nested `VfsEntry` adds one.
+    /// Depth of the nesting chain. `Filesystem`, `Anonymous`, and
+    /// `PluginMount` are depth 0; each nested `VfsEntry` adds one.
     pub fn depth(&self) -> usize {
         match self {
-            Self::Filesystem(_) | Self::Anonymous { .. } => 0,
+            Self::Filesystem(_) | Self::Anonymous { .. } | Self::PluginMount { .. } => 0,
             Self::VfsEntry { parent, .. } => parent.depth() + 1,
         }
     }
 
     /// The root filesystem path at the bottom of any nesting.
-    /// `None` for `Anonymous` tabs (no on-disk origin).
+    /// `None` for `Anonymous` and `PluginMount` tabs (no on-disk
+    /// origin).
     pub fn root_path(&self) -> Option<&PathBuf> {
         match self {
             Self::Filesystem(p) => Some(p),
             Self::VfsEntry { parent, .. } => parent.root_path(),
-            Self::Anonymous { .. } => None,
+            Self::Anonymous { .. } | Self::PluginMount { .. } => None,
         }
     }
 
     /// A short human label: for `Filesystem` it's the file name; for
     /// `VfsEntry` it's the last segment of `entry_path`; for
-    /// `Anonymous` it's the stored title.
+    /// `Anonymous` and `PluginMount` it's the stored title.
     pub fn display_name(&self) -> String {
         match self {
             Self::Filesystem(p) => {
@@ -65,6 +74,7 @@ impl TabSource {
                 entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned()
             }
             Self::Anonymous { title, .. } => title.clone(),
+            Self::PluginMount { title, .. } => title.clone(),
         }
     }
 }

@@ -715,6 +715,35 @@ impl HxyApp {
                 self.open(title.clone(), Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), false);
                 Ok(())
             }
+            TabSource::PluginMount { plugin_name, token, title } => {
+                let plugin = self
+                    .plugin_handlers
+                    .iter()
+                    .find(|p| p.name() == plugin_name)
+                    .cloned()
+                    .ok_or_else(|| crate::file::FileOpenError::PluginMount {
+                        plugin_name: plugin_name.clone(),
+                        token: token.clone(),
+                        reason: "plugin no longer installed".to_owned(),
+                    })?;
+                let mount = plugin.mount_by_token(token).map_err(|e| crate::file::FileOpenError::PluginMount {
+                    plugin_name: plugin_name.clone(),
+                    token: token.clone(),
+                    reason: e.to_string(),
+                })?;
+                let id = crate::file::FileId::new(self.next_file_id);
+                self.next_file_id += 1;
+                let mut file =
+                    crate::file::OpenFile::from_bytes(id, title.clone(), Some(tab.source.clone()), Vec::new());
+                file.mount = Some(Arc::new(mount));
+                file.show_vfs_tree = show_tree;
+                self.files.insert(id, file);
+                self.dock.push_to_focused_leaf(Tab::File(id));
+                if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+                    remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -4252,10 +4281,11 @@ fn handle_open_file(app: &mut HxyApp) {
 /// `mount-by-token`. The tab carries an empty in-memory byte
 /// buffer (the HexEditor needs *something*); the user's intent
 /// is to navigate the plugin's tree via the VFS panel rather
-/// than scrolling raw bytes. `source_kind` is `None` so the tab
-/// won't be persisted to `open_tabs` -- a v1 limitation; plugin
-/// reconnection on restart is a follow-up that needs a stable
-/// per-mount token the plugin can rebind to.
+/// than scrolling raw bytes. `source_kind` is set to
+/// [`TabSource::PluginMount`] so the tab persists into
+/// `open_tabs`; on restart the host re-invokes `mount_by_token`
+/// with the saved token, dropping the tab if the plugin no
+/// longer recognizes it.
 #[cfg(not(target_arch = "wasm32"))]
 fn open_plugin_mount_tab(
     app: &mut HxyApp,
@@ -4276,7 +4306,12 @@ fn open_plugin_mount_tab(
     };
     let id = crate::file::FileId::new(app.next_file_id);
     app.next_file_id += 1;
-    let mut file = crate::file::OpenFile::from_bytes(id, req.title.clone(), None, Vec::new());
+    let source = TabSource::PluginMount {
+        plugin_name: plugin.name().to_owned(),
+        token: req.token.clone(),
+        title: req.title.clone(),
+    };
+    let mut file = crate::file::OpenFile::from_bytes(id, req.title.clone(), Some(source), Vec::new());
     file.mount = Some(Arc::new(mount));
     file.show_vfs_tree = true;
     app.files.insert(id, file);

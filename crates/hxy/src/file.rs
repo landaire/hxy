@@ -248,4 +248,16 @@ pub enum FileOpenError {
         #[source]
         source: std::io::Error,
     },
+    /// A persisted plugin-mounted tab couldn't be re-bound on
+    /// startup, either because the plugin is no longer installed or
+    /// because its `mount_by_token` rejected the saved token (e.g.
+    /// the underlying connection / profile was wiped from the
+    /// plugin's own state). The tab is dropped from `open_tabs`
+    /// rather than left orphaned.
+    #[error("restore plugin mount for {plugin_name:?} (token {token:?}): {reason}")]
+    PluginMount {
+        plugin_name: String,
+        token: String,
+        reason: String,
+    },
 }
