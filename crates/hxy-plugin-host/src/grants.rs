@@ -61,9 +61,14 @@ impl PluginKey {
     /// different bytes would otherwise wipe the user's grant on
     /// every dev iteration. The sha256 still lives on the embedded
     /// [`PluginKey`] so the consent UI can surface a fingerprint
-    /// mismatch if we want to warn on substituted bytes; bumping
-    /// the version is the explicit "this is a different plugin
-    /// now, please re-consent" signal.
+    /// mismatch if we want to warn on substituted bytes.
+    ///
+    /// A version bump does NOT wipe consent either -- see
+    /// [`PluginGrants::get`], which falls back to the union of
+    /// every prior record for the same `name` so previously-
+    /// approved permissions carry forward. Only NET NEW permissions
+    /// (ones never granted at any prior version) need fresh
+    /// approval.
     fn map_key(&self) -> String {
         format!("{}@{}", self.name, self.version)
     }
@@ -124,15 +129,46 @@ struct PluginGrantEntry {
 
 impl PluginGrants {
     /// Look up the recorded decisions for `key`. Returns
-    /// [`PermissionGrants::default`] (all false) when no record
-    /// exists yet -- the caller should treat that as "needs consent."
+    /// [`PermissionGrants::default`] (all false) when nothing was
+    /// ever granted for this plugin's `name`.
+    ///
+    /// Resolution order:
+    ///
+    /// 1. Exact `name@version` record, if present. This is the
+    ///    typical path during normal use.
+    /// 2. Otherwise, the **union** of every record sharing the same
+    ///    `name`. A version bump that adds a permission still
+    ///    requires fresh consent for the new permission, but every
+    ///    permission the user already approved at *any* prior
+    ///    version carries over automatically. The consent UI
+    ///    populates new-version checkboxes from this union, so the
+    ///    user only sees fresh prompts for net-new asks.
+    ///
     /// Cloned to keep the borrow chain short for the typical
     /// startup loop, which iterates plugins and intersects each
-    /// against its manifest; the per-plugin allowlist Vec is
-    /// short enough that cloning is cheaper than rearranging
-    /// lifetimes.
+    /// against its manifest.
     pub fn get(&self, key: &PluginKey) -> PermissionGrants {
-        self.plugins.get(&key.map_key()).map(|e| e.grants.clone()).unwrap_or_default()
+        if let Some(entry) = self.plugins.get(&key.map_key()) {
+            return entry.grants.clone();
+        }
+        let mut merged = PermissionGrants::default();
+        let mut found_any = false;
+        for entry in self.plugins.values().filter(|e| e.key.name == key.name) {
+            found_any = true;
+            merged.persist |= entry.grants.persist;
+            merged.commands |= entry.grants.commands;
+            for pat in &entry.grants.network {
+                if !merged.network.contains(pat) {
+                    merged.network.push(pat.clone());
+                }
+            }
+        }
+        if found_any {
+            // Keep network patterns in deterministic order so the
+            // consent UI doesn't reshuffle on every load.
+            merged.network.sort();
+        }
+        merged
     }
 
     /// Whether we have *any* recorded decision for `key`. Distinct
@@ -253,13 +289,78 @@ mod tests {
     }
 
     #[test]
-    fn version_bump_drops_grants() {
+    fn version_bump_carries_prior_grants_forward() {
+        // Bumping the version no longer wipes consent. The user's
+        // existing decisions for prior versions of the same plugin
+        // apply to the new version automatically.
         let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
         let k2 = PluginKey::from_bytes("p", "1.1.0", b"first");
         let mut g = PluginGrants::default();
-        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
-        assert!(g.has_record(&k1));
-        assert!(!g.has_record(&k2), "version bump should require fresh consent");
+        g.set(
+            k1,
+            PermissionGrants {
+                persist: true,
+                commands: true,
+                network: vec!["xbox.local:730".to_string()],
+            },
+        );
+        let resolved = g.get(&k2);
+        assert!(resolved.persist, "persist should carry across version bump");
+        assert!(resolved.commands, "commands should carry across version bump");
+        assert_eq!(resolved.network, vec!["xbox.local:730".to_string()]);
+    }
+
+    #[test]
+    fn version_bump_with_new_permission_doesnt_grant_it() {
+        // The carry-forward is a UNION of prior grants -- it only
+        // covers permissions the user already approved at some prior
+        // version. A net-new permission in the new manifest still
+        // needs fresh consent (the consent UI shows it as unchecked
+        // because the resolved grant doesn't include it; intersect
+        // at linker-wire time then drops it).
+        let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
+        let k2 = PluginKey::from_bytes("p", "2.0.0", b"second");
+        let mut g = PluginGrants::default();
+        g.set(
+            k1,
+            PermissionGrants {
+                persist: false,
+                commands: true,
+                network: vec!["*:730".to_string()],
+            },
+        );
+        let resolved = g.get(&k2);
+        assert!(!resolved.persist, "persist was never granted -- stays denied");
+        assert!(resolved.commands, "commands carries forward");
+        assert_eq!(
+            resolved.network,
+            vec!["*:730".to_string()],
+            "the *:443 the new manifest might request is not in resolved grants"
+        );
+    }
+
+    #[test]
+    fn carry_forward_unions_across_multiple_prior_versions() {
+        // v1 had commands; v2 had network. v3 should inherit BOTH.
+        let k1 = PluginKey::from_bytes("p", "1.0.0", b"a");
+        let k2 = PluginKey::from_bytes("p", "2.0.0", b"b");
+        let k3 = PluginKey::from_bytes("p", "3.0.0", b"c");
+        let mut g = PluginGrants::default();
+        g.set(
+            k1,
+            PermissionGrants { persist: false, commands: true, network: vec![] },
+        );
+        g.set(
+            k2,
+            PermissionGrants {
+                persist: false,
+                commands: false,
+                network: vec!["xbox.local:730".to_string()],
+            },
+        );
+        let resolved = g.get(&k3);
+        assert!(resolved.commands);
+        assert_eq!(resolved.network, vec!["xbox.local:730".to_string()]);
     }
 
     #[test]
