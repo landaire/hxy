@@ -29,6 +29,11 @@ pub enum Tab {
     /// `HxyApp::mounts`.
     #[cfg(not(target_arch = "wasm32"))]
     PluginMount(MountId),
+    /// Cross-file search results. Lists every match across every open
+    /// file. Clicking jumps to the file + offset; the active match is
+    /// highlighted in the corresponding hex view via its selection.
+    #[cfg(not(target_arch = "wasm32"))]
+    SearchResults,
 }
 
 impl Tab {

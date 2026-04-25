@@ -109,6 +109,11 @@ pub struct OpenFile {
     /// setting. Set via the `Set hex columns (this buffer)` palette
     /// command and not currently persisted across restarts.
     pub hex_columns_override: Option<hxy_core::ColumnCount>,
+    /// Per-tab search bar state. Live as long as the tab; not
+    /// persisted across restarts. The bar visibility flag lives on the
+    /// state itself rather than a separate boolean so reopening the
+    /// bar restores the user's last query.
+    pub search: crate::search::SearchState,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -257,6 +262,7 @@ impl OpenFile {
             #[cfg(not(target_arch = "wasm32"))]
             suggested_template: None,
             hex_columns_override: None,
+            search: crate::search::SearchState::default(),
         }
     }
 

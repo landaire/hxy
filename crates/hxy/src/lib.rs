@@ -7,6 +7,10 @@ pub mod commands;
 pub mod file;
 pub mod settings;
 pub mod state;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod global_search;
+pub mod search;
+pub mod search_bar;
 pub mod tabs;
 pub mod vfs_panel;
 pub mod window;

@@ -143,6 +143,16 @@ pub struct HxyApp {
     /// matching record from `state.open_tabs`.
     #[cfg(not(target_arch = "wasm32"))]
     pending_close_mount: Option<crate::file::MountId>,
+    /// Shared cross-file search state. Backs the `Tab::SearchResults`
+    /// dock tab; lives on the app so query / matches survive the user
+    /// closing and reopening the tab.
+    #[cfg(not(target_arch = "wasm32"))]
+    global_search: crate::global_search::GlobalSearchState,
+    /// Events the global search tab emitted this frame. Drained at the
+    /// end of `ui()` so we can mutate `files` (focus / jump) after the
+    /// dock has released its borrow.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_global_search_events: Vec<crate::global_search::GlobalSearchEvent>,
     /// File paths from the launch's command line. Drained on the
     /// first frame and turned into open-file requests, so a
     /// `hxy a.bin b.bin` invocation lands two tabs as soon as the
@@ -274,6 +284,10 @@ impl HxyApp {
             pending_close_tab: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_close_mount: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            global_search: crate::global_search::GlobalSearchState::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_global_search_events: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_cli_paths: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -941,6 +955,10 @@ impl eframe::App for HxyApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_close_mount: &mut self.pending_close_mount,
                 #[cfg(not(target_arch = "wasm32"))]
+                global_search: &mut self.global_search,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_global_search_events: &mut self.pending_global_search_events,
+                #[cfg(not(target_arch = "wasm32"))]
                 inspector: &mut self.inspector,
                 #[cfg(not(target_arch = "wasm32"))]
                 decoders: &self.decoders,
@@ -969,14 +987,21 @@ impl eframe::App for HxyApp {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(mount_id) = self.pending_close_mount.take() {
-            if let Some(removed) = self.mounts.remove(&mount_id) {
-                let target = TabSource::PluginMount {
-                    plugin_name: removed.plugin_name,
-                    token: removed.token,
-                    title: removed.display_name,
-                };
-                self.state.write().open_tabs.retain(|t| t.source != target);
+        if let Some(mount_id) = self.pending_close_mount.take()
+            && let Some(removed) = self.mounts.remove(&mount_id)
+        {
+            let target = TabSource::PluginMount {
+                plugin_name: removed.plugin_name,
+                token: removed.token,
+                title: removed.display_name,
+            };
+            self.state.write().open_tabs.retain(|t| t.source != target);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let events = std::mem::take(&mut self.pending_global_search_events);
+            if !events.is_empty() {
+                apply_global_search_events(self, events);
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1018,6 +1043,8 @@ impl eframe::App for HxyApp {
         dispatch_close_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_paste_shortcut(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        dispatch_find_shortcut(ui.ctx(), self);
         dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
@@ -2135,6 +2162,160 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
     let _ = ctx;
 }
 
+/// Apply a frame's worth of events from the search bar to `file`.
+/// The bar itself is render-only -- byte scans, selection moves, and
+/// `matches` recomputation happen here.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search_bar::SearchEvent>) {
+    use crate::search::find_all;
+    use crate::search::find_next;
+    use crate::search::find_prev;
+    use crate::search_bar::SearchEvent;
+
+    let mut want_all = file.search.all_results;
+    for ev in events {
+        match ev {
+            SearchEvent::Refresh => {
+                file.search.refresh_pattern();
+                if want_all && let Some(p) = file.search.pattern.clone() {
+                    let m = find_all(file.editor.source().as_ref(), &p);
+                    file.search.matches = m;
+                    file.search.active_idx = nearest_match_idx(&file.search.matches, current_caret(file));
+                }
+            }
+            SearchEvent::Next => {
+                let Some(pattern) = file.search.pattern.clone() else { continue };
+                let from = current_caret(file).saturating_add(1);
+                if let Some(off) = find_next(file.editor.source().as_ref(), &pattern, from, true) {
+                    apply_match_jump(file, off, &pattern);
+                }
+            }
+            SearchEvent::Prev => {
+                let Some(pattern) = file.search.pattern.clone() else { continue };
+                let from = current_caret(file);
+                if let Some(off) = find_prev(file.editor.source().as_ref(), &pattern, from, true) {
+                    apply_match_jump(file, off, &pattern);
+                }
+            }
+            SearchEvent::FindAll => {
+                want_all = true;
+                file.search.all_results = true;
+                if let Some(p) = file.search.pattern.clone() {
+                    let m = find_all(file.editor.source().as_ref(), &p);
+                    file.search.matches = m;
+                    file.search.active_idx = nearest_match_idx(&file.search.matches, current_caret(file));
+                    if let Some(idx) = file.search.active_idx {
+                        let off = file.search.matches[idx];
+                        apply_match_jump(file, off, &p);
+                    }
+                }
+            }
+            SearchEvent::ClearAll => {
+                want_all = false;
+                file.search.all_results = false;
+                file.search.matches.clear();
+                file.search.active_idx = None;
+            }
+            SearchEvent::Close => {
+                file.search.open = false;
+            }
+            SearchEvent::JumpTo(idx) => {
+                let Some(pattern) = file.search.pattern.clone() else { continue };
+                let Some(off) = file.search.matches.get(idx).copied() else { continue };
+                file.search.active_idx = Some(idx);
+                apply_match_jump(file, off, &pattern);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn current_caret(file: &OpenFile) -> u64 {
+    file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0)
+}
+
+/// Highlight the match at `off` and scroll it into view. Sets the
+/// selection to `[off, off + pattern.len())` so the existing selection
+/// rendering colors the match. Updates `active_idx` if the match
+/// matches an entry in `matches`.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_match_jump(file: &mut OpenFile, off: u64, pattern: &[u8]) {
+    let end_inclusive = off.saturating_add(pattern.len() as u64).saturating_sub(1);
+    file.editor.set_selection(Some(hxy_core::Selection {
+        anchor: hxy_core::ByteOffset::new(off),
+        cursor: hxy_core::ByteOffset::new(end_inclusive),
+    }));
+    file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(off));
+    if let Ok(idx) = file.search.matches.binary_search(&off) {
+        file.search.active_idx = Some(idx);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn nearest_match_idx(matches: &[u64], caret: u64) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    Some(matches.partition_point(|&m| m < caret).min(matches.len() - 1))
+}
+
+/// Apply a frame's worth of cross-file search events. `Run` rebuilds
+/// the match list from scratch by scanning every open file's source;
+/// `JumpTo` focuses the matched file's tab and selects the bytes.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::global_search::GlobalSearchEvent>) {
+    use crate::global_search::GlobalMatch;
+    use crate::global_search::GlobalSearchEvent;
+    use crate::search::find_all;
+
+    for ev in events {
+        match ev {
+            GlobalSearchEvent::Refresh => {
+                app.global_search.query_state.refresh_pattern();
+                app.global_search.matches.clear();
+                app.global_search.active_idx = None;
+            }
+            GlobalSearchEvent::Run => {
+                app.global_search.query_state.refresh_pattern();
+                let Some(pattern) = app.global_search.query_state.pattern.clone() else {
+                    app.global_search.matches.clear();
+                    app.global_search.active_idx = None;
+                    continue;
+                };
+                // Stable order: by file id then offset, so the result
+                // list doesn't reshuffle on every rerun.
+                let mut ids: Vec<FileId> = app.files.keys().copied().collect();
+                ids.sort_by_key(|id| id.get());
+                let mut all_matches: Vec<GlobalMatch> = Vec::new();
+                for id in ids {
+                    let Some(file) = app.files.get(&id) else { continue };
+                    let src = file.editor.source().clone();
+                    for off in find_all(src.as_ref(), &pattern) {
+                        all_matches.push(GlobalMatch { file_id: id, offset: off });
+                    }
+                }
+                app.global_search.matches = all_matches;
+                app.global_search.active_idx = if app.global_search.matches.is_empty() { None } else { Some(0) };
+            }
+            GlobalSearchEvent::Close => {
+                if let Some(path) = app.dock.find_tab(&Tab::SearchResults) {
+                    let _ = app.dock.remove_tab(path);
+                }
+                app.global_search.open = false;
+            }
+            GlobalSearchEvent::JumpTo(idx) => {
+                let Some(m) = app.global_search.matches.get(idx).cloned() else { continue };
+                let Some(pattern) = app.global_search.query_state.pattern.clone() else { continue };
+                app.global_search.active_idx = Some(idx);
+                if let Some(file) = app.files.get_mut(&m.file_id) {
+                    apply_match_jump(file, m.offset, &pattern);
+                }
+                app.focus_file_tab(m.file_id);
+            }
+        }
+    }
+}
+
 fn mount_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -2197,6 +2378,16 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
                 status_bar_ui(ui, file, settings_base, &mut new_base);
             });
         });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if file.search.open {
+        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get())))
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                let events = crate::search_bar::show(ui, &mut file.search);
+                apply_search_events(file, events);
+            });
+    }
 
     let body_rect = ui.available_rect_before_wrap();
     ui.painter().hline(
@@ -3280,6 +3471,12 @@ fn request_close_active_tab(app: &mut HxyApp) {
                 app.state.write().open_tabs.retain(|t| t.source != target);
             }
         }
+        Tab::SearchResults => {
+            if let Some(path) = app.dock.find_tab(&tab) {
+                let _ = app.dock.remove_tab(path);
+            }
+            app.global_search.open = false;
+        }
     }
 }
 
@@ -3291,6 +3488,43 @@ fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     if ctx.input_mut(|i| i.consume_shortcut(&CLOSE_TAB)) {
         request_close_active_tab(app);
     }
+}
+
+/// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
+/// opens the cross-file search results tab. The shortcut runs after
+/// the palette so a Cmd+F typed while the palette is open isn't
+/// stolen for search.
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_find_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    let global = ctx.input_mut(|i| i.consume_shortcut(&FIND_GLOBAL));
+    let local = !global && ctx.input_mut(|i| i.consume_shortcut(&FIND_LOCAL));
+    if global {
+        toggle_global_search(app);
+        return;
+    }
+    if local {
+        toggle_local_search(app);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn toggle_local_search(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.search.open = !file.search.open;
+    if file.search.open {
+        file.search.refresh_pattern();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn toggle_global_search(app: &mut HxyApp) {
+    if let Some(path) = app.dock.find_tab(&Tab::SearchResults) {
+        let _ = app.dock.remove_tab(path);
+        return;
+    }
+    app.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.65, vec![Tab::SearchResults]);
+    app.global_search.open = true;
 }
 
 /// Ctrl+Tab / Ctrl+Shift+Tab cycle the active tab inside the focused
@@ -5171,6 +5405,13 @@ struct HxyTabViewer<'a> {
     /// `app.mounts` after the dock pass.
     #[cfg(not(target_arch = "wasm32"))]
     pending_close_mount: &'a mut Option<crate::file::MountId>,
+    /// Cross-file search state, rendered by `Tab::SearchResults`.
+    #[cfg(not(target_arch = "wasm32"))]
+    global_search: &'a mut crate::global_search::GlobalSearchState,
+    /// Events emitted by the global search tab during render. Drained
+    /// after the dock pass so we can mutate `files` to focus / jump.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_global_search_events: &'a mut Vec<crate::global_search::GlobalSearchEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     inspector: &'a mut crate::inspector::InspectorState,
     #[cfg(not(target_arch = "wasm32"))]
@@ -5252,6 +5493,10 @@ impl TabViewer for HxyTabViewer<'_> {
                 Some(m) => format!("{} {}", egui_phosphor::regular::TREE_STRUCTURE, m.display_name).into(),
                 None => format!("mount-{}", mount_id.get()).into(),
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::SearchResults => {
+                format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS).into()
+            }
         }
     }
 
@@ -5301,6 +5546,13 @@ impl TabViewer for HxyTabViewer<'_> {
                     ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
                 }
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::SearchResults => {
+                let names: std::collections::HashMap<FileId, String> =
+                    self.files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
+                let events = crate::global_search::show(ui, self.global_search, &names);
+                self.pending_global_search_events.extend(events);
+            }
         }
     }
 
@@ -5308,7 +5560,7 @@ impl TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins => true,
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::PluginMount(_) => true,
+            Tab::PluginMount(_) | Tab::SearchResults => true,
             _ => false,
         }
     }
@@ -5320,7 +5572,7 @@ impl TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::File(_) | Tab::Console | Tab::Inspector => [false, false],
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::PluginMount(_) => [false, false],
+            Tab::PluginMount(_) | Tab::SearchResults => [false, false],
             _ => [true, true],
         }
     }
@@ -5519,6 +5771,9 @@ const PASTE_AS_HEX: egui::KeyboardShortcut =
 const NEXT_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Tab);
 const PREV_TAB: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Tab);
+const FIND_LOCAL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
+const FIND_GLOBAL: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::F);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
