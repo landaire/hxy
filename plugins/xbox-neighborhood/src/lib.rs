@@ -153,9 +153,21 @@ impl GuestMount for NoMount {
 /// Send a unicast NAP probe to `host_port` and return the console
 /// that answered, if any. Errors are joined as strings so the
 /// palette has a single failure surface.
+///
+/// Implementation note: WASI preview 2 sockets does not expose a
+/// receive-timeout primitive (`set_read_timeout` returns "Protocol
+/// not available" on `wasm32-wasip2`). The state machine's
+/// `Wait { until }` action is honoured instead by setting the
+/// socket to nonblocking and polling `recv_from` until either the
+/// deadline elapses or a datagram lands. `std::thread::sleep`
+/// between polls maps cleanly to wasi:clocks so we don't burn the
+/// CPU.
 fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {
     let target = resolve_target(host_port)?;
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind: {e}"))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|e| format!("set_nonblocking: {e}"))?;
     let config = DiscoveryConfig::unicast(target);
     let start = Instant::now();
     let mut engine = Discovery::broadcast(config, start);
@@ -173,26 +185,28 @@ fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {
                     .map_err(|e| format!("send_to {dest}: {e}"))?;
             }
             DiscoveryAction::Wait { until } => {
-                let now = Instant::now();
-                let budget = until.saturating_duration_since(now);
-                let timeout = if budget.is_zero() {
-                    Duration::from_millis(1)
-                } else {
-                    budget
-                };
-                socket
-                    .set_read_timeout(Some(timeout))
-                    .map_err(|e| format!("set_read_timeout: {e}"))?;
-                match socket.recv_from(&mut buf) {
-                    Ok((n, src)) => engine.handle_inbound(src, &buf[..n]),
-                    Err(e) if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {
-                        // Timer fired -- loop and re-poll so the
-                        // state machine sees the deadline.
+                // Spin in nonblocking mode until either a datagram
+                // arrives or the deadline fires; the outer loop
+                // then re-polls the engine for the next action.
+                loop {
+                    let now = Instant::now();
+                    if now >= until {
+                        break;
                     }
-                    Err(e) => return Err(format!("recv_from: {e}")),
+                    match socket.recv_from(&mut buf) {
+                        Ok((n, src)) => {
+                            engine.handle_inbound(src, &buf[..n]);
+                            break;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Cap the nap at the remaining budget so
+                            // we don't oversleep the deadline.
+                            let remaining = until.saturating_duration_since(now);
+                            let nap = remaining.min(Duration::from_millis(20));
+                            std::thread::sleep(nap);
+                        }
+                        Err(e) => return Err(format!("recv_from: {e}")),
+                    }
                 }
             }
         }
