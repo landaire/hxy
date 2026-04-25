@@ -126,6 +126,12 @@ pub struct HxyApp {
     /// clicked) keep showing data from the file the user was last
     /// reading, not from themselves.
     last_active_file: Option<FileId>,
+    /// Same idea as `last_active_file` but for workspace context:
+    /// remembers which workspace was most recently focused so
+    /// "Toggle VFS panel" / "Browse VFS" don't silently no-op when
+    /// the user happens to have clicked into the inspector or
+    /// console. Cleared when the corresponding workspace closes.
+    last_active_workspace: Option<crate::file::WorkspaceId>,
     /// Native macOS menu bar. `None` until the app is constructed on
     /// the main thread. Dropping it tears the NSMenu down.
     #[cfg(target_os = "macos")]
@@ -328,6 +334,7 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             decoders: crate::inspector::default_decoders(),
             last_active_file: None,
+            last_active_workspace: None,
             #[cfg(target_os = "macos")]
             menu: Some(crate::menu::MenuState::install()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -2799,13 +2806,32 @@ fn mount_active_file(app: &mut HxyApp) {
     }
 }
 
-/// Returns the workspace id of the active workspace tab, if any.
+/// Best guess at "the workspace the user is in." Tries in order:
+/// the outer-focused `Tab::Workspace`, the most recently focused
+/// workspace (so clicking into Inspector / Console doesn't make
+/// `Toggle VFS panel` and friends evaporate), and finally -- when
+/// only one workspace is open -- that sole workspace. Returns
+/// `None` only when no workspace exists.
 fn active_workspace_id(app: &mut HxyApp) -> Option<crate::file::WorkspaceId> {
-    let (_, tab) = app.dock.find_active_focused()?;
-    match tab {
-        Tab::Workspace(id) => Some(*id),
-        _ => None,
+    if let Some((_, tab)) = app.dock.find_active_focused()
+        && let Tab::Workspace(id) = *tab
+    {
+        app.last_active_workspace = Some(id);
+        return Some(id);
     }
+    if let Some(id) = app.last_active_workspace
+        && app.workspaces.contains_key(&id)
+    {
+        return Some(id);
+    }
+    // Final fallback: pick any workspace if one exists. Matches the
+    // single-workspace common case without forcing the user to
+    // re-focus before invoking a workspace command.
+    let id = app.workspaces.keys().next().copied();
+    if let Some(id) = id {
+        app.last_active_workspace = Some(id);
+    }
+    id
 }
 
 /// Re-add `WorkspaceTab::VfsTree` to the workspace's inner dock if the
@@ -3959,6 +3985,9 @@ fn request_close_active_tab(app: &mut HxyApp) {
 /// `app.workspaces` and the persisted `as_workspace` flag is cleared.
 fn collapse_workspace_to_file(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId) {
     let Some(workspace) = app.workspaces.remove(&workspace_id) else { return };
+    if app.last_active_workspace == Some(workspace_id) {
+        app.last_active_workspace = None;
+    }
     let editor_id = workspace.editor_id;
 
     // Replace the outer Tab::Workspace with Tab::File(editor_id) in
@@ -3993,6 +4022,9 @@ fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::file::WorkspaceI
         Some(w) => w,
         None => return,
     };
+    if app.last_active_workspace == Some(workspace_id) {
+        app.last_active_workspace = None;
+    }
     if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
         let _ = app.dock.remove_tab(path);
     }
@@ -5564,6 +5596,7 @@ fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
                 if let Some(workspace) = app.workspaces.get(&workspace_id) {
                     let id = inner_active_file(workspace);
                     app.last_active_file = Some(id);
+                    app.last_active_workspace = Some(workspace_id);
                     return Some(id);
                 }
             }
