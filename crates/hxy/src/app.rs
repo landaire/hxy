@@ -769,6 +769,7 @@ impl HxyApp {
         as_workspace: bool,
     ) -> FileId {
         let id = self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
+        self.apply_readonly_for_source(id);
 
         let pushed_workspace = if as_workspace { self.try_push_as_workspace(id) } else { false };
         if !pushed_workspace {
@@ -1030,18 +1031,50 @@ impl HxyApp {
         }
     }
 
+    /// If `id`'s source is a `TabSource::VfsEntry` whose mount has
+    /// no writer, force the file's editor into Readonly and stamp
+    /// the reason on the file. The user cannot then toggle to
+    /// mutable from the lock icon -- saving is structurally
+    /// impossible, not a soft hint. Filesystem-readonly stays soft
+    /// (the user can still edit in-memory and save-as elsewhere).
+    fn apply_readonly_for_source(&mut self, id: FileId) {
+        let parent_source = match self.files.get(&id).and_then(|f| f.source_kind.as_ref()) {
+            Some(TabSource::VfsEntry { parent, .. }) => (**parent).clone(),
+            _ => return,
+        };
+        let parent_writable = self
+            .find_mount_for_source(&parent_source)
+            .map(|m| m.writer.is_some())
+            // Mount missing right now (shouldn't happen at open time)
+            // -- be conservative and leave the file alone rather
+            // than force-locking it.
+            .unwrap_or(true);
+        if parent_writable {
+            return;
+        }
+        if let Some(file) = self.files.get_mut(&id) {
+            file.read_only_reason = Some(crate::file::ReadOnlyReason::VfsNoWriter);
+            file.editor.set_edit_mode(crate::file::EditMode::Readonly);
+        }
+    }
+
     /// Locate the `MountedVfs` for the given source, regardless of
     /// where the mount lives -- workspace (file-rooted) or plugin
     /// (rootless). Returns `None` if no live mount currently provides
-    /// that source.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// that source. Plugin mounts only exist on desktop (the
+    /// wasm-side runtime can't host wasmtime), but workspaces work
+    /// everywhere -- so the function itself is universal and the
+    /// `PluginMount` arm is the only desktop-only piece.
     fn find_mount_for_source(&self, source: &TabSource) -> Option<Arc<MountedVfs>> {
         match source {
+            #[cfg(not(target_arch = "wasm32"))]
             TabSource::PluginMount { plugin_name, token, .. } => self
                 .mounts
                 .values()
                 .find(|m| m.plugin_name == *plugin_name && m.token == *token)
                 .map(|m| m.mount.clone()),
+            #[cfg(target_arch = "wasm32")]
+            TabSource::PluginMount { .. } => None,
             other => {
                 let editor_id = self
                     .files
@@ -1095,6 +1128,7 @@ impl HxyApp {
                     restore_selection,
                     restore_scroll,
                 );
+                self.apply_readonly_for_source(id);
                 if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
                     push_workspace_entry(workspace, id);
                 } else {
@@ -3646,6 +3680,13 @@ fn sync_native_menu_state(app: &mut HxyApp) {
 fn toggle_active_edit_mode(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
+    // Hard read-only files refuse the toggle the same way the lock
+    // icon does. The reason is already surfaced via the icon's
+    // tooltip; silently no-op the keystroke rather than flicker the
+    // edit mode and snap it back.
+    if file.read_only_reason.is_some() {
+        return;
+    }
     let next = match file.editor.edit_mode() {
         crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
         crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,
@@ -6704,15 +6745,30 @@ fn status_bar_ui(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Lock toggle sits next to the length readout. Clicking
             // flips EditMode; the tooltip describes what the click
-            // will do, not what the icon currently shows.
-            let (icon, tooltip_key) = match file.editor.edit_mode() {
-                crate::file::EditMode::Readonly => (egui_phosphor::regular::LOCK, "status-lock-readonly-tooltip"),
-                crate::file::EditMode::Mutable => (egui_phosphor::regular::LOCK_OPEN, "status-lock-mutable-tooltip"),
+            // will do, not what the icon currently shows. When the
+            // file has a hard read-only constraint (`read_only_reason`)
+            // the icon stays locked, the click is a no-op, and the
+            // tooltip explains why mutability isn't available.
+            let hard_readonly = file.read_only_reason;
+            let (icon, tooltip): (&str, String) = match (hard_readonly, file.editor.edit_mode()) {
+                (Some(reason), _) => (
+                    egui_phosphor::regular::LOCK,
+                    hxy_i18n::t_args(
+                        "status-lock-readonly-locked-tooltip",
+                        &[("reason", &hxy_i18n::t(reason.message_key()))],
+                    ),
+                ),
+                (None, crate::file::EditMode::Readonly) => {
+                    (egui_phosphor::regular::LOCK, hxy_i18n::t("status-lock-readonly-tooltip"))
+                }
+                (None, crate::file::EditMode::Mutable) => {
+                    (egui_phosphor::regular::LOCK_OPEN, hxy_i18n::t("status-lock-mutable-tooltip"))
+                }
             };
             let resp = ui
                 .add(egui::Button::new(icon).frame(false).min_size(egui::vec2(18.0, 18.0)))
-                .on_hover_text(hxy_i18n::t(tooltip_key));
-            if resp.clicked() {
+                .on_hover_text(tooltip);
+            if resp.clicked() && hard_readonly.is_none() {
                 let next = match file.editor.edit_mode() {
                     crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
                     crate::file::EditMode::Mutable => crate::file::EditMode::Readonly,

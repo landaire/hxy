@@ -144,6 +144,11 @@ close-prompt-cancel = Cancel
 # Status bar
 status-lock-readonly-tooltip = Read-only -- click to enable edits
 status-lock-mutable-tooltip = Editable -- click to lock
+# Tooltip on the lock icon when the buffer is hard-readonly: the user
+# can't toggle to mutable. `$reason` is the reason text (one of the
+# `readonly-reason-*` strings below).
+status-lock-readonly-locked-tooltip = Read-only -- {$reason}
+readonly-reason-vfs-no-writer = the backing VFS doesn't support writes
 
 # Restore-unsaved-edits dialog
 restore-patch-title = Restore unsaved edits?

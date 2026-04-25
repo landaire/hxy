@@ -20,6 +20,30 @@ pub use hxy_view::EditEntry;
 pub use hxy_view::EditMode;
 pub use hxy_view::WriteError;
 
+/// A reason a buffer is hard-readonly: the user cannot toggle the
+/// editor to mutable, and the lock icon's tooltip explains why.
+/// Detected at open / restore time by inspecting the byte source's
+/// backing mount; orthogonal to OS-level filesystem readonly, which
+/// is a soft hint the user can still flip locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnlyReason {
+    /// The byte source is a `TabSource::VfsEntry` whose parent mount
+    /// has no `VfsWriter` -- the underlying handler simply doesn't
+    /// support in-place writes (e.g. zip, minidump).
+    VfsNoWriter,
+}
+
+impl ReadOnlyReason {
+    /// Fluent key for the human-readable reason text. Resolved via
+    /// `hxy_i18n::t` at the call site so a locale change triggers a
+    /// fresh lookup without the reason itself caching English.
+    pub fn message_key(&self) -> &'static str {
+        match self {
+            Self::VfsNoWriter => "readonly-reason-vfs-no-writer",
+        }
+    }
+}
+
 /// Identifier for an open-file tab. Stable across the tab's lifetime so
 /// egui_dock can refer to it even as the tab moves around the dock tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,6 +187,11 @@ pub struct OpenFile {
     /// setting. Set via the `Set hex columns (this buffer)` palette
     /// command and not currently persisted across restarts.
     pub hex_columns_override: Option<hxy_core::ColumnCount>,
+    /// `Some` when the byte source has a hard write constraint (see
+    /// [`ReadOnlyReason`]) that the user cannot override from the
+    /// status-bar lock toggle. Forces `editor.edit_mode` to
+    /// `Readonly` and rewrites the lock tooltip with the reason.
+    pub read_only_reason: Option<ReadOnlyReason>,
     /// Per-tab search bar state. Live as long as the tab; not
     /// persisted across restarts. The bar visibility flag lives on the
     /// state itself rather than a separate boolean so reopening the
@@ -314,6 +343,7 @@ impl OpenFile {
             #[cfg(not(target_arch = "wasm32"))]
             suggested_template: None,
             hex_columns_override: None,
+            read_only_reason: None,
             search: crate::search::SearchState::default(),
         }
     }
