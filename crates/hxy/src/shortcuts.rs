@@ -50,6 +50,17 @@ pub const PREV_TAB: KeyboardShortcut =
 /// Option key.
 pub const TOGGLE_TAB_FOCUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::Tab);
 
+// -------- Palette --------
+
+/// Cmd+P opens the filename-first quick-open list (open files
+/// plus recent paths). Re-pressing while the same mode is already
+/// open closes the palette.
+pub const QUICK_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
+/// Cmd+Shift+P opens the full command palette (commands, files,
+/// templates, plugin contributions). Re-pressing closes it.
+pub const COMMAND_PALETTE: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::P);
+
 // -------- Pane focus --------
 
 /// Cmd+K starts the visual pane-focus picker -- every leaf gets a

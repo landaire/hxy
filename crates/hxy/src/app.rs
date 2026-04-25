@@ -4371,16 +4371,25 @@ fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
-    let toggle = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::P);
-    if ctx.input_mut(|i| i.consume_shortcut(&toggle)) {
-        if app.palette.is_open() {
+    // Cmd+P opens / closes the file switcher; Cmd+Shift+P opens
+    // the full command palette. Match VS Code's split: filename
+    // muscle memory goes to plain Cmd+P, the busier "search
+    // everything" list takes the shift.
+    let quick = ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::QUICK_OPEN));
+    let full = !quick && ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::COMMAND_PALETTE));
+    if quick || full {
+        let target_mode =
+            if quick { crate::command_palette::Mode::QuickOpen } else { crate::command_palette::Mode::Main };
+        if app.palette.is_open() && app.palette.mode == target_mode {
+            // Same shortcut twice == close, matching the existing
+            // "Cmd+P toggles the palette" expectation.
             app.palette.close();
         } else {
             // The palette and the visual pane picker can't coexist:
             // both want full-screen keyboard ownership. Opening the
             // palette implicitly cancels any staged pick.
             app.pending_pane_pick = None;
-            app.palette.open_at(crate::command_palette::Mode::Main);
+            app.palette.open_at(target_mode);
         }
     }
     if !app.palette.is_open() {
@@ -4977,6 +4986,42 @@ fn build_palette_entries(
                     entry = entry.with_icon(cmd.icon.unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
                     out.push(entry);
                 }
+            }
+        }
+        Mode::QuickOpen => {
+            // Files-only fast switcher. Lists every open file in
+            // `app.files` plus recent paths the user could re-open.
+            // No commands, plugin entries, or copy actions -- this
+            // is the "I just want to switch tabs" path.
+            for (id, file) in &app.files {
+                let mut entry =
+                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
+                        .with_icon(icon::FILE);
+                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
+            }
+            // Recent files that aren't currently open. Same Action
+            // as the cascading Recent mode, just inline so the user
+            // doesn't need to hop modes for the common case.
+            let open_paths: std::collections::HashSet<std::path::PathBuf> =
+                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
+            for recent in &app.state.read().app.recent_files {
+                if open_paths.contains(&recent.path) {
+                    continue;
+                }
+                let name = recent
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| recent.path.display().to_string());
+                let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
+                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                if let Some(parent) = recent.path.parent() {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
             }
         }
         Mode::Templates => {

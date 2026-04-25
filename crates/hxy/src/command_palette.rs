@@ -114,8 +114,14 @@ impl PaletteState {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Everything -- commands + files + the `Run Template...` entry
-    /// that cascades into [`Mode::Templates`].
+    /// that cascades into [`Mode::Templates`]. Reached via the
+    /// "command palette" shortcut (Cmd+Shift+P).
     Main,
+    /// Filename-first quick-open list: just the currently-open
+    /// files (in `app.files`) plus recent paths the user can
+    /// re-open. No commands. Reached via the "quick open"
+    /// shortcut (Cmd+P) and intended for fast tab switching.
+    QuickOpen,
     /// Second-level cascade shown after the user picks `Run Template...`
     /// from the main list. Registered templates + an install entry.
     Templates,
@@ -181,7 +187,9 @@ impl Mode {
     /// parent for everything except `Main` itself.
     pub fn parent(self) -> Option<Self> {
         match self {
-            Mode::Main => None,
+            // Top-level modes -- Escape closes the palette outright
+            // rather than popping back somewhere.
+            Mode::Main | Mode::QuickOpen => None,
             Mode::Templates
             | Mode::Uninstall
             | Mode::UninstallPlugin
@@ -325,6 +333,7 @@ pub fn show(
 ) -> Option<Outcome> {
     let hint: String = match state.mode {
         Mode::Main => hxy_i18n::t("palette-hint-main"),
+        Mode::QuickOpen => hxy_i18n::t("palette-hint-quick-open"),
         Mode::Templates => hxy_i18n::t("palette-hint-templates"),
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
         Mode::UninstallPlugin => hxy_i18n::t("palette-hint-uninstall-plugin"),
