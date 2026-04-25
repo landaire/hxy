@@ -123,6 +123,11 @@ pub enum Mode {
     /// Picking one deletes its `.bt` file (and any siblings we added
     /// for it). Reached from `Main` via "Uninstall template...".
     Uninstall,
+    /// Third-level cascade: list installed WASM plugins to remove.
+    /// Picking one deletes the `.wasm` + `.hxy.toml` sidecar, drops
+    /// the user's stored grant, and clears persisted plugin state.
+    /// Reached from `Main` via "Uninstall plugin...".
+    UninstallPlugin,
     /// Recent filesystem files picked from `AppSettings::recent_files`,
     /// already-open paths filtered out. Reached from `Main` via
     /// "Open recent...".
@@ -179,6 +184,7 @@ impl Mode {
             Mode::Main => None,
             Mode::Templates
             | Mode::Uninstall
+            | Mode::UninstallPlugin
             | Mode::Recent
             | Mode::GoToOffset
             | Mode::SelectFromOffset
@@ -253,6 +259,12 @@ pub enum Action {
     InstallTemplate,
     /// Delete the given `.bt` from the user's templates directory.
     UninstallTemplate(PathBuf),
+    /// Uninstall the WASM plugin whose component lives at `wasm_path`.
+    /// The dispatcher deletes the `.wasm` + sidecar, drops the
+    /// stored grant for the plugin's `PluginKey`, and clears any
+    /// persisted blob the plugin owned. Triggers a plugin rescan
+    /// so the change is reflected immediately.
+    UninstallPlugin(PathBuf),
     /// Copy the active file's current selection using the given
     /// format. Only offered when a non-empty selection exists.
     Copy(crate::copy_format::CopyKind),
@@ -303,6 +315,7 @@ pub fn show(
         Mode::Main => hxy_i18n::t("palette-hint-main"),
         Mode::Templates => hxy_i18n::t("palette-hint-templates"),
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
+        Mode::UninstallPlugin => hxy_i18n::t("palette-hint-uninstall-plugin"),
         Mode::Recent => hxy_i18n::t("palette-hint-recent"),
         Mode::GoToOffset => hxy_i18n::t("palette-hint-go-to-offset"),
         Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),

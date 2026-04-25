@@ -3445,6 +3445,14 @@ fn build_palette_entries(
                 )
                 .with_icon(icon::TRASH),
             );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-uninstall-plugin"),
+                    Action::SwitchMode(Mode::UninstallPlugin),
+                )
+                .with_subtitle(hxy_i18n::t("palette-delete-plugin-subtitle"))
+                .with_icon(icon::TRASH),
+            );
             if history_ctx.has_active_file {
                 out.push(
                     egui_palette::Entry::new(
@@ -3738,6 +3746,36 @@ fn build_palette_entries(
                         egui_palette::Entry::new(
                             hxy_i18n::t_args("palette-delete-template-fmt", &[("name", &name)]),
                             Action::UninstallTemplate(path.clone()),
+                        )
+                        .with_subtitle(path.display().to_string())
+                        .with_icon(icon::TRASH),
+                    );
+                }
+            }
+        }
+        Mode::UninstallPlugin => {
+            // Pull from both plugin directories so a single palette
+            // mode covers handler plugins (`plugins/`) and template
+            // runtimes (`template-plugins/`). The dispatcher handles
+            // both the same way: delete the .wasm + sidecar, drop
+            // grant, clear state, rescan.
+            for dir in [user_plugins_dir(), user_template_plugins_dir()].into_iter().flatten() {
+                let Ok(read) = std::fs::read_dir(&dir) else { continue };
+                let mut wasms: Vec<std::path::PathBuf> = read
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wasm"))
+                    .collect();
+                wasms.sort();
+                for path in wasms {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t_args("palette-delete-plugin-fmt", &[("name", &name)]),
+                            Action::UninstallPlugin(path.clone()),
                         )
                         .with_subtitle(path.display().to_string())
                         .with_icon(icon::TRASH),
@@ -4087,6 +4125,10 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             app.palette.close();
             uninstall_template(app, &path);
         }
+        crate::command_palette::Action::UninstallPlugin(path) => {
+            app.palette.close();
+            uninstall_plugin(app, &path);
+        }
         crate::command_palette::Action::Copy(kind) => {
             app.palette.close();
             if let Some(id) = active_file_id(app)
@@ -4227,6 +4269,108 @@ fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
             app.console_log(ConsoleSeverity::Error, &ctx, format!("delete failed: {e}"));
         }
     }
+}
+
+/// Full plugin uninstall: removes the `.wasm` + sidecar manifest,
+/// drops the user's stored grant for the plugin's `PluginKey`, and
+/// clears any persisted state blob the plugin owned. Each step
+/// logs to the console; failures don't short-circuit the others
+/// (a stale grant or leftover state shouldn't block the disk
+/// cleanup that the user actually asked for).
+#[cfg(not(target_arch = "wasm32"))]
+fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
+    let ctx = format!("Uninstall {}", wasm_path.display());
+
+    // Read the sidecar before deleting so we can scope the grant +
+    // state cleanup to the plugin's actual identity. Falling back
+    // to the file stem mirrors how the loader handles manifest-less
+    // plugins (`PluginManifest::load_for` -> `Ok(None)`), so we
+    // still clean up state keyed by the legacy name.
+    let sidecar = hxy_plugin_host::PluginManifest::sidecar_path(wasm_path);
+    let manifest = hxy_plugin_host::PluginManifest::load_for(wasm_path).ok().flatten();
+    let plugin_name = manifest
+        .as_ref()
+        .map(|m| m.plugin.name.clone())
+        .unwrap_or_else(|| {
+            wasm_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+
+    // Hash the on-disk bytes so we can drop the matching grant
+    // entry. Failure to read just means the grant cleanup is
+    // skipped -- the file deletion below still proceeds.
+    let key = match std::fs::read(wasm_path) {
+        Ok(bytes) => {
+            let version = manifest
+                .as_ref()
+                .map(|m| m.plugin.version.clone())
+                .unwrap_or_else(|| "0.0.0".to_string());
+            Some(hxy_plugin_host::PluginKey::from_bytes(plugin_name.clone(), version, &bytes))
+        }
+        Err(e) => {
+            app.console_log(
+                ConsoleSeverity::Warning,
+                &ctx,
+                format!("read for grant cleanup: {e}"),
+            );
+            None
+        }
+    };
+
+    match std::fs::remove_file(wasm_path) {
+        Ok(_) => app.console_log(ConsoleSeverity::Info, &ctx, "removed component"),
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Error, &ctx, format!("remove component: {e}"));
+            return;
+        }
+    }
+    if sidecar.exists() {
+        match std::fs::remove_file(&sidecar) {
+            Ok(_) => app.console_log(ConsoleSeverity::Info, &ctx, "removed manifest"),
+            Err(e) => app.console_log(
+                ConsoleSeverity::Warning,
+                &ctx,
+                format!("remove manifest {}: {e}", sidecar.display()),
+            ),
+        }
+    }
+
+    if let Some(key) = key {
+        let mut grants_changed = false;
+        {
+            let mut state = app.state.write();
+            if state.plugin_grants.forget(&key) {
+                grants_changed = true;
+            }
+        }
+        if grants_changed && let Some(sink) = app.sink.as_ref() {
+            let snapshot = app.state.read().clone();
+            if let Err(e) = sink.save(&snapshot) {
+                app.console_log(
+                    ConsoleSeverity::Warning,
+                    &ctx,
+                    format!("persist grants after uninstall: {e}"),
+                );
+            }
+        }
+    }
+
+    if !plugin_name.is_empty()
+        && let Some(store) = app.plugin_state_store.as_ref()
+    {
+        match store.clear(&plugin_name) {
+            Ok(_) => app.console_log(ConsoleSeverity::Info, &ctx, "cleared persisted state"),
+            Err(e) => app.console_log(
+                ConsoleSeverity::Warning,
+                &ctx,
+                format!("clear persisted state: {e}"),
+            ),
+        }
+    }
+
+    app.reload_plugins();
 }
 
 /// Best guess at which file tab the user is "in" right now. Tries in

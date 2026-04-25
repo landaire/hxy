@@ -144,9 +144,12 @@ impl PluginGrants {
     }
 
     /// Forget any record for `key`. The next load that observes
-    /// this plugin will treat it as needing fresh consent.
-    pub fn forget(&mut self, key: &PluginKey) {
-        self.plugins.remove(&key.map_key());
+    /// this plugin will treat it as needing fresh consent. Returns
+    /// `true` when an entry was actually removed -- callers (e.g.
+    /// the uninstall flow) use this to skip a needless re-persist
+    /// when the grant table is unchanged.
+    pub fn forget(&mut self, key: &PluginKey) -> bool {
+        self.plugins.remove(&key.map_key()).is_some()
     }
 
     /// Iterate every (key, grants) pair currently recorded. Used
