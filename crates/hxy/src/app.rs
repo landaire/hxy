@@ -402,6 +402,16 @@ impl HxyApp {
         // or the unchanged op (still pending). Re-collect the
         // not-yet-ready ones into the queue; ready ones are
         // dispatched immediately.
+        //
+        // Critical: dispatching a ready op may itself spawn a new
+        // op (e.g. a `respond` outcome of `Mount` spawns
+        // `mount_by_token`), so the dispatch path pushes onto
+        // `self.pending_plugin_ops`. We must NOT overwrite that
+        // vec with our locally-collected `still_pending` at the
+        // end -- that would discard the newly-spawned ops and the
+        // mount tab would never open. Instead, prepend the still-
+        // pending ones back so any new ops dispatch added during
+        // this drain are preserved.
         let drained: Vec<_> = self.pending_plugin_ops.drain(..).collect();
         let mut still_pending: Vec<crate::plugin_runner::PendingOp> = Vec::new();
         for op in drained {
@@ -450,7 +460,12 @@ impl HxyApp {
                 },
             }
         }
-        self.pending_plugin_ops = still_pending;
+        // Push the still-pending ops back, preserving any new ops
+        // the dispatch loop appended (e.g. a `mount_by_token`
+        // spawned by a `respond -> Mount` outcome).
+        for op in still_pending {
+            self.pending_plugin_ops.push(op);
+        }
     }
 
     fn log_plugin_completion(
@@ -4646,10 +4661,15 @@ fn install_mount_tab(
     app.dock.push_to_focused_leaf(Tab::File(id));
     if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
         remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
-        // Make sure the new tab is the active one so its side
-        // panel renders immediately rather than waiting for the
-        // user to click it.
-        let _ = app.dock.set_active_tab(path);
+        // Re-find the tab after the welcome removal -- removing the
+        // welcome tab can shift our index, so the original `path`
+        // is potentially stale. Without re-resolving, set_active_tab
+        // either points at a different tab or no-ops, leaving the
+        // new mount tab in the background where its side panel
+        // never renders (and read_dir never fires against the kit).
+        if let Some(fresh_path) = app.dock.find_tab(&Tab::File(id)) {
+            let _ = app.dock.set_active_tab(fresh_path);
+        }
     }
     tracing::info!(plugin = %plugin.name(), title = %title, id = %id.get(), "mount tab installed");
 }

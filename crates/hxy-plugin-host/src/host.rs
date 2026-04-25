@@ -107,14 +107,14 @@ impl HostState {
 }
 
 /// Build a `WasiCtx` with sockets enabled but every address denied.
-/// The default `WasiCtxBuilder` already denies all addresses; we
-/// just don't grant anything else (no fs preopens, no env, no stdio
-/// inheritance) so plugins start from a maximally-locked-down
-/// baseline.
+/// `socket_addr_check` defaults to "reject everything" so we don't
+/// need a custom callback for the deny-all case. Stderr is
+/// inherited so plugin diagnostics (`eprintln!`) reach the host's
+/// terminal -- `wasi:cli/stderr` writes are otherwise dropped.
 fn deny_all_wasi_ctx() -> WasiCtx {
-    // socket_addr_check defaults to "reject everything", so we don't
-    // need to install a custom callback for the deny-all case.
-    WasiCtxBuilder::new().build()
+    let mut builder = WasiCtxBuilder::new();
+    builder.inherit_stderr();
+    builder.build()
 }
 
 /// Build a `WasiCtx` whose socket allow-check honors the given
@@ -127,9 +127,14 @@ fn deny_all_wasi_ctx() -> WasiCtx {
 /// about *where the plugin can talk to*, not about whether it can
 /// open a UDP socket on an ephemeral port. Outbound operations are
 /// gated against the pattern list.
+///
+/// Stderr is inherited so plugin diagnostics (`eprintln!`) surface
+/// in the host's terminal; without this they go to /dev/null and
+/// debugging the plugin is much harder.
 fn build_wasi_ctx_with_allowlist(patterns: Vec<String>) -> WasiCtx {
     let patterns = Arc::new(patterns);
     let mut builder = WasiCtxBuilder::new();
+    builder.inherit_stderr();
     builder.allow_ip_name_lookup(true);
     builder.socket_addr_check(move |addr, use_kind| {
         let patterns = patterns.clone();

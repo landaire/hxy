@@ -119,9 +119,16 @@ fn walk(
         let full = join(path, &name);
         let id = format!("D:{full}");
         let label = format!("{} {}", egui_phosphor::regular::FOLDER, name);
-        builder.node(NodeBuilder::dir(id).label(label).default_open(false));
+        let is_open = builder.node(NodeBuilder::dir(id).label(label).default_open(false));
         totals.dirs += 1;
-        walk(builder, fs, &full, totals);
+        // Lazy descent: only recurse into children when the user has
+        // actually expanded this node. For in-memory VFS handlers
+        // (zip, etc.) the eager walk was cheap; for a TCP-backed
+        // mount like xbox-neighborhood it pulls the entire remote
+        // filesystem on the UI thread and freezes the frame loop.
+        if is_open {
+            walk(builder, fs, &full, totals);
+        }
         builder.close_dir();
     }
     for (name, size) in files {
