@@ -20,9 +20,10 @@ pub enum VfsPanelEvent {
 }
 
 /// Render the panel for `fs` and return any events produced this frame.
-/// The `id_seed` should be unique per tab so multiple mounted tabs don't
-/// share tree state.
-pub fn show(ui: &mut egui::Ui, id_seed: u64, fs: &dyn FileSystem) -> Vec<VfsPanelEvent> {
+/// `id_scope` must be unique across every panel currently on screen --
+/// workspaces and plugin mounts each pass a domain-tagged id so a
+/// `WorkspaceId(1)` panel can't collide with a `MountId(1)` panel.
+pub fn show(ui: &mut egui::Ui, id_scope: egui::Id, fs: &dyn FileSystem) -> Vec<VfsPanelEvent> {
     // Clip everything painted by the tree to our allocated rect so
     // long entry names don't overflow horizontally into the hex view.
     ui.set_clip_rect(ui.max_rect());
@@ -31,8 +32,8 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, fs: &dyn FileSystem) -> Vec<VfsPane
 
     // Footer first so its height is reserved before the scroll area claims
     // the remaining vertical space.
-    let footer_text = egui::Id::new(("hxy_vfs_footer", id_seed));
-    egui::Panel::bottom(egui::Id::new(("hxy_vfs_footer_panel", id_seed))).resizable(false).show_inside(ui, |ui| {
+    let footer_text = id_scope.with("hxy_vfs_footer");
+    egui::Panel::bottom(id_scope.with("hxy_vfs_footer_panel")).resizable(false).show_inside(ui, |ui| {
         let text: String = ui.ctx().data(|d| d.get_temp(footer_text)).unwrap_or_default();
         ui.horizontal(|ui| {
             ui.weak(text);
@@ -40,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, fs: &dyn FileSystem) -> Vec<VfsPane
     });
 
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        let tree_id = egui::Id::new(("hxy_vfs_tree", id_seed));
+        let tree_id = id_scope.with("hxy_vfs_tree");
         let (response, actions) = TreeView::new(tree_id).show(ui, |builder| {
             walk(builder, fs, "", &mut totals);
         });

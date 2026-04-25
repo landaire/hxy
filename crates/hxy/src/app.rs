@@ -2761,7 +2761,8 @@ fn render_plugin_mount_tab(
     mount_id: crate::file::MountId,
     mount: &Arc<hxy_vfs::MountedVfs>,
 ) {
-    let events = crate::vfs_panel::show(ui, mount_id.get(), &*mount.fs);
+    let scope = egui::Id::new(("hxy-plugin-mount-vfs", mount_id.get()));
+    let events = crate::vfs_panel::show(ui, scope, &*mount.fs);
     let mut to_open: Vec<String> = Vec::new();
     for e in events {
         let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
@@ -6394,7 +6395,8 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 }
             },
             crate::file::WorkspaceTab::VfsTree => {
-                let events = crate::vfs_panel::show(ui, self.workspace_id.get(), &*self.mount.fs);
+                let scope = egui::Id::new(("hxy-workspace-vfs", self.workspace_id.get()));
+                let events = crate::vfs_panel::show(ui, scope, &*self.mount.fs);
                 let mut to_open: Vec<String> = Vec::new();
                 for e in events {
                     let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
