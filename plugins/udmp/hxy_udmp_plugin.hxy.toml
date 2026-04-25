@@ -1,0 +1,10 @@
+[plugin]
+name = "udmp"
+version = "0.1.0"
+authors = ["Lander Brandt"]
+description = "Mount Windows user-mode minidumps as a structured VFS tree."
+
+# No host capabilities requested -- the plugin reads the source byte
+# range it was given and emits a tree. No commands, no networking,
+# no persisted state.
+[permissions]

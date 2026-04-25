@@ -1,0 +1,25 @@
+[package]
+name = "hxy-udmp-plugin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+description = "Mount Windows user-mode minidumps as a structured VFS tree."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
+# Path-dep so the wasm shim added to map.rs travels with the plugin.
+udmp-parser = { path = "../../../../src/udmp-parser-rs" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# Standalone workspace -- not pulled into the main hxy workspace so
+# host crates don't take a transitive dependency on udmp-parser.
+[workspace]
