@@ -279,6 +279,12 @@ impl GuestMount for Mount {
         let end = ((offset.saturating_add(length)) as usize).min(body.len());
         Ok(body[start..end].to_vec())
     }
+
+    fn write_range(&self, _path: String, _offset: u64, _data: Vec<u8>) -> Result<u64, String> {
+        // Test fixture has no real backing store -- the synthesized
+        // `<token>.txt` is rebuilt from the token on every read.
+        Err("test-statecmd mount is read-only".to_string())
+    }
 }
 
 /// Read the persisted counter, defaulting to zero when the state

@@ -31,4 +31,23 @@ pub trait VfsHandler: Send + Sync {
 pub struct MountedVfs {
     pub fs: Box<dyn FileSystem>,
     pub capabilities: VfsCapabilities,
+    /// Optional in-place writeback handle. `Some` for handlers that
+    /// support `write_range` (e.g. xbox-neighborhood's
+    /// `/modules/...` and `/memory/...` synthetic dirs); `None` for
+    /// read-only mounts. The save flow uses this to push patched
+    /// bytes back through the plugin via xbdm `setmem`.
+    pub writer: Option<Arc<dyn VfsWriter>>,
+}
+
+/// In-place ranged writeback. Sits alongside [`vfs::FileSystem`]
+/// rather than being part of it because the upstream trait only
+/// has `create_file` / `append_file` and we want to overwrite
+/// bytes inside an existing entry without truncating or extending.
+///
+/// Returns the number of bytes the underlying medium actually
+/// wrote. May be less than `data.len()` (e.g. xbdm's `setmem`
+/// stops at the first unmapped page); the editor surfaces a
+/// partial-write to the user as a warning.
+pub trait VfsWriter: Send + Sync {
+    fn write_range(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, String>;
 }

@@ -54,6 +54,18 @@ interface handler {
         /// Reads past EOF return whatever is available (a short
         /// read); reads with `length == 0` return an empty `Vec`.
         read-range: func(path: string, offset: u64, length: u64) -> result<list<u8>, string>;
+
+        /// Overwrite bytes `[offset, offset + data.len())` in the
+        /// file at `path`. Returns the number of bytes the plugin
+        /// actually wrote (may be less than requested if the
+        /// underlying medium aborted partway -- e.g. xbox-
+        /// neighborhood's `setmem` stops at unmapped pages).
+        ///
+        /// Plugins that don't support writes return `Err("not
+        /// supported")` (or similar). This is the only write path
+        /// in the WIT mount interface; in-place edits via the hex
+        /// editor's save flow route every patch op through here.
+        write-range: func(path: string, offset: u64, data: list<u8>) -> result<u64, string>;
     }
 
     /// Sniff the first bytes of a source and report whether this

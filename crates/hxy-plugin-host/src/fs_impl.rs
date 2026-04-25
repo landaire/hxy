@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use hxy_vfs::VfsWriter;
 use vfs::FileSystem;
 use vfs::SeekAndRead;
 use vfs::SeekAndWrite;
@@ -72,7 +73,7 @@ impl FileSystem for PluginFileSystem {
             .map_err(|e| other(format!("plugin read-dir call trap: {e}")))?
             .map_err(|e| other(format!("plugin read-dir: {e}")));
         match &result {
-            Ok(entries) => tracing::info!(
+            Ok(entries) => tracing::debug!(
                 target: "hxy_plugin_host::mount",
                 plugin = %self.plugin_name,
                 path = %path,
@@ -240,6 +241,36 @@ impl FileBlockCache {
         Some(bytes)
     }
 
+    /// Drop every cached block for `path` whose byte range
+    /// overlaps `[write_offset, write_offset + write_len)`. Called
+    /// after a successful `write_range` so subsequent reads re-
+    /// fetch the modified pages instead of serving stale bytes
+    /// from before the write.
+    pub(crate) fn invalidate_overlapping(
+        &mut self,
+        path: &str,
+        write_offset: u64,
+        write_len: u64,
+    ) {
+        if write_len == 0 {
+            return;
+        }
+        let write_end = write_offset.saturating_add(write_len);
+        self.entries.retain(|((p, block_off), bytes)| {
+            if p != path {
+                return true;
+            }
+            let block_end = block_off.saturating_add(bytes.len() as u64);
+            // Keep the block iff it sits entirely outside the
+            // written range.
+            *block_off >= write_end || block_end <= write_offset
+        });
+        // Recompute size_bytes after retain rather than tracking
+        // deltas inline; cheaper than the bookkeeping for the
+        // expected small number of evictions.
+        self.size_bytes = self.entries.iter().map(|(_, b)| b.len()).sum();
+    }
+
     /// Insert a block, evicting from the back until the size budget
     /// fits. A single block larger than `max_bytes` still goes in
     /// (it'll evict on the next put); the alternative would be to
@@ -309,7 +340,7 @@ impl RangedReader {
             .map_err(|e| io::Error::other(format!("read-range call trap: {e}")))?
             .map_err(|e| io::Error::other(format!("plugin read-range: {e}")));
         match &result {
-            Ok(bytes) => tracing::info!(
+            Ok(bytes) => tracing::debug!(
                 target: "hxy_plugin_host::mount",
                 plugin = %self.plugin_name,
                 path = %self.path,
@@ -396,4 +427,68 @@ fn other(msg: String) -> VfsError {
 
 fn poisoned<T>(_e: std::sync::PoisonError<T>) -> VfsError {
     VfsError::from(VfsErrorKind::Other("plugin filesystem mutex poisoned".to_owned()))
+}
+
+/// In-place writeback handle. Holds the same `Arc<Mutex<PluginFsInner>>`
+/// the [`PluginFileSystem`] does so writes can lock the wasmtime
+/// `Store`, call into the plugin, and invalidate the matching read
+/// blocks in the shared cache without going through the
+/// `vfs::FileSystem` trait (which doesn't model in-place writes
+/// natively -- only `create_file` and `append_file`).
+///
+/// Construction is paired with `PluginFileSystem` in
+/// [`crate::handler::PluginHandler::mount_source`] /
+/// [`crate::handler::PluginHandler::mount_by_token`].
+pub(crate) struct PluginWriter {
+    pub(crate) inner: Arc<Mutex<crate::handler::PluginFsInner>>,
+    pub(crate) block_cache: Arc<Mutex<FileBlockCache>>,
+    pub(crate) plugin_name: String,
+}
+
+impl VfsWriter for PluginWriter {
+    fn write_range(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, String> {
+        let started = std::time::Instant::now();
+        let mut g = self
+            .inner
+            .lock()
+            .map_err(|_| "plugin filesystem mutex poisoned".to_owned())?;
+        let g = &mut *g;
+        let mount_guest = g.plugin.hxy_vfs_handler().mount();
+        let result = mount_guest
+            .call_write_range(&mut g.store, g.mount, path, offset, data)
+            .map_err(|e| format!("plugin write-range trap: {e}"))?
+            .map_err(|e| format!("plugin write-range: {e}"));
+        match &result {
+            Ok(written) => tracing::info!(
+                target: "hxy_plugin_host::mount",
+                plugin = %self.plugin_name,
+                path = %path,
+                offset,
+                requested = data.len(),
+                written,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "write_range ok"
+            ),
+            Err(e) => tracing::warn!(
+                target: "hxy_plugin_host::mount",
+                plugin = %self.plugin_name,
+                path = %path,
+                offset,
+                length = data.len(),
+                error = %e,
+                "write_range err"
+            ),
+        }
+        let written = result?;
+        // Invalidate any cached read blocks that overlap the
+        // written range so subsequent `read_range` calls don't
+        // hand back stale pre-write bytes. The whole-file
+        // metadata cache stays valid (size unchanged).
+        if written > 0
+            && let Ok(mut cache) = self.block_cache.lock()
+        {
+            cache.invalidate_overlapping(path, offset, written);
+        }
+        Ok(written)
+    }
 }

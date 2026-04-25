@@ -71,7 +71,7 @@ impl VfsHandler for ZipHandler {
         let tree = builder.build();
         let opener = ZipOpener { bytes };
         let fs: Box<dyn vfs::FileSystem> = Box::new(ReadOnlyVfs::new(tree, opener));
-        Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
+        Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY, writer: None })
     }
 }
 

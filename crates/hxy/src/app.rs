@@ -4734,8 +4734,183 @@ fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
 /// As shortcut path and by the close-tab-with-unsaved-changes
 /// modal, which conditions the tab close on the save succeeding.
 #[cfg(not(target_arch = "wasm32"))]
+/// In-place writeback for a VFS-backed tab. Walks the editor's
+/// patch ops and pushes each in-place write through the mount's
+/// `VfsWriter`. Pure inserts / deletes are rejected because the
+/// only writeback target today is xbox-neighborhood's `/memory/`
+/// + `/modules/` namespaces, neither of which can grow or shrink.
+///
+/// On success the patch is cleared (the mount is now the source
+/// of truth) and the file's byte source is swapped to the post-
+/// write contents so the editor doesn't keep showing the patch
+/// overlay against stale base bytes.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
+    let Some(file) = app.files.get(&id) else { return false };
+    let TabSource::VfsEntry { parent, entry_path } = file.source_kind.as_ref().expect("checked") else {
+        return false;
+    };
+    let entry_path = entry_path.clone();
+    let parent_source = (**parent).clone();
+    let display = file.display_name.clone();
+    let ctx = format!("Save {display}");
+
+    // Find the parent file (the mount-tab) so we can reach its writer.
+    let parent_id = match app
+        .files
+        .iter()
+        .find_map(|(fid, f)| (f.source_kind.as_ref() == Some(&parent_source)).then_some(*fid))
+    {
+        Some(p) => p,
+        None => {
+            app.console_log(
+                ConsoleSeverity::Error,
+                &ctx,
+                "parent VFS tab is gone -- close + reopen this tab",
+            );
+            return false;
+        }
+    };
+    let mount = match app.files.get(&parent_id).and_then(|f| f.mount.clone()) {
+        Some(m) => m,
+        None => {
+            app.console_log(ConsoleSeverity::Error, &ctx, "parent VFS lost its mount");
+            return false;
+        }
+    };
+    let writer = match mount.writer.clone() {
+        Some(w) => w,
+        None => {
+            app.console_log(
+                ConsoleSeverity::Error,
+                &ctx,
+                "this VFS handler doesn't support writeback",
+            );
+            return false;
+        }
+    };
+
+    // Snapshot the patch ops + total byte length so we can rebuild
+    // the post-write source after dispatching.
+    let (patch_ops, total_len, post_write_bytes): (
+        Vec<(u64, Vec<u8>)>,
+        u64,
+        Result<Vec<u8>, String>,
+    ) = {
+        let file = app.files.get(&id).expect("just looked up");
+        let editor = &file.editor;
+        let total_len = editor.source().len().get();
+        let patch = editor.patch().read().unwrap();
+        let mut ops: Vec<(u64, Vec<u8>)> = Vec::with_capacity(patch.ops().len());
+        let mut bad_op: Option<(u64, u64, usize)> = None;
+        for op in patch.ops() {
+            if op.old_len != op.new_bytes.len() as u64 {
+                bad_op = Some((op.offset, op.old_len, op.new_bytes.len()));
+                break;
+            }
+            ops.push((op.offset, op.new_bytes.clone()));
+        }
+        drop(patch);
+        if let Some((offset, old_len, new_len)) = bad_op {
+            app.console_log(
+                ConsoleSeverity::Error,
+                &ctx,
+                format!(
+                    "can't poke insert/delete (offset={offset}, old_len={old_len}, new_len={new_len}); only in-place writes"
+                ),
+            );
+            return false;
+        }
+        // Read the patched view (base + patch) so we can swap the
+        // editor's source afterwards.
+        let bytes = editor.source().read(
+            hxy_core::ByteRange::new(
+                hxy_core::ByteOffset::new(0),
+                hxy_core::ByteOffset::new(total_len),
+            )
+            .expect("valid range"),
+        );
+        let bytes_result = bytes.map_err(|e| e.to_string());
+        (ops, total_len, bytes_result)
+    };
+
+    if patch_ops.is_empty() {
+        app.console_log(ConsoleSeverity::Info, &ctx, "no changes to save");
+        return true;
+    }
+
+    let mut total_written: u64 = 0;
+    let mut total_requested: u64 = 0;
+    for (offset, bytes) in &patch_ops {
+        let n = bytes.len() as u64;
+        total_requested += n;
+        match writer.write_range(&entry_path, *offset, bytes) {
+            Ok(written) => {
+                total_written += written;
+                if written < n {
+                    app.console_log(
+                        ConsoleSeverity::Warning,
+                        &ctx,
+                        format!(
+                            "partial write at offset {offset}: requested {n}, wrote {written}"
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
+                app.console_log(
+                    ConsoleSeverity::Error,
+                    &ctx,
+                    format!("write @ offset {offset}: {e}"),
+                );
+                return false;
+            }
+        }
+    }
+
+    // Swap the editor's source to the post-write bytes so the
+    // patch overlay can be cleared without losing the user's
+    // current view. If reading the patched view failed we leave
+    // the patch in place (the user's changes are already on the
+    // device but the local view would otherwise lie).
+    match post_write_bytes {
+        Ok(bytes) => {
+            if let Some(file) = app.files.get_mut(&id) {
+                let base: std::sync::Arc<dyn hxy_core::HexSource> =
+                    std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
+                file.editor.swap_source(base);
+            }
+        }
+        Err(e) => {
+            app.console_log(
+                ConsoleSeverity::Warning,
+                &ctx,
+                format!("post-write source rebuild: {e} (patch overlay still present)"),
+            );
+        }
+    }
+
+    let _ = total_len;
+    app.console_log(
+        ConsoleSeverity::Info,
+        &ctx,
+        format!("wrote {total_written}/{total_requested} bytes via plugin writer"),
+    );
+    true
+}
+
 fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool {
     let Some(file) = app.files.get(&id) else { return false };
+    // VFS-entry tabs (e.g. xbox-neighborhood `/memory/<addr>`)
+    // have no filesystem path -- the save flow walks each patch
+    // op back through the parent mount's `VfsWriter` instead.
+    // `force_dialog` (Save As) still falls through to the
+    // filesystem path so the user can spill VFS bytes to disk.
+    if !force_dialog
+        && let Some(TabSource::VfsEntry { .. }) = file.source_kind.as_ref()
+    {
+        return save_vfs_entry_in_place(app, id);
+    }
     let display = file.display_name.clone();
     let target = if force_dialog {
         let mut dialog = rfd::FileDialog::new().set_file_name(&display);

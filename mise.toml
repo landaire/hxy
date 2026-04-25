@@ -26,3 +26,44 @@ run = [
     "cargo check -p hxy-app --target wasm32-unknown-unknown --no-default-features --features wasm",
 ]
 depends_post = ["fmt"]
+
+# Per-plugin "build + deploy to user data dir" tasks. The deploy
+# step delegates to `scripts/deploy_plugin.py` so the same task
+# works on Linux / macOS / Windows (no PowerShell, no shell
+# pipelines). Drop a built component into the running hxy's plugin
+# discovery directory; restart or click Rescan to pick it up.
+
+[tasks."plugin:xbox-neighborhood"]
+description = "Build + deploy the xbox-neighborhood plugin"
+run = [
+    "cargo build --manifest-path plugins/xbox-neighborhood/Cargo.toml --target wasm32-wasip2 --release",
+    "python scripts/deploy_plugin.py plugins/xbox-neighborhood hxy_xbox_neighborhood handler",
+]
+
+[tasks."plugin:test-statecmd"]
+description = "Build + deploy the test-statecmd plugin"
+run = [
+    "cargo build --manifest-path plugins/test-statecmd/Cargo.toml --target wasm32-wasip2 --release",
+    "python scripts/deploy_plugin.py plugins/test-statecmd hxy_plugin_test_statecmd handler",
+]
+
+[tasks."plugin:passthrough"]
+description = "Build + deploy the passthrough plugin"
+run = [
+    "cargo build --manifest-path plugins/passthrough/Cargo.toml --target wasm32-wasip2 --release",
+    "python scripts/deploy_plugin.py plugins/passthrough hxy_plugin_passthrough handler",
+]
+
+[tasks."plugin:bt-runtime"]
+description = "Build + deploy the bt-runtime template plugin"
+run = [
+    "cargo build --manifest-path plugins/bt-runtime/Cargo.toml --target wasm32-wasip2 --release",
+    "python scripts/deploy_plugin.py plugins/bt-runtime hxy_bt_runtime template",
+]
+
+[tasks."plugin:png-template"]
+description = "Build + deploy the png-template plugin"
+run = [
+    "cargo build --manifest-path plugins/png-template/Cargo.toml --target wasm32-wasip2 --release",
+    "python scripts/deploy_plugin.py plugins/png-template hxy_png_template template",
+]

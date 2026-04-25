@@ -18,6 +18,8 @@ use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceAny;
 
+use hxy_vfs::VfsWriter;
+
 use crate::PluginKey;
 use crate::PluginManifest;
 use crate::Permissions;
@@ -229,16 +231,33 @@ impl VfsHandler for PluginHandler {
             .call_mount_source(&mut store)
             .map_err(|e| HandlerError::Internal(format!("call mount-source: {e}")))?
             .map_err(HandlerError::Malformed)?;
+        let inner = Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }));
+        let block_cache = Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
+            crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
+        )));
+        let writer: Arc<dyn VfsWriter> = Arc::new(crate::fs_impl::PluginWriter {
+            inner: Arc::clone(&inner),
+            block_cache: Arc::clone(&block_cache),
+            plugin_name: self.name.clone(),
+        });
         let fs = Box::new(PluginFileSystem {
-            inner: Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource })),
+            inner,
             plugin_name: self.name.clone(),
             dir_cache: Mutex::new(std::collections::HashMap::new()),
             meta_cache: Mutex::new(std::collections::HashMap::new()),
-            block_cache: Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
-                crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
-            ))),
+            block_cache,
         });
-        Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
+        Ok(MountedVfs {
+            fs,
+            // Plugins always claim WRITE; whether their
+            // `write_range` actually does anything depends on the
+            // plugin's own capability check (it'll return Err
+            // for read-only paths). Marking READ_WRITE here lets
+            // the editor offer the save affordance without us
+            // needing a per-mount capability negotiation.
+            capabilities: VfsCapabilities::READ_WRITE,
+            writer: Some(writer),
+        })
     }
 }
 
@@ -260,16 +279,33 @@ impl PluginHandler {
             .call_mount_by_token(&mut store, token)
             .map_err(|e| HandlerError::Internal(format!("call mount-by-token: {e}")))?
             .map_err(HandlerError::Malformed)?;
+        let inner = Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }));
+        let block_cache = Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
+            crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
+        )));
+        let writer: Arc<dyn VfsWriter> = Arc::new(crate::fs_impl::PluginWriter {
+            inner: Arc::clone(&inner),
+            block_cache: Arc::clone(&block_cache),
+            plugin_name: self.name.clone(),
+        });
         let fs = Box::new(PluginFileSystem {
-            inner: Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource })),
+            inner,
             plugin_name: self.name.clone(),
             dir_cache: Mutex::new(std::collections::HashMap::new()),
             meta_cache: Mutex::new(std::collections::HashMap::new()),
-            block_cache: Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
-                crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
-            ))),
+            block_cache,
         });
-        Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
+        Ok(MountedVfs {
+            fs,
+            // Plugins always claim WRITE; whether their
+            // `write_range` actually does anything depends on the
+            // plugin's own capability check (it'll return Err
+            // for read-only paths). Marking READ_WRITE here lets
+            // the editor offer the save affordance without us
+            // needing a per-mount capability negotiation.
+            capabilities: VfsCapabilities::READ_WRITE,
+            writer: Some(writer),
+        })
     }
 }
 

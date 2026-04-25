@@ -100,6 +100,12 @@ impl GuestMount for Mount {
         }
         source::read(offset, len)
     }
+
+    fn write_range(&self, _path: String, _offset: u64, _data: Vec<u8>) -> Result<u64, String> {
+        // Source files are read-only -- the user opened the byte
+        // buffer for inspection, not editing.
+        Err("passthrough mount is read-only".to_string())
+    }
 }
 
 hxy_plugin_api::handler::export_handler!(Plugin with_types_in hxy_plugin_api::handler);
