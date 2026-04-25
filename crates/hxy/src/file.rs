@@ -34,6 +34,35 @@ impl FileId {
     }
 }
 
+/// Identifier for an active plugin VFS mount. Distinct from `FileId`
+/// because plugin mounts are not file tabs -- they own a `MountedVfs`
+/// and render only the VFS tree. Children opened from the tree become
+/// regular `FileId` tabs whose `mount` field shares the same Arc.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MountId(u64);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MountId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// A plugin mount the user has opened. Backs a `Tab::PluginMount` --
+/// the tab renders the VFS tree and clicking an entry opens a regular
+/// `Tab::File` whose bytes come from this mount.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct MountedPlugin {
+    pub display_name: String,
+    pub plugin_name: String,
+    pub token: String,
+    pub mount: Arc<MountedVfs>,
+}
+
 pub struct OpenFile {
     pub id: FileId,
     pub display_name: String,
@@ -51,9 +80,10 @@ pub struct OpenFile {
     /// from the first-frame detection so the toolbar command can check
     /// availability without re-scanning on each frame.
     pub detected_handler: Option<Arc<dyn VfsHandler>>,
-    /// Mounted VFS, if the user has opened the archive via the
-    /// "Browse archive" command. Shared so descendant tabs can open
-    /// entries against the same mount.
+    /// Mounted VFS for this file, if the user has opened it via the
+    /// "Browse VFS" command. Shared so descendant entry tabs can read
+    /// their bytes against the same mount. Plugin mounts live in
+    /// `HxyApp::mounts` instead and aren't represented here.
     pub mount: Option<Arc<MountedVfs>>,
     /// Whether the VFS tree side panel should render for this tab. Only
     /// meaningful when `mount` is `Some`. Starts true on mount; the

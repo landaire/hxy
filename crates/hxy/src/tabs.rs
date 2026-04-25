@@ -4,6 +4,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::file::FileId;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::file::MountId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tab {
@@ -22,11 +24,30 @@ pub enum Tab {
     /// installed in the user plugin directories, install new ones
     /// from disk, and delete / rescan.
     Plugins,
+    /// A live plugin VFS mount. Renders only the VFS tree; clicking an
+    /// entry opens a regular `File` tab. The `MountId` indexes into
+    /// `HxyApp::mounts`.
+    #[cfg(not(target_arch = "wasm32"))]
+    PluginMount(MountId),
 }
 
 impl Tab {
     pub fn is_file(&self, id: FileId) -> bool {
         matches!(self, Tab::File(fid) if *fid == id)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Serialize for MountId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(self.get())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'de> Deserialize<'de> for MountId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        u64::deserialize(d).map(MountId::new)
     }
 }
 

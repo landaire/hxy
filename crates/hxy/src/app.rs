@@ -25,6 +25,13 @@ use crate::window::WindowSettings;
 pub struct HxyApp {
     dock: DockState<Tab>,
     files: HashMap<FileId, OpenFile>,
+    /// Active plugin VFS mounts, keyed by `MountId`. Each entry backs a
+    /// `Tab::PluginMount` and supplies the byte source for child VFS
+    /// entry tabs the user opens from the tree.
+    #[cfg(not(target_arch = "wasm32"))]
+    mounts: std::collections::BTreeMap<crate::file::MountId, crate::file::MountedPlugin>,
+    #[cfg(not(target_arch = "wasm32"))]
+    next_mount_id: u64,
     state: SharedPersistedState,
     next_file_id: u64,
     registry: VfsRegistry,
@@ -131,6 +138,11 @@ pub struct HxyApp {
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
     pending_close_tab: Option<PendingCloseTab>,
+    /// Set when the user X-clicks a `Tab::PluginMount`; drained after
+    /// the dock pass to remove the mount entry from `mounts` and any
+    /// matching record from `state.open_tabs`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_close_mount: Option<crate::file::MountId>,
     /// File paths from the launch's command line. Drained on the
     /// first frame and turned into open-file requests, so a
     /// `hxy a.bin b.bin` invocation lands two tabs as soon as the
@@ -219,6 +231,10 @@ impl HxyApp {
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            mounts: std::collections::BTreeMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            next_mount_id: 1,
             state,
             next_file_id: 1,
             registry,
@@ -256,6 +272,8 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
             pending_close_tab: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_close_mount: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_cli_paths: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -622,7 +640,7 @@ impl HxyApp {
     /// (if any) on the tab so the toolbar command can enable itself.
     /// When `restore_show_vfs_tree` is true and a handler matches, the
     /// source is mounted and the tree panel opens immediately -- used by
-    /// restore-on-launch so children of mounted archives can find their
+    /// restore-on-launch so children of mounted VFS sources can find their
     /// parent mount.
     pub fn open(
         &mut self,
@@ -776,17 +794,28 @@ impl HxyApp {
                 Ok(())
             }
             TabSource::VfsEntry { parent, entry_path } => {
-                // Parent must already exist as an open tab with a mount.
-                let parent_file_id = self
-                    .files
-                    .iter()
-                    .find_map(|(id, f)| (f.source_kind.as_ref() == Some(parent.as_ref())).then_some(*id))
-                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
-                let parent_mount = self
-                    .files
-                    .get(&parent_file_id)
-                    .and_then(|f| f.mount.clone())
-                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
+                // Resolve the parent's `MountedVfs`. PluginMount parents
+                // live in `app.mounts` (no File tab); other VFS-bearing
+                // sources are File tabs whose `mount` field carries it.
+                let parent_mount = match parent.as_ref() {
+                    TabSource::PluginMount { plugin_name, token, .. } => self
+                        .mounts
+                        .values()
+                        .find(|m| m.plugin_name == *plugin_name && m.token == *token)
+                        .map(|m| m.mount.clone())
+                        .ok_or_else(|| parent_missing(parent.as_ref()))?,
+                    other => {
+                        let parent_file_id = self
+                            .files
+                            .iter()
+                            .find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))
+                            .ok_or_else(|| parent_missing(other))?;
+                        self.files
+                            .get(&parent_file_id)
+                            .and_then(|f| f.mount.clone())
+                            .ok_or_else(|| parent_missing(other))?
+                    }
+                };
                 let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
                     .map_err(|e| crate::file::FileOpenError::Read { path: entry_path.into(), source: e })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
@@ -829,15 +858,20 @@ impl HxyApp {
                     token: token.clone(),
                     reason: e.to_string(),
                 })?;
-                let id = crate::file::FileId::new(self.next_file_id);
-                self.next_file_id += 1;
-                let mut file =
-                    crate::file::OpenFile::from_bytes(id, title.clone(), Some(tab.source.clone()), Vec::new());
-                file.mount = Some(Arc::new(mount));
-                file.show_vfs_tree = show_tree;
-                self.files.insert(id, file);
-                self.dock.push_to_focused_leaf(Tab::File(id));
-                if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+                let mount_id = crate::file::MountId::new(self.next_mount_id);
+                self.next_mount_id += 1;
+                self.mounts.insert(
+                    mount_id,
+                    crate::file::MountedPlugin {
+                        display_name: title.clone(),
+                        plugin_name: plugin_name.clone(),
+                        token: token.clone(),
+                        mount: Arc::new(mount),
+                    },
+                );
+                let _ = show_tree; // mount tabs always show the tree
+                self.dock.push_to_focused_leaf(Tab::PluginMount(mount_id));
+                if let Some(path) = self.dock.find_tab(&Tab::PluginMount(mount_id)) {
                     remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
                 }
                 Ok(())
@@ -903,6 +937,10 @@ impl eframe::App for HxyApp {
                 state: &mut state_guard,
                 console: &self.console,
                 #[cfg(not(target_arch = "wasm32"))]
+                mounts: &self.mounts,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_close_mount: &mut self.pending_close_mount,
+                #[cfg(not(target_arch = "wasm32"))]
                 inspector: &mut self.inspector,
                 #[cfg(not(target_arch = "wasm32"))]
                 decoders: &self.decoders,
@@ -928,6 +966,17 @@ impl eframe::App for HxyApp {
             let events = std::mem::take(&mut self.pending_plugin_events);
             if !events.is_empty() {
                 self.apply_plugin_events(events);
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(mount_id) = self.pending_close_mount.take() {
+            if let Some(removed) = self.mounts.remove(&mount_id) {
+                let target = TabSource::PluginMount {
+                    plugin_name: removed.plugin_name,
+                    token: removed.token,
+                    title: removed.display_name,
+                };
+                self.state.write().open_tabs.retain(|t| t.source != target);
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1619,26 +1668,60 @@ fn capture_window_on_drag_end(
 /// drain loop (which can open new tabs).
 const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
 
+/// One pending "open this entry as a new tab" request, queued from a
+/// VFS panel during render. `File` carries the parent file id (for
+/// in-file mounts like a ZIP); `Mount` carries a `MountId` (plugin
+/// VFS tabs whose mount lives in `app.mounts`, not in any file).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub enum PendingVfsOpen {
+    File { parent_id: FileId, entry_path: String },
+    Mount { mount_id: crate::file::MountId, entry_path: String },
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
-    let pending: Vec<(FileId, String)> = ctx
-        .data_mut(|d| d.remove_temp::<Vec<(FileId, String)>>(egui::Id::new(PENDING_VFS_OPEN_KEY)))
+    let pending: Vec<PendingVfsOpen> = ctx
+        .data_mut(|d| d.remove_temp::<Vec<PendingVfsOpen>>(egui::Id::new(PENDING_VFS_OPEN_KEY)))
         .unwrap_or_default();
-    for (parent_id, entry_path) in pending {
-        let Some(parent) = app.files.get(&parent_id) else { continue };
-        let parent_source = parent.source_kind.clone();
-        let Some(parent_source) = parent_source else { continue };
-        let Some(mount) = parent.mount.clone() else { continue };
-        let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
-                continue;
+    for req in pending {
+        match req {
+            PendingVfsOpen::File { parent_id, entry_path } => {
+                let Some(parent) = app.files.get(&parent_id) else { continue };
+                let parent_source = parent.source_kind.clone();
+                let Some(parent_source) = parent_source else { continue };
+                let Some(mount) = parent.mount.clone() else { continue };
+                let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
+                        continue;
+                    }
+                };
+                let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
+                let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
+                app.open(name, Some(source), bytes, None, None, false);
             }
-        };
-        let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
-        let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
-        app.open(name, Some(source), bytes, None, None, false);
+            PendingVfsOpen::Mount { mount_id, entry_path } => {
+                let Some(entry) = app.mounts.get(&mount_id) else { continue };
+                let parent_source = TabSource::PluginMount {
+                    plugin_name: entry.plugin_name.clone(),
+                    token: entry.token.clone(),
+                    title: entry.display_name.clone(),
+                };
+                let mount = entry.mount.clone();
+                let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
+                        continue;
+                    }
+                };
+                let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
+                let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
+                app.open(name, Some(source), bytes, None, None, false);
+            }
+        }
     }
 }
 
@@ -2069,6 +2152,31 @@ fn mount_active_file(app: &mut HxyApp) {
     }
 }
 
+/// Render a `Tab::PluginMount`. The whole tab body is the VFS tree
+/// for the mount; clicking an entry queues a `PendingVfsOpen::Mount`
+/// for the post-dock drain to turn into a regular `Tab::File`.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_plugin_mount_tab(
+    ui: &mut egui::Ui,
+    mount_id: crate::file::MountId,
+    mount: &Arc<hxy_vfs::MountedVfs>,
+) {
+    let events = crate::vfs_panel::show(ui, mount_id.get(), &*mount.fs);
+    let mut to_open: Vec<String> = Vec::new();
+    for e in events {
+        let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
+        to_open.push(path);
+    }
+    if !to_open.is_empty() {
+        ui.ctx().data_mut(|d| {
+            let queue: &mut Vec<PendingVfsOpen> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+            for p in to_open {
+                queue.push(PendingVfsOpen::Mount { mount_id, entry_path: p });
+            }
+        });
+    }
+}
+
 fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &mut PersistedState) {
     let settings_base = state.app.offset_base;
     let mut new_base = settings_base;
@@ -2127,12 +2235,15 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
     if let Some(kind) = copy_request {
         do_copy(ui.ctx(), file, kind);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     for entry_path in open_entries {
         ui.ctx().data_mut(|d| {
-            let queue: &mut Vec<(FileId, String)> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
-            queue.push((id, entry_path));
+            let queue: &mut Vec<PendingVfsOpen> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+            queue.push(PendingVfsOpen::File { parent_id: id, entry_path });
         });
     }
+    #[cfg(target_arch = "wasm32")]
+    drop(open_entries);
 
     if new_base != settings_base {
         state.app.offset_base = new_base;
@@ -3156,6 +3267,19 @@ fn request_close_active_tab(app: &mut HxyApp) {
                 let _ = app.dock.remove_tab(path);
             }
         }
+        Tab::PluginMount(mount_id) => {
+            if let Some(path) = app.dock.find_tab(&tab) {
+                let _ = app.dock.remove_tab(path);
+            }
+            if let Some(removed) = app.mounts.remove(&mount_id) {
+                let target = TabSource::PluginMount {
+                    plugin_name: removed.plugin_name,
+                    token: removed.token,
+                    title: removed.display_name,
+                };
+                app.state.write().open_tabs.retain(|t| t.source != target);
+            }
+        }
     }
 }
 
@@ -3527,8 +3651,8 @@ fn build_palette_entries(
             }
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t("toolbar-browse-archive"),
-                    Action::InvokeCommand(crate::command_palette::PaletteCommand::BrowseArchive),
+                    hxy_i18n::t("toolbar-browse-vfs"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::BrowseVfs),
                 )
                 .with_icon(icon::TREE_STRUCTURE),
             );
@@ -4209,7 +4333,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 match id {
                     PaletteCommand::NewFile => handle_new_file(app),
                     PaletteCommand::OpenFile => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
-                    PaletteCommand::BrowseArchive => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
+                    PaletteCommand::BrowseVfs => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
                     PaletteCommand::ToggleConsole => app.toggle_console(),
                     PaletteCommand::ToggleInspector => app.toggle_inspector(),
                     PaletteCommand::TogglePlugins => app.toggle_plugins(),
@@ -4643,21 +4767,12 @@ fn dispatch_plugin_outcome(
     }
 }
 
-/// Open a new tab whose VFS is generated by a plugin's
-/// `mount-by-token`. The tab carries an empty in-memory byte
-/// buffer (the HexEditor needs *something*); the user's intent
-/// is to navigate the plugin's tree via the VFS panel rather
-/// than scrolling raw bytes. `source_kind` is set to
-/// [`TabSource::PluginMount`] so the tab persists into
-/// `open_tabs`; on restart the host re-invokes `mount_by_token`
-/// with the saved token, dropping the tab if the plugin no
-/// longer recognizes it.
-#[cfg(not(target_arch = "wasm32"))]
-/// Install an already-resolved `MountedVfs` as a new tab. The
-/// background-threaded `mount-by-token` flow ends here once its
-/// worker hands back the mount; a freshly-restored tab from
-/// `open_tabs` also funnels through here after its synchronous
-/// `mount_by_token` call.
+/// Install an already-resolved `MountedVfs` as a new `Tab::PluginMount`.
+/// The mount itself lives in `app.mounts`; the dock tab carries only the
+/// `MountId`. The worker thread that ran `mount-by-token` ends here, and
+/// session restoration funnels through here too. The mount entry is
+/// recorded into `state.open_tabs` so restart re-invokes `mount_by_token`
+/// with the saved token.
 #[cfg(not(target_arch = "wasm32"))]
 fn install_mount_tab(
     app: &mut HxyApp,
@@ -4666,34 +4781,42 @@ fn install_mount_tab(
     token: String,
     title: String,
 ) {
-    let id = crate::file::FileId::new(app.next_file_id);
-    app.next_file_id += 1;
+    let mount_id = crate::file::MountId::new(app.next_mount_id);
+    app.next_mount_id += 1;
+    let plugin_name = plugin.name().to_owned();
+    let entry = crate::file::MountedPlugin {
+        display_name: title.clone(),
+        plugin_name: plugin_name.clone(),
+        token: token.clone(),
+        mount: Arc::new(mount),
+    };
+    app.mounts.insert(mount_id, entry);
+
     let source = TabSource::PluginMount {
-        plugin_name: plugin.name().to_owned(),
+        plugin_name: plugin_name.clone(),
         token,
         title: title.clone(),
     };
-    let mut file = crate::file::OpenFile::from_bytes(id, title.clone(), Some(source), Vec::new());
-    file.mount = Some(Arc::new(mount));
-    file.show_vfs_tree = true;
-    app.files.insert(id, file);
-    // Mirrors the welcome-replace logic in `open_filesystem`:
-    // focus the leaf, push the new tab, then drop any Welcome
-    // placeholder in the same leaf so the new tab takes its slot.
-    app.dock.push_to_focused_leaf(Tab::File(id));
-    if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
+    {
+        let mut g = app.state.write();
+        if !g.open_tabs.iter().any(|t| t.source == source) {
+            g.open_tabs.push(crate::state::OpenTabState {
+                source,
+                selection: None,
+                scroll_offset: 0.0,
+                show_vfs_tree: true,
+            });
+        }
+    }
+
+    app.dock.push_to_focused_leaf(Tab::PluginMount(mount_id));
+    if let Some(path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
         remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
-        // Re-find the tab after the welcome removal -- removing the
-        // welcome tab can shift our index, so the original `path`
-        // is potentially stale. Without re-resolving, set_active_tab
-        // either points at a different tab or no-ops, leaving the
-        // new mount tab in the background where its side panel
-        // never renders (and read_dir never fires against the kit).
-        if let Some(fresh_path) = app.dock.find_tab(&Tab::File(id)) {
+        if let Some(fresh_path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
             let _ = app.dock.set_active_tab(fresh_path);
         }
     }
-    tracing::info!(plugin = %plugin.name(), title = %title, id = %id.get(), "mount tab installed");
+    tracing::info!(plugin = %plugin_name, title = %title, id = %mount_id.get(), "mount tab installed");
 }
 
 fn handle_new_file(app: &mut HxyApp) {
@@ -5038,6 +5161,16 @@ struct HxyTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     state: &'a mut PersistedState,
     console: &'a std::collections::VecDeque<ConsoleEntry>,
+    /// Active plugin VFS mounts. Read-only here -- closing a mount tab
+    /// only flags it via `pending_close_mount` and the app drops it
+    /// from the map after the dock pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    mounts: &'a std::collections::BTreeMap<crate::file::MountId, crate::file::MountedPlugin>,
+    /// Slot for the dock's `on_close` handler when the user X-clicks a
+    /// `Tab::PluginMount`. The app drains the mount entry from
+    /// `app.mounts` after the dock pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_close_mount: &'a mut Option<crate::file::MountId>,
     #[cfg(not(target_arch = "wasm32"))]
     inspector: &'a mut crate::inspector::InspectorState,
     #[cfg(not(target_arch = "wasm32"))]
@@ -5114,6 +5247,11 @@ impl TabViewer for HxyTabViewer<'_> {
                 }
                 None => format!("file-{}", id.get()).into(),
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
+                Some(m) => format!("{} {}", egui_phosphor::regular::TREE_STRUCTURE, m.display_name).into(),
+                None => format!("mount-{}", mount_id.get()).into(),
+            },
         }
     }
 
@@ -5156,17 +5294,35 @@ impl TabViewer for HxyTabViewer<'_> {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
+                Some(m) => render_plugin_mount_tab(ui, *mount_id, &m.mount),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
+                }
+            },
         }
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins)
+        match tab {
+            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins => true,
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::PluginMount(_) => true,
+            _ => false,
+        }
     }
 
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
         // File tabs and the console/inspector manage their own
-        // scrolling; outer dock scrollbar off for those.
-        if matches!(tab, Tab::File(_) | Tab::Console | Tab::Inspector) { [false, false] } else { [true, true] }
+        // scrolling; outer dock scrollbar off for those. Plugin mount
+        // tabs render the VFS tree's own scroll area.
+        match tab {
+            Tab::File(_) | Tab::Console | Tab::Inspector => [false, false],
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::PluginMount(_) => [false, false],
+            _ => [true, true],
+        }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
@@ -5189,6 +5345,14 @@ impl TabViewer for HxyTabViewer<'_> {
             {
                 self.state.open_tabs.retain(|t| t.source != source);
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Tab::PluginMount(mount_id) = tab {
+            // Defer the actual removal -- the mounts map is borrowed
+            // immutably here. The post-dock drain in `HxyApp::ui`
+            // matches on this slot and drops the mount entry plus the
+            // matching `state.open_tabs` record.
+            *self.pending_close_mount = Some(*mount_id);
         }
         OnCloseResponse::Close
     }

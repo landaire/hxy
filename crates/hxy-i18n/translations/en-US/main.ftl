@@ -59,7 +59,7 @@ welcome-recent = Recent files
 welcome-recent-empty = No recent files yet.
 
 toolbar-open-file = Open file…
-toolbar-browse-archive = Browse archive
+toolbar-browse-vfs = Browse VFS
 toolbar-run-template = Run template…
 settings-offset-base = Offset base
 settings-address-separator = Group hex digits in address column

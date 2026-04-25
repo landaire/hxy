@@ -47,7 +47,7 @@ pub fn show(
     render_section(
         ui,
         "VFS handlers",
-        "Parse archive-like byte sources into a browseable tree.",
+        "Mount byte sources as a browseable VFS tree.",
         handlers_dir,
         &mut events,
     );

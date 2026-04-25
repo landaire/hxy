@@ -209,7 +209,7 @@ impl Mode {
 pub enum PaletteCommand {
     NewFile,
     OpenFile,
-    BrowseArchive,
+    BrowseVfs,
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,
