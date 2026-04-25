@@ -23,6 +23,7 @@ use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::WasiCtxView;
 use wasmtime_wasi::WasiView;
+use wasmtime_wasi::sockets::SocketAddrUse;
 
 use crate::StateError;
 use crate::StateStore;
@@ -118,17 +119,32 @@ fn deny_all_wasi_ctx() -> WasiCtx {
 
 /// Build a `WasiCtx` whose socket allow-check honors the given
 /// `host:port` pattern list.
+///
+/// `socket_addr_check` is invoked by wasi-sockets for every socket
+/// operation that involves an address: outbound `connect` / `send_to`
+/// against the remote, plus local `bind` against the local address.
+/// Local binds are always permitted -- the manifest's allowlist is
+/// about *where the plugin can talk to*, not about whether it can
+/// open a UDP socket on an ephemeral port. Outbound operations are
+/// gated against the pattern list.
 fn build_wasi_ctx_with_allowlist(patterns: Vec<String>) -> WasiCtx {
     let patterns = Arc::new(patterns);
     let mut builder = WasiCtxBuilder::new();
     builder.allow_ip_name_lookup(true);
-    builder.socket_addr_check(move |addr, _use_kind| {
+    builder.socket_addr_check(move |addr, use_kind| {
         let patterns = patterns.clone();
-        // wasi-sockets supplies the resolved SocketAddr -- match the
-        // numeric address against each manifest pattern.
-        let host = addr.ip().to_string();
-        let port = addr.port();
-        Box::pin(async move { allowlist_matches(&patterns, &host, port) })
+        Box::pin(async move {
+            match use_kind {
+                SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => true,
+                SocketAddrUse::TcpConnect
+                | SocketAddrUse::UdpConnect
+                | SocketAddrUse::UdpOutgoingDatagram => {
+                    let host = addr.ip().to_string();
+                    let port = addr.port();
+                    allowlist_matches(&patterns, &host, port)
+                }
+            }
+        })
     });
     builder.build()
 }

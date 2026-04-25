@@ -1,0 +1,16 @@
+[plugin]
+name = "xbox-neighborhood"
+version = "0.1.0"
+authors = ["Lander Brandt"]
+description = "Connect to an Xbox 360 development kit over XBDM (NAP / port 730)."
+
+[permissions]
+# The plugin contributes a "Connect to Xbox console" entry; without
+# `commands` the host never invokes its `commands.list-commands`.
+commands = true
+
+# UDP outbound for the unicast NAP probe + (eventually) TCP for the
+# XBDM command channel. Both speak port 730. wasi-sockets gates each
+# `send_to` / `connect` against this list via `socket_addr_check`;
+# bind / recv are not gated.
+network = ["*:730"]

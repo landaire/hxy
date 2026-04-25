@@ -1,0 +1,29 @@
+[package]
+name = "hxy-xbox-neighborhood"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+description = "Discover Xbox 360 development kits over XBDM (NAP) and surface them in the command palette."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
+# Sans-io NAP discovery types (`Discovery`, `DiscoveryConfig`,
+# `DiscoveryAction`, wire encoders/decoders). `default-features = false`
+# drops the `tokio` runner module so we don't pull tokio into a wasm
+# component that can't use it anyway.
+xeedee = { path = "../../../xeedee/crates/xeedee", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# Standalone workspace -- not pulled into the main hxy workspace so
+# the host crates don't take a (transitive) build-time dependency on
+# the plugin tree.
+[workspace]
