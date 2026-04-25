@@ -37,8 +37,23 @@ interface handler {
         /// Metadata for `path`.
         metadata: func(path: string) -> result<metadata, string>;
 
-        /// Full contents of the file at `path`.
+        /// Full contents of the file at `path`. Convenience for
+        /// in-memory handlers; remote-VFS handlers should treat it
+        /// as `read-range(path, 0, length)`.
         read-file: func(path: string) -> result<list<u8>, string>;
+
+        /// Bytes `[offset, offset + length)` from the file at
+        /// `path`. The host calls this to back its `Read + Seek`
+        /// adapter without paying to fetch the whole file -- vital
+        /// for remote-VFS handlers (xbox-neighborhood) where files
+        /// can run hundreds of megabytes and the user only ever
+        /// scrolls a few KB. In-memory handlers (passthrough,
+        /// fixture-template, etc.) implement it as a slice of
+        /// their existing `read-file` body.
+        ///
+        /// Reads past EOF return whatever is available (a short
+        /// read); reads with `length == 0` return an empty `Vec`.
+        read-range: func(path: string, offset: u64, length: u64) -> result<list<u8>, string>;
     }
 
     /// Sniff the first bytes of a source and report whether this

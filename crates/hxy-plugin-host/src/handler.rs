@@ -230,8 +230,13 @@ impl VfsHandler for PluginHandler {
             .map_err(|e| HandlerError::Internal(format!("call mount-source: {e}")))?
             .map_err(HandlerError::Malformed)?;
         let fs = Box::new(PluginFileSystem {
-            inner: Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }),
+            inner: Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource })),
             plugin_name: self.name.clone(),
+            dir_cache: Mutex::new(std::collections::HashMap::new()),
+            meta_cache: Mutex::new(std::collections::HashMap::new()),
+            block_cache: Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
+                crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
+            ))),
         });
         Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
     }
@@ -256,8 +261,13 @@ impl PluginHandler {
             .map_err(|e| HandlerError::Internal(format!("call mount-by-token: {e}")))?
             .map_err(HandlerError::Malformed)?;
         let fs = Box::new(PluginFileSystem {
-            inner: Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }),
+            inner: Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource })),
             plugin_name: self.name.clone(),
+            dir_cache: Mutex::new(std::collections::HashMap::new()),
+            meta_cache: Mutex::new(std::collections::HashMap::new()),
+            block_cache: Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
+                crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
+            ))),
         });
         Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
     }
@@ -265,10 +275,31 @@ impl PluginHandler {
 
 /// Live VFS backed by a plugin instance. All operations funnel through
 /// the inner [`Mutex`] because wasmtime [`Store`] access requires
-/// `&mut` while [`vfs::FileSystem`] methods are `&self`.
+/// `&mut` while [`vfs::FileSystem`] methods are `&self`. The inner
+/// is `Arc`-shared so [`crate::fs_impl::RangedReader`] (returned by
+/// `open_file`) can call back into the plugin without holding a
+/// reference to the surrounding `Box<dyn FileSystem>`.
+///
+/// `dir_cache` and `meta_cache` short-circuit repeated lookups so the
+/// VFS panel's per-frame recursive walk doesn't hammer the plugin
+/// (and through it, the wire) on every render. `block_cache` does
+/// the same for ranged file reads -- the hex view re-reads the same
+/// neighborhood every paint, so block-level LRU eliminates ~all of
+/// those round trips. All caches are populated lazily on miss and
+/// never expire within a session -- reload by closing + reopening
+/// the tab.
 pub(crate) struct PluginFileSystem {
-    pub(crate) inner: Mutex<PluginFsInner>,
+    pub(crate) inner: Arc<Mutex<PluginFsInner>>,
     pub(crate) plugin_name: String,
+    pub(crate) dir_cache: Mutex<std::collections::HashMap<String, Vec<String>>>,
+    /// Cached `(file_type, length)` per path; full `VfsMetadata`
+    /// isn't `Clone`, so the timestamps are dropped (we don't have
+    /// them anyway -- the plugin doesn't currently surface them).
+    pub(crate) meta_cache: Mutex<std::collections::HashMap<String, (vfs::VfsFileType, u64)>>,
+    /// Byte-bounded LRU of fixed-size file blocks shared across
+    /// every `RangedReader` opened against this mount. See
+    /// [`crate::fs_impl::FileBlockCache`].
+    pub(crate) block_cache: Arc<Mutex<crate::fs_impl::FileBlockCache>>,
 }
 
 pub(crate) struct PluginFsInner {

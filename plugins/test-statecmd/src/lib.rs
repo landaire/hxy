@@ -272,6 +272,13 @@ impl GuestMount for Mount {
             Err(format!("no such file: {path}"))
         }
     }
+
+    fn read_range(&self, path: String, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+        let body = self.read_file(path)?;
+        let start = (offset as usize).min(body.len());
+        let end = ((offset.saturating_add(length)) as usize).min(body.len());
+        Ok(body[start..end].to_vec())
+    }
 }
 
 /// Read the persisted counter, defaulting to zero when the state

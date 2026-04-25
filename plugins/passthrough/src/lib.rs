@@ -84,6 +84,22 @@ impl GuestMount for Mount {
         }
         source::read(0, source::len())
     }
+
+    fn read_range(&self, path: String, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+        if path != "/data.bin" {
+            return Err(format!("no such file: {path}"));
+        }
+        // Passthrough is just a renamed view of the source bytes;
+        // we route the ranged read straight through the host
+        // import without ever materialising the whole file.
+        let total = source::len();
+        let end = offset.saturating_add(length).min(total);
+        let len = end.saturating_sub(offset);
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        source::read(offset, len)
+    }
 }
 
 hxy_plugin_api::handler::export_handler!(Plugin with_types_in hxy_plugin_api::handler);
