@@ -402,10 +402,7 @@ impl<S: HexSource> Interpreter<S> {
     /// garbage in that case, but a clean error is more useful here.
     fn decode_array_element(&self, span: &ArraySpan, idx: u64) -> Result<Value, RuntimeError> {
         if idx >= span.count {
-            return Err(RuntimeError::Type(format!(
-                "array index out of bounds: {idx} >= {}",
-                span.count
-            )));
+            return Err(RuntimeError::Type(format!("array index out of bounds: {idx} >= {}", span.count)));
         }
         let off = span.source_offset + idx * span.prim.width as u64;
         let bytes = self.cursor.read_at(off, span.prim.width as u64)?;
@@ -484,12 +481,7 @@ impl<S: HexSource> Interpreter<S> {
                 }
             }
         }
-        RunResult {
-            nodes: self.nodes,
-            diagnostics: self.diagnostics,
-            return_value: exit_value,
-            terminal_error,
-        }
+        RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: exit_value, terminal_error }
     }
 
     fn register_primitives(&mut self) {
@@ -1017,8 +1009,10 @@ impl<S: HexSource> Interpreter<S> {
             let offset = self.cursor.tell();
             let total_bytes = count.saturating_mul(p.width as u64);
             let bytes = self.cursor.read_advance(total_bytes)?;
-            let value = if matches!(p.class, PrimClass::Char) {
-                Value::Str(String::from_utf8_lossy(&bytes).into_owned())
+            let value = if matches!(p.class, PrimClass::Char)
+                && let Ok(_) = str::from_utf8(&bytes)
+            {
+                Value::Str(String::from_utf8(bytes).expect("string should be UTF-8"))
             } else {
                 // No Value variant for raw byte arrays yet -- emit
                 // Void so the UI knows the node has a span but no
@@ -1056,10 +1050,8 @@ impl<S: HexSource> Interpreter<S> {
             // HashMap inserts per array, multiplied across every
             // record in a multi-megabyte file.
             let storage_key = self.storage_key(name);
-            self.array_storage.insert(
-                storage_key,
-                ArraySpan { source_offset: offset, count, prim: p, endian: self.endian },
-            );
+            self.array_storage
+                .insert(storage_key, ArraySpan { source_offset: offset, count, prim: p, endian: self.endian });
             return Ok(value);
         }
         let array_ty = match &def {
