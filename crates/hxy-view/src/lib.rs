@@ -359,6 +359,16 @@ impl HexEditor {
         self.edit.history_break = true;
     }
 
+    /// Replace bytes `[offset, offset + remove)` with `insert`.
+    /// Generalises in-place writes (`remove == insert.len()`),
+    /// inserts (`remove == 0`), and deletes (`insert.is_empty()`).
+    /// Used by Vim mode's paste / delete operators; also useful to
+    /// library consumers building their own bulk-edit commands.
+    #[cfg(feature = "editor")]
+    pub fn splice(&mut self, offset: u64, remove: u64, insert: Vec<u8>) -> Result<(), WriteError> {
+        self.edit.splice(offset, remove, insert)
+    }
+
     #[cfg(not(feature = "editor"))]
     pub(crate) fn push_history_boundary(&mut self) {}
 

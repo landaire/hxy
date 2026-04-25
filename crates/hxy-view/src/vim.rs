@@ -69,15 +69,39 @@ pub struct VimState {
     /// Multi-key prefix the user is partway through (e.g. the
     /// first `g` of `gg`). Cleared on completion or on `Esc`.
     pub pending: Option<Pending>,
+    /// Vim's unnamed register: bytes from the last yank or delete.
+    /// Used by `p` to paste at the cursor. Stays alive across mode
+    /// switches and across files (lives on each editor; could
+    /// become a host-level shared register later).
+    pub register: Vec<u8>,
+    /// Which pane the bytes in `register` were yanked from. Used to
+    /// pick a clipboard format on yank: hex pane yanks render as
+    /// space-separated hex, ASCII pane yanks as utf-8 lossy text.
+    pub register_origin: RegisterOrigin,
+}
+
+/// Format hint attached to the unnamed register's contents. Doesn't
+/// affect paste (we always paste raw bytes); only governs how yank
+/// shapes the system-clipboard payload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RegisterOrigin {
+    #[default]
+    Hex,
+    Ascii,
 }
 
 /// In-progress multi-key sequence. Resolved by the next keypress
-/// or cleared by `Esc`. Stage 3 will add operator pending states
-/// (`Yank`, `Delete`, `Change`).
+/// or cleared by `Esc`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
     /// First `g` of a `g`-prefixed motion (`gg`, `gu`, ...).
     G,
+    /// First `y` of a `yy` (linewise yank). Stage 3 keeps the
+    /// operator-pending state minimal -- only the doubled form is
+    /// recognised; arbitrary `y{motion}` lands in Stage 4.
+    Yank,
+    /// First `d` of a `dd` (linewise delete).
+    Delete,
 }
 
 impl VimState {
@@ -172,6 +196,26 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                     }
                     Key::I => {
                         out.push(VimPress::EnterInsert);
+                        false
+                    }
+                    Key::V => {
+                        out.push(if shift { VimPress::EnterVisualLine } else { VimPress::EnterVisual });
+                        false
+                    }
+                    Key::Y => {
+                        out.push(VimPress::Yank);
+                        false
+                    }
+                    Key::P => {
+                        out.push(VimPress::Paste);
+                        false
+                    }
+                    Key::D => {
+                        out.push(VimPress::Delete);
+                        false
+                    }
+                    Key::X => {
+                        out.push(VimPress::DeleteByte);
                         false
                     }
                     Key::G => {
@@ -308,6 +352,68 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                 editor.vim.clear_pending();
                 apply_motion(editor, motion, count, columns, source_len);
             }
+            VimPress::EnterVisual => {
+                editor.vim.clear_pending();
+                editor.vim.mode = match editor.vim.mode {
+                    VimMode::Visual => VimMode::Normal,
+                    _ => VimMode::Visual,
+                };
+                ensure_anchor(editor);
+            }
+            VimPress::EnterVisualLine => {
+                editor.vim.clear_pending();
+                editor.vim.mode = match editor.vim.mode {
+                    VimMode::VisualLine => VimMode::Normal,
+                    _ => VimMode::VisualLine,
+                };
+                if editor.vim.mode == VimMode::VisualLine {
+                    snap_visual_line(editor, columns, source_len);
+                } else {
+                    ensure_anchor(editor);
+                }
+            }
+            VimPress::Yank => match editor.vim.mode {
+                VimMode::Visual | VimMode::VisualLine => {
+                    yank_selection(editor, ctx);
+                    editor.vim.mode = VimMode::Normal;
+                    editor.vim.clear_pending();
+                }
+                _ => {
+                    if editor.vim.pending == Some(Pending::Yank) {
+                        let count = editor.vim.count_or_one();
+                        editor.vim.clear_pending();
+                        yank_rows(editor, ctx, count, columns, source_len);
+                    } else {
+                        editor.vim.pending = Some(Pending::Yank);
+                    }
+                }
+            },
+            VimPress::Delete => match editor.vim.mode {
+                VimMode::Visual | VimMode::VisualLine => {
+                    delete_selection(editor, ctx);
+                    editor.vim.mode = VimMode::Normal;
+                    editor.vim.clear_pending();
+                }
+                _ => {
+                    if editor.vim.pending == Some(Pending::Delete) {
+                        let count = editor.vim.count_or_one();
+                        editor.vim.clear_pending();
+                        delete_rows(editor, ctx, count, columns, source_len);
+                    } else {
+                        editor.vim.pending = Some(Pending::Delete);
+                    }
+                }
+            },
+            VimPress::DeleteByte => {
+                let count = editor.vim.count_or_one();
+                editor.vim.clear_pending();
+                delete_byte_under_cursor(editor, ctx, count);
+            }
+            VimPress::Paste => {
+                let count = editor.vim.count_or_one();
+                editor.vim.clear_pending();
+                paste_register(editor, count);
+            }
         }
     }
 
@@ -335,10 +441,22 @@ enum VimPress {
     Escape,
     TogglePane,
     EnterInsert,
+    EnterVisual,
+    EnterVisualLine,
     Digit(u8),
     /// First `g` of a multi-key sequence (`gg` etc.). Resolved on
     /// the next press.
     PendingG,
+    /// `y` -- yank. In Visual: yanks the live selection. In Normal:
+    /// pressing twice (`yy`) yanks the current row.
+    Yank,
+    /// `p` -- paste the unnamed register at / after the cursor.
+    Paste,
+    /// `d` -- delete (shifts bytes left). Visual: deletes the live
+    /// selection; Normal: pressing twice (`dd`) deletes the row.
+    Delete,
+    /// `x` -- delete the byte under the cursor.
+    DeleteByte,
     Motion(Motion),
 }
 
@@ -569,4 +687,227 @@ fn find_line_end(editor: &HexEditor, cur: u64, source_len: u64) -> u64 {
         i = next;
     }
     source_len - 1
+}
+
+/// Make sure a selection exists with anchor == cursor. Used when
+/// entering Visual without a prior selection so the next motion has
+/// something to extend from.
+fn ensure_anchor(editor: &mut HexEditor) {
+    if editor.selection.is_none() {
+        editor.selection = Some(Selection::caret(ByteOffset::new(0)));
+    }
+    if let Some(sel) = editor.selection.as_mut() {
+        sel.anchor = sel.cursor;
+    }
+}
+
+/// Snap the selection to whole rows (hex) or whole lines (ASCII)
+/// around the current cursor. Called when entering VisualLine so the
+/// initial highlight visibly matches the linewise mode.
+fn snap_visual_line(editor: &mut HexEditor, columns: u64, source_len: u64) {
+    let cur = current_cursor(editor).unwrap_or(0);
+    let (start, end_inclusive) = line_bounds(editor, cur, columns, source_len);
+    if let Some(sel) = editor.selection.as_mut() {
+        sel.anchor = ByteOffset::new(start);
+        sel.cursor = ByteOffset::new(end_inclusive);
+    }
+}
+
+/// Inclusive byte bounds for the row/line containing `cur`. Hex pane
+/// uses fixed `columns`-wide rows; ASCII pane uses LF boundaries.
+fn line_bounds(editor: &HexEditor, cur: u64, columns: u64, source_len: u64) -> (u64, u64) {
+    if source_len == 0 {
+        return (0, 0);
+    }
+    match editor.active_pane {
+        Pane::Hex => {
+            let start = (cur / columns) * columns;
+            let end = (start + columns - 1).min(source_len - 1);
+            (start, end)
+        }
+        Pane::Ascii => {
+            let start = find_line_start(editor, cur);
+            let end = find_line_end(editor, cur, source_len);
+            (start, end)
+        }
+    }
+}
+
+/// Read `[start, end_exclusive)` from the patched source. Returns an
+/// empty Vec on bounds mismatch -- callers treat that as "nothing to
+/// yank/delete" rather than propagating an error to the user.
+fn read_range_bytes(editor: &HexEditor, start: u64, end_exclusive: u64) -> Vec<u8> {
+    if end_exclusive <= start {
+        return Vec::new();
+    }
+    let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(start), ByteOffset::new(end_exclusive))
+    else {
+        return Vec::new();
+    };
+    editor.source.read(range).unwrap_or_default()
+}
+
+/// Format yanked bytes for the system clipboard. Hex pane yanks land
+/// as space-separated uppercase hex (matching the existing copy-hex
+/// menu); ASCII pane yanks land as utf-8 lossy text.
+fn format_for_clipboard(bytes: &[u8], origin: RegisterOrigin) -> String {
+    match origin {
+        RegisterOrigin::Hex => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
+        RegisterOrigin::Ascii => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn current_register_origin(editor: &HexEditor) -> RegisterOrigin {
+    match editor.active_pane {
+        Pane::Hex => RegisterOrigin::Hex,
+        Pane::Ascii => RegisterOrigin::Ascii,
+    }
+}
+
+/// Yank the live Visual / VisualLine selection. Caller is responsible
+/// for switching back to Normal afterwards.
+fn yank_selection(editor: &mut HexEditor, ctx: &egui::Context) {
+    let Some(sel) = editor.selection else {
+        return;
+    };
+    let range = sel.range();
+    let bytes = read_range_bytes(editor, range.start().get(), range.end().get());
+    if bytes.is_empty() {
+        return;
+    }
+    stash_register(editor, ctx, bytes);
+    if let Some(sel) = editor.selection.as_mut() {
+        sel.anchor = sel.cursor;
+    }
+}
+
+/// `yy` / `<count>yy`: yank `count` rows / lines starting at the row
+/// or line containing the cursor.
+fn yank_rows(editor: &mut HexEditor, ctx: &egui::Context, count: usize, columns: u64, source_len: u64) {
+    let cur = current_cursor(editor).unwrap_or(0);
+    let (start, end_inclusive) = multi_line_bounds(editor, cur, count, columns, source_len);
+    let bytes = read_range_bytes(editor, start, end_inclusive + 1);
+    if bytes.is_empty() {
+        return;
+    }
+    stash_register(editor, ctx, bytes);
+}
+
+/// Save bytes to the unnamed register and write the formatted form to
+/// the system clipboard.
+fn stash_register(editor: &mut HexEditor, ctx: &egui::Context, bytes: Vec<u8>) {
+    let origin = current_register_origin(editor);
+    let text = format_for_clipboard(&bytes, origin);
+    ctx.copy_text(text);
+    editor.vim.register = bytes;
+    editor.vim.register_origin = origin;
+}
+
+/// Inclusive bounds spanning `count` consecutive rows / lines starting
+/// at the one containing `cur`. Used by `yy` / `dd` with a count.
+fn multi_line_bounds(editor: &HexEditor, cur: u64, count: usize, columns: u64, source_len: u64) -> (u64, u64) {
+    let (start, mut end) = line_bounds(editor, cur, columns, source_len);
+    for _ in 1..count {
+        if end + 1 >= source_len {
+            break;
+        }
+        let (_, next_end) = line_bounds(editor, end + 1, columns, source_len);
+        end = next_end;
+    }
+    (start, end)
+}
+
+/// Delete the live Visual / VisualLine selection: stash it in the
+/// register and splice it out of the underlying source.
+fn delete_selection(editor: &mut HexEditor, ctx: &egui::Context) {
+    let Some(sel) = editor.selection else {
+        return;
+    };
+    let range = sel.range();
+    let start = range.start().get();
+    let end = range.end().get();
+    let bytes = read_range_bytes(editor, start, end);
+    if bytes.is_empty() {
+        return;
+    }
+    stash_register(editor, ctx, bytes);
+    #[cfg(feature = "editor")]
+    {
+        let len = end - start;
+        let _ = editor.splice(start, len, Vec::new());
+    }
+    let new_len = editor.source.len().get();
+    let new_cursor = if new_len == 0 { 0 } else { start.min(new_len - 1) };
+    editor.selection = Some(Selection::caret(ByteOffset::new(new_cursor)));
+}
+
+/// `dd` / `<count>dd`: delete `count` rows / lines.
+fn delete_rows(editor: &mut HexEditor, ctx: &egui::Context, count: usize, columns: u64, source_len: u64) {
+    let cur = current_cursor(editor).unwrap_or(0);
+    let (start, end_inclusive) = multi_line_bounds(editor, cur, count, columns, source_len);
+    let bytes = read_range_bytes(editor, start, end_inclusive + 1);
+    if bytes.is_empty() {
+        return;
+    }
+    stash_register(editor, ctx, bytes);
+    #[cfg(feature = "editor")]
+    {
+        let len = end_inclusive + 1 - start;
+        let _ = editor.splice(start, len, Vec::new());
+    }
+    let new_len = editor.source.len().get();
+    let new_cursor = if new_len == 0 { 0 } else { start.min(new_len - 1) };
+    editor.selection = Some(Selection::caret(ByteOffset::new(new_cursor)));
+}
+
+/// `x` / `<count>x`: delete `count` bytes starting at the cursor.
+fn delete_byte_under_cursor(editor: &mut HexEditor, ctx: &egui::Context, count: usize) {
+    let cur = current_cursor(editor).unwrap_or(0);
+    let source_len = editor.source.len().get();
+    if source_len == 0 || cur >= source_len {
+        return;
+    }
+    let len = (count as u64).min(source_len - cur);
+    let bytes = read_range_bytes(editor, cur, cur + len);
+    if bytes.is_empty() {
+        return;
+    }
+    stash_register(editor, ctx, bytes);
+    #[cfg(feature = "editor")]
+    {
+        let _ = editor.splice(cur, len, Vec::new());
+    }
+    let new_len = editor.source.len().get();
+    let new_cursor = if new_len == 0 { 0 } else { cur.min(new_len - 1) };
+    editor.selection = Some(Selection::caret(ByteOffset::new(new_cursor)));
+}
+
+/// `p`: paste the unnamed register `count` times after the cursor
+/// (vim's paste-after default). On an empty buffer paste lands at 0.
+fn paste_register(editor: &mut HexEditor, count: usize) {
+    if editor.vim.register.is_empty() {
+        return;
+    }
+    let cur = current_cursor(editor).unwrap_or(0);
+    let source_len = editor.source.len().get();
+    let insert_at = if source_len == 0 { 0 } else { (cur + 1).min(source_len) };
+    let mut payload = Vec::with_capacity(editor.vim.register.len() * count);
+    for _ in 0..count {
+        payload.extend_from_slice(&editor.vim.register);
+    }
+    let payload_len = payload.len() as u64;
+    #[cfg(feature = "editor")]
+    {
+        let _ = editor.splice(insert_at, 0, payload);
+    }
+    #[cfg(not(feature = "editor"))]
+    let _ = payload;
+    let new_len = editor.source.len().get();
+    if new_len == 0 {
+        editor.selection = Some(Selection::caret(ByteOffset::new(0)));
+        return;
+    }
+    let landing = insert_at + payload_len.saturating_sub(1);
+    let landing = landing.min(new_len - 1);
+    editor.selection = Some(Selection::caret(ByteOffset::new(landing)));
 }

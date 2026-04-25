@@ -169,6 +169,33 @@ impl EditState {
         Ok(())
     }
 
+    /// Replace the byte range `[offset, offset + remove)` with
+    /// `insert`. Generalises [`Self::request_write`] (in-place,
+    /// `remove == insert.len()`) and [`Self::insert_at`]
+    /// (`remove == 0`); also covers pure delete (`insert.is_empty()`)
+    /// and arbitrary splices (vim's `p` / `d` over a visual range).
+    pub(crate) fn splice(
+        &mut self,
+        offset: u64,
+        remove: u64,
+        insert: Vec<u8>,
+    ) -> Result<(), WriteError> {
+        if self.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        let source_len = self.patched_source.len().get();
+        if offset > source_len || offset.saturating_add(remove) > source_len {
+            return Err(WriteError::OutOfBounds { offset, len: remove, source_len });
+        }
+        let mut old_bytes = Vec::with_capacity(remove as usize);
+        for i in 0..remove {
+            old_bytes.push(self.read_byte_at(offset + i)?);
+        }
+        self.record_entry(EditEntry { offset, old_bytes, new_bytes: insert });
+        self.rebuild_patch_from_stack();
+        Ok(())
+    }
+
     /// Insert `bytes` at `offset`, growing the source by `bytes.len()`.
     /// Used by the editor when the cursor sits at EOF so anonymous
     /// buffers can start at 0 bytes and grow with typing.
