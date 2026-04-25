@@ -102,6 +102,12 @@ pub struct HxyApp {
     /// store) and triggers a plugin reload.
     #[cfg(not(target_arch = "wasm32"))]
     pending_plugin_events: Vec<crate::plugins_tab::PluginsEvent>,
+    /// Plugin operations (invoke / respond / mount-by-token) that
+    /// were dispatched to a worker thread and are awaiting a result.
+    /// Drained each frame; ready ops dispatch their outcome through
+    /// the same paths the synchronous calls used to take.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_plugin_ops: Vec<crate::plugin_runner::PendingOp>,
     /// Auto-detected template library loaded from the user's
     /// `templates/` dir. Consulted when a file is opened so the
     /// toolbar can offer `Run ZIP.bt` directly.
@@ -242,6 +248,7 @@ impl HxyApp {
             plugin_rescan: false,
             #[cfg(not(target_arch = "wasm32"))]
             pending_plugin_events: Vec::new(),
+            pending_plugin_ops: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             templates: crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -382,6 +389,82 @@ impl HxyApp {
     }
 
     pub const CONSOLE_CAPACITY: usize = 2048;
+
+    /// Drain any plugin operations that have completed since last
+    /// frame and dispatch their outcomes. Background-threaded calls
+    /// register themselves on `pending_plugin_ops` via the helpers in
+    /// [`crate::plugin_runner`]; the outcome dispatch matches what
+    /// the synchronous calls used to do (palette dispatch / open
+    /// tab) plus a "completed in N ms" log entry.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drain_pending_plugin_ops(&mut self, ctx: &egui::Context) {
+        // `try_take` consumes the op and returns either the result
+        // or the unchanged op (still pending). Re-collect the
+        // not-yet-ready ones into the queue; ready ones are
+        // dispatched immediately.
+        let drained: Vec<_> = self.pending_plugin_ops.drain(..).collect();
+        let mut still_pending: Vec<crate::plugin_runner::PendingOp> = Vec::new();
+        for op in drained {
+            let plugin_name = op.plugin_name.clone();
+            let label = op.label.clone();
+            let started = op.started;
+            match op.try_take() {
+                Err(unfinished) => still_pending.push(unfinished),
+                Ok(crate::plugin_runner::DrainResult::Pending) => {}
+                Ok(crate::plugin_runner::DrainResult::InvokeReady {
+                    plugin,
+                    command_id,
+                    outcome,
+                }) => {
+                    self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
+                    dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
+                }
+                Ok(crate::plugin_runner::DrainResult::RespondReady {
+                    plugin,
+                    command_id,
+                    outcome,
+                }) => {
+                    self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
+                    dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
+                }
+                Ok(crate::plugin_runner::DrainResult::MountReady {
+                    plugin,
+                    token,
+                    title,
+                    result,
+                }) => match result {
+                    Ok(mount) => {
+                        self.log_plugin_completion(&plugin_name, &label, started, true);
+                        install_mount_tab(self, plugin, mount, token, title);
+                    }
+                    Err(e) => {
+                        crate::plugin_runner::log_completion(
+                            self,
+                            &plugin_name,
+                            &label,
+                            started,
+                            ConsoleSeverity::Error,
+                            &format!("failed: {e}"),
+                        );
+                    }
+                },
+            }
+        }
+        self.pending_plugin_ops = still_pending;
+    }
+
+    fn log_plugin_completion(
+        &mut self,
+        plugin_name: &str,
+        label: &str,
+        started: std::time::Instant,
+        ok: bool,
+    ) {
+        let (sev, detail) = if ok { (ConsoleSeverity::Info, "ok") } else {
+            (ConsoleSeverity::Warning, "no outcome (call trapped or grant denied)")
+        };
+        crate::plugin_runner::log_completion(self, plugin_name, label, started, sev, detail);
+    }
 
     /// Open the Console tab as a horizontal split at the bottom of
     /// the main dock area. If the tab is already docked anywhere,
@@ -765,9 +848,24 @@ impl HxyApp {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::plugin_runner::Logger for HxyApp {
+    fn log(&mut self, severity: ConsoleSeverity, context: String, message: String) {
+        self.console_log(severity, context, message);
+    }
+}
+
 impl eframe::App for HxyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let snapshot_before = self.state.read().clone();
+
+        // Drain any background-threaded plugin operations that
+        // completed since the previous frame. Outcomes dispatch
+        // through the same paths the synchronous calls used to take
+        // (palette dispatch, mount-tab open) plus a "completed in N
+        // ms" log entry.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.drain_pending_plugin_ops(ui.ctx());
 
         #[cfg(target_os = "macos")]
         drain_native_menu(ui.ctx(), self);
@@ -4201,8 +4299,14 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 app.palette.close();
                 return;
             };
-            let outcome = plugin.invoke_command(&command_id);
-            dispatch_plugin_outcome(app, plugin, &plugin_name, &command_id, outcome);
+            // Close the palette immediately so the user can keep
+            // typing; the worker thread runs in the background and
+            // dispatches its outcome through `drain_pending_plugin_ops`.
+            app.palette.close();
+            let repaint = ctx.clone();
+            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
+            crate::plugin_runner::spawn_invoke(&mut ops, app, repaint, plugin, plugin_name, command_id);
+            app.pending_plugin_ops = ops;
         }
         crate::command_palette::Action::RespondToPlugin { plugin_name, command_id, answer } => {
             let Some(plugin) = app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() else {
@@ -4210,8 +4314,19 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 app.palette.close();
                 return;
             };
-            let outcome = plugin.respond_to_prompt(&command_id, &answer);
-            dispatch_plugin_outcome(app, plugin, &plugin_name, &command_id, outcome);
+            app.palette.close();
+            let repaint = ctx.clone();
+            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
+            crate::plugin_runner::spawn_respond(
+                &mut ops,
+                app,
+                repaint,
+                plugin,
+                plugin_name,
+                command_id,
+                answer,
+            );
+            app.pending_plugin_ops = ops;
         }
         crate::command_palette::Action::NoOp => {
             // Placeholder rows (e.g. "Invalid: ..." in the Go-To
@@ -4439,6 +4554,7 @@ fn handle_open_file(app: &mut HxyApp) {
 /// rounds back here on submit).
 #[cfg(not(target_arch = "wasm32"))]
 fn dispatch_plugin_outcome(
+    ctx: &egui::Context,
     app: &mut HxyApp,
     plugin: Arc<hxy_plugin_host::PluginHandler>,
     plugin_name: &str,
@@ -4452,7 +4568,22 @@ fn dispatch_plugin_outcome(
         }
         Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
             app.palette.close();
-            open_plugin_mount_tab(app, plugin, &req);
+            // mount_by_token does the slow TCP-connect + banner read;
+            // background-thread it so the UI stays responsive. The
+            // tab opens once the worker finishes, via
+            // `install_mount_tab` from `drain_pending_plugin_ops`.
+            let plugin_name_owned = plugin.name().to_owned();
+            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
+            crate::plugin_runner::spawn_mount_by_token(
+                &mut ops,
+                app,
+                ctx.clone(),
+                plugin,
+                plugin_name_owned,
+                req.token,
+                req.title,
+            );
+            app.pending_plugin_ops = ops;
         }
         Some(hxy_plugin_host::InvokeOutcome::Prompt(req)) => {
             // Switch to argument-style prompt mode. The user's
@@ -4485,31 +4616,27 @@ fn dispatch_plugin_outcome(
 /// with the saved token, dropping the tab if the plugin no
 /// longer recognizes it.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_plugin_mount_tab(
+/// Install an already-resolved `MountedVfs` as a new tab. The
+/// background-threaded `mount-by-token` flow ends here once its
+/// worker hands back the mount; a freshly-restored tab from
+/// `open_tabs` also funnels through here after its synchronous
+/// `mount_by_token` call.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_mount_tab(
     app: &mut HxyApp,
     plugin: Arc<hxy_plugin_host::PluginHandler>,
-    req: &hxy_plugin_host::MountRequest,
+    mount: hxy_vfs::MountedVfs,
+    token: String,
+    title: String,
 ) {
-    let mount = match plugin.mount_by_token(&req.token) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                plugin = %plugin.name(),
-                token = %req.token,
-                "mount-by-token failed"
-            );
-            return;
-        }
-    };
     let id = crate::file::FileId::new(app.next_file_id);
     app.next_file_id += 1;
     let source = TabSource::PluginMount {
         plugin_name: plugin.name().to_owned(),
-        token: req.token.clone(),
-        title: req.title.clone(),
+        token,
+        title: title.clone(),
     };
-    let mut file = crate::file::OpenFile::from_bytes(id, req.title.clone(), Some(source), Vec::new());
+    let mut file = crate::file::OpenFile::from_bytes(id, title, Some(source), Vec::new());
     file.mount = Some(Arc::new(mount));
     file.show_vfs_tree = true;
     app.files.insert(id, file);

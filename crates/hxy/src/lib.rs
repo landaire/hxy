@@ -24,6 +24,8 @@ pub mod goto;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod inspector;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_runner;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod plugins_tab;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod template_library;
