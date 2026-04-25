@@ -118,6 +118,42 @@ struct FileNode {
     length: u64,
 }
 
+/// A captured memory range. `va_start..va_end` is the process virtual
+/// address span; `rva` is where the bytes for that span live in the
+/// dump file. Used by [`resolve_va`] to map a thread stack's virtual
+/// address (which in full-memory dumps is the only locator we have)
+/// back to a file offset.
+#[derive(Clone, Copy, Debug)]
+struct MemRegion {
+    va_start: u64,
+    va_end: u64,
+    rva: u64,
+    length: u64,
+}
+
+/// Find the captured region containing `va`, if any, and return the
+/// (file offset, available bytes) starting at `va`. `wanted` is the
+/// caller's requested length; the available bytes are clamped to
+/// what the region actually holds (so a stack VA at the end of a
+/// region returns just the tail). Returns `None` when no captured
+/// region contains `va`.
+fn resolve_va(regions: &[MemRegion], va: u64, wanted: u64) -> Option<(u64, u64)> {
+    // Regions are sorted by va_start; the candidate containing `va`
+    // is the one with the largest va_start <= va.
+    let idx = regions.partition_point(|r| r.va_start <= va).checked_sub(1)?;
+    let region = regions.get(idx)?;
+    if va >= region.va_end {
+        return None;
+    }
+    let inside = va - region.va_start;
+    if inside >= region.length {
+        return None;
+    }
+    let avail = region.length - inside;
+    let len = wanted.min(avail);
+    Some((region.rva + inside, len))
+}
+
 struct Mount {
     files: BTreeMap<String, FileNode>,
     dirs: BTreeMap<String, BTreeSet<String>>,
@@ -146,6 +182,31 @@ impl Mount {
 
         mount.add_file("/header", 0, HEADER_SIZE);
 
+        // Collect memory regions FIRST so the thread-list pass can
+        // resolve per-thread stack file offsets against them. Full-
+        // memory dumps store thread stacks inside MEMORY64_LIST and
+        // leave `MINIDUMP_THREAD::Stack.Memory.Rva` zero -- we have to
+        // map via the stack's virtual address back to the captured
+        // memory region.
+        let bytes_base = bytes.as_ptr() as usize;
+        let mut mem_regions: Vec<MemRegion> = Vec::new();
+        for block in parser.mem_blocks().values() {
+            if block.data.is_empty() {
+                continue;
+            }
+            let block_off = block.data.as_ptr() as usize;
+            if block_off < bytes_base || block_off > bytes_base + bytes.len() {
+                continue;
+            }
+            let rva = (block_off - bytes_base) as u64;
+            let length = block.data.len() as u64;
+            mem_regions.push(MemRegion { va_start: block.range.start, va_end: block.range.end, rva, length });
+            let path = format!("/memory/0x{:016X}", block.range.start);
+            mount.add_file(&path, rva, length);
+        }
+        // Sort by va_start so resolve_va can binary-search.
+        mem_regions.sort_by_key(|r| r.va_start);
+
         let n_streams = read_u32(&bytes, 8).ok_or_else(|| "truncated header".to_string())?;
         let stream_dir_rva = read_u32(&bytes, 12).ok_or_else(|| "truncated header".to_string())?;
 
@@ -169,33 +230,13 @@ impl Mount {
                     mount.add_file("/streams/exception", rva as u64, data_size as u64);
                 }
                 STREAM_THREAD_LIST => {
-                    parse_thread_list(&mut mount, &bytes, rva as u64)?;
+                    parse_thread_list(&mut mount, &bytes, rva as u64, &mem_regions)?;
                 }
                 STREAM_MODULE_LIST => {
                     parse_module_list(&mut mount, &bytes, rva as u64)?;
                 }
                 _ => {}
             }
-        }
-
-        // Memory regions: udmp-parser already associated each MemBlock with
-        // its data slice. The slice points into our `bytes` buffer, so the
-        // file offset is `data.as_ptr() - bytes.as_ptr()`.
-        let bytes_base = bytes.as_ptr() as usize;
-        for block in parser.mem_blocks().values() {
-            if block.data.is_empty() {
-                continue;
-            }
-            let block_off = block.data.as_ptr() as usize;
-            // Defensive: reject pointers outside our buffer rather than
-            // emit a bogus offset.
-            if block_off < bytes_base || block_off > bytes_base + bytes.len() {
-                continue;
-            }
-            let rva = (block_off - bytes_base) as u64;
-            let length = block.data.len() as u64;
-            let path = format!("/memory/0x{:016X}", block.range.start);
-            mount.add_file(&path, rva, length);
         }
 
         // Drop the parser before returning so the borrow on `bytes` ends
@@ -285,7 +326,13 @@ impl GuestMount for Mount {
 ///
 /// * `u32 number_of_threads`
 /// * `ThreadEntry[number_of_threads]` (48 bytes each, see [`THREAD_ENTRY_SIZE`])
-fn parse_thread_list(mount: &mut Mount, bytes: &[u8], stream_rva: u64) -> Result<(), String> {
+///
+/// `mem_regions` is the captured-memory map; when a thread's per-entry
+/// `Stack.Memory.Rva` is zero (full-memory dumps store stack contents
+/// in `MEMORY64_LIST` instead of inline), we resolve the stack's
+/// `start_of_memory_range` virtual address against the map to recover
+/// the actual file offset.
+fn parse_thread_list(mount: &mut Mount, bytes: &[u8], stream_rva: u64, mem_regions: &[MemRegion]) -> Result<(), String> {
     let n_threads = read_u32(bytes, stream_rva as usize).ok_or_else(|| "truncated thread list header".to_string())?;
     let entries_start = stream_rva + 4;
     for i in 0..n_threads as u64 {
@@ -300,6 +347,7 @@ fn parse_thread_list(mount: &mut Mount, bytes: &[u8], stream_rva: u64) -> Result
         //  16  teb u64
         //  24  stack: MemoryDescriptor { start_of_memory_range u64, memory: LocationDescriptor32 { data_size u32 (32), rva u32 (36) } }
         //  40  thread_context: LocationDescriptor32 { data_size u32 (40), rva u32 (44) }
+        let stack_va = read_u64(bytes, (entry_off + 24) as usize).ok_or("truncated stack va")?;
         let stack_size = read_u32(bytes, (entry_off + 32) as usize).ok_or("truncated stack descriptor")?;
         let stack_rva = read_u32(bytes, (entry_off + 36) as usize).ok_or("truncated stack descriptor")?;
         let ctx_size = read_u32(bytes, (entry_off + 40) as usize).ok_or("truncated context descriptor")?;
@@ -310,8 +358,20 @@ fn parse_thread_list(mount: &mut Mount, bytes: &[u8], stream_rva: u64) -> Result
         if ctx_size > 0 {
             mount.add_file(&format!("{dir}/context"), ctx_rva as u64, ctx_size as u64);
         }
-        if stack_size > 0 {
-            mount.add_file(&format!("{dir}/stack"), stack_rva as u64, stack_size as u64);
+        // Stack: prefer the inline LocationDescriptor when populated;
+        // otherwise resolve the start VA against the captured memory
+        // regions. If neither yields anything (e.g. mini-only dump
+        // where the stack region wasn't captured at all), skip the
+        // stack file rather than emit one pointing at offset 0.
+        let stack_loc = if stack_rva != 0 && stack_size > 0 {
+            Some((stack_rva as u64, stack_size as u64))
+        } else if stack_size > 0 {
+            resolve_va(mem_regions, stack_va, stack_size as u64)
+        } else {
+            None
+        };
+        if let Some((rva, length)) = stack_loc {
+            mount.add_file(&format!("{dir}/stack"), rva, length);
         }
     }
     Ok(())
@@ -377,6 +437,13 @@ fn parse_module_list(mount: &mut Mount, bytes: &[u8], stream_rva: u64) -> Result
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice = bytes.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let slice = bytes.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
 }
 
 /// Decode the basename of a UTF-16LE Windows path. Strips any path
