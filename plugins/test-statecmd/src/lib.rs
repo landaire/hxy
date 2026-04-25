@@ -34,6 +34,53 @@ use std::io::Read;
 use std::io::Write;
 use std::net::TcpStream;
 
+/// Wire tag for the `network` command's saved-state blob. The
+/// integration test reads the blob via `StateStore::load` and asserts
+/// against the first byte; this avoids brittle string-matching
+/// against `io::Error::to_string()` across platforms / wasi versions.
+///
+/// Layout: `[tag, ..rest]`.
+/// - [`STATE_TAG_OK`]:     `[OK,     ..response bytes]`
+/// - [`STATE_TAG_DENIED`]: `[DENIED, ..ignored]` (no message body)
+/// - [`STATE_TAG_OTHER`]:  `[OTHER,  ..utf-8 error message]`
+pub const STATE_TAG_OK: u8 = 0x00;
+pub const STATE_TAG_DENIED: u8 = 0x01;
+pub const STATE_TAG_OTHER: u8 = 0x02;
+
+/// Typed error returned by [`tcp_roundtrip`]. `Denied` is the
+/// permission-denied case wasi-sockets surfaces when the
+/// manifest's `network` allowlist doesn't cover the requested
+/// destination; `Other` is everything else (refused, unreachable,
+/// truncated, ...).
+#[derive(Debug)]
+enum NetError {
+    Denied,
+    Other(String),
+}
+
+impl From<std::io::Error> for NetError {
+    fn from(e: std::io::Error) -> Self {
+        match e.kind() {
+            std::io::ErrorKind::PermissionDenied => NetError::Denied,
+            _ => NetError::Other(e.to_string()),
+        }
+    }
+}
+
+impl NetError {
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            NetError::Denied => vec![STATE_TAG_DENIED],
+            NetError::Other(msg) => {
+                let mut out = Vec::with_capacity(1 + msg.len());
+                out.push(STATE_TAG_OTHER);
+                out.extend_from_slice(msg.as_bytes());
+                out
+            }
+        }
+    }
+}
+
 struct Plugin;
 
 impl Guest for Plugin {
@@ -158,11 +205,16 @@ impl GuestCommands for Plugin {
             // read up to 64 bytes, store the answer in state for
             // the test to inspect, return Done.
             "network" => {
-                let echo = match tcp_roundtrip(&answer) {
-                    Ok(bytes) => bytes,
-                    Err(e) => format!("ERR: {e}").into_bytes(),
+                let blob = match tcp_roundtrip(&answer) {
+                    Ok(bytes) => {
+                        let mut out = Vec::with_capacity(1 + bytes.len());
+                        out.push(STATE_TAG_OK);
+                        out.extend_from_slice(&bytes);
+                        out
+                    }
+                    Err(e) => e.encode(),
                 };
-                let _ = state::save(&echo);
+                let _ = state::save(&blob);
                 InvokeResult::Done
             }
             _ => InvokeResult::Done,
@@ -171,18 +223,18 @@ impl GuestCommands for Plugin {
 }
 
 /// Connect to `host:port`, write "ping", read up to 64 bytes back.
-/// Returns the echoed bytes for the host to assert on. Errors are
-/// joined as a string so the test gets a single failure surface.
+/// Returns the echoed bytes on success, or a typed [`NetError`]
+/// distinguishing "host denied connect" from anything else.
 ///
 /// Uses `std::net::TcpStream` directly; on `wasm32-wasip2` that
 /// resolves to wasi-sockets imports satisfied by the host's
 /// `wasmtime-wasi` linker (gated by the manifest's `network`
 /// allowlist).
-fn tcp_roundtrip(host_port: &str) -> Result<Vec<u8>, String> {
-    let mut stream = TcpStream::connect(host_port).map_err(|e| e.to_string())?;
-    stream.write_all(b"ping").map_err(|e| e.to_string())?;
+fn tcp_roundtrip(host_port: &str) -> Result<Vec<u8>, NetError> {
+    let mut stream = TcpStream::connect(host_port)?;
+    stream.write_all(b"ping")?;
     let mut buf = vec![0u8; 64];
-    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+    let n = stream.read(&mut buf)?;
     buf.truncate(n);
     Ok(buf)
 }

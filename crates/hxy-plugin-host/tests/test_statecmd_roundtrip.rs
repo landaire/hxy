@@ -245,8 +245,12 @@ network = ["127.0.0.1:{port}", "*:443"]
     let outcome = plugin.respond_to_prompt("network", &answer).expect("respond");
     assert!(matches!(outcome, InvokeOutcome::Done), "got {outcome:?}");
 
+    // Success case: tag byte (0x00 = STATE_TAG_OK) followed by the
+    // echo bytes the listener sent back.
     let echoed = store.load("test-statecmd").unwrap().expect("plugin saved its echo");
-    assert_eq!(&echoed[..], b"pong", "echo blob = {:?}", String::from_utf8_lossy(&echoed));
+    const STATE_TAG_OK: u8 = 0x00;
+    assert_eq!(echoed.first(), Some(&STATE_TAG_OK), "expected OK tag, got {echoed:?}");
+    assert_eq!(&echoed[1..], b"pong", "echo body = {:?}", String::from_utf8_lossy(&echoed[1..]));
 }
 
 #[test]
@@ -300,14 +304,16 @@ network = ["*:443"]
     assert!(matches!(outcome, InvokeOutcome::Done));
 
     let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
-    let saved_str = String::from_utf8_lossy(&saved);
-    // wasi-sockets surfaces a denied connect as "Permission denied
-    // (os error 2)" via std::io::Error; the test plugin wraps it in
-    // an `ERR:` prefix. Match the substring rather than the exact
-    // message so future wasi backend tweaks don't break the test.
-    assert!(
-        saved_str.starts_with("ERR:") && saved_str.contains("Permission denied"),
-        "expected denial for out-of-allowlist port, got {saved_str:?}"
+    // The plugin tags its saved-state blob with a single byte
+    // discriminator (see test-statecmd src/lib.rs `STATE_TAG_*`):
+    // wasi-sockets denies the out-of-allowlist port, the plugin
+    // maps that to `NetError::Denied` via `ErrorKind::PermissionDenied`,
+    // and saves a single `0x01` byte. No string parsing involved.
+    const STATE_TAG_DENIED: u8 = 0x01;
+    assert_eq!(
+        saved,
+        vec![STATE_TAG_DENIED],
+        "expected denial tag for out-of-allowlist port, got {saved:?}"
     );
 }
 
@@ -355,17 +361,19 @@ network = ["*:*"]
 
     // Drive the same prompt -> respond cycle. With network denied,
     // the plugin's `std::net::TcpStream::connect` hits a wasi-sockets
-    // permission check that returns a "Permission denied" io::Error;
-    // the test plugin formats it as an "ERR:" blob.
+    // permission check that returns a `PermissionDenied` io::Error;
+    // the test plugin maps that to `NetError::Denied` and saves a
+    // single discriminator byte rather than a stringified message.
     let _ = plugin.invoke_command("network").expect("invoke");
     let outcome = plugin.respond_to_prompt("network", "127.0.0.1:9").expect("respond");
     assert!(matches!(outcome, InvokeOutcome::Done));
 
     let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
-    let saved_str = String::from_utf8_lossy(&saved);
-    assert!(
-        saved_str.starts_with("ERR:") && saved_str.contains("Permission denied"),
-        "expected denial error, got {saved_str:?}"
+    const STATE_TAG_DENIED: u8 = 0x01;
+    assert_eq!(
+        saved,
+        vec![STATE_TAG_DENIED],
+        "expected denial tag, got {saved:?}"
     );
 }
 
