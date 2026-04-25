@@ -3,12 +3,16 @@
 //! source, and verifies the plugin correctly calls back into the
 //! host's `source.read` to materialise file contents.
 //!
-//! The component binary is produced by building
-//! `plugins/passthrough` with
-//! `cargo build --target wasm32-unknown-unknown --release` and then
-//! wrapping it with `wasm-tools component new`. The test skips itself
-//! gracefully if that artifact isn't present so `cargo test` stays
-//! green on a fresh checkout.
+//! Build the artifact first:
+//!
+//! ```sh
+//! cd plugins/passthrough && cargo build --target wasm32-wasip2 --release
+//! ```
+//!
+//! `wasm32-wasip2` emits a component directly, so no `wasm-tools
+//! component new` step is needed. The test skips itself gracefully
+//! if the artifact isn't present so `cargo test` stays green on a
+//! fresh checkout.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -19,7 +23,8 @@ use hxy_core::MemorySource;
 use hxy_vfs::VfsHandler;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/passthrough/target/passthrough.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/passthrough/target/wasm32-wasip2/release/hxy_plugin_passthrough.wasm")
 }
 
 #[test]

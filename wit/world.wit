@@ -61,44 +61,6 @@ interface handler {
     mount-by-token: func(token: string) -> result<mount, string>;
 }
 
-/// Outbound TCP for plugins. Narrow on purpose -- one resource
-/// type, three methods, no stream / pollable / select machinery.
-/// Suitable for stateful client protocols (xbdm, custom JSON-RPC
-/// over a long-lived connection, etc.); plugins that want
-/// fire-and-forget request / response can wrap it themselves.
-///
-/// Gated by the manifest's `network` permission: the host enforces
-/// the allowlist before completing `connect`, returning
-/// `forbidden` (with the would-be address in the message) when
-/// the user hasn't granted access. Reads / writes never re-check;
-/// the allowlist is enforced once at connect time.
-interface tcp {
-    /// Live connection handle. The host owns the underlying
-    /// `std::net::TcpStream`; dropping the resource closes it.
-    resource connection {
-        /// Write every byte of `data` or fail. Blocks the plugin
-        /// call until the OS accepts the write.
-        write-all: func(data: list<u8>) -> result<_, string>;
-
-        /// Read up to `max` bytes. Returns fewer (including zero)
-        /// on EOF / short read. Blocks until at least one byte
-        /// arrives or the peer closes.
-        read: func(max: u32) -> result<list<u8>, string>;
-
-        /// Best-effort shutdown (closes both halves). Calling
-        /// further methods after this returns errors.
-        close: func();
-    }
-
-    /// Open an outbound TCP connection to `host:port`. The host
-    /// resolves `host` via the OS resolver, walks the resulting
-    /// addresses through the per-plugin allowlist, and connects
-    /// to the first match. Returns an error string when the
-    /// permission is missing, no resolved address is allowed, or
-    /// the OS-level connect fails.
-    connect: func(host: string, port: u16) -> result<connection, string>;
-}
-
 /// Opaque per-plugin storage. The host treats the blob as bytes;
 /// versioning and encoding are the plugin's problem. Wired up by the
 /// host only when the user has granted the plugin's `persist`
@@ -209,18 +171,23 @@ interface commands {
     respond: func(id: string, answer: string) -> invoke-result;
 }
 
-/// Plugin world: imports `source` (always), `state` (gated by the
-/// `persist` permission), and `tcp` (gated by the `network`
-/// permission); exports `handler` (always) and `commands` (gated
-/// by the `commands` permission). Permission gating happens at
-/// runtime: the host returns `denied` / `forbidden` from gated
-/// interface calls, and skips invoking `commands.list-commands`
-/// when the commands permission is off. Plugins that don't want a
-/// given capability just never call its interface.
+/// Plugin world: imports `source` (always) and `state` (gated by the
+/// `persist` permission); exports `handler` (always) and `commands`
+/// (gated by the `commands` permission). Permission gating happens
+/// at runtime: the host returns `denied` from gated interface calls
+/// and skips invoking `commands.list-commands` when the commands
+/// permission is off. Plugins that don't want a given capability
+/// just never call its interface.
+///
+/// Outbound networking is provided via WASI preview 2's
+/// `wasi:sockets` interfaces (linked by the host alongside this
+/// world). The `network` manifest field is enforced via wasi's
+/// `socket_addr_check` callback so the same `host:port` allowlist
+/// applies to plugins using `std::net::TcpStream` /
+/// `std::net::UdpSocket`.
 world plugin {
     import source;
     import state;
-    import tcp;
     export handler;
     export commands;
 }

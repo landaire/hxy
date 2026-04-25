@@ -81,18 +81,20 @@ pub struct Permissions {
     /// effectively passive (only acts when the user navigates to
     /// a path it claims via the handler interface).
     pub commands: bool,
-    /// Outbound-TCP allowlist: each entry is a `host:port` pattern
-    /// the plugin wants to connect to. `*` matches anything in
+    /// Outbound-network allowlist: each entry is a `host:port`
+    /// pattern the plugin wants to talk to. `*` matches anything in
     /// either field, e.g. `"*:443"` (any host, port 443),
     /// `"github.com:*"` (any port on github.com),
     /// `"192.168.1.50:730"` (one specific endpoint).
     ///
-    /// Empty list = no network access requested. Matching is on the
-    /// *literal host string* the plugin passes to `tcp.connect` --
-    /// the host does not resolve and re-check, so a plugin that
-    /// passes `"localhost"` will not match a `"127.0.0.1:*"`
-    /// pattern. Plugin authors should declare the names they will
-    /// actually use.
+    /// Empty list = no network access requested. The list is
+    /// translated into a wasi-sockets `socket_addr_check` that gates
+    /// every TCP / UDP socket creation the plugin attempts via
+    /// `std::net::*`. Matching runs on the *resolved* socket
+    /// address, so the host pattern is compared against the IP
+    /// string (`192.168.1.50`, `127.0.0.1`, `[::1]`, ...) rather
+    /// than the original hostname. Plugins that need by-name gating
+    /// should declare the resolved addresses they actually use.
     pub network: Vec<String>,
 }
 

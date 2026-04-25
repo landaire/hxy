@@ -12,18 +12,15 @@
 //! 4. The token round-trips through `mount-by-token` and the
 //!    resulting VFS exposes the expected synthesized file.
 //!
-//! The component binary is produced by:
+//! Build the artifact first:
 //!
 //! ```sh
-//! cd plugins/test-statecmd
-//! cargo build --target wasm32-unknown-unknown --release
-//! wasm-tools component new \
-//!     target/wasm32-unknown-unknown/release/hxy_plugin_test_statecmd.wasm \
-//!     -o target/test-statecmd.component.wasm
+//! cd plugins/test-statecmd && cargo build --target wasm32-wasip2 --release
 //! ```
 //!
-//! The test skips itself if that artifact is absent so a fresh
-//! checkout's `cargo test` stays green.
+//! `wasm32-wasip2` emits a component directly. The test skips itself
+//! if the artifact is absent so a fresh checkout's `cargo test`
+//! stays green.
 
 use std::io::Read as _;
 use std::io::Write as _;
@@ -42,7 +39,7 @@ use hxy_vfs::VfsHandler;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/test-statecmd/target/test-statecmd.component.wasm")
+        .join("../../plugins/test-statecmd/target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm")
 }
 
 #[test]
@@ -304,8 +301,12 @@ network = ["*:443"]
 
     let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
     let saved_str = String::from_utf8_lossy(&saved);
+    // wasi-sockets surfaces a denied connect as "Permission denied
+    // (os error 2)" via std::io::Error; the test plugin wraps it in
+    // an `ERR:` prefix. Match the substring rather than the exact
+    // message so future wasi backend tweaks don't break the test.
     assert!(
-        saved_str.starts_with("ERR: network permission denied"),
+        saved_str.starts_with("ERR:") && saved_str.contains("Permission denied"),
         "expected denial for out-of-allowlist port, got {saved_str:?}"
     );
 }
@@ -352,11 +353,10 @@ network = ["*:*"]
         .find(|p| p.name() == "test-statecmd")
         .expect("test-statecmd handler present");
 
-    // Drive the same prompt -> respond cycle. With network
-    // denied, the plugin's tcp_roundtrip helper hits
-    // `tcp::connect` which returns `Err("network permission
-    // denied for ...")`; the plugin formats that as an "ERR:"
-    // blob.
+    // Drive the same prompt -> respond cycle. With network denied,
+    // the plugin's `std::net::TcpStream::connect` hits a wasi-sockets
+    // permission check that returns a "Permission denied" io::Error;
+    // the test plugin formats it as an "ERR:" blob.
     let _ = plugin.invoke_command("network").expect("invoke");
     let outcome = plugin.respond_to_prompt("network", "127.0.0.1:9").expect("respond");
     assert!(matches!(outcome, InvokeOutcome::Done));
@@ -364,7 +364,7 @@ network = ["*:*"]
     let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
     let saved_str = String::from_utf8_lossy(&saved);
     assert!(
-        saved_str.starts_with("ERR: network permission denied"),
+        saved_str.starts_with("ERR:") && saved_str.contains("Permission denied"),
         "expected denial error, got {saved_str:?}"
     );
 }

@@ -1,31 +1,34 @@
-//! Host-side state and `source` / `state` / `tcp` import
-//! implementations. One [`HostState`] lives per
-//! [`Store`](wasmtime::Store); it holds the [`HexSource`] the plugin
-//! is reading from, the per-plugin name + grant view used to gate
-//! `state` and `tcp` calls, the [`StateStore`] that persists blobs,
-//! and a [`wasmtime::component::ResourceTable`] for the live TCP
-//! connections owned by the plugin instance.
+//! Host-side state and `source` / `state` import implementations.
+//!
+//! One [`HostState`] lives per [`Store`](wasmtime::Store); it holds:
+//!
+//! - the [`HexSource`] the plugin is reading from,
+//! - the per-plugin name + grant view used to gate `state` calls,
+//! - the [`StateStore`] that persists blobs,
+//! - a [`wasmtime::component::ResourceTable`] (used by both wasi and
+//!   any future host-defined resources),
+//! - a [`wasmtime_wasi::p2::WasiCtx`] providing wasi:sockets,
+//!   wasi:io, wasi:cli, etc. The wasi context's socket allow-check
+//!   is wired to the manifest's `network` allowlist so plugin
+//!   networking inherits the same per-host:port gating as the
+//!   former custom `tcp` interface.
 
-use std::io::Read as _;
-use std::io::Write as _;
-use std::net::Shutdown;
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
 use std::sync::Arc;
 
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
-use wasmtime::component::Resource;
 use wasmtime::component::ResourceTable;
+use wasmtime_wasi::WasiCtx;
+use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::WasiCtxView;
+use wasmtime_wasi::WasiView;
 
 use crate::StateError;
 use crate::StateStore;
 use crate::bindings::handler_world::hxy::vfs::source::Host as SourceHost;
 use crate::bindings::handler_world::hxy::vfs::state::Host as StateHost;
 use crate::bindings::handler_world::hxy::vfs::state::StateError as WitStateError;
-use crate::bindings::handler_world::hxy::vfs::tcp::Host as TcpHost;
-use crate::bindings::handler_world::hxy::vfs::tcp::HostConnection as TcpHostConnection;
 
 pub struct HostState {
     pub source: Arc<dyn HexSource>,
@@ -40,36 +43,31 @@ pub struct HostState {
     /// `persist_granted = false` -- the host may decide not to wire
     /// up a store at all (e.g. in tests).
     pub state_store: Option<Arc<dyn StateStore>>,
-    /// Granted outbound-TCP allowlist patterns. Each entry is a
-    /// `host:port` string with optional `*` wildcards on either
-    /// side; `tcp.connect(host, port)` succeeds only when at
-    /// least one pattern matches the literal host string the
-    /// plugin passed (no DNS re-check). Empty list = network
-    /// fully denied. Once a connection is established subsequent
-    /// reads / writes don't re-check.
-    pub network_allowlist: Vec<String>,
-    /// Owns every live TCP connection the plugin opens during the
-    /// lifetime of this store. wasmtime hands the plugin opaque
-    /// `Resource` handles backed by entries in this table; dropping
-    /// a handle from the plugin side calls back into our
-    /// [`TcpHostConnection::drop`] to close the underlying socket.
+    /// Wasmtime resource table -- shared across host-defined and
+    /// wasi-defined resources. Required by [`IoView`].
     pub resources: ResourceTable,
+    /// WASI preview 2 context. Provides `wasi:sockets`,
+    /// `wasi:io/streams`, `wasi:cli/environment`, etc. Built with the
+    /// network allowlist callback installed when the plugin has any
+    /// `network` grants; a plugin that requested no network capability
+    /// gets a default (`SocketAddrCheck` denies everything) ctx.
+    pub wasi: WasiCtx,
 }
 
 impl HostState {
-    /// Construct a minimal state with no persist or network plumbing
-    /// -- used by the existing detect / matches probe paths where
-    /// the plugin shouldn't be doing I/O anyway. Calls to the
-    /// `state` interface return `denied`; calls to `tcp` return
-    /// `forbidden`.
+    /// Construct a minimal state with no persist or network plumbing.
+    /// Used by the existing detect / matches probe paths where the
+    /// plugin shouldn't be doing I/O anyway. Calls to the `state`
+    /// interface return `denied`; wasi sockets are denied by the
+    /// default-deny `SocketAddrCheck`.
     pub fn new(source: Arc<dyn HexSource>) -> Self {
         Self {
             source,
             plugin_name: String::new(),
             persist_granted: false,
             state_store: None,
-            network_allowlist: Vec::new(),
             resources: ResourceTable::new(),
+            wasi: deny_all_wasi_ctx(),
         }
     }
 
@@ -89,14 +87,50 @@ impl HostState {
         self
     }
 
-    /// Install the granted outbound-TCP allowlist. Each pattern
-    /// is `host:port` with `*` wildcards permitted in either
-    /// half; an empty list leaves the connection denied for all
-    /// addresses.
+    /// Install the granted outbound-network allowlist as a wasi
+    /// `socket_addr_check`. Each pattern is `host:port` with `*`
+    /// wildcards permitted in either half; an empty list leaves
+    /// every connection denied.
+    ///
+    /// Note that wasi-sockets calls `socket_addr_check` with the
+    /// resolved [`SocketAddr`](std::net::SocketAddr) -- the host
+    /// pattern in our manifest is matched against the IP's string
+    /// representation. Plugins that want by-name allowlisting (e.g.
+    /// `xbox.local:*`) should declare the resolved IP they actually
+    /// use, or we can wire DNS-aware allowlisting via
+    /// `WasiCtxBuilder::allow_ip_name_lookup` in a follow-up.
     pub fn with_network_allowlist(mut self, patterns: Vec<String>) -> Self {
-        self.network_allowlist = patterns;
+        self.wasi = build_wasi_ctx_with_allowlist(patterns);
         self
     }
+}
+
+/// Build a `WasiCtx` with sockets enabled but every address denied.
+/// The default `WasiCtxBuilder` already denies all addresses; we
+/// just don't grant anything else (no fs preopens, no env, no stdio
+/// inheritance) so plugins start from a maximally-locked-down
+/// baseline.
+fn deny_all_wasi_ctx() -> WasiCtx {
+    // socket_addr_check defaults to "reject everything", so we don't
+    // need to install a custom callback for the deny-all case.
+    WasiCtxBuilder::new().build()
+}
+
+/// Build a `WasiCtx` whose socket allow-check honors the given
+/// `host:port` pattern list.
+fn build_wasi_ctx_with_allowlist(patterns: Vec<String>) -> WasiCtx {
+    let patterns = Arc::new(patterns);
+    let mut builder = WasiCtxBuilder::new();
+    builder.allow_ip_name_lookup(true);
+    builder.socket_addr_check(move |addr, _use_kind| {
+        let patterns = patterns.clone();
+        // wasi-sockets supplies the resolved SocketAddr -- match the
+        // numeric address against each manifest pattern.
+        let host = addr.ip().to_string();
+        let port = addr.port();
+        Box::pin(async move { allowlist_matches(&patterns, &host, port) })
+    });
+    builder.build()
 }
 
 /// Whether `host:port` is allowed by *any* pattern in `patterns`.
@@ -121,13 +155,13 @@ fn pattern_matches(pattern: &str, host: &str, port: u16) -> bool {
     host_ok && port_ok
 }
 
-/// Live TCP connection backing a plugin-side `connection` resource.
-/// Wraps the std stream behind an `Option` so a plugin-issued
-/// `close` can shut it down without immediately destroying the
-/// resource entry; subsequent calls then return a clear error
-/// instead of panicking on a moved value.
-pub struct TcpConnection {
-    stream: Option<TcpStream>,
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.resources,
+        }
+    }
 }
 
 impl SourceHost for HostState {
@@ -183,79 +217,6 @@ impl HostState {
             return Err(WitStateError::Denied);
         }
         Ok((store.as_ref(), self.plugin_name.as_str()))
-    }
-}
-
-impl TcpHost for HostState {
-    fn connect(&mut self, host: String, port: u16) -> Result<Resource<TcpConnection>, String> {
-        if !allowlist_matches(&self.network_allowlist, &host, port) {
-            return Err(format!("network permission denied for {host}:{port}"));
-        }
-        // OS resolver. Errors propagate as-is so a plugin user
-        // can distinguish "host doesn't resolve" from "denied".
-        let addrs: Vec<_> = (host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve {host}:{port}: {e}"))?
-            .collect();
-        if addrs.is_empty() {
-            return Err(format!("resolve {host}:{port}: no addresses"));
-        }
-        // Try each resolved address until one connects. The OS
-        // already orders by IPv6/IPv4 preference; this just lets
-        // us recover from the dual-stack case where one family is
-        // unreachable.
-        let mut last_err: Option<std::io::Error> = None;
-        for addr in addrs {
-            match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    return self
-                        .resources
-                        .push(TcpConnection { stream: Some(stream) })
-                        .map_err(|e| format!("push connection resource: {e}"));
-                }
-                Err(e) => last_err = Some(e),
-            }
-        }
-        Err(format!("connect {host}:{port}: {}", last_err.expect("at least one error")))
-    }
-}
-
-impl TcpHostConnection for HostState {
-    fn write_all(&mut self, conn: Resource<TcpConnection>, data: Vec<u8>) -> Result<(), String> {
-        let entry = self.resources.get_mut(&conn).map_err(|e| format!("lookup connection: {e}"))?;
-        let stream = entry.stream.as_mut().ok_or_else(|| "connection closed".to_owned())?;
-        stream.write_all(&data).map_err(|e| format!("write: {e}"))?;
-        // Best-effort flush -- the OS usually does it on send,
-        // but explicit avoids surprises for line-oriented peers.
-        let _ = stream.flush();
-        Ok(())
-    }
-
-    fn read(&mut self, conn: Resource<TcpConnection>, max: u32) -> Result<Vec<u8>, String> {
-        let entry = self.resources.get_mut(&conn).map_err(|e| format!("lookup connection: {e}"))?;
-        let stream = entry.stream.as_mut().ok_or_else(|| "connection closed".to_owned())?;
-        let mut buf = vec![0u8; max as usize];
-        let n = stream.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-        buf.truncate(n);
-        Ok(buf)
-    }
-
-    fn close(&mut self, conn: Resource<TcpConnection>) {
-        let Ok(entry) = self.resources.get_mut(&conn) else { return };
-        if let Some(stream) = entry.stream.take() {
-            // Either half failing isn't actionable here -- the
-            // socket is on its way out either way.
-            let _ = stream.shutdown(Shutdown::Both);
-        }
-    }
-
-    fn drop(&mut self, conn: Resource<TcpConnection>) -> wasmtime::Result<()> {
-        // Removing from the table drops `TcpStream`, which closes
-        // the socket. Any explicit `close` already nulled the
-        // stream out, so this is the catch-all path for plugins
-        // that just let the resource go out of scope.
-        let _ = self.resources.delete(conn)?;
-        Ok(())
     }
 }
 
@@ -317,8 +278,6 @@ mod tests {
 
     #[test]
     fn malformed_patterns_silently_dont_match() {
-        // No colon -> no match. Stops the matcher from panicking
-        // on a hand-rolled / corrupted grant blob.
         let pats = vec!["nope-no-port".to_string(), "host:not-a-number".to_string()];
         assert!(!allowlist_matches(&pats, "nope-no-port", 80));
         assert!(!allowlist_matches(&pats, "host", 80));
@@ -326,11 +285,7 @@ mod tests {
 
     #[test]
     fn ipv6_with_brackets_works_via_rsplit_once() {
-        // rsplit_once finds the LAST `:`, so [::1]:443 splits as
-        // host="[::1]" / port="443" -- IPv6 literals work as long
-        // as the user / plugin author wraps them in brackets.
         let pats = vec!["[::1]:443".to_string()];
         assert!(allowlist_matches(&pats, "[::1]", 443));
     }
 }
-

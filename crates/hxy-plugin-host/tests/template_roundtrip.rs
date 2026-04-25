@@ -13,7 +13,7 @@ use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/fixture-template/target/fixture-template.component.wasm")
+        .join("../../plugins/fixture-template/target/wasm32-wasip2/release/hxy_fixture_template_runtime.wasm")
 }
 
 #[test]

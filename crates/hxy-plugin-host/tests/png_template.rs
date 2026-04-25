@@ -12,7 +12,8 @@ use hxy_plugin_host::TemplateRuntime as _;
 use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/png-template/target/png-template.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/png-template/target/wasm32-wasip2/release/hxy_png_template.wasm")
 }
 
 /// Build a minimal valid PNG: 8-byte signature + IHDR (13 bytes of

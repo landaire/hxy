@@ -1,8 +1,14 @@
 //! End-to-end test for the 010 Editor template runtime plugin.
 //!
-//! Loads `plugins/bt-runtime/target/bt-runtime.component.wasm` (if
-//! built), parses a small hand-written template, runs it against a
-//! synthetic byte buffer, and verifies the emitted tree.
+//! Loads the built `wasm32-wasip2` component (if present), parses a
+//! small hand-written template, runs it against a synthetic byte
+//! buffer, and verifies the emitted tree.
+//!
+//! Build the artifact first:
+//!
+//! ```sh
+//! cd plugins/bt-runtime && cargo build --target wasm32-wasip2 --release
+//! ```
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +19,8 @@ use hxy_plugin_host::TemplateRuntime as _;
 use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/bt-runtime/target/bt-runtime.component.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/bt-runtime/target/wasm32-wasip2/release/hxy_bt_runtime.wasm")
 }
 
 #[test]

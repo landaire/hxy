@@ -48,12 +48,16 @@ for a trivial example that exposes the whole source as a single
 
 ```sh
 cd plugins/<name>
-cargo build --target wasm32-unknown-unknown --release
-wasm-tools component new \
-    target/wasm32-unknown-unknown/release/hxy_<name>.wasm \
-    -o target/<name>.component.wasm
-# Then drop `<name>.component.wasm` into the appropriate data dir.
+cargo build --target wasm32-wasip2 --release
+# Then drop target/wasm32-wasip2/release/hxy_<name>.wasm into the
+# appropriate data dir.
 ```
 
-Requires the `wasm32-unknown-unknown` target (`rustup target add`)
-and `wasm-tools` (`cargo install wasm-tools`).
+Requires the `wasm32-wasip2` target (`rustup target add
+wasm32-wasip2`). `wasm32-wasip2` emits a component directly, so no
+`wasm-tools component new` step is needed.
+
+The host links `wasmtime-wasi` so plugins can use `std::net::*`,
+`std::time::*`, and other `std` facilities backed by WASI preview 2
+imports. Outbound networking is gated on the manifest's `network`
+allowlist via the wasi-sockets `socket_addr_check` callback.

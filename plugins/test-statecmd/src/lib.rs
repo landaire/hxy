@@ -12,7 +12,7 @@
 //! that observable behaviour to verify that persist gating + the
 //! state-store wiring round-trips correctly.
 
-#![no_std]
+// Needs `std` for `std::net::TcpStream` (wasi-sockets via wasm32-wasip2).
 extern crate alloc;
 
 use alloc::format;
@@ -30,7 +30,9 @@ use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::MountRequest;
 use hxy_plugin_api::handler::PromptRequest;
 use hxy_plugin_api::handler::state;
-use hxy_plugin_api::handler::tcp;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpStream;
 
 struct Plugin;
 
@@ -171,12 +173,18 @@ impl GuestCommands for Plugin {
 /// Connect to `host:port`, write "ping", read up to 64 bytes back.
 /// Returns the echoed bytes for the host to assert on. Errors are
 /// joined as a string so the test gets a single failure surface.
+///
+/// Uses `std::net::TcpStream` directly; on `wasm32-wasip2` that
+/// resolves to wasi-sockets imports satisfied by the host's
+/// `wasmtime-wasi` linker (gated by the manifest's `network`
+/// allowlist).
 fn tcp_roundtrip(host_port: &str) -> Result<Vec<u8>, String> {
-    let (host, port_s) = host_port.rsplit_once(':').ok_or("expected host:port")?;
-    let port: u16 = port_s.parse().map_err(|e: core::num::ParseIntError| e.to_string())?;
-    let conn = tcp::connect(host, port)?;
-    conn.write_all(b"ping")?;
-    conn.read(64)
+    let mut stream = TcpStream::connect(host_port).map_err(|e| e.to_string())?;
+    stream.write_all(b"ping").map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 64];
+    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+    buf.truncate(n);
+    Ok(buf)
 }
 
 struct Mount {

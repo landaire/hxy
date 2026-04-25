@@ -87,6 +87,11 @@ pub fn load_plugins_from_dir(
     let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
 
     let mut linker: Linker<HostState> = Linker::new(&engine);
+    // WASI preview 2: gives plugins wasi:sockets, wasi:io, wasi:cli,
+    // etc. Plugins target wasm32-wasip2 so std::net works through
+    // these imports.
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(PluginLoadError::Engine)?;
     Plugin::add_to_linker::<_, wasmtime::component::HasSelf<_>>(&mut linker, |s: &mut HostState| s)
         .map_err(PluginLoadError::Engine)?;
     let linker = Arc::new(linker);
@@ -151,6 +156,8 @@ pub fn load_template_plugins_from_dir(dir: &Path) -> Result<Vec<WasmTemplateRunt
     let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
 
     let mut linker: Linker<HostState> = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(PluginLoadError::Engine)?;
     WitTemplateRuntime::add_to_linker::<_, wasmtime::component::HasSelf<_>>(&mut linker, |s: &mut HostState| s)
         .map_err(PluginLoadError::Engine)?;
     let linker = Arc::new(linker);
@@ -192,6 +199,8 @@ pub fn load_template_runtime_from_bytes(bytes: &[u8], label: &str) -> Result<Was
     let engine = Engine::new(&config).map_err(PluginLoadError::Engine)?;
 
     let mut linker: Linker<HostState> = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .map_err(PluginLoadError::Engine)?;
     WitTemplateRuntime::add_to_linker::<_, wasmtime::component::HasSelf<_>>(&mut linker, |s: &mut HostState| s)
         .map_err(PluginLoadError::Engine)?;
     let linker = Arc::new(linker);

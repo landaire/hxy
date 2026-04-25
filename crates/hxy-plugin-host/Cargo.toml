@@ -20,6 +20,7 @@ toml = "0.9.12"
 tracing = "0.1.44"
 vfs = "0.13.0"
 wasmtime = { version = "44", features = ["component-model", "runtime", "cranelift"] }
+wasmtime-wasi = "44"
 
 [dev-dependencies]
 serde_json = "1.0.145"
