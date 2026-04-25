@@ -153,6 +153,13 @@ pub struct HxyApp {
     /// dock has released its borrow.
     #[cfg(not(target_arch = "wasm32"))]
     pending_global_search_events: Vec<crate::global_search::GlobalSearchEvent>,
+    /// Most-recently-focused leaf that holds a content tab (File /
+    /// Welcome / Settings). Used to route file opens that originate
+    /// from inside a tool panel (e.g. clicking a VFS entry inside a
+    /// `Tab::PluginMount`) back into the user's main editing area
+    /// instead of the tool panel itself. Refreshed each frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_content_leaf: Option<egui_dock::NodePath>,
     /// File paths from the launch's command line. Drained on the
     /// first frame and turned into open-file requests, so a
     /// `hxy a.bin b.bin` invocation lands two tabs as soon as the
@@ -289,6 +296,8 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_global_search_events: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
+            last_content_leaf: None,
+            #[cfg(not(target_arch = "wasm32"))]
             pending_cli_paths: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             ipc_inbox: None,
@@ -349,8 +358,9 @@ impl HxyApp {
         }
     }
 
-    /// Show the Plugins tab. Focuses if already open; otherwise splits
-    /// to the right of the main dock area like the other side panels.
+    /// Show the Plugins tab. Focuses if already open; otherwise routes
+    /// to the shared tool leaf (creating it as a right split if no
+    /// other plugin tab is already docked there).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn show_plugins(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Plugins) {
@@ -359,7 +369,8 @@ impl HxyApp {
             self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Plugins]);
+        let node_path = push_tool_tab(&mut self.dock, Tab::Plugins);
+        self.dock.set_focused_node_and_surface(node_path);
     }
 
     /// Close the Plugins tab if present; otherwise show it.
@@ -884,7 +895,7 @@ impl HxyApp {
                     },
                 );
                 let _ = show_tree; // mount tabs always show the tree
-                self.dock.push_to_focused_leaf(Tab::PluginMount(mount_id));
+                let _ = push_tool_tab(&mut self.dock, Tab::PluginMount(mount_id));
                 if let Some(path) = self.dock.find_tab(&Tab::PluginMount(mount_id)) {
                     remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
                 }
@@ -986,6 +997,8 @@ impl eframe::App for HxyApp {
                 self.apply_plugin_events(events);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        track_content_leaf(self);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(mount_id) = self.pending_close_mount.take()
             && let Some(removed) = self.mounts.remove(&mount_id)
@@ -1746,6 +1759,10 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 };
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
+                // The click happened in the tool panel, so focus is
+                // there too. Move focus back to the editing area
+                // before `open` -- it routes via push_to_focused_leaf.
+                focus_content_leaf(app);
                 app.open(name, Some(source), bytes, None, None, false);
             }
         }
@@ -1937,6 +1954,104 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
 /// Remove any [`Tab::Welcome`] entry from the given leaf. Used by
 /// the file-open and tab-move paths so the Welcome placeholder
 /// quietly steps aside whenever a real tab takes over its pane.
+/// Tabs that belong in the right-hand "tool" panel: the plugin manager
+/// and any live plugin VFS browser. Adding a new tool-class tab type
+/// (e.g. a hypothetical `Tab::Workspace`) means listing it here so the
+/// dock router knows to keep it out of the file editing area.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_tool_tab(t: &Tab) -> bool {
+    matches!(t, Tab::Plugins | Tab::PluginMount(_))
+}
+
+/// Tabs that hold the user's main editing surface -- File buffers and
+/// the two static placeholders (Welcome, Settings) that share the same
+/// leaf with them. Console / Inspector / SearchResults are *neither*
+/// content nor tool: they have their own placement logic and never
+/// receive routed File tabs.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_content_tab(t: &Tab) -> bool {
+    matches!(t, Tab::File(_) | Tab::Welcome | Tab::Settings)
+}
+
+/// First leaf in the dock whose tabs are all tool-class. Used as the
+/// destination for plugin tab opens; if no such leaf exists, the
+/// caller splits a new one off the right side.
+#[cfg(not(target_arch = "wasm32"))]
+fn find_tool_leaf(dock: &egui_dock::DockState<Tab>) -> Option<egui_dock::NodePath> {
+    for (path, _tab) in dock.iter_all_tabs() {
+        let node_path = path.node_path();
+        let Ok(leaf) = dock.leaf(node_path) else { continue };
+        if !leaf.tabs.is_empty() && leaf.tabs.iter().all(is_tool_tab) {
+            return Some(node_path);
+        }
+    }
+    None
+}
+
+/// First leaf whose tabs include any content-class entry. Used as the
+/// fallback target for File opens originating from inside a tool
+/// panel when `HxyApp::last_content_leaf` is stale or unset.
+#[cfg(not(target_arch = "wasm32"))]
+fn find_content_leaf(dock: &egui_dock::DockState<Tab>) -> Option<egui_dock::NodePath> {
+    for (path, _tab) in dock.iter_all_tabs() {
+        let node_path = path.node_path();
+        let Ok(leaf) = dock.leaf(node_path) else { continue };
+        if leaf.tabs.iter().any(is_content_tab) {
+            return Some(node_path);
+        }
+    }
+    None
+}
+
+/// Append `tab` to the dock's tool leaf, creating one with a right
+/// split off the main surface root if none exists yet. Activates the
+/// new tab in its leaf but does not move keyboard focus -- callers
+/// that want focus follow this with `set_focused_node_and_surface`.
+#[cfg(not(target_arch = "wasm32"))]
+fn push_tool_tab(dock: &mut egui_dock::DockState<Tab>, tab: Tab) -> egui_dock::NodePath {
+    if let Some(node_path) = find_tool_leaf(dock)
+        && let Ok(leaf) = dock.leaf_mut(node_path)
+    {
+        leaf.append_tab(tab);
+        return node_path;
+    }
+    dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![tab]);
+    // After split_right the new leaf is the second one returned, but
+    // we don't need the index here -- the caller can re-find it via
+    // `dock.find_tab` if it needs the path.
+    find_tool_leaf(dock).expect("split_right just created a tool leaf")
+}
+
+/// Snapshot the currently-focused leaf if it counts as a content
+/// leaf. Called after each dock pass so file opens routed via
+/// `last_content_leaf` land where the user was last editing.
+#[cfg(not(target_arch = "wasm32"))]
+fn track_content_leaf(app: &mut HxyApp) {
+    let Some(node_path) = app.dock.focused_leaf() else { return };
+    let Ok(leaf) = app.dock.leaf(node_path) else { return };
+    if leaf.tabs.iter().any(is_content_tab) {
+        app.last_content_leaf = Some(node_path);
+    }
+}
+
+/// Move dock focus onto the saved `last_content_leaf`, falling back
+/// to the first content-bearing leaf in the dock. Used right before
+/// `app.open()` from a plugin VFS click so `push_to_focused_leaf`
+/// inside `open` lands the new File tab in the editing area.
+#[cfg(not(target_arch = "wasm32"))]
+fn focus_content_leaf(app: &mut HxyApp) {
+    if let Some(node_path) = app.last_content_leaf
+        && app.dock.leaf(node_path).is_ok()
+    {
+        app.dock.set_focused_node_and_surface(node_path);
+        return;
+    }
+    if let Some(node_path) = find_content_leaf(&app.dock) {
+        app.last_content_leaf = Some(node_path);
+        app.dock.set_focused_node_and_surface(node_path);
+    }
+}
+
 fn remove_welcome_from_leaf(
     dock: &mut egui_dock::DockState<Tab>,
     surface: egui_dock::SurfaceIndex,
@@ -5043,13 +5158,14 @@ fn install_mount_tab(
         }
     }
 
-    app.dock.push_to_focused_leaf(Tab::PluginMount(mount_id));
+    let tool_leaf = push_tool_tab(&mut app.dock, Tab::PluginMount(mount_id));
     if let Some(path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
         remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
         if let Some(fresh_path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
             let _ = app.dock.set_active_tab(fresh_path);
         }
     }
+    app.dock.set_focused_node_and_surface(tool_leaf);
     tracing::info!(plugin = %plugin_name, title = %title, id = %mount_id.get(), "mount tab installed");
 }
 
