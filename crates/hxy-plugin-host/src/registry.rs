@@ -76,7 +76,7 @@ pub enum PluginLoadError {
 pub fn load_plugins_from_dir(
     dir: &Path,
     grants: &PluginGrants,
-    state_store: Option<Arc<StateStore>>,
+    state_store: Option<Arc<dyn StateStore>>,
 ) -> Result<Vec<PluginHandler>, PluginLoadError> {
     if !dir.exists() {
         return Ok(Vec::new());
@@ -112,7 +112,7 @@ fn load_single(
     linker: Arc<Linker<HostState>>,
     path: &Path,
     grants: &PluginGrants,
-    state_store: Option<Arc<StateStore>>,
+    state_store: Option<Arc<dyn StateStore>>,
 ) -> Result<PluginHandler, PluginLoadError> {
     let bytes = std::fs::read(path).map_err(|source| PluginLoadError::ReadFile { path: path.to_path_buf(), source })?;
     let manifest = PluginManifest::load_for(path).map_err(PluginLoadError::Manifest)?;

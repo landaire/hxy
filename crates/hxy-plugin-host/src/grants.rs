@@ -1,6 +1,7 @@
-//! Persistent record of which permissions the user has granted to
-//! each plugin. Loaded from / saved to a single TOML file (typically
-//! `<data_dir>/hxy/plugin_grants.toml`).
+//! In-memory record of which permissions the user has granted to
+//! each plugin. The host crate owns the data structure; the app
+//! crate owns persistence (typically the same SQLite database
+//! that backs window settings, app settings, etc.).
 //!
 //! Plugins are keyed by a [`PluginKey`] = `(name, version, sha256)`
 //! so a plugin with the same name but a swapped binary re-prompts.
@@ -11,46 +12,13 @@
 //! interface.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
-use thiserror::Error;
 
 use crate::manifest::Permissions;
-
-#[derive(Debug, Error)]
-pub enum GrantsError {
-    #[error("read grants file {path}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("parse grants file {path}")]
-    Parse {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
-    },
-    #[error("serialize grants")]
-    Serialize(#[source] toml::ser::Error),
-    #[error("write grants file {path}")]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("create grants directory {path}")]
-    CreateDir {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-}
 
 /// Stable identity of a plugin binary. Two plugins compare equal
 /// only when name *and* version *and* content hash match -- a
@@ -85,11 +53,12 @@ impl PluginKey {
         out
     }
 
-    /// Compact key used inside the TOML file as a `[plugins.<key>]`
-    /// table heading. Format: `name@version#sha256-prefix` -- the
-    /// hash prefix gives a visual distinguisher between rebuilds at
-    /// the same version without dumping the full 64-char digest.
-    fn toml_key(&self) -> String {
+    /// Compact serialization key. Format: `name@version#sha256-prefix`
+    /// -- the hash prefix gives a visual distinguisher between
+    /// rebuilds at the same version without dumping the full 64-char
+    /// digest. Used as the map key inside [`PluginGrants`] so a
+    /// JSON dump of the struct stays human-scannable.
+    fn map_key(&self) -> String {
         let prefix: String = self.sha256.chars().take(12).collect();
         format!("{}@{}#{}", self.name, self.version, prefix)
     }
@@ -118,12 +87,12 @@ impl PermissionGrants {
     }
 }
 
-/// On-disk grants store. Entries are addressable by [`PluginKey`];
-/// callers typically load once at startup and save when the user
-/// makes a consent decision.
+/// In-memory grants store. Implements `Serialize` / `Deserialize`
+/// so the app crate can blob the whole thing into its existing
+/// kv layer (SQLite); the host crate doesn't pick the storage.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PluginGrants {
-    /// Flat map keyed by [`PluginKey::toml_key`]; the embedded
+    /// Flat map keyed by [`PluginKey::map_key`]; the embedded
     /// `PluginKey` carries the canonical identity so a corrupted
     /// or hand-edited heading doesn't desynchronize from the body.
     #[serde(default)]
@@ -137,60 +106,36 @@ struct PluginGrantEntry {
 }
 
 impl PluginGrants {
-    /// Load from `path`, returning an empty store if the file does
-    /// not exist (first run). I/O and parse failures are surfaced
-    /// rather than papered over -- a corrupt grants file should
-    /// stop the host from silently re-prompting on every launch.
-    pub fn load(path: &Path) -> Result<Self, GrantsError> {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => return Err(GrantsError::Read { path: path.to_path_buf(), source }),
-        };
-        let text = String::from_utf8(bytes)
-            .map_err(|e| GrantsError::Read { path: path.to_path_buf(), source: std::io::Error::other(e) })?;
-        toml::from_str(&text).map_err(|source| GrantsError::Parse { path: path.to_path_buf(), source })
-    }
-
-    /// Atomically write to `path`. Creates the parent directory if
-    /// needed; replaces the file via temp+rename so a crash mid-
-    /// write leaves either the previous version or the new one.
-    pub fn save(&self, path: &Path) -> Result<(), GrantsError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|source| GrantsError::CreateDir { path: parent.to_path_buf(), source })?;
-        }
-        let text = toml::to_string_pretty(self).map_err(GrantsError::Serialize)?;
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text).map_err(|source| GrantsError::Write { path: tmp.clone(), source })?;
-        std::fs::rename(&tmp, path).map_err(|source| GrantsError::Write { path: path.to_path_buf(), source })?;
-        Ok(())
-    }
-
     /// Look up the recorded decisions for `key`. Returns
     /// [`PermissionGrants::default`] (all false) when no record
     /// exists yet -- the caller should treat that as "needs consent."
     pub fn get(&self, key: &PluginKey) -> PermissionGrants {
-        self.plugins.get(&key.toml_key()).map(|e| e.grants).unwrap_or_default()
+        self.plugins.get(&key.map_key()).map(|e| e.grants).unwrap_or_default()
     }
 
     /// Whether we have *any* recorded decision for `key`. Distinct
     /// from "all permissions denied" because the latter is a real
     /// user choice we should honor without re-prompting.
     pub fn has_record(&self, key: &PluginKey) -> bool {
-        self.plugins.contains_key(&key.toml_key())
+        self.plugins.contains_key(&key.map_key())
     }
 
     /// Record (or overwrite) the user's decisions for `key`.
     pub fn set(&mut self, key: PluginKey, grants: PermissionGrants) {
-        let toml_key = key.toml_key();
-        self.plugins.insert(toml_key, PluginGrantEntry { key, grants });
+        let map_key = key.map_key();
+        self.plugins.insert(map_key, PluginGrantEntry { key, grants });
     }
 
     /// Forget any record for `key`. The next load that observes
     /// this plugin will treat it as needing fresh consent.
     pub fn forget(&mut self, key: &PluginKey) {
-        self.plugins.remove(&key.toml_key());
+        self.plugins.remove(&key.map_key());
+    }
+
+    /// Iterate every (key, grants) pair currently recorded. Used
+    /// by the consent UI to render existing decisions.
+    pub fn iter(&self) -> impl Iterator<Item = (&PluginKey, PermissionGrants)> {
+        self.plugins.values().map(|e| (&e.key, e.grants))
     }
 }
 
@@ -217,8 +162,6 @@ mod tests {
 
     #[test]
     fn intersect_drops_unrequested_permissions() {
-        // User granted everything but the plugin only asked for
-        // commands -- persist should still be off in the result.
         let granted = PermissionGrants { persist: true, commands: true };
         let requested = Permissions { persist: false, commands: true };
         let actual = granted.intersect(requested);
@@ -227,26 +170,15 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_roundtrips() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("grants.toml");
-
+    fn json_roundtrip_preserves_records() {
         let mut g = PluginGrants::default();
         let key = PluginKey::from_bytes("xeedee", "0.1.0", b"\0asm\x01\x00\x00\x00");
         g.set(key.clone(), PermissionGrants { persist: true, commands: false });
-        g.save(&path).expect("save");
 
-        let loaded = PluginGrants::load(&path).expect("load");
+        let json = serde_json::to_string(&g).expect("serialize");
+        let loaded: PluginGrants = serde_json::from_str(&json).expect("deserialize");
         assert!(loaded.has_record(&key));
         assert_eq!(loaded.get(&key), PermissionGrants { persist: true, commands: false });
-    }
-
-    #[test]
-    fn missing_file_loads_as_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let g = PluginGrants::load(&dir.path().join("absent.toml")).expect("load");
-        let key = PluginKey::from_bytes("anything", "0.0.0", b"");
-        assert!(!g.has_record(&key));
     }
 
     #[test]

@@ -50,7 +50,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
-    let (sink, loaded_app, loaded_tabs) = {
+    let (sink, loaded_app, loaded_tabs, plugin_persistence) = {
         let _guard = runtime.enter();
         match runtime.block_on(persist::open_db()) {
             Ok(pool) => {
@@ -68,11 +68,25 @@ fn main() -> eframe::Result<()> {
                         None
                     }
                 };
-                (Some(SaveSink::new(pool, Arc::clone(&runtime))), app_settings, tabs)
+                let grants = match runtime.block_on(persist::load_plugin_grants(&pool)) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load plugin grants -- treating all as denied");
+                        hxy_plugin_host::PluginGrants::default()
+                    }
+                };
+                let state_store: Arc<dyn hxy_plugin_host::StateStore> =
+                    Arc::new(persist::SqliteStateStore::new(pool.clone(), Arc::clone(&runtime)));
+                (
+                    Some(SaveSink::new(pool, Arc::clone(&runtime))),
+                    app_settings,
+                    tabs,
+                    Some((grants, state_store)),
+                )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "open settings database");
-                (None, None, None)
+                (None, None, None, None)
             }
         }
     };
@@ -100,6 +114,9 @@ fn main() -> eframe::Result<()> {
             let mut app = hxy_lib::HxyApp::new(cc, state_for_app);
             if let Some(sink) = sink {
                 app = app.with_sink(sink);
+            }
+            if let Some((grants, state_store)) = plugin_persistence {
+                app = app.with_plugin_persistence(grants, state_store);
             }
             // The IPC inbox needs the egui Context to schedule
             // repaints when a forwarded batch arrives, so spin up

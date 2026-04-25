@@ -14,6 +14,7 @@ use crate::window::WindowSettings;
 const KEY_WINDOW: &str = "window";
 const KEY_APP: &str = "app_settings";
 const KEY_OPEN_TABS: &str = "open_tabs";
+const KEY_PLUGIN_GRANTS: &str = "plugin_grants";
 
 async fn fetch(pool: &SqlitePool, key: &str) -> PersistResult<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
@@ -66,4 +67,12 @@ pub async fn load_open_tabs(pool: &SqlitePool) -> PersistResult<Option<Vec<OpenT
 
 pub async fn store_open_tabs(pool: &SqlitePool, tabs: &[OpenTabState]) -> PersistResult<()> {
     store(pool, KEY_OPEN_TABS, &tabs).await
+}
+
+pub async fn load_plugin_grants(pool: &SqlitePool) -> PersistResult<Option<hxy_plugin_host::PluginGrants>> {
+    load(pool, KEY_PLUGIN_GRANTS).await
+}
+
+pub async fn store_plugin_grants(pool: &SqlitePool, grants: &hxy_plugin_host::PluginGrants) -> PersistResult<()> {
+    store(pool, KEY_PLUGIN_GRANTS, grants).await
 }

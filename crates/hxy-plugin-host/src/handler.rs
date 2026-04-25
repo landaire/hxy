@@ -32,11 +32,11 @@ pub struct PluginHandler {
     engine: Engine,
     component: Component,
     linker: Arc<Linker<HostState>>,
-    /// Shared on-disk persistence backend. `None` means the host
-    /// didn't wire one (e.g. tests, or no data dir available); the
-    /// state interface returns `denied` even for plugins that were
+    /// Shared persistence backend. `None` means the host didn't
+    /// wire one (e.g. tests, or no data dir available); the state
+    /// interface returns `denied` even for plugins that were
     /// granted `persist`.
-    state_store: Option<Arc<StateStore>>,
+    state_store: Option<Arc<dyn StateStore>>,
     /// Sidecar manifest, if one was found at load time. `None` is
     /// the legacy / no-permissions case -- the plugin can still
     /// mount sources (the baseline API every plugin has) but cannot
@@ -61,7 +61,7 @@ impl PluginHandler {
         engine: Engine,
         component: Component,
         linker: Arc<Linker<HostState>>,
-        state_store: Option<Arc<StateStore>>,
+        state_store: Option<Arc<dyn StateStore>>,
         manifest: Option<PluginManifest>,
         key: PluginKey,
         granted: Permissions,

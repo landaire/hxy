@@ -1,131 +1,110 @@
-//! On-disk persistence for plugin state blobs. One file per plugin,
-//! contents opaque to the host -- the plugin owns the format and is
-//! responsible for any versioning. The host's contract is just
-//! "atomic save with a quota and namespaced layout."
+//! Per-plugin opaque blob storage. The host crate provides the
+//! [`StateStore`] *trait*; concrete backends (SQLite in the app
+//! crate, in-memory for tests) live wherever the storage tech is
+//! already established. Keeping the trait here keeps the host
+//! crate independent of any one persistence stack.
 //!
-//! Used by the `hxy:host/state` interface; the linker only wires
-//! that interface up when the plugin's manifest declared `persist`
-//! and the user granted it.
+//! The contract is intentionally minimal: load / save / clear
+//! against an opaque per-plugin name, with a host-imposed quota
+//! the plugin cannot influence. Sized for "remember IP + token +
+//! a small list of recents"; if a real plugin needs more we
+//! reopen this conversation rather than letting plugins ask for
+//! arbitrary disk.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use thiserror::Error;
 
-/// Per-plugin maximum blob size in bytes. The host imposes this
-/// uniformly: plugins cannot self-elevate their quota in the
-/// manifest. Sized for "remember IP + token + a small list of
-/// recents" -- if a real plugin needs more we reopen this conversation
-/// rather than letting plugins ask for arbitrary disk.
+/// Per-plugin maximum blob size in bytes. Enforced by every
+/// [`StateStore`] implementation; plugins cannot raise the cap
+/// from the manifest.
 pub const MAX_STATE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum StateError {
-    #[error("plugin name {name:?} contains characters disallowed in a filename")]
+    #[error("plugin name {name:?} contains characters disallowed in a storage key")]
     InvalidName { name: String },
     #[error("blob is {actual} bytes but the per-plugin quota is {limit}")]
     QuotaExceeded { actual: u64, limit: u64 },
-    #[error("create state directory {path}")]
-    CreateDir {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("write state file {path}")]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("read state file {path}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("backing store I/O")]
+    Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Filesystem-backed store rooted at `dir`. Each plugin's blob lives
-/// at `<dir>/<plugin_name>.bin`. The directory is created on first
-/// `save`; `load` and `clear` tolerate its absence.
-#[derive(Clone, Debug)]
-pub struct StateStore {
-    dir: PathBuf,
-    quota: u64,
+/// Opaque per-plugin storage backend. Implementations must be
+/// thread-safe (`Send + Sync`) because the host can drive plugin
+/// calls from multiple threads concurrently.
+///
+/// Names arrive as the plugin's manifest name. Implementations
+/// should reject anything that would let a plugin escape its
+/// namespace (path separators, NUL bytes, dot-traversal); the
+/// helper [`validate_plugin_name`] enforces a uniform policy and
+/// is recommended for any backend that uses the name as part of
+/// a key.
+pub trait StateStore: Send + Sync {
+    /// Previously-saved blob, if any. `Ok(None)` when no blob
+    /// exists (fresh install or after a `clear`).
+    fn load(&self, plugin_name: &str) -> Result<Option<Vec<u8>>, StateError>;
+
+    /// Replace the stored blob. Implementations must enforce the
+    /// [`MAX_STATE_BYTES`] quota by returning
+    /// [`StateError::QuotaExceeded`] before any I/O.
+    fn save(&self, plugin_name: &str, blob: &[u8]) -> Result<(), StateError>;
+
+    /// Drop the stored blob. No-op when nothing is saved.
+    fn clear(&self, plugin_name: &str) -> Result<(), StateError>;
 }
 
-impl StateStore {
-    /// Construct a store rooted at `dir` with the default
-    /// [`MAX_STATE_BYTES`] quota.
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into(), quota: MAX_STATE_BYTES }
+/// Validate a plugin name against the policy every backend should
+/// share. Rejects empty strings, dot-traversal, and anything that
+/// could escape a name-keyed storage layout.
+pub fn validate_plugin_name(name: &str) -> Result<(), StateError> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+    {
+        return Err(StateError::InvalidName { name: name.to_owned() });
+    }
+    Ok(())
+}
+
+/// Process-local in-memory backend. Useful for tests and as the
+/// fallback when the host has no real persistence wired up
+/// (anything saved to it dies with the process).
+#[derive(Debug, Default)]
+pub struct InMemoryStateStore {
+    inner: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl InMemoryStateStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl StateStore for InMemoryStateStore {
+    fn load(&self, plugin_name: &str) -> Result<Option<Vec<u8>>, StateError> {
+        validate_plugin_name(plugin_name)?;
+        Ok(self.inner.lock().expect("poisoned").get(plugin_name).cloned())
     }
 
-    /// Override the quota. Intended for tests; production code
-    /// should rely on the default so the limit is one place.
-    #[doc(hidden)]
-    pub fn with_quota(mut self, quota: u64) -> Self {
-        self.quota = quota;
-        self
-    }
-
-    /// Load the previously-saved blob for `plugin_name`. Returns
-    /// `Ok(None)` when no blob exists (fresh install or after a
-    /// `clear`).
-    pub fn load(&self, plugin_name: &str) -> Result<Option<Vec<u8>>, StateError> {
-        let path = self.path_for(plugin_name)?;
-        match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(StateError::Read { path, source }),
-        }
-    }
-
-    /// Atomically replace the stored blob. Writes to a temp file in
-    /// the same directory then renames over the target so a crash
-    /// during write leaves either the previous blob or the new one
-    /// readable, never a torn write.
-    pub fn save(&self, plugin_name: &str, blob: &[u8]) -> Result<(), StateError> {
+    fn save(&self, plugin_name: &str, blob: &[u8]) -> Result<(), StateError> {
+        validate_plugin_name(plugin_name)?;
         let actual = blob.len() as u64;
-        if actual > self.quota {
-            return Err(StateError::QuotaExceeded { actual, limit: self.quota });
+        if actual > MAX_STATE_BYTES {
+            return Err(StateError::QuotaExceeded { actual, limit: MAX_STATE_BYTES });
         }
-        let path = self.path_for(plugin_name)?;
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|source| StateError::CreateDir { path: self.dir.clone(), source })?;
-        let tmp = path.with_extension("bin.tmp");
-        std::fs::write(&tmp, blob).map_err(|source| StateError::Write { path: tmp.clone(), source })?;
-        std::fs::rename(&tmp, &path).map_err(|source| StateError::Write { path, source })?;
+        self.inner.lock().expect("poisoned").insert(plugin_name.to_owned(), blob.to_vec());
         Ok(())
     }
 
-    /// Remove the stored blob. No-op when nothing is saved.
-    pub fn clear(&self, plugin_name: &str) -> Result<(), StateError> {
-        let path = self.path_for(plugin_name)?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(StateError::Write { path, source }),
-        }
-    }
-
-    /// Per-plugin quota in bytes. Plugins cannot read this from WIT;
-    /// it is exposed for host code that wants to surface the limit
-    /// in UI or logs.
-    pub fn quota(&self) -> u64 {
-        self.quota
-    }
-
-    fn path_for(&self, plugin_name: &str) -> Result<PathBuf, StateError> {
-        if plugin_name.is_empty()
-            || plugin_name.contains('/')
-            || plugin_name.contains('\\')
-            || plugin_name.contains('\0')
-            || plugin_name == "."
-            || plugin_name == ".."
-        {
-            return Err(StateError::InvalidName { name: plugin_name.to_owned() });
-        }
-        Ok(self.dir.join(format!("{plugin_name}.bin")))
+    fn clear(&self, plugin_name: &str) -> Result<(), StateError> {
+        validate_plugin_name(plugin_name)?;
+        self.inner.lock().expect("poisoned").remove(plugin_name);
+        Ok(())
     }
 }
 
@@ -133,28 +112,22 @@ impl StateStore {
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, StateStore) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let s = StateStore::new(dir.path());
-        (dir, s)
-    }
-
     #[test]
     fn load_missing_returns_none() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         assert_eq!(s.load("absent").unwrap(), None);
     }
 
     #[test]
     fn save_then_load_roundtrips() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         s.save("xeedee", b"hello, plugin").unwrap();
         assert_eq!(s.load("xeedee").unwrap().as_deref(), Some(&b"hello, plugin"[..]));
     }
 
     #[test]
     fn save_replaces_previous_blob() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         s.save("xeedee", b"first").unwrap();
         s.save("xeedee", b"second").unwrap();
         assert_eq!(s.load("xeedee").unwrap().as_deref(), Some(&b"second"[..]));
@@ -162,7 +135,7 @@ mod tests {
 
     #[test]
     fn clear_removes_blob() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         s.save("xeedee", b"x").unwrap();
         s.clear("xeedee").unwrap();
         assert_eq!(s.load("xeedee").unwrap(), None);
@@ -170,19 +143,19 @@ mod tests {
 
     #[test]
     fn clear_missing_is_noop() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         s.clear("absent").unwrap();
     }
 
     #[test]
     fn quota_is_enforced() {
-        let (_d, s) = store();
-        let s = s.with_quota(8);
-        let err = s.save("p", b"too long for the quota").unwrap_err();
+        let s = InMemoryStateStore::new();
+        let blob = vec![0u8; (MAX_STATE_BYTES + 1) as usize];
+        let err = s.save("p", &blob).unwrap_err();
         match err {
             StateError::QuotaExceeded { actual, limit } => {
                 assert!(actual > limit);
-                assert_eq!(limit, 8);
+                assert_eq!(limit, MAX_STATE_BYTES);
             }
             other => panic!("wrong error: {other:?}"),
         }
@@ -190,7 +163,7 @@ mod tests {
 
     #[test]
     fn invalid_name_rejected() {
-        let (_d, s) = store();
+        let s = InMemoryStateStore::new();
         for bad in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
             let err = s.save(bad, b"x").unwrap_err();
             assert!(matches!(err, StateError::InvalidName { .. }), "name {bad:?}: {err:?}");

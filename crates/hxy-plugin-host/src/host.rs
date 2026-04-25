@@ -18,18 +18,17 @@ use crate::bindings::handler_world::hxy::vfs::state::StateError as WitStateError
 
 pub struct HostState {
     pub source: Arc<dyn HexSource>,
-    /// Plugin identity used to namespace [`StateStore`] entries. The
-    /// host provides this; the plugin can't influence which file it
+    /// Plugin identity used to namespace state entries. The host
+    /// provides this; the plugin can't influence which key it
     /// writes to.
     pub plugin_name: String,
     /// Whether the user granted this plugin the `persist` permission.
     /// Drives the early-return for every `state` interface call.
     pub persist_granted: bool,
-    /// Shared on-disk store. `None` is treated identically to
+    /// Shared persistence backend. `None` is treated identically to
     /// `persist_granted = false` -- the host may decide not to wire
-    /// up a store at all (e.g. in tests, or when no data dir is
-    /// available).
-    pub state_store: Option<Arc<StateStore>>,
+    /// up a store at all (e.g. in tests).
+    pub state_store: Option<Arc<dyn StateStore>>,
 }
 
 impl HostState {
@@ -45,7 +44,12 @@ impl HostState {
     /// Pair with [`Self::new`] when constructing the state for a
     /// long-lived mount: the plugin's name keys the store, the grant
     /// flag gates calls, and the store handles the actual I/O.
-    pub fn with_persist(mut self, plugin_name: impl Into<String>, granted: bool, store: Arc<StateStore>) -> Self {
+    pub fn with_persist(
+        mut self,
+        plugin_name: impl Into<String>,
+        granted: bool,
+        store: Arc<dyn StateStore>,
+    ) -> Self {
         self.plugin_name = plugin_name.into();
         self.persist_granted = granted;
         self.state_store = Some(store);
@@ -90,7 +94,7 @@ impl HostState {
     /// `Err(WitStateError::Denied)` when persist is off or no store
     /// is wired; otherwise yields the store handle and plugin name
     /// the call should use.
-    fn persist_handle(&self) -> Result<(&StateStore, &str), WitStateError> {
+    fn persist_handle(&self) -> Result<(&dyn StateStore, &str), WitStateError> {
         if !self.persist_granted {
             return Err(WitStateError::Denied);
         }
@@ -99,10 +103,10 @@ impl HostState {
         };
         if self.plugin_name.is_empty() {
             // A configured store with no plugin name is a host-side
-            // wiring bug -- surface it so we don't silently write to
-            // a `<empty>.bin`. Treated the same as `denied` in the
-            // public surface: the plugin can't tell, and shouldn't
-            // care about, which side messed up.
+            // wiring bug -- surface it so we don't silently write
+            // under an empty key. Treated the same as `denied` in
+            // the public surface: the plugin can't tell, and
+            // shouldn't care about, which side messed up.
             return Err(WitStateError::Denied);
         }
         Ok((store.as_ref(), self.plugin_name.as_str()))
@@ -112,19 +116,11 @@ impl HostState {
 fn map_state_error(e: StateError) -> WitStateError {
     match e {
         StateError::QuotaExceeded { limit, .. } => WitStateError::QuotaExceeded(limit),
-        // Filename-policy violations are a host-side bug -- the plugin
+        // Name-policy violations are a host-side bug -- the plugin
         // doesn't pick its name -- so surfacing them as opaque
         // host-error keeps the public surface honest about who's at
         // fault.
         StateError::InvalidName { name } => WitStateError::HostError(format!("invalid plugin name: {name:?}")),
-        StateError::CreateDir { path, source } => {
-            WitStateError::HostError(format!("create state dir {}: {source}", path.display()))
-        }
-        StateError::Write { path, source } => {
-            WitStateError::HostError(format!("write {}: {source}", path.display()))
-        }
-        StateError::Read { path, source } => {
-            WitStateError::HostError(format!("read {}: {source}", path.display()))
-        }
+        StateError::Backend(source) => WitStateError::HostError(format!("backend: {source}")),
     }
 }

@@ -36,6 +36,17 @@ pub struct HxyApp {
     /// object erasure the registry stores.
     #[cfg(not(target_arch = "wasm32"))]
     plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>>,
+    /// User consent decisions per (plugin name, version, sha256).
+    /// Empty until [`HxyApp::with_plugin_persistence`] supplies the
+    /// loaded set; mutated by the consent UI and written back to
+    /// SQLite via the kv layer.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_grants: hxy_plugin_host::PluginGrants,
+    /// Shared per-plugin blob persistence. `None` means no SQLite
+    /// pool was wired (e.g. db open failed at startup); plugins
+    /// granted `persist` then see `denied` from the state interface.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_state_store: Option<Arc<dyn hxy_plugin_host::StateStore>>,
 
     #[cfg(not(target_arch = "wasm32"))]
     sink: Option<crate::persist::SaveSink>,
@@ -188,10 +199,14 @@ impl HxyApp {
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
+        // Plugins load with empty grants + no state store at
+        // construction time. The runtime-owned `with_plugin_persistence`
+        // builder reloads them once the SQLite-backed grants and
+        // state store are available; without that call (e.g. db open
+        // failed at startup) every requested permission stays denied.
         #[cfg(not(target_arch = "wasm32"))]
-        let plugin_handlers = register_user_plugins(&mut registry);
-        #[cfg(target_arch = "wasm32")]
-        register_user_plugins(&mut registry);
+        let plugin_handlers =
+            register_user_plugins(&mut registry, &hxy_plugin_host::PluginGrants::default(), None);
         #[cfg(not(target_arch = "wasm32"))]
         let template_plugins = load_user_template_plugins();
         Self {
@@ -204,6 +219,10 @@ impl HxyApp {
             template_plugins,
             #[cfg(not(target_arch = "wasm32"))]
             plugin_handlers,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_grants: hxy_plugin_host::PluginGrants::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_state_store: None,
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
@@ -243,7 +262,8 @@ impl HxyApp {
     pub fn reload_plugins(&mut self) {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
-        self.plugin_handlers = register_user_plugins(&mut registry);
+        self.plugin_handlers =
+            register_user_plugins(&mut registry, &self.plugin_grants, self.plugin_state_store.clone());
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
         self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
@@ -361,6 +381,24 @@ impl HxyApp {
     pub fn with_sink(mut self, sink: crate::persist::SaveSink) -> Self {
         self.sink = Some(sink);
         self.restore_open_tabs();
+        self
+    }
+
+    /// Hand the app the previously-saved consent decisions plus a
+    /// SQLite-backed state store so plugins granted `persist`
+    /// actually persist. Triggers a plugin reload so the in-memory
+    /// `PluginHandler` instances pick up the new grant set;
+    /// without this call (e.g. db open failed at startup), every
+    /// plugin's permission requests are treated as denied.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_plugin_persistence(
+        mut self,
+        grants: hxy_plugin_host::PluginGrants,
+        state_store: Arc<dyn hxy_plugin_host::StateStore>,
+    ) -> Self {
+        self.plugin_grants = grants;
+        self.plugin_state_store = Some(state_store);
+        self.reload_plugins();
         self
     }
 
@@ -2458,17 +2496,14 @@ fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Res
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn register_user_plugins(registry: &mut VfsRegistry) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
+fn register_user_plugins(
+    registry: &mut VfsRegistry,
+    grants: &hxy_plugin_host::PluginGrants,
+    state_store: Option<Arc<dyn hxy_plugin_host::StateStore>>,
+) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
     let Some(dir) = user_plugins_dir() else { return Vec::new() };
-    // Consent storage / UI lands in a follow-up; for now every
-    // plugin loads with an empty grants record, which means any
-    // permission a manifest requests is treated as denied. Plugins
-    // that don't request permissions are unaffected.
-    let grants = hxy_plugin_host::PluginGrants::default();
-    let state_store = dirs::data_dir()
-        .map(|base| Arc::new(hxy_plugin_host::StateStore::new(base.join(APP_NAME).join("plugin-state"))));
     let mut out = Vec::new();
-    match hxy_plugin_host::load_plugins_from_dir(&dir, &grants, state_store) {
+    match hxy_plugin_host::load_plugins_from_dir(&dir, grants, state_store) {
         Ok(handlers) => {
             for h in handlers {
                 tracing::info!(name = h.name(), "loaded wasm plugin");
@@ -2480,11 +2515,6 @@ fn register_user_plugins(registry: &mut VfsRegistry) -> Vec<Arc<hxy_plugin_host:
         Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load plugins"),
     }
     out
-}
-
-#[cfg(target_arch = "wasm32")]
-fn register_user_plugins(_registry: &mut VfsRegistry) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
-    Vec::new()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
