@@ -129,12 +129,28 @@ interface commands {
         title: string,
     }
 
-    /// What `invoke` produced: either a side effect already executed
-    /// (close the palette), a sub-menu to push, or a mount to open.
+    /// Prompt the host should render in its palette before the
+    /// plugin's logic can continue. The user's typed answer comes
+    /// back to the plugin via `respond(id, answer)` -- where `id`
+    /// is the same command id the plugin originally returned the
+    /// prompt from, so the plugin can correlate via its own state
+    /// when chaining multiple questions.
+    record prompt-request {
+        /// One-line label rendered as the palette's input hint.
+        title: string,
+        /// Optional pre-fill for the input. Useful for "edit
+        /// existing" flows (e.g. last-used IP).
+        default-value: option<string>,
+    }
+
+    /// What `invoke` (or `respond`) produced: either a side effect
+    /// already executed (close the palette), a sub-menu to push,
+    /// a mount to open, or another prompt to gather input for.
     variant invoke-result {
         done,
         cascade(list<command>),
         mount(mount-request),
+        prompt(prompt-request),
     }
 
     /// Top-level command list. Host calls this every time the
@@ -145,6 +161,14 @@ interface commands {
 
     /// User picked an entry. The plugin decides what to do next.
     invoke: func(id: string) -> invoke-result;
+
+    /// User submitted a value for a previously-emitted `prompt`.
+    /// `id` is the command id from the originating `invoke` call;
+    /// the plugin looks up its own pending state to figure out
+    /// which prompt is being answered when chaining. Returns the
+    /// next outcome -- typically `done` / `mount`, or another
+    /// `prompt` for multi-step input.
+    respond: func(id: string, answer: string) -> invoke-result;
 }
 
 /// Plugin world: imports `source` (always) and `state` (gated by

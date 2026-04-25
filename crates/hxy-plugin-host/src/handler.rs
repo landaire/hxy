@@ -166,6 +166,34 @@ impl PluginHandler {
             }
         }
     }
+
+    /// Hand a user-supplied answer back to the plugin in response
+    /// to a previous [`InvokeOutcome::Prompt`]. `id` is the same
+    /// command id from the originating `invoke` call -- the plugin
+    /// uses it (plus its own state) to correlate which prompt is
+    /// being answered. Returns `None` under the same conditions as
+    /// [`Self::invoke_command`].
+    pub fn respond_to_prompt(&self, id: &str, answer: &str) -> Option<InvokeOutcome> {
+        if !self.granted.commands {
+            return None;
+        }
+        let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
+        let plugin = match Plugin::instantiate(&mut store, &self.component, &self.linker) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, "instantiate for respond");
+                return None;
+            }
+        };
+        match plugin.hxy_vfs_commands().call_respond(&mut store, id, answer) {
+            Ok(result) => Some(InvokeOutcome::from_wit(result)),
+            Err(e) => {
+                tracing::warn!(error = %e, plugin = %self.name, command = id, "call respond");
+                None
+            }
+        }
+    }
 }
 
 impl VfsHandler for PluginHandler {

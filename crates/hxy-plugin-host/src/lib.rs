@@ -25,6 +25,7 @@ pub mod template;
 pub use commands::InvokeOutcome;
 pub use commands::MountRequest;
 pub use commands::PluginCommand;
+pub use commands::PromptRequest;
 pub use grants::PermissionGrants;
 pub use grants::PluginGrants;
 pub use grants::PluginKey;

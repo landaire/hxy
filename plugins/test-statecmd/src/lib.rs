@@ -28,6 +28,7 @@ use hxy_plugin_api::handler::GuestMount;
 use hxy_plugin_api::handler::InvokeResult;
 use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::MountRequest;
+use hxy_plugin_api::handler::PromptRequest;
 use hxy_plugin_api::handler::state;
 
 struct Plugin;
@@ -81,6 +82,13 @@ impl GuestCommands for Plugin {
                 icon: None,
                 has_children: false,
             },
+            Command {
+                id: "prompt".to_string(),
+                label: "Prompt outcome".to_string(),
+                subtitle: Some("type a token name; mounts it back".to_string()),
+                icon: None,
+                has_children: false,
+            },
         ]
     }
 
@@ -111,10 +119,29 @@ impl GuestCommands for Plugin {
                 token: format!("token-{next}"),
                 title: format!("Test mount #{next}"),
             }),
+            "prompt" => InvokeResult::Prompt(PromptRequest {
+                title: "Token name".to_string(),
+                default_value: Some(format!("default-{next}")),
+            }),
             // Children of `cascade` resolve as Done -- they exist
             // so the host can verify cascade dispatch routes back
             // to the right plugin.
             _ => InvokeResult::Done,
+        }
+    }
+
+    fn respond(id: String, answer: String) -> InvokeResult {
+        // The fixture's only `Prompt` outcome was raised by the
+        // "prompt" command; an answer to it becomes a `Mount` so
+        // the host can verify that the typed string round-trips
+        // back through into a token-driven tab.
+        if id == "prompt" {
+            InvokeResult::Mount(MountRequest {
+                token: format!("from-prompt:{answer}"),
+                title: format!("Prompt answered: {answer}"),
+            })
+        } else {
+            InvokeResult::Done
         }
     }
 }

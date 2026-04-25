@@ -3820,6 +3820,32 @@ fn build_palette_entries(
                 }
             }
         }
+        Mode::PluginPrompt => {
+            // Argument-style prompt: one dynamic entry whose label
+            // is the user's current input, action sends the answer
+            // back to the plugin. Mirrors the Go-To Offset / Select
+            // Range modes -- bypass_filter is on for this mode so
+            // the entry isn't fuzzy-filtered out as the user types.
+            if let Some(prompt) = app.palette.plugin_prompt.as_ref() {
+                let answer = app.palette.inner.query.clone();
+                let label = if answer.is_empty() {
+                    hxy_i18n::t("palette-plugin-prompt-empty")
+                } else {
+                    answer.clone()
+                };
+                let mut entry = egui_palette::Entry::new(
+                    label,
+                    Action::RespondToPlugin {
+                        plugin_name: prompt.plugin_name.clone(),
+                        command_id: prompt.command_id.clone(),
+                        answer,
+                    },
+                )
+                .with_icon(icon::ARROW_BEND_DOWN_LEFT);
+                entry = entry.with_subtitle(prompt.title.clone());
+                out.push(entry);
+            }
+        }
     }
     out
 }
@@ -4133,33 +4159,17 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 app.palette.close();
                 return;
             };
-            match plugin.invoke_command(&command_id) {
-                Some(hxy_plugin_host::InvokeOutcome::Done) => app.palette.close(),
-                Some(hxy_plugin_host::InvokeOutcome::Cascade(commands)) => {
-                    // Push a fresh sub-palette populated by the
-                    // plugin's returned entries. The plugin name
-                    // rides along so picks within the sub-palette
-                    // route their `invoke` back to the same handler.
-                    app.palette.enter_plugin_cascade(plugin_name.clone(), commands);
-                }
-                Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
-                    // Open a tab whose VFS comes from the plugin
-                    // (no underlying file). The HexEditor still
-                    // needs *some* source so we hand it an empty
-                    // memory buffer; the user navigates the
-                    // plugin's tree via the VFS panel and never
-                    // sees the placeholder bytes unless they
-                    // explicitly close the tree.
-                    app.palette.close();
-                    open_plugin_mount_tab(app, plugin, &req);
-                }
-                None => {
-                    // Plugin couldn't be invoked (commands grant
-                    // off, or an internal trap). PluginHandler
-                    // already logged; just close.
-                    app.palette.close();
-                }
-            }
+            let outcome = plugin.invoke_command(&command_id);
+            dispatch_plugin_outcome(app, plugin, &plugin_name, &command_id, outcome);
+        }
+        crate::command_palette::Action::RespondToPlugin { plugin_name, command_id, answer } => {
+            let Some(plugin) = app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() else {
+                tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin respond target missing");
+                app.palette.close();
+                return;
+            };
+            let outcome = plugin.respond_to_prompt(&command_id, &answer);
+            dispatch_plugin_outcome(app, plugin, &plugin_name, &command_id, outcome);
         }
         crate::command_palette::Action::NoOp => {
             // Placeholder rows (e.g. "Invalid: ..." in the Go-To
@@ -4277,6 +4287,50 @@ fn handle_open_file(app: &mut HxyApp) {
 /// buffer. Picks the next free `AnonymousId` and a "Untitled N" title
 /// that doesn't collide with any already-open or persisted tab.
 #[cfg(not(target_arch = "wasm32"))]
+/// Drive the side effect for whatever outcome a plugin returned
+/// from `invoke` or `respond_to_prompt`. Centralized so both
+/// initial command activation and prompt answers fan out through
+/// the same switch (`Done` -> close, `Cascade` -> sub-palette,
+/// `Mount` -> tab, `Prompt` -> argument-style sub-palette that
+/// rounds back here on submit).
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_plugin_outcome(
+    app: &mut HxyApp,
+    plugin: Arc<hxy_plugin_host::PluginHandler>,
+    plugin_name: &str,
+    command_id: &str,
+    outcome: Option<hxy_plugin_host::InvokeOutcome>,
+) {
+    match outcome {
+        Some(hxy_plugin_host::InvokeOutcome::Done) => app.palette.close(),
+        Some(hxy_plugin_host::InvokeOutcome::Cascade(commands)) => {
+            app.palette.enter_plugin_cascade(plugin_name.to_owned(), commands);
+        }
+        Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
+            app.palette.close();
+            open_plugin_mount_tab(app, plugin, &req);
+        }
+        Some(hxy_plugin_host::InvokeOutcome::Prompt(req)) => {
+            // Switch to argument-style prompt mode. The user's
+            // typed answer rides back through `RespondToPlugin`
+            // with the same command id, so chaining prompts is
+            // just "the plugin returns another Prompt outcome".
+            app.palette.enter_plugin_prompt(
+                plugin_name.to_owned(),
+                command_id.to_owned(),
+                req.title,
+                req.default_value,
+            );
+        }
+        None => {
+            // Plugin couldn't be invoked (commands grant off, or
+            // an internal trap). PluginHandler already logged;
+            // just close.
+            app.palette.close();
+        }
+    }
+}
+
 /// Open a new tab whose VFS is generated by a plugin's
 /// `mount-by-token`. The tab carries an empty in-memory byte
 /// buffer (the HexEditor needs *something*); the user's intent

@@ -22,6 +22,11 @@ pub struct PaletteState {
     /// us, used to populate the sub-palette without re-asking the
     /// plugin every frame.
     pub plugin_cascade: Option<PluginCascadeState>,
+    /// Active plugin prompt when `mode == Mode::PluginPrompt`.
+    /// Carries the plugin name + originating command id (so the
+    /// answer is routed back via `respond_to_prompt`) and the
+    /// title rendered as the palette hint.
+    pub plugin_prompt: Option<PluginPromptState>,
 }
 
 #[derive(Clone)]
@@ -30,25 +35,40 @@ pub struct PluginCascadeState {
     pub commands: Vec<hxy_plugin_host::PluginCommand>,
 }
 
+#[derive(Clone)]
+pub struct PluginPromptState {
+    pub plugin_name: String,
+    pub command_id: String,
+    pub title: String,
+}
+
 impl Default for PaletteState {
     fn default() -> Self {
-        Self { mode: Mode::Main, inner: egui_palette::State::default(), plugin_cascade: None }
+        Self {
+            mode: Mode::Main,
+            inner: egui_palette::State::default(),
+            plugin_cascade: None,
+            plugin_prompt: None,
+        }
     }
 }
 
 impl PaletteState {
     pub fn open_at(&mut self, mode: Mode) {
         self.mode = mode;
-        // Cleared on every mode switch -- the only entry path into
-        // a populated `plugin_cascade` is `enter_plugin_cascade`,
-        // so leaving cascade mode should always drop the buffer.
+        // Cleared on every mode switch -- the only entry paths
+        // into populated plugin buffers are `enter_plugin_cascade`
+        // / `enter_plugin_prompt`, so any other transition should
+        // drop them.
         self.plugin_cascade = None;
+        self.plugin_prompt = None;
         self.inner.open();
     }
 
     pub fn close(&mut self) {
         self.inner.close();
         self.plugin_cascade = None;
+        self.plugin_prompt = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -60,11 +80,34 @@ impl PaletteState {
     /// list is searchable from scratch.
     pub fn enter_plugin_cascade(&mut self, plugin_name: String, commands: Vec<hxy_plugin_host::PluginCommand>) {
         self.plugin_cascade = Some(PluginCascadeState { plugin_name, commands });
+        self.plugin_prompt = None;
         self.mode = Mode::PluginCascade;
         // open() resets query / selection / pending_focus and is
         // safe to call when already open -- mirrors how mode
         // switches like Templates / Recent are entered.
         self.inner.open();
+    }
+
+    /// Switch into argument-style prompt mode for a plugin's
+    /// pending question. The user's typed answer is routed back
+    /// via `Action::RespondToPlugin` carrying the same plugin
+    /// name + command id stored here. `default_value` pre-fills
+    /// the input so an "edit existing" flow can start from the
+    /// last value.
+    pub fn enter_plugin_prompt(
+        &mut self,
+        plugin_name: String,
+        command_id: String,
+        title: String,
+        default_value: Option<String>,
+    ) {
+        self.plugin_prompt = Some(PluginPromptState { plugin_name, command_id, title });
+        self.plugin_cascade = None;
+        self.mode = Mode::PluginPrompt;
+        self.inner.open();
+        if let Some(value) = default_value {
+            self.inner.query = value;
+        }
     }
 }
 
@@ -106,6 +149,12 @@ pub enum Mode {
     /// [`PaletteState::plugin_cascade`] -- this variant is just
     /// the marker that build-entries should read from there.
     PluginCascade,
+    /// Argument-style prompt raised by a plugin's `Prompt` invoke
+    /// outcome. The plugin's title becomes the palette hint, the
+    /// user's typed answer is dispatched back via
+    /// [`Action::RespondToPlugin`]. Context (plugin name + command
+    /// id + title) lives on [`PaletteState::plugin_prompt`].
+    PluginPrompt,
 }
 
 /// Which scope a [`Mode::SetColumnsLocal`] / [`Mode::SetColumnsGlobal`]
@@ -136,7 +185,8 @@ impl Mode {
             | Mode::SelectRange
             | Mode::SetColumnsLocal
             | Mode::SetColumnsGlobal
-            | Mode::PluginCascade => Some(Mode::Main),
+            | Mode::PluginCascade
+            | Mode::PluginPrompt => Some(Mode::Main),
         }
     }
 }
@@ -230,6 +280,12 @@ pub enum Action {
     /// the action stays self-contained even if the plugin list
     /// reshuffles before activation.
     InvokePluginCommand { plugin_name: String, command_id: String },
+    /// Submit the user's typed answer to a previously-emitted
+    /// plugin prompt. Routed through
+    /// `PluginHandler::respond_to_prompt`; the resulting
+    /// [`hxy_plugin_host::InvokeOutcome`] decides what happens
+    /// next (close / cascade / mount / chain another prompt).
+    RespondToPlugin { plugin_name: String, command_id: String, answer: String },
     /// Intentionally does nothing. Used for non-actionable
     /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
     /// when the query doesn't parse).
@@ -254,6 +310,15 @@ pub fn show(
         Mode::SetColumnsLocal => hxy_i18n::t("palette-hint-set-columns-local"),
         Mode::SetColumnsGlobal => hxy_i18n::t("palette-hint-set-columns-global"),
         Mode::PluginCascade => hxy_i18n::t("palette-hint-main"),
+        // The plugin authored the prompt's wording -- pass it
+        // through verbatim. Falls back to a generic hint if the
+        // mode was reached without setting up the prompt buffer
+        // (shouldn't happen in practice; keeps the match total).
+        Mode::PluginPrompt => state
+            .plugin_prompt
+            .as_ref()
+            .map(|p| p.title.clone())
+            .unwrap_or_else(|| hxy_i18n::t("palette-hint-main")),
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw
@@ -268,6 +333,7 @@ pub fn show(
             | Mode::SelectRange
             | Mode::SetColumnsLocal
             | Mode::SetColumnsGlobal
+            | Mode::PluginPrompt
     );
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),

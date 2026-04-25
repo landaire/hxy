@@ -38,6 +38,7 @@ pub mod handler {
     pub use exports::hxy::vfs::commands::Guest as GuestCommands;
     pub use exports::hxy::vfs::commands::InvokeResult;
     pub use exports::hxy::vfs::commands::MountRequest;
+    pub use exports::hxy::vfs::commands::PromptRequest;
 }
 
 pub mod template {

@@ -37,9 +37,11 @@ impl PluginCommand {
     }
 }
 
-/// Result of [`PluginHandler::invoke_command`](crate::PluginHandler::invoke_command).
+/// Result of [`PluginHandler::invoke_command`](crate::PluginHandler::invoke_command)
+/// or [`PluginHandler::respond_to_prompt`](crate::PluginHandler::respond_to_prompt).
 /// Drives what the host does next after the user picks a plugin
-/// command from the palette.
+/// command from the palette (or answers a prompt the plugin
+/// previously raised).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InvokeOutcome {
     /// Plugin already executed whatever side effect it wanted; the
@@ -54,6 +56,14 @@ pub enum InvokeOutcome {
     /// handed back to the plugin when the host materializes the
     /// mount.
     Mount(MountRequest),
+    /// Plugin needs a string from the user before it can decide
+    /// the next outcome. The host renders the request as a palette
+    /// argument-style prompt (matching Go-To Offset / Select Range)
+    /// and routes the typed answer back via
+    /// [`PluginHandler::respond_to_prompt`] using the *same* command
+    /// id the original `invoke` carried, so the plugin can
+    /// correlate against its own state when chaining.
+    Prompt(PromptRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,12 +72,27 @@ pub struct MountRequest {
     pub title: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptRequest {
+    /// Rendered as the palette's input hint, so plugins should
+    /// phrase it like the existing built-in hints (`Token name`,
+    /// `Xbox IP address`, ...) -- short, no terminating
+    /// punctuation.
+    pub title: String,
+    /// Optional pre-fill for the input. `None` leaves the palette
+    /// query empty.
+    pub default_value: Option<String>,
+}
+
 impl InvokeOutcome {
     pub(crate) fn from_wit(r: wit::InvokeResult) -> Self {
         match r {
             wit::InvokeResult::Done => Self::Done,
             wit::InvokeResult::Cascade(list) => Self::Cascade(list.into_iter().map(PluginCommand::from_wit).collect()),
             wit::InvokeResult::Mount(req) => Self::Mount(MountRequest { token: req.token, title: req.title }),
+            wit::InvokeResult::Prompt(req) => {
+                Self::Prompt(PromptRequest { title: req.title, default_value: req.default_value })
+            }
         }
     }
 }

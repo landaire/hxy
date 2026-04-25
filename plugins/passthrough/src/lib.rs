@@ -44,14 +44,18 @@ impl Guest for Plugin {
 
 // No-op commands export. The world requires every plugin to
 // export `commands`, but passthrough doesn't contribute any
-// palette entries, so it returns an empty list and `invoke` is
-// unreachable.
+// palette entries, so it returns an empty list and `invoke` /
+// `respond` are unreachable.
 impl GuestCommands for Plugin {
     fn list_commands() -> Vec<Command> {
         Vec::new()
     }
 
     fn invoke(_id: String) -> InvokeResult {
+        InvokeResult::Done
+    }
+
+    fn respond(_id: String, _answer: String) -> InvokeResult {
         InvokeResult::Done
     }
 }

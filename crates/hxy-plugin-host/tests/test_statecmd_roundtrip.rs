@@ -86,7 +86,7 @@ commands = true
     // 1. Plugin's declared commands surface verbatim.
     let cmds = plugin.list_commands();
     let ids: Vec<&str> = cmds.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(ids, vec!["done", "cascade", "mount"]);
+    assert_eq!(ids, vec!["done", "cascade", "mount", "prompt"]);
 
     // The plugin's `Done outcome` subtitle reads the persisted
     // counter; with a fresh InMemoryStateStore it should start at 0.
@@ -137,6 +137,27 @@ commands = true
     assert_eq!(entries, vec![format!("{}.txt", req.token)]);
     let meta = mount.fs.metadata(&format!("/{}.txt", req.token)).expect("metadata");
     assert_eq!(meta.len, req.token.len() as u64);
+
+    // 5. invoke "prompt" returns a Prompt outcome carrying the
+    //    plugin's title + default. Pretend the user typed
+    //    "xenon-dev" and dispatch via respond_to_prompt; the
+    //    plugin turns the answer into a Mount outcome whose
+    //    token embeds the answer verbatim.
+    let prompt_outcome = plugin.invoke_command("prompt").expect("invoke prompt");
+    let prompt = match prompt_outcome {
+        InvokeOutcome::Prompt(p) => p,
+        other => panic!("expected prompt, got {other:?}"),
+    };
+    assert_eq!(prompt.title, "Token name");
+    assert!(prompt.default_value.is_some(), "prompt should pre-fill a default");
+
+    let respond_outcome = plugin.respond_to_prompt("prompt", "xenon-dev").expect("respond");
+    let mount_req = match respond_outcome {
+        InvokeOutcome::Mount(m) => m,
+        other => panic!("expected mount after respond, got {other:?}"),
+    };
+    assert_eq!(mount_req.token, "from-prompt:xenon-dev");
+    assert_eq!(mount_req.title, "Prompt answered: xenon-dev");
 }
 
 #[test]

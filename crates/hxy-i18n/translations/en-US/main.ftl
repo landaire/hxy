@@ -64,6 +64,7 @@ toolbar-run-template = Run template…
 settings-offset-base = Offset base
 settings-address-separator = Group hex digits in address column
 settings-address-separator-char = Address group separator
+palette-plugin-prompt-empty = (type an answer)
 
 # Command palette
 palette-hint-main = Search commands, files, templates…
