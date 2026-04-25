@@ -52,6 +52,13 @@ interface handler {
     /// may call `source.read` any number of times during and after this
     /// call; the host keeps the source alive for the mount's lifetime.
     mount-source: func() -> result<mount, string>;
+
+    /// Mount without an underlying byte source. Used when a palette
+    /// command's `invoke` returned `mount-request { token, title }`:
+    /// the host hands the same token back so the plugin can identify
+    /// which connection / saved profile the user picked. Plugins that
+    /// don't expose token-driven mounts return an error.
+    mount-by-token: func(token: string) -> result<mount, string>;
 }
 
 /// Opaque per-plugin storage. The host treats the blob as bytes;

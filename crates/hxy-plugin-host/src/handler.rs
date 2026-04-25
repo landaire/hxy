@@ -206,6 +206,32 @@ impl VfsHandler for PluginHandler {
     }
 }
 
+impl PluginHandler {
+    /// Mount the plugin against an opaque `token` rather than an
+    /// underlying byte source. The plugin uses the token to look up
+    /// which connection / profile / saved entry the user picked
+    /// from a palette command; the host stays oblivious to its
+    /// shape (typically a [`crate::fresh_token`]). The instantiated
+    /// store has an empty placeholder source -- the plugin should
+    /// not call `source.read` on a token-driven mount.
+    pub fn mount_by_token(&self, token: &str) -> Result<MountedVfs, HandlerError> {
+        let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
+        let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker)
+            .map_err(|e| HandlerError::Internal(format!("instantiate for mount-by-token: {e}")))?;
+        let mount_resource = plugin
+            .hxy_vfs_handler()
+            .call_mount_by_token(&mut store, token)
+            .map_err(|e| HandlerError::Internal(format!("call mount-by-token: {e}")))?
+            .map_err(HandlerError::Malformed)?;
+        let fs = Box::new(PluginFileSystem {
+            inner: Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }),
+            plugin_name: self.name.clone(),
+        });
+        Ok(MountedVfs { fs, capabilities: VfsCapabilities::READ_ONLY })
+    }
+}
+
 /// Live VFS backed by a plugin instance. All operations funnel through
 /// the inner [`Mutex`] because wasmtime [`Store`] access requires
 /// `&mut` while [`vfs::FileSystem`] methods are `&self`.

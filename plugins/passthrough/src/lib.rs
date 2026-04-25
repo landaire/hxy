@@ -36,6 +36,10 @@ impl Guest for Plugin {
     fn mount_source() -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
         Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(Mount))
     }
+
+    fn mount_by_token(_token: String) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
+        Err("passthrough does not support token-driven mounts".to_string())
+    }
 }
 
 // No-op commands export. The world requires every plugin to
