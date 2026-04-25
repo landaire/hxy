@@ -258,6 +258,10 @@ pub enum PaletteCommand {
     /// sourceless -- every leaf in the dock gets a letter, and
     /// pressing one moves keyboard focus + active-tab to that leaf.
     FocusPane,
+    /// Toggle Vim-style modal editing on the active tab and the
+    /// global default for newly-opened tabs. Off (default) restores
+    /// the standard arrow-key dispatcher.
+    ToggleVim,
     ToggleEditMode,
     /// Copy the active tab's caret offset as a formatted number.
     CopyCaretOffset,

@@ -124,6 +124,9 @@ palette-move-tab-visual = Move tab to pane…
 palette-merge-visual = Merge pane into…
 palette-focus-pane = Focus pane…
 palette-pane-pick-subtitle = Press the highlighted letter on the target pane
+palette-toggle-vim = Toggle Vim mode
+palette-toggle-vim-subtitle-on = Currently ON -- switch back to standard input
+palette-toggle-vim-subtitle-off = Currently OFF -- switch to modal editing
 
 # Errors
 error-open-failed = Failed to open file

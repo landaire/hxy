@@ -843,6 +843,10 @@ impl HxyApp {
         if let Some(s) = restore_scroll {
             file.editor.set_scroll_to(s);
         }
+        // Pick up the user's chosen input style at construction.
+        // Switching the global setting later walks every open file
+        // and updates each editor; this just seeds new tabs.
+        file.editor.set_input_mode(self.state.read().app.input_mode);
 
         // Detect a matching VFS handler against the first ~4 KiB.
         if let Ok(range) = hxy_core::ByteRange::new(
@@ -4324,6 +4328,21 @@ fn start_pane_pick(app: &mut HxyApp, op: crate::pane_pick::PaneOp) {
     app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick { op, source: Some(source) });
 }
 
+/// Flip Vim mode: rotates the saved setting between `Default` and
+/// `Vim`, then walks every open file's editor and applies the new
+/// mode so the change takes effect immediately rather than waiting
+/// for the next file to open.
+fn toggle_vim_mode(app: &mut HxyApp) {
+    let next = match app.state.read().app.input_mode {
+        hxy_view::InputMode::Default => hxy_view::InputMode::Vim,
+        hxy_view::InputMode::Vim => hxy_view::InputMode::Default,
+    };
+    app.state.write().app.input_mode = next;
+    for file in app.files.values_mut() {
+        file.editor.set_input_mode(next);
+    }
+}
+
 /// Sourceless variant: stage a pane pick whose op doesn't need a
 /// "from" leaf (currently just `Focus`). Every leaf in the dock
 /// becomes a target. No-op when there's no dock (shouldn't happen).
@@ -4950,6 +4969,19 @@ fn build_palette_entries(
                 .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle"))
                 .with_shortcut(fmt(&FOCUS_PANE)),
             );
+            let vim_active = matches!(app.state.read().app.input_mode, hxy_view::InputMode::Vim);
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-toggle-vim"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleVim),
+                )
+                .with_icon(icon::KEYBOARD)
+                .with_subtitle(hxy_i18n::t(if vim_active {
+                    "palette-toggle-vim-subtitle-on"
+                } else {
+                    "palette-toggle-vim-subtitle-off"
+                })),
+            );
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
@@ -5425,6 +5457,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::MoveTabVisual => start_pane_pick(app, crate::pane_pick::PaneOp::MoveTab),
                     PaletteCommand::MergeVisual => start_pane_pick(app, crate::pane_pick::PaneOp::Merge),
                     PaletteCommand::FocusPane => start_pane_focus(app),
+                    PaletteCommand::ToggleVim => toggle_vim_mode(app),
                     PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
                     PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
@@ -6807,10 +6840,24 @@ fn status_bar_ui(
     tab_focus: TabFocus,
 ) {
     ui.horizontal(|ui| {
-        // Tab-focus chip on the far left so Ctrl+Tab's effect is
-        // legible at a glance. "Outer" = top-level tabs cycle; "VFS"
-        // = the surrounding workspace's inner tabs cycle. Click a
-        // tab in the other dock to switch, or press Alt+Tab.
+        // Vim-mode chip first so the modal state is the most
+        // prominent thing on the status bar when the user has it
+        // on. Hidden entirely in Default mode so non-vim users
+        // don't see noise.
+        if !matches!(file.editor.input_mode(), hxy_view::InputMode::Default) {
+            let (label, tooltip) = match file.editor.vim_state().mode {
+                hxy_view::VimMode::Normal => ("NORMAL", "Vim Normal mode -- motions, operators"),
+                hxy_view::VimMode::Visual => ("VISUAL", "Vim Visual mode -- motions extend selection"),
+                hxy_view::VimMode::VisualLine => {
+                    ("V-LINE", "Vim Visual-line mode -- selection snaps to whole rows")
+                }
+                hxy_view::VimMode::Insert => ("INSERT", "Vim Insert mode -- typing edits bytes; Esc to return"),
+            };
+            ui.label(format!("[{label}]")).on_hover_text(tooltip);
+            ui.separator();
+        }
+        // Tab-focus chip: "Outer" = top-level tabs cycle; "VFS" =
+        // the surrounding workspace's inner tabs cycle.
         let (icon, label, tooltip) = match tab_focus {
             TabFocus::Outer => (
                 egui_phosphor::regular::SQUARES_FOUR,

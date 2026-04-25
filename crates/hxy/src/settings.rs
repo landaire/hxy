@@ -136,6 +136,14 @@ pub struct AppSettings {
     /// or ` `.
     #[serde(default = "default_address_separator_char")]
     pub address_separator_char: char,
+
+    /// Top-level input style. `Default` is the standard arrow-key /
+    /// type-to-edit dispatcher; `Vim` enables modal editing with
+    /// `hjkl`, count prefixes, visual / insert modes, etc. New
+    /// `OpenFile`s pick this up at construction; existing tabs are
+    /// updated when the user toggles via the palette.
+    #[serde(default)]
+    pub input_mode: hxy_view::InputMode,
 }
 
 fn default_palette_escape_pops_to_parent() -> bool {
@@ -163,6 +171,7 @@ impl Default for AppSettings {
             palette_escape_pops_to_parent: true,
             address_separator_enabled: false,
             address_separator_char: default_address_separator_char(),
+            input_mode: hxy_view::InputMode::default(),
         }
     }
 }

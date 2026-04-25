@@ -16,6 +16,7 @@
 #[cfg(feature = "editor")]
 mod editor;
 mod input;
+mod vim;
 
 #[cfg(feature = "editor")]
 pub use editor::EditEntry;
@@ -23,6 +24,9 @@ pub use editor::EditEntry;
 pub use editor::EditMode;
 #[cfg(feature = "editor")]
 pub use editor::WriteError;
+pub use vim::InputMode;
+pub use vim::VimMode;
+pub use vim::VimState;
 
 use std::sync::Arc;
 
@@ -130,6 +134,14 @@ pub struct HexEditor {
     last_visible_range: Option<ByteRange>,
     #[cfg(feature = "editor")]
     edit: editor::EditState,
+    /// Top-level input style. `Default` runs the standard
+    /// arrow-key dispatcher; `Vim` routes through the modal
+    /// state machine in [`vim`].
+    input_mode: InputMode,
+    /// Vim-mode state. Persists across mode switches so flipping
+    /// from `Default` to `Vim` mid-session resumes wherever the
+    /// user left off; flipping back doesn't drop the buffer.
+    pub(crate) vim: VimState,
 }
 
 impl HexEditor {
@@ -152,6 +164,8 @@ impl HexEditor {
                 last_columns: None,
                 last_visible_range: None,
                 edit,
+                input_mode: InputMode::Default,
+                vim: VimState::default(),
             }
         }
         #[cfg(not(feature = "editor"))]
@@ -166,8 +180,38 @@ impl HexEditor {
                 pending_scroll_to_byte: None,
                 last_columns: None,
                 last_visible_range: None,
+                input_mode: InputMode::Default,
+                vim: VimState::default(),
             }
         }
+    }
+
+    /// Current top-level input style. See [`InputMode`].
+    pub fn input_mode(&self) -> InputMode {
+        self.input_mode
+    }
+
+    /// Switch input style. Flipping to `Vim` resets the mode to
+    /// `VimMode::Normal` so the user starts in a well-defined
+    /// state; flipping back to `Default` leaves any pending count
+    /// buffer / sub-mode alone (it's harmless once the dispatcher
+    /// stops looking at it).
+    pub fn set_input_mode(&mut self, mode: InputMode) {
+        if self.input_mode == mode {
+            return;
+        }
+        self.input_mode = mode;
+        if matches!(mode, InputMode::Vim) {
+            self.vim.mode = VimMode::Normal;
+            self.vim.clear_pending();
+        }
+    }
+
+    /// Read-only access to the Vim state (current sub-mode, count
+    /// buffer, ...). Library consumers can use this to render their
+    /// own status indicator.
+    pub fn vim_state(&self) -> &VimState {
+        &self.vim
     }
 
     /// The user-visible source. With the `editor` feature this is
@@ -422,8 +466,15 @@ impl HexEditor {
 
     /// Drain egui keyboard events and apply navigation / editing
     /// updates. Skips when another widget has keyboard focus.
+    /// Routes through Vim's modal dispatcher when [`InputMode::Vim`]
+    /// is active and the editor isn't in Insert mode; Insert mode
+    /// and Default both route through the standard dispatcher so
+    /// hex digit / ASCII typing / arrow-key nav stay consistent.
     pub fn handle_input(&mut self, ctx: &egui::Context) {
-        input::dispatch(self, ctx);
+        match self.input_mode {
+            InputMode::Default => input::dispatch(self, ctx),
+            InputMode::Vim => vim::dispatch(self, ctx),
+        }
     }
 
     /// Open a per-frame [`HexView`] configured with this editor's
