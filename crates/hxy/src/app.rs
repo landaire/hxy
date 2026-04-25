@@ -1191,7 +1191,7 @@ impl eframe::App for HxyApp {
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock)
                 .style(style)
-                .show_leaf_collapse_buttons(false)
+                .show_leaf_collapse_buttons(true)
                 .show_inside(ui, &mut viewer);
         }
 
@@ -6301,7 +6301,7 @@ fn render_workspace_tab(
     egui_dock::DockArea::new(inner_dock)
         .id(egui::Id::new(("hxy-workspace-dock", workspace_id.get())))
         .style(style)
-        .show_leaf_collapse_buttons(false)
+        .show_leaf_collapse_buttons(true)
         .show_inside(ui, &mut viewer);
 
     // Collapse-back trigger: if the workspace is left with only its
