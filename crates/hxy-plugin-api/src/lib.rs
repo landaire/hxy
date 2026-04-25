@@ -27,6 +27,7 @@ pub mod handler {
     // generated `...::exports::hxy::vfs::handler::FileType` path.
     pub use self::hxy::vfs::source;
     pub use self::hxy::vfs::state;
+    pub use self::hxy::vfs::tcp;
     pub use exports::hxy::vfs::handler::FileType;
     pub use exports::hxy::vfs::handler::Guest;
     pub use exports::hxy::vfs::handler::GuestMount;

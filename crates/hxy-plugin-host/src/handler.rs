@@ -105,6 +105,9 @@ impl PluginHandler {
         {
             state = state.with_persist(self.key.name.clone(), true, store);
         }
+        if self.granted.network {
+            state = state.with_network(true);
+        }
         state
     }
 

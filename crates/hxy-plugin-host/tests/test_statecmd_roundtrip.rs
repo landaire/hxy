@@ -25,8 +25,12 @@
 //! The test skips itself if that artifact is absent so a fresh
 //! checkout's `cargo test` stays green.
 
+use std::io::Read as _;
+use std::io::Write as _;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 
 use hxy_plugin_host::InMemoryStateStore;
 use hxy_plugin_host::InvokeOutcome;
@@ -73,7 +77,7 @@ commands = true
     // and the commands list would come back empty.
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
-    grants.set(key, PermissionGrants { persist: true, commands: true });
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: false });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
@@ -86,7 +90,7 @@ commands = true
     // 1. Plugin's declared commands surface verbatim.
     let cmds = plugin.list_commands();
     let ids: Vec<&str> = cmds.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(ids, vec!["done", "cascade", "mount", "prompt"]);
+    assert_eq!(ids, vec!["done", "cascade", "mount", "prompt", "network"]);
 
     // The plugin's `Done outcome` subtitle reads the persisted
     // counter; with a fresh InMemoryStateStore it should start at 0.
@@ -158,6 +162,133 @@ commands = true
     };
     assert_eq!(mount_req.token, "from-prompt:xenon-dev");
     assert_eq!(mount_req.title, "Prompt answered: xenon-dev");
+}
+
+#[test]
+fn network_grant_lets_plugin_open_tcp_connection() {
+    let path = component_path();
+    if !path.exists() {
+        eprintln!("skipping: {} not built", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read component");
+
+    // Spin up a one-shot TCP echo server on a random local port
+    // before we set up the plugin so the plugin's connect call
+    // succeeds. The accept loop runs once and replies "pong"
+    // when it sees "ping" -- the plugin sends "ping" verbatim.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 4];
+        stream.read_exact(&mut buf).expect("read ping");
+        assert_eq!(&buf, b"ping");
+        stream.write_all(b"pong").expect("write pong");
+        // Drop closes; the plugin's `read` returns the pending
+        // bytes and then EOF.
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wasm_path = dir.path().join("test-statecmd.wasm");
+    std::fs::write(&wasm_path, &bytes).expect("write wasm");
+    let manifest = r#"
+[plugin]
+name = "test-statecmd"
+version = "0.1.0"
+
+[permissions]
+persist = true
+commands = true
+network = true
+"#;
+    std::fs::write(dir.path().join("test-statecmd.hxy.toml"), manifest).expect("write manifest");
+
+    let mut grants = PluginGrants::default();
+    let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: true });
+
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
+        .expect("load plugins");
+    let plugin = handlers
+        .into_iter()
+        .find(|p| p.name() == "test-statecmd")
+        .expect("test-statecmd handler present");
+
+    // The "network" command emits a Prompt that asks for the
+    // host:port. respond drives the connect / write / read on
+    // the host side and stores the echo bytes in the state blob
+    // so we can pull them out via the in-memory store.
+    let prompt = match plugin.invoke_command("network").expect("invoke") {
+        InvokeOutcome::Prompt(p) => p,
+        other => panic!("expected prompt, got {other:?}"),
+    };
+    assert_eq!(prompt.title, "host:port to connect to");
+
+    let answer = format!("127.0.0.1:{port}");
+    let outcome = plugin.respond_to_prompt("network", &answer).expect("respond");
+    assert!(matches!(outcome, InvokeOutcome::Done), "got {outcome:?}");
+
+    let echoed = store.load("test-statecmd").unwrap().expect("plugin saved its echo");
+    assert_eq!(&echoed[..], b"pong", "echo blob = {:?}", String::from_utf8_lossy(&echoed));
+}
+
+#[test]
+fn network_denied_returns_error_string() {
+    let path = component_path();
+    if !path.exists() {
+        eprintln!("skipping: {} not built", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read component");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("test-statecmd.wasm"), &bytes).expect("write wasm");
+    // Manifest declares network -- but grants withhold it. The
+    // plugin's tcp.connect should return a "permission denied"
+    // string; the test plugin saves "ERR: ..." into state, which
+    // we verify here.
+    let manifest = r#"
+[plugin]
+name = "test-statecmd"
+version = "0.1.0"
+
+[permissions]
+persist = true
+commands = true
+network = true
+"#;
+    std::fs::write(dir.path().join("test-statecmd.hxy.toml"), manifest).expect("write manifest");
+
+    let mut grants = PluginGrants::default();
+    let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
+    // Explicitly grant persist + commands but NOT network.
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: false });
+
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
+        .expect("load plugins");
+    let plugin = handlers
+        .into_iter()
+        .find(|p| p.name() == "test-statecmd")
+        .expect("test-statecmd handler present");
+
+    // Drive the same prompt -> respond cycle. With network
+    // denied, the plugin's tcp_roundtrip helper hits
+    // `tcp::connect` which returns `Err("network permission
+    // denied for ...")`; the plugin formats that as an "ERR:"
+    // blob.
+    let _ = plugin.invoke_command("network").expect("invoke");
+    let outcome = plugin.respond_to_prompt("network", "127.0.0.1:9").expect("respond");
+    assert!(matches!(outcome, InvokeOutcome::Done));
+
+    let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
+    let saved_str = String::from_utf8_lossy(&saved);
+    assert!(
+        saved_str.starts_with("ERR: network permission denied"),
+        "expected denial error, got {saved_str:?}"
+    );
 }
 
 #[test]

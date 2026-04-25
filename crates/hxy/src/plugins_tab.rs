@@ -113,6 +113,7 @@ fn render_consent_card(
         let mut next = PermissionGrants {
             persist: granted.persist,
             commands: granted.commands,
+            network: granted.network,
         };
         let mut changed = false;
         if requested.persist
@@ -123,6 +124,13 @@ fn render_consent_card(
         if requested.commands
             && ui
                 .checkbox(&mut next.commands, "Commands (contribute entries to the command palette)")
+                .changed()
+        {
+            changed = true;
+        }
+        if requested.network
+            && ui
+                .checkbox(&mut next.network, "Network (open outbound TCP connections)")
                 .changed()
         {
             changed = true;

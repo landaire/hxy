@@ -7,6 +7,18 @@ pub mod handler_world {
     wasmtime::component::bindgen!({
         world: "plugin",
         path: "wit",
+        // Map the WIT `connection` resource to our concrete host
+        // type so the generated trait methods take
+        // `Resource<TcpConnection>` directly. Without this, bindgen
+        // generates its own marker `Connection` type that isn't
+        // useful for storing the underlying `TcpStream`.
+        // wasmtime bindgen wants `interface.resource` (period before
+        // the resource name) rather than `interface/resource`;
+        // documented in wasmtime's bindgen!() rustdoc with the
+        // example `"wasi:filesystem/types.descriptor"`.
+        with: {
+            "hxy:vfs/tcp@0.1.0.connection": super::super::host::TcpConnection,
+        },
     });
 }
 

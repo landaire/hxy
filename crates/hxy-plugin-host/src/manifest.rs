@@ -64,15 +64,16 @@ pub struct PluginMeta {
 }
 
 /// Capability flags. Each field corresponds to one host-provided WIT
-/// interface or behavior the plugin can use; `false` means the
-/// linker simply does not expose that interface, so a plugin that
-/// tries to call it traps at instantiation time.
+/// interface or behavior the plugin can use. With the current
+/// single-world wiring every interface is always linked; gating
+/// happens at the host's interface impl, which returns a denial
+/// (or empty list) when the corresponding flag is `false`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Permissions {
     /// Allow the plugin to load and save an opaque per-plugin blob
-    /// via `hxy:host/state`. Host enforces a fixed quota; plugins
-    /// cannot ask for more.
+    /// via the `state` interface. Host enforces a fixed quota;
+    /// plugins cannot ask for more.
     pub persist: bool,
     /// Allow the plugin to contribute entries to the command
     /// palette via its exported `commands` interface. Off means
@@ -80,6 +81,13 @@ pub struct Permissions {
     /// effectively passive (only acts when the user navigates to
     /// a path it claims via the handler interface).
     pub commands: bool,
+    /// Allow the plugin to open outbound TCP connections via the
+    /// `tcp` interface. Off means `tcp.connect` always returns a
+    /// `forbidden` error string. Reads / writes against an already-
+    /// established connection (granted before, then revoked) are
+    /// not retroactively blocked, but the next instantiation will
+    /// not be able to reconnect.
+    pub network: bool,
 }
 
 impl PluginManifest {

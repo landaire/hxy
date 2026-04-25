@@ -30,6 +30,7 @@ use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::MountRequest;
 use hxy_plugin_api::handler::PromptRequest;
 use hxy_plugin_api::handler::state;
+use hxy_plugin_api::handler::tcp;
 
 struct Plugin;
 
@@ -89,6 +90,13 @@ impl GuestCommands for Plugin {
                 icon: None,
                 has_children: false,
             },
+            Command {
+                id: "network".to_string(),
+                label: "Network roundtrip".to_string(),
+                subtitle: Some("connect to host:port, send 'ping', read echo".to_string()),
+                icon: None,
+                has_children: false,
+            },
         ]
     }
 
@@ -123,6 +131,10 @@ impl GuestCommands for Plugin {
                 title: "Token name".to_string(),
                 default_value: Some(format!("default-{next}")),
             }),
+            "network" => InvokeResult::Prompt(PromptRequest {
+                title: "host:port to connect to".to_string(),
+                default_value: None,
+            }),
             // Children of `cascade` resolve as Done -- they exist
             // so the host can verify cascade dispatch routes back
             // to the right plugin.
@@ -131,19 +143,40 @@ impl GuestCommands for Plugin {
     }
 
     fn respond(id: String, answer: String) -> InvokeResult {
-        // The fixture's only `Prompt` outcome was raised by the
-        // "prompt" command; an answer to it becomes a `Mount` so
-        // the host can verify that the typed string round-trips
-        // back through into a token-driven tab.
-        if id == "prompt" {
-            InvokeResult::Mount(MountRequest {
+        match id.as_str() {
+            // Answer to the "prompt" command becomes a Mount so
+            // the host can verify the typed string round-trips
+            // back through into a token-driven tab.
+            "prompt" => InvokeResult::Mount(MountRequest {
                 token: format!("from-prompt:{answer}"),
                 title: format!("Prompt answered: {answer}"),
-            })
-        } else {
-            InvokeResult::Done
+            }),
+            // Answer to "network" is a host:port. Parse it,
+            // connect via the host's tcp interface, send "ping",
+            // read up to 64 bytes, store the answer in state for
+            // the test to inspect, return Done.
+            "network" => {
+                let echo = match tcp_roundtrip(&answer) {
+                    Ok(bytes) => bytes,
+                    Err(e) => format!("ERR: {e}").into_bytes(),
+                };
+                let _ = state::save(&echo);
+                InvokeResult::Done
+            }
+            _ => InvokeResult::Done,
         }
     }
+}
+
+/// Connect to `host:port`, write "ping", read up to 64 bytes back.
+/// Returns the echoed bytes for the host to assert on. Errors are
+/// joined as a string so the test gets a single failure surface.
+fn tcp_roundtrip(host_port: &str) -> Result<Vec<u8>, String> {
+    let (host, port_s) = host_port.rsplit_once(':').ok_or("expected host:port")?;
+    let port: u16 = port_s.parse().map_err(|e: core::num::ParseIntError| e.to_string())?;
+    let conn = tcp::connect(host, port)?;
+    conn.write_all(b"ping")?;
+    conn.read(64)
 }
 
 struct Mount {

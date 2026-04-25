@@ -71,6 +71,7 @@ impl PluginKey {
 pub struct PermissionGrants {
     pub persist: bool,
     pub commands: bool,
+    pub network: bool,
 }
 
 impl PermissionGrants {
@@ -83,6 +84,7 @@ impl PermissionGrants {
         Permissions {
             persist: self.persist && requested.persist,
             commands: self.commands && requested.commands,
+            network: self.network && requested.network,
         }
     }
 }
@@ -153,8 +155,8 @@ mod tests {
 
     #[test]
     fn intersect_drops_denied_permissions() {
-        let granted = PermissionGrants { persist: true, commands: false };
-        let requested = Permissions { persist: true, commands: true };
+        let granted = PermissionGrants { persist: true, commands: false, network: false };
+        let requested = Permissions { persist: true, commands: true, network: false };
         let actual = granted.intersect(requested);
         assert!(actual.persist);
         assert!(!actual.commands);
@@ -162,8 +164,8 @@ mod tests {
 
     #[test]
     fn intersect_drops_unrequested_permissions() {
-        let granted = PermissionGrants { persist: true, commands: true };
-        let requested = Permissions { persist: false, commands: true };
+        let granted = PermissionGrants { persist: true, commands: true, network: false };
+        let requested = Permissions { persist: false, commands: true, network: false };
         let actual = granted.intersect(requested);
         assert!(!actual.persist);
         assert!(actual.commands);
@@ -173,19 +175,19 @@ mod tests {
     fn json_roundtrip_preserves_records() {
         let mut g = PluginGrants::default();
         let key = PluginKey::from_bytes("xeedee", "0.1.0", b"\0asm\x01\x00\x00\x00");
-        g.set(key.clone(), PermissionGrants { persist: true, commands: false });
+        g.set(key.clone(), PermissionGrants { persist: true, commands: false, network: false });
 
         let json = serde_json::to_string(&g).expect("serialize");
         let loaded: PluginGrants = serde_json::from_str(&json).expect("deserialize");
         assert!(loaded.has_record(&key));
-        assert_eq!(loaded.get(&key), PermissionGrants { persist: true, commands: false });
+        assert_eq!(loaded.get(&key), PermissionGrants { persist: true, commands: false, network: false });
     }
 
     #[test]
     fn forget_removes_record() {
         let mut g = PluginGrants::default();
         let key = PluginKey::from_bytes("xeedee", "0.1.0", b"hello");
-        g.set(key.clone(), PermissionGrants { persist: true, commands: true });
+        g.set(key.clone(), PermissionGrants { persist: true, commands: true, network: false });
         assert!(g.has_record(&key));
         g.forget(&key);
         assert!(!g.has_record(&key));
@@ -197,7 +199,7 @@ mod tests {
         let k2 = PluginKey::from_bytes("p", "1.0.0", b"second");
         assert_ne!(k1, k2);
         let mut g = PluginGrants::default();
-        g.set(k1.clone(), PermissionGrants { persist: true, commands: false });
+        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: false });
         assert!(g.has_record(&k1));
         assert!(!g.has_record(&k2));
     }
