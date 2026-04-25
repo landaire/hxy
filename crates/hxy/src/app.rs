@@ -3767,6 +3767,30 @@ fn build_palette_entries(
                 build_columns_entries(&mut out, app.palette.mode, query);
             }
         }
+        Mode::PluginCascade => {
+            // The plugin's `Cascade` outcome stashed both the
+            // commands list and the plugin name on `palette.plugin_cascade`.
+            // We render entries from that snapshot rather than
+            // re-asking the plugin every frame -- otherwise the
+            // user's selection would jitter as the list rebuilt.
+            if let Some(cascade) = app.palette.plugin_cascade.as_ref() {
+                let plugin_name = &cascade.plugin_name;
+                for cmd in &cascade.commands {
+                    let mut entry = egui_palette::Entry::new(
+                        cmd.label.clone(),
+                        Action::InvokePluginCommand {
+                            plugin_name: plugin_name.clone(),
+                            command_id: cmd.id.clone(),
+                        },
+                    );
+                    if let Some(s) = cmd.subtitle.clone() {
+                        entry = entry.with_subtitle(s);
+                    }
+                    entry = entry.with_icon(cmd.icon.clone().unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
+                    out.push(entry);
+                }
+            }
+        }
     }
     out
 }
@@ -4082,15 +4106,12 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             };
             match plugin.invoke_command(&command_id) {
                 Some(hxy_plugin_host::InvokeOutcome::Done) => app.palette.close(),
-                Some(hxy_plugin_host::InvokeOutcome::Cascade(_)) => {
-                    // Cascading sub-palettes for plugin commands
-                    // require the palette state to carry plugin-
-                    // owned entry lists, which is its own slice
-                    // (involves loosening Mode from Copy + Eq).
-                    // For now we surface a console line so the
-                    // user knows the call ran but nothing followed.
-                    tracing::warn!(plugin = %plugin_name, command = %command_id, "Cascade outcome not yet implemented");
-                    app.palette.close();
+                Some(hxy_plugin_host::InvokeOutcome::Cascade(commands)) => {
+                    // Push a fresh sub-palette populated by the
+                    // plugin's returned entries. The plugin name
+                    // rides along so picks within the sub-palette
+                    // route their `invoke` back to the same handler.
+                    app.palette.enter_plugin_cascade(plugin_name.clone(), commands);
                 }
                 Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
                     // Mount requests need a token-backed VFS source

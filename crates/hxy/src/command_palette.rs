@@ -16,26 +16,55 @@ use crate::file::FileId;
 pub struct PaletteState {
     pub mode: Mode,
     pub inner: egui_palette::State,
+    /// Active plugin-driven sub-menu when `mode == Mode::PluginCascade`.
+    /// Carries the plugin name (so further `invoke` calls route to
+    /// the right handler) and the command list the plugin handed
+    /// us, used to populate the sub-palette without re-asking the
+    /// plugin every frame.
+    pub plugin_cascade: Option<PluginCascadeState>,
+}
+
+#[derive(Clone)]
+pub struct PluginCascadeState {
+    pub plugin_name: String,
+    pub commands: Vec<hxy_plugin_host::PluginCommand>,
 }
 
 impl Default for PaletteState {
     fn default() -> Self {
-        Self { mode: Mode::Main, inner: egui_palette::State::default() }
+        Self { mode: Mode::Main, inner: egui_palette::State::default(), plugin_cascade: None }
     }
 }
 
 impl PaletteState {
     pub fn open_at(&mut self, mode: Mode) {
         self.mode = mode;
+        // Cleared on every mode switch -- the only entry path into
+        // a populated `plugin_cascade` is `enter_plugin_cascade`,
+        // so leaving cascade mode should always drop the buffer.
+        self.plugin_cascade = None;
         self.inner.open();
     }
 
     pub fn close(&mut self) {
         self.inner.close();
+        self.plugin_cascade = None;
     }
 
     pub fn is_open(&self) -> bool {
         self.inner.open
+    }
+
+    /// Push a fresh plugin-driven sub-menu and switch into the
+    /// cascade mode. Resets the query / selection so the new entry
+    /// list is searchable from scratch.
+    pub fn enter_plugin_cascade(&mut self, plugin_name: String, commands: Vec<hxy_plugin_host::PluginCommand>) {
+        self.plugin_cascade = Some(PluginCascadeState { plugin_name, commands });
+        self.mode = Mode::PluginCascade;
+        // open() resets query / selection / pending_focus and is
+        // safe to call when already open -- mirrors how mode
+        // switches like Templates / Recent are entered.
+        self.inner.open();
     }
 }
 
@@ -72,6 +101,11 @@ pub enum Mode {
     /// overrides from [`Mode::SetColumnsLocal`] continue to win for
     /// their own tabs.
     SetColumnsGlobal,
+    /// Sub-palette populated by a plugin's `Cascade` invoke
+    /// outcome. The actual entry list lives on
+    /// [`PaletteState::plugin_cascade`] -- this variant is just
+    /// the marker that build-entries should read from there.
+    PluginCascade,
 }
 
 /// Which scope a [`Mode::SetColumnsLocal`] / [`Mode::SetColumnsGlobal`]
@@ -101,7 +135,8 @@ impl Mode {
             | Mode::SelectFromOffset
             | Mode::SelectRange
             | Mode::SetColumnsLocal
-            | Mode::SetColumnsGlobal => Some(Mode::Main),
+            | Mode::SetColumnsGlobal
+            | Mode::PluginCascade => Some(Mode::Main),
         }
     }
 }
@@ -218,6 +253,7 @@ pub fn show(
         Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),
         Mode::SetColumnsLocal => hxy_i18n::t("palette-hint-set-columns-local"),
         Mode::SetColumnsGlobal => hxy_i18n::t("palette-hint-set-columns-global"),
+        Mode::PluginCascade => hxy_i18n::t("palette-hint-main"),
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw
