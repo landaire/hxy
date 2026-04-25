@@ -53,14 +53,19 @@ impl PluginKey {
         out
     }
 
-    /// Compact serialization key. Format: `name@version#sha256-prefix`
-    /// -- the hash prefix gives a visual distinguisher between
-    /// rebuilds at the same version without dumping the full 64-char
-    /// digest. Used as the map key inside [`PluginGrants`] so a
-    /// JSON dump of the struct stays human-scannable.
+    /// Compact serialization key. Format: `name@version`. Used as
+    /// the map key inside [`PluginGrants`].
+    ///
+    /// Note that the sha256 is intentionally NOT part of the key:
+    /// rebuilding the same plugin (same name, same version) at
+    /// different bytes would otherwise wipe the user's grant on
+    /// every dev iteration. The sha256 still lives on the embedded
+    /// [`PluginKey`] so the consent UI can surface a fingerprint
+    /// mismatch if we want to warn on substituted bytes; bumping
+    /// the version is the explicit "this is a different plugin
+    /// now, please re-consent" signal.
     fn map_key(&self) -> String {
-        let prefix: String = self.sha256.chars().take(12).collect();
-        format!("{}@{}#{}", self.name, self.version, prefix)
+        format!("{}@{}", self.name, self.version)
     }
 }
 
@@ -233,10 +238,34 @@ mod tests {
     }
 
     #[test]
-    fn distinct_hashes_distinct_keys() {
+    fn rebuilt_plugin_at_same_version_carries_grants_over() {
+        // Map keys are name@version (sha256 intentionally NOT in
+        // the lookup): rebuilding the same plugin shouldn't wipe
+        // the user's consent on every dev iteration. Bumping the
+        // version (or renaming) is the explicit re-consent signal.
         let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
         let k2 = PluginKey::from_bytes("p", "1.0.0", b"second");
-        assert_ne!(k1, k2);
+        assert_ne!(k1, k2, "PluginKey identity still differs by sha256");
+        let mut g = PluginGrants::default();
+        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
+        assert!(g.has_record(&k1));
+        assert!(g.has_record(&k2), "grant should carry across rebuild");
+    }
+
+    #[test]
+    fn version_bump_drops_grants() {
+        let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
+        let k2 = PluginKey::from_bytes("p", "1.1.0", b"first");
+        let mut g = PluginGrants::default();
+        g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
+        assert!(g.has_record(&k1));
+        assert!(!g.has_record(&k2), "version bump should require fresh consent");
+    }
+
+    #[test]
+    fn distinct_names_distinct_keys() {
+        let k1 = PluginKey::from_bytes("alpha", "1.0.0", b"same");
+        let k2 = PluginKey::from_bytes("beta", "1.0.0", b"same");
         let mut g = PluginGrants::default();
         g.set(k1.clone(), PermissionGrants { persist: true, commands: false, network: vec![] });
         assert!(g.has_record(&k1));
