@@ -36,15 +36,10 @@ pub struct HxyApp {
     /// object erasure the registry stores.
     #[cfg(not(target_arch = "wasm32"))]
     plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>>,
-    /// User consent decisions per (plugin name, version, sha256).
-    /// Empty until [`HxyApp::with_plugin_persistence`] supplies the
-    /// loaded set; mutated by the consent UI and written back to
-    /// SQLite via the kv layer.
-    #[cfg(not(target_arch = "wasm32"))]
-    plugin_grants: hxy_plugin_host::PluginGrants,
     /// Shared per-plugin blob persistence. `None` means no SQLite
     /// pool was wired (e.g. db open failed at startup); plugins
     /// granted `persist` then see `denied` from the state interface.
+    /// Grants themselves live in [`PersistedState::plugin_grants`].
     #[cfg(not(target_arch = "wasm32"))]
     plugin_state_store: Option<Arc<dyn hxy_plugin_host::StateStore>>,
 
@@ -101,6 +96,12 @@ pub struct HxyApp {
     /// file in the plugin directories. Drained at end of `ui()`.
     #[cfg(not(target_arch = "wasm32"))]
     plugin_rescan: bool,
+    /// Per-plugin grant changes / state-wipe requests captured by
+    /// the Plugins tab. Drained at end of `ui()`; each entry is
+    /// applied to `PersistedState::plugin_grants` (or the state
+    /// store) and triggers a plugin reload.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_plugin_events: Vec<crate::plugins_tab::PluginsEvent>,
     /// Auto-detected template library loaded from the user's
     /// `templates/` dir. Consulted when a file is opened so the
     /// toolbar can offer `Run ZIP.bt` directly.
@@ -220,8 +221,6 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             plugin_handlers,
             #[cfg(not(target_arch = "wasm32"))]
-            plugin_grants: hxy_plugin_host::PluginGrants::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             plugin_state_store: None,
             #[cfg(not(target_arch = "wasm32"))]
             sink: None,
@@ -241,6 +240,8 @@ impl HxyApp {
             menu: Some(crate::menu::MenuState::install()),
             #[cfg(not(target_arch = "wasm32"))]
             plugin_rescan: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_plugin_events: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             templates: crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -262,11 +263,51 @@ impl HxyApp {
     pub fn reload_plugins(&mut self) {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
+        let grants = self.state.read().plugin_grants.clone();
         self.plugin_handlers =
-            register_user_plugins(&mut registry, &self.plugin_grants, self.plugin_state_store.clone());
+            register_user_plugins(&mut registry, &grants, self.plugin_state_store.clone());
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
         self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
+    }
+
+    /// Drain a batch of grant / wipe events captured by the
+    /// Plugins tab. Mutates `PersistedState::plugin_grants` for
+    /// any `SetGrant`, calls the state store for any `WipeState`,
+    /// then triggers a single `reload_plugins` at the end so the
+    /// linker reflects the new grant set.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_plugin_events(&mut self, events: Vec<crate::plugins_tab::PluginsEvent>) {
+        let mut grants_changed = false;
+        for ev in events {
+            match ev {
+                crate::plugins_tab::PluginsEvent::Rescan => {
+                    self.plugin_rescan = true;
+                }
+                crate::plugins_tab::PluginsEvent::SetGrant { key, grants: g } => {
+                    self.state.write().plugin_grants.set(key, g);
+                    grants_changed = true;
+                }
+                crate::plugins_tab::PluginsEvent::WipeState { plugin_name } => {
+                    if let Some(store) = self.plugin_state_store.as_ref()
+                        && let Err(e) = store.clear(&plugin_name)
+                    {
+                        tracing::warn!(error = %e, plugin = %plugin_name, "wipe plugin state");
+                    }
+                }
+            }
+        }
+        if grants_changed {
+            // Persist immediately so a crash before the next save
+            // tick doesn't lose the user's consent decision.
+            if let Some(sink) = self.sink.as_ref() {
+                let snapshot = self.state.read().clone();
+                if let Err(e) = sink.save(&snapshot) {
+                    tracing::warn!(error = %e, "save plugin grants");
+                }
+            }
+            self.reload_plugins();
+        }
     }
 
     /// Show the Plugins tab. Focuses if already open; otherwise splits
@@ -384,19 +425,15 @@ impl HxyApp {
         self
     }
 
-    /// Hand the app the previously-saved consent decisions plus a
-    /// SQLite-backed state store so plugins granted `persist`
-    /// actually persist. Triggers a plugin reload so the in-memory
-    /// `PluginHandler` instances pick up the new grant set;
-    /// without this call (e.g. db open failed at startup), every
+    /// Hand the app a SQLite-backed state store so plugins granted
+    /// `persist` actually persist. Grants themselves come from the
+    /// shared [`PersistedState::plugin_grants`] populated at
+    /// startup. Triggers a plugin reload so the in-memory
+    /// `PluginHandler` instances pick up the new state-store
+    /// reference; without this call (e.g. db open failed), every
     /// plugin's permission requests are treated as denied.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_plugin_persistence(
-        mut self,
-        grants: hxy_plugin_host::PluginGrants,
-        state_store: Arc<dyn hxy_plugin_host::StateStore>,
-    ) -> Self {
-        self.plugin_grants = grants;
+    pub fn with_plugin_persistence(mut self, state_store: Arc<dyn hxy_plugin_host::StateStore>) -> Self {
         self.plugin_state_store = Some(state_store);
         self.reload_plugins();
         self
@@ -731,6 +768,10 @@ impl eframe::App for HxyApp {
                 inspector_data,
                 #[cfg(not(target_arch = "wasm32"))]
                 plugin_rescan: &mut self.plugin_rescan,
+                #[cfg(not(target_arch = "wasm32"))]
+                plugin_handlers: &self.plugin_handlers,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_plugin_events: &mut self.pending_plugin_events,
                 pending_close_tab: &mut self.pending_close_tab,
             };
             let style = Style::from_egui(ui.style());
@@ -740,6 +781,13 @@ impl eframe::App for HxyApp {
                 .show_inside(ui, &mut viewer);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let events = std::mem::take(&mut self.pending_plugin_events);
+            if !events.is_empty() {
+                self.apply_plugin_events(events);
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if std::mem::take(&mut self.plugin_rescan) {
             self.reload_plugins();
@@ -4362,6 +4410,14 @@ struct HxyTabViewer<'a> {
     /// end of frame by [`HxyApp::ui`].
     #[cfg(not(target_arch = "wasm32"))]
     plugin_rescan: &'a mut bool,
+    /// Read-only view of loaded plugin handlers so the Plugins tab
+    /// can render their consent cards.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_handlers: &'a [Arc<hxy_plugin_host::PluginHandler>],
+    /// Sink for grant changes / state-wipe requests captured by the
+    /// Plugins tab. Drained at end of frame by [`HxyApp::ui`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_plugin_events: &'a mut Vec<crate::plugins_tab::PluginsEvent>,
     /// Slot the dock's `on_close` handler writes to when the user
     /// X-clicks a dirty File tab. The app drains this after the
     /// dock pass and renders the save-prompt modal next frame.
@@ -4434,10 +4490,19 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
                 let templates_dir = user_template_plugins_dir();
-                let events = crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref());
+                let events = crate::plugins_tab::show(
+                    ui,
+                    handlers_dir.as_ref(),
+                    templates_dir.as_ref(),
+                    self.plugin_handlers,
+                );
                 for e in events {
                     match e {
                         crate::plugins_tab::PluginsEvent::Rescan => *self.plugin_rescan = true,
+                        // Grant + wipe events apply to mutable state
+                        // the viewer doesn't own; queue them for the
+                        // app's post-dock drain.
+                        other => self.pending_plugin_events.push(other),
                     }
                 }
             }

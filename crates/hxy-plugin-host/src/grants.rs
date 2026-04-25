@@ -90,7 +90,7 @@ impl PermissionGrants {
 /// In-memory grants store. Implements `Serialize` / `Deserialize`
 /// so the app crate can blob the whole thing into its existing
 /// kv layer (SQLite); the host crate doesn't pick the storage.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginGrants {
     /// Flat map keyed by [`PluginKey::map_key`]; the embedded
     /// `PluginKey` carries the canonical identity so a corrupted
@@ -99,7 +99,7 @@ pub struct PluginGrants {
     plugins: BTreeMap<String, PluginGrantEntry>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PluginGrantEntry {
     key: PluginKey,
     grants: PermissionGrants,

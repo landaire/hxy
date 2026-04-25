@@ -36,6 +36,11 @@ pub struct PersistedState {
     pub window: WindowSettings,
     pub app: AppSettings,
     pub open_tabs: Vec<OpenTabState>,
+    /// User consent decisions for each loaded plugin. Mirrored
+    /// into `HxyApp` is unnecessary -- the rest of the app reads /
+    /// writes it through the same `state.read()` / `state.write()`
+    /// path the rest of [`PersistedState`] uses.
+    pub plugin_grants: hxy_plugin_host::PluginGrants,
 }
 
 pub type SharedPersistedState = Arc<RwLock<PersistedState>>;

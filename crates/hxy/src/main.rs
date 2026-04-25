@@ -50,7 +50,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
-    let (sink, loaded_app, loaded_tabs, plugin_persistence) = {
+    let (sink, loaded_app, loaded_tabs, loaded_grants, plugin_state_store) = {
         let _guard = runtime.enter();
         match runtime.block_on(persist::open_db()) {
             Ok(pool) => {
@@ -81,12 +81,13 @@ fn main() -> eframe::Result<()> {
                     Some(SaveSink::new(pool, Arc::clone(&runtime))),
                     app_settings,
                     tabs,
-                    Some((grants, state_store)),
+                    grants,
+                    Some(state_store),
                 )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "open settings database");
-                (None, None, None, None)
+                (None, None, None, hxy_plugin_host::PluginGrants::default(), None)
             }
         }
     };
@@ -95,6 +96,7 @@ fn main() -> eframe::Result<()> {
         window: loaded_window.unwrap_or_default(),
         app: loaded_app.unwrap_or_default(),
         open_tabs: loaded_tabs.unwrap_or_default(),
+        plugin_grants: loaded_grants,
     });
 
     let viewport = egui::ViewportBuilder::default()
@@ -115,8 +117,8 @@ fn main() -> eframe::Result<()> {
             if let Some(sink) = sink {
                 app = app.with_sink(sink);
             }
-            if let Some((grants, state_store)) = plugin_persistence {
-                app = app.with_plugin_persistence(grants, state_store);
+            if let Some(state_store) = plugin_state_store {
+                app = app.with_plugin_persistence(state_store);
             }
             // The IPC inbox needs the egui Context to schedule
             // repaints when a forwarded batch arrives, so spin up
