@@ -1,20 +1,24 @@
 //! Xbox 360 devkit "neighborhood" plugin.
 //!
 //! Surfaces a "Connect to Xbox console" command in the host's command
-//! palette. Picking it prompts for the kit's `host:port`, then sends
-//! an XBDM NAP `WhatIsYourName` (`0x03`) packet to that address and
-//! reports whatever name the console replies with.
+//! palette. Picking it prompts for the kit's `host:port`, sends an
+//! XBDM NAP `WhatIsYourName` (`0x03`) packet to that address to
+//! confirm the console responds, then opens a VFS-backed tab whose
+//! root mirrors the console's drive list. Each drive shows up as a
+//! folder; `read_dir` / `metadata` / `read_file` are translated into
+//! XBDM `dirlist` / `getfileattributes` / `getfile` commands against
+//! the kit.
 //!
-//! WASI preview 2's `wasi:sockets` doesn't support UDP broadcast
-//! (subnet-wide auto-discovery isn't in the spec), so the user
-//! supplies the IP. The wire framing is handled by
-//! [`xeedee::Discovery`] (sans-io state machine) configured for a
-//! unicast probe; this plugin only owns the UDP socket and the
-//! polling loop.
+//! ## I/O bridge
 //!
-//! Picking a discovered console currently just closes the palette --
-//! the actual TCP connect (via `xeedee::ClientEngine` over a
-//! blocking TCP shim) is the next milestone.
+//! WASI preview 2 sockets gives us `std::net::TcpStream` / `UdpSocket`
+//! but no async runtime. `xeedee::Client` is parameterised over
+//! `futures_io::AsyncRead + AsyncWrite`, so we wrap a blocking
+//! `TcpStream` in [`BlockingTcp`] (a futures shim that always
+//! resolves immediately) and drive the resulting futures via
+//! `futures::executor::block_on`. The single-poll completion is fine
+//! because the underlying I/O really is blocking -- the future never
+//! has a reason to yield `Pending`.
 
 extern crate alloc;
 
@@ -24,13 +28,26 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use core::cell::RefCell;
+use core::pin::Pin;
+use core::task::Context;
+use core::task::Poll;
+
+use std::io;
 use std::net::SocketAddr;
+use std::net::Shutdown;
+use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::net::UdpSocket;
 use std::time::Duration;
 use std::time::Instant;
 
+use futures::executor::block_on;
+use futures_io::AsyncRead as FAsyncRead;
+use futures_io::AsyncWrite as FAsyncWrite;
+
 use hxy_plugin_api::handler::Command;
+use hxy_plugin_api::handler::FileType;
 use hxy_plugin_api::handler::Guest;
 use hxy_plugin_api::handler::GuestCommands;
 use hxy_plugin_api::handler::GuestMount;
@@ -38,28 +55,27 @@ use hxy_plugin_api::handler::InvokeResult;
 use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::MountRequest;
 use hxy_plugin_api::handler::PromptRequest;
+use xeedee::Client;
+use xeedee::Connected;
+use xeedee::commands::DirEntry;
+use xeedee::commands::DirList;
+use xeedee::commands::DriveList;
+use xeedee::commands::GetFileAttributes;
 use xeedee::discovery::DiscoveryAction;
 use xeedee::discovery::{DiscoveredConsole, Discovery, DiscoveryConfig};
 
-/// Default text the prompt pre-fills with. Picked as a typical
-/// home-router devkit address; users edit it to their kit's IP.
 const PROMPT_DEFAULT: &str = "192.168.1.50:730";
-
-/// Receive buffer for inbound NAP replies. NAP responses are at most
-/// 256 bytes (`0x02 <namelen=u8> <name...>` with `namelen <= 254`),
-/// so 1 KiB has plenty of headroom for any malformed reply we'd
-/// silently drop anyway.
 const RECV_BUF: usize = 1024;
 
 struct Plugin;
 
 impl Guest for Plugin {
-    type Mount = NoMount;
+    type Mount = ConsoleMount;
 
     fn matches(_head: Vec<u8>) -> bool {
-        // This plugin only contributes palette commands. It never
-        // claims to handle a byte source -- detection always falls
-        // through to other handlers.
+        // This plugin only contributes palette commands + token-driven
+        // mounts. It never claims to handle a byte source -- detection
+        // always falls through to other handlers.
         false
     }
 
@@ -68,17 +84,18 @@ impl Guest for Plugin {
     }
 
     fn mount_source() -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
-        Err("xbox-neighborhood does not expose a file mount".to_string())
+        Err("xbox-neighborhood does not expose a file-source mount".to_string())
     }
 
     fn mount_by_token(
-        _token: String,
+        token: String,
     ) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
-        // The lookup cascade resolves to `Done` for now, so the host
-        // never asks us to mount by token. If a future "Connect"
-        // outcome wires through a token-backed VFS over the XBDM
-        // file-transfer commands, this is where we'd open it.
-        Err("xbox-neighborhood does not yet support token-backed mounts".to_string())
+        // Token format: `host:port` -- captured at probe time and
+        // round-tripped through the host. Reconnect rather than
+        // sharing state with the prior `respond` call (which lived
+        // in a different Store).
+        let mount = ConsoleMount::connect(&token)?;
+        Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(mount))
     }
 }
 
@@ -89,8 +106,6 @@ impl GuestCommands for Plugin {
             label: "Connect to Xbox console".to_string(),
             subtitle: Some("NAP unicast probe -- prompts for the kit IP".to_string()),
             icon: None,
-            // Picking opens a prompt rather than a sub-menu, so the
-            // cosmetic hint stays false.
             has_children: false,
         }]
     }
@@ -101,11 +116,6 @@ impl GuestCommands for Plugin {
                 title: "Xbox console (host:port)".to_string(),
                 default_value: Some(PROMPT_DEFAULT.to_string()),
             }),
-            // A picked console entry from the cascade we returned
-            // earlier. For the MVP we just close the palette; the
-            // next milestone is to open a TCP session and surface
-            // a Mount with the console's filesystem.
-            picked if picked.starts_with("console:") => InvokeResult::Done,
             _ => InvokeResult::Done,
         }
     }
@@ -115,13 +125,16 @@ impl GuestCommands for Plugin {
             return InvokeResult::Done;
         }
         match probe_console(&answer) {
-            Ok(console) => InvokeResult::Cascade(vec![Command {
-                id: format!("console:{}@{}", console.name, console.addr),
-                label: console.name.clone(),
-                subtitle: Some(console.addr.to_string()),
-                icon: None,
-                has_children: false,
-            }]),
+            Ok(console) => {
+                // Mount the console as a VFS tab. The token round-
+                // trips through `mount_by_token` so the new Store
+                // can reconnect without sharing the probe Store's
+                // state. Title carries the discovered name so the
+                // tab shows "Xbox: deanxbox" instead of the bare IP.
+                let token = console.addr.to_string();
+                let title = format!("Xbox: {}", console.name);
+                InvokeResult::Mount(MountRequest { token, title })
+            }
             Err(msg) => InvokeResult::Cascade(vec![Command {
                 id: "noop:probe-error".to_string(),
                 label: format!("No response from {answer}"),
@@ -133,35 +146,10 @@ impl GuestCommands for Plugin {
     }
 }
 
-/// Stub `mount` resource. Required by the WIT trait but never
-/// actually constructed: `Plugin::mount_source` and `mount_by_token`
-/// always return `Err`.
-struct NoMount;
+// ---------------------------------------------------------------------------
+// NAP unicast probe (UDP/730)
+// ---------------------------------------------------------------------------
 
-impl GuestMount for NoMount {
-    fn read_dir(&self, _path: String) -> Result<Vec<String>, String> {
-        Err("xbox-neighborhood has no mount surface".to_string())
-    }
-    fn metadata(&self, _path: String) -> Result<Metadata, String> {
-        Err("xbox-neighborhood has no mount surface".to_string())
-    }
-    fn read_file(&self, _path: String) -> Result<Vec<u8>, String> {
-        Err("xbox-neighborhood has no mount surface".to_string())
-    }
-}
-
-/// Send a unicast NAP probe to `host_port` and return the console
-/// that answered, if any. Errors are joined as strings so the
-/// palette has a single failure surface.
-///
-/// Implementation note: WASI preview 2 sockets does not expose a
-/// receive-timeout primitive (`set_read_timeout` returns "Protocol
-/// not available" on `wasm32-wasip2`). The state machine's
-/// `Wait { until }` action is honoured instead by setting the
-/// socket to nonblocking and polling `recv_from` until either the
-/// deadline elapses or a datagram lands. `std::thread::sleep`
-/// between polls maps cleanly to wasi:clocks so we don't burn the
-/// CPU.
 fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {
     let target = resolve_target(host_port)?;
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind: {e}"))?;
@@ -184,60 +172,272 @@ fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {
                     .send_to(&payload, dest)
                     .map_err(|e| format!("send_to {dest}: {e}"))?;
             }
-            DiscoveryAction::Wait { until } => {
-                // Spin in nonblocking mode until either a datagram
-                // arrives or the deadline fires; the outer loop
-                // then re-polls the engine for the next action.
-                loop {
-                    let now = Instant::now();
-                    if now >= until {
+            DiscoveryAction::Wait { until } => loop {
+                let now = Instant::now();
+                if now >= until {
+                    break;
+                }
+                match socket.recv_from(&mut buf) {
+                    Ok((n, src)) => {
+                        engine.handle_inbound(src, &buf[..n]);
                         break;
                     }
-                    match socket.recv_from(&mut buf) {
-                        Ok((n, src)) => {
-                            engine.handle_inbound(src, &buf[..n]);
-                            break;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Cap the nap at the remaining budget so
-                            // we don't oversleep the deadline.
-                            let remaining = until.saturating_duration_since(now);
-                            let nap = remaining.min(Duration::from_millis(20));
-                            std::thread::sleep(nap);
-                        }
-                        Err(e) => return Err(format!("recv_from: {e}")),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        let remaining = until.saturating_duration_since(now);
+                        let nap = remaining.min(Duration::from_millis(20));
+                        std::thread::sleep(nap);
                     }
+                    Err(e) => return Err(format!("recv_from: {e}")),
                 }
+            },
+        }
+    }
+}
+
+fn resolve_target(host_port: &str) -> Result<SocketAddr, String> {
+    let candidate = if host_port.contains(':') {
+        host_port.to_string()
+    } else {
+        format!("{host_port}:730")
+    };
+    candidate
+        .as_str()
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .ok_or_else(|| format!("could not resolve {host_port:?}"))
+}
+
+// ---------------------------------------------------------------------------
+// Console mount: drives + filesystem over XBDM TCP/730
+// ---------------------------------------------------------------------------
+
+/// One open XBDM session backing a tab. The wasm host keeps this
+/// resource alive for the tab's lifetime; the inner client + transport
+/// stay open across every `read_dir` / `metadata` / `read_file` call.
+pub struct ConsoleMount {
+    /// `RefCell` because the WIT trait methods take `&self` but we
+    /// need exclusive access to drive the client's reads/writes.
+    client: RefCell<Client<BlockingTcp, Connected>>,
+}
+
+impl ConsoleMount {
+    /// Open a TCP session to `host_port` and read the XBDM banner.
+    /// Returns a connected mount ready for `read_dir` / `read_file`.
+    fn connect(host_port: &str) -> Result<Self, String> {
+        let stream = TcpStream::connect(host_port)
+            .map_err(|e| format!("tcp connect {host_port}: {e}"))?;
+        let transport = BlockingTcp::new(stream);
+        let client = block_on(Client::new(transport).read_banner())
+            .map_err(|e| format!("xbdm banner: {e}"))?;
+        Ok(Self { client: RefCell::new(client) })
+    }
+}
+
+impl GuestMount for ConsoleMount {
+    fn read_dir(&self, path: String) -> Result<Vec<String>, String> {
+        let kind = classify_path(&path);
+        let mut client = self.client.borrow_mut();
+        match kind {
+            PathKind::Root => {
+                // `/` -> drive list. Each drive becomes a folder
+                // entry named like `E:` so the next `read_dir`
+                // navigates into `/E:` and we know to dirlist `E:\`.
+                let drives = block_on(client.run(DriveList))
+                    .map_err(|e| format!("drivelist: {e}"))?;
+                Ok(drives.into_iter().map(|d| format!("{d}:")).collect())
+            }
+            PathKind::Drive(_) | PathKind::Path(_) => {
+                let xbdm = path_to_xbdm(&path);
+                let entries = block_on(client.run(DirList { path: xbdm.clone() }))
+                    .map_err(|e| format!("dirlist {xbdm}: {e}"))?;
+                Ok(entries.into_iter().map(|e: DirEntry| e.name).collect())
             }
         }
     }
-}
 
-/// Parse `host:port` (default port 730 if omitted), resolving via
-/// the OS resolver so DNS names work in addition to bare IPs.
-fn resolve_target(host_port: &str) -> Result<SocketAddr, String> {
-    // Try the input as `host:port` first; fall back to treating the
-    // input as a bare host and using the default XBDM port.
-    let with_port = host_port.to_string();
-    let candidates: Vec<String> = if host_port.contains(':') {
-        vec![with_port]
-    } else {
-        vec![format!("{host_port}:730")]
-    };
-    for candidate in &candidates {
-        if let Ok(mut addrs) = candidate.as_str().to_socket_addrs()
-            && let Some(addr) = addrs.next()
-        {
-            return Ok(addr);
+    fn metadata(&self, path: String) -> Result<Metadata, String> {
+        let kind = classify_path(&path);
+        match kind {
+            PathKind::Root | PathKind::Drive(_) => {
+                // Synthetic directories -- no XBDM call needed and
+                // `getfileattributes` on a drive root often returns
+                // an error anyway.
+                Ok(Metadata { file_type: FileType::Directory, length: 0 })
+            }
+            PathKind::Path(_) => {
+                let xbdm = path_to_xbdm(&path);
+                let mut client = self.client.borrow_mut();
+                let attrs = block_on(client.run(GetFileAttributes { path: xbdm.clone() }))
+                    .map_err(|e| format!("getfileattributes {xbdm}: {e}"))?;
+                let file_type = if attrs.is_directory {
+                    FileType::Directory
+                } else {
+                    FileType::RegularFile
+                };
+                Ok(Metadata { file_type, length: attrs.size })
+            }
         }
     }
-    Err(format!("could not resolve {host_port:?}"))
+
+    fn read_file(&self, path: String) -> Result<Vec<u8>, String> {
+        let kind = classify_path(&path);
+        let xbdm = match kind {
+            PathKind::Root | PathKind::Drive(_) => {
+                return Err("not a regular file".to_string());
+            }
+            PathKind::Path(_) => path_to_xbdm(&path),
+        };
+        let mut client = self.client.borrow_mut();
+        let bytes = block_on(async {
+            let download = client
+                .get_file(&xbdm, xeedee::commands::GetFileRange::WholeFile)
+                .await?;
+            download.into_vec().await
+        })
+        .map_err(|e| format!("getfile {xbdm}: {e}"))?;
+        Ok(bytes)
+    }
 }
 
-// Reference imports the body doesn't directly name so the compiler
-// keeps the use-statements live for documentation while warnings stay
-// clean.
-#[allow(dead_code)]
-fn _unused_imports(_: MountRequest) {}
+/// Coarse classification of a VFS path so each callsite doesn't have
+/// to re-parse. The host always passes `/`-rooted, `/`-separated
+/// paths; this maps that into the three regions of the console
+/// filesystem we care about.
+enum PathKind<'a> {
+    /// `/` -- the synthetic root that lists drives.
+    Root,
+    /// `/<DRIVE>:` -- the synthetic root of a drive (a dirlist on
+    /// `<DRIVE>:\` lives at the same level so the host's tree view
+    /// can expand the drive without an extra hop).
+    #[allow(dead_code)]
+    Drive(&'a str),
+    /// `/<DRIVE>:/<rest>` -- somewhere inside the filesystem.
+    #[allow(dead_code)]
+    Path(&'a str),
+}
+
+fn classify_path(path: &str) -> PathKind<'_> {
+    let trimmed = path.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return PathKind::Root;
+    }
+    match trimmed.split_once('/') {
+        None => PathKind::Drive(trimmed),
+        Some((drive, _rest)) => PathKind::Path(drive),
+    }
+}
+
+/// Translate a VFS path (`/E:/Games/Halo3.xex`) into XBDM's native
+/// form (`E:\Games\Halo3.xex`). Empty path components from a
+/// trailing slash are dropped so `/E:/` and `/E:` both produce
+/// `E:\`. The drive root always carries the trailing `\` because
+/// the XBDM `dirlist` command needs it to resolve.
+fn path_to_xbdm(path: &str) -> String {
+    let trimmed = path.trim_start_matches('/').trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Special-case the drive root so a bare `/E:` becomes `E:\`
+    // (XBDM needs the trailing slash on a drive listing).
+    let xbdm: String = trimmed.replace('/', "\\");
+    if !xbdm.contains('\\') {
+        format!("{xbdm}\\")
+    } else {
+        xbdm
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blocking-TCP -> futures_io shim
+// ---------------------------------------------------------------------------
+
+/// Blocking `std::net::TcpStream` exposed as
+/// `futures_io::AsyncRead + AsyncWrite`. Every poll just calls the
+/// underlying blocking syscall and returns `Poll::Ready(...)`; we
+/// never yield `Pending`, which is fine because `block_on` runs the
+/// future on the calling thread and there's nothing else to make
+/// progress. The plugin runs in its own wasi instance and the host
+/// is happy to wait for the syscall.
+struct BlockingTcp {
+    stream: TcpStream,
+}
+
+impl BlockingTcp {
+    fn new(stream: TcpStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl FAsyncRead for BlockingTcp {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Read::read(&mut self.get_mut().stream, buf))
+    }
+}
+
+impl FAsyncWrite for BlockingTcp {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(io::Write::write(&mut self.get_mut().stream, buf))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(io::Write::flush(&mut self.get_mut().stream))
+    }
+
+    fn poll_close(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        // Best-effort -- wasi-sockets may not implement shutdown,
+        // but dropping the stream still closes the socket.
+        let _ = self.get_mut().stream.shutdown(Shutdown::Both);
+        Poll::Ready(Ok(()))
+    }
+}
 
 hxy_plugin_api::handler::export_handler!(Plugin with_types_in hxy_plugin_api::handler);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_classifies_as_root() {
+        assert!(matches!(classify_path("/"), PathKind::Root));
+        assert!(matches!(classify_path(""), PathKind::Root));
+    }
+
+    #[test]
+    fn drive_classifies_as_drive() {
+        assert!(matches!(classify_path("/E:"), PathKind::Drive("E:")));
+    }
+
+    #[test]
+    fn path_classifies_as_path() {
+        assert!(matches!(classify_path("/E:/Games"), PathKind::Path("E:")));
+        assert!(matches!(classify_path("/E:/Games/Halo3.xex"), PathKind::Path("E:")));
+    }
+
+    #[test]
+    fn drive_root_path_carries_trailing_backslash() {
+        assert_eq!(path_to_xbdm("/E:"), "E:\\");
+        assert_eq!(path_to_xbdm("/E:/"), "E:\\");
+    }
+
+    #[test]
+    fn nested_path_uses_backslash_separator() {
+        assert_eq!(path_to_xbdm("/E:/Games"), "E:\\Games");
+        assert_eq!(path_to_xbdm("/E:/Games/Halo3.xex"), "E:\\Games\\Halo3.xex");
+    }
+}

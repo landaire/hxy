@@ -11,11 +11,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
-# Sans-io NAP discovery types (`Discovery`, `DiscoveryConfig`,
-# `DiscoveryAction`, wire encoders/decoders). `default-features = false`
-# drops the `tokio` runner module so we don't pull tokio into a wasm
-# component that can't use it anyway.
+# Sans-io NAP discovery types + the async XBDM `Client` used by the
+# console mount. `default-features = false` drops the tokio runner /
+# transport modules so we don't pull tokio into a wasm component
+# that can't use it anyway. We bridge `xeedee::Client`'s
+# `futures_io::AsyncRead + AsyncWrite` requirement to a blocking
+# `std::net::TcpStream` via the `BlockingTcp` shim in this crate
+# and drive futures with `futures::executor::block_on`.
 xeedee = { path = "../../../xeedee/crates/xeedee", default-features = false }
+futures-io = "0.3"
+futures = { version = "0.3", default-features = false, features = ["executor"] }
 
 [profile.release]
 opt-level = "s"
