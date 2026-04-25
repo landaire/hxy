@@ -4955,14 +4955,10 @@ fn build_palette_entries(
                     }
                 }
             }
-            for (id, file) in &app.files {
-                let mut entry =
-                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon(icon::FILE);
-                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
+            // Open files don't appear in Mode::Main any more --
+            // file-switching has its own mode (Cmd+P / `Mode::QuickOpen`)
+            // so the full command palette stays focused on commands +
+            // plugin contributions instead of mixing the two.
             // Plugin-contributed entries. Each loaded plugin is
             // asked for its current command list (gated host-side
             // by the `commands` permission); the host prefixes the
