@@ -210,6 +210,14 @@ pub enum PaletteCommand {
     NewFile,
     OpenFile,
     BrowseVfs,
+    /// Toggle the workspace VFS tree on/off without losing the
+    /// workspace itself. When the active tab isn't a workspace, the
+    /// command is a no-op.
+    ToggleWorkspaceVfs,
+    /// Toggle the right-hand tool panel (Plugins manager + plugin
+    /// mount tabs). Hides every tool-class tab into a stash; toggling
+    /// again re-creates the panel and restores them.
+    ToggleToolPanel,
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,

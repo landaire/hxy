@@ -188,6 +188,12 @@ pub struct HxyApp {
     /// matching record from `state.open_tabs`.
     #[cfg(not(target_arch = "wasm32"))]
     pending_close_mount: Option<crate::file::MountId>,
+    /// Tool tabs the user has stashed via `toggle_tool_panel`. While
+    /// non-empty, the right-hand tool panel is hidden -- the dock has
+    /// no leaf for these tabs at all, so the surrounding panes get
+    /// their horizontal space back. Toggling again recreates the
+    /// right-split leaf and pushes these tabs into it.
+    hidden_tool_tabs: Vec<Tab>,
     /// Shared cross-file search state. Backs the `Tab::SearchResults`
     /// dock tab; lives on the app so query / matches survive the user
     /// closing and reopening the tab.
@@ -341,6 +347,7 @@ impl HxyApp {
             pending_collapse_workspace: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_close_mount: None,
+            hidden_tool_tabs: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             global_search: crate::global_search::GlobalSearchState::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1191,7 +1198,7 @@ impl eframe::App for HxyApp {
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock)
                 .style(style)
-                .show_leaf_collapse_buttons(true)
+                .show_leaf_collapse_buttons(false)
                 .show_inside(ui, &mut viewer);
         }
 
@@ -2181,6 +2188,71 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
 /// Remove any [`Tab::Welcome`] entry from the given leaf. Used by
 /// the file-open and tab-move paths so the Welcome placeholder
 /// quietly steps aside whenever a real tab takes over its pane.
+/// Toggle visibility of the right-hand tool panel (the Plugins
+/// manager and any plugin mount tabs). When visible, drains every
+/// tool-class tab out of the dock into `hidden_tool_tabs`. The
+/// now-empty leaf is removed by egui_dock and adjacent panes reflow
+/// to take the space. When hidden, recreates the right-split leaf
+/// at the standard 28% width and refills it from the stash.
+#[cfg(not(target_arch = "wasm32"))]
+fn toggle_tool_panel(app: &mut HxyApp) {
+    if !app.hidden_tool_tabs.is_empty() {
+        // Restore.
+        let to_restore = std::mem::take(&mut app.hidden_tool_tabs);
+        let mut iter = to_restore.into_iter();
+        let Some(first) = iter.next() else { return };
+        app.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![first]);
+        if let Some(path) = app.dock.find_tab(&first) {
+            for tab in iter {
+                if let Ok(leaf) = app.dock.leaf_mut(path.node_path()) {
+                    leaf.append_tab(tab);
+                }
+            }
+        }
+        return;
+    }
+    // Hide. Walk every tool-class tab; collect them in dock order so
+    // restore preserves the visual sequence the user had. Remove
+    // from highest tab index per leaf first to avoid index shifts
+    // invalidating subsequent paths.
+    let mut to_hide: Vec<(egui_dock::TabPath, Tab)> = Vec::new();
+    for (path, tab) in app.dock.iter_all_tabs() {
+        if is_tool_tab(tab) {
+            to_hide.push((path, *tab));
+        }
+    }
+    if to_hide.is_empty() {
+        return;
+    }
+    // Sort descending so removing earlier indices doesn't shift later ones.
+    to_hide.sort_by(|a, b| b.0.tab.0.cmp(&a.0.tab.0));
+    let stash: Vec<Tab> = to_hide.iter().rev().map(|(_, t)| *t).collect();
+    for (path, _) in to_hide {
+        let _ = app.dock.remove_tab(path);
+    }
+    app.hidden_tool_tabs = stash;
+}
+
+/// Toggle visibility of the workspace VFS tree sub-tab. Hide just
+/// removes `WorkspaceTab::VfsTree` from the workspace's inner dock
+/// (the leaf that hosted it auto-cleans if it was the only tab,
+/// returning that horizontal slice to the editor + entries leaf).
+/// Show re-adds the tree as a fresh left split at the same default
+/// fraction we use for new workspaces.
+fn toggle_workspace_vfs(app: &mut HxyApp) {
+    let Some(workspace_id) = active_workspace_id(app) else { return };
+    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
+    if let Some(path) = workspace.dock.find_tab(&crate::file::WorkspaceTab::VfsTree) {
+        let _ = workspace.dock.remove_tab(path);
+    } else {
+        workspace.dock.main_surface_mut().split_left(
+            egui_dock::NodeIndex::root(),
+            0.3,
+            vec![crate::file::WorkspaceTab::VfsTree],
+        );
+    }
+}
+
 /// Push a freshly-opened VFS entry into the leaf that holds the
 /// workspace's `Editor` sub-tab so the entry stacks alongside the
 /// parent file rather than landing wherever the user was last
@@ -4451,6 +4523,46 @@ fn build_palette_entries(
                 .with_icon(icon::PUZZLE_PIECE)
                 .with_subtitle(panel_subtitle(plugins_visible)),
             );
+
+            // Toggle the workspace VFS tree (only meaningful when the
+            // active tab is a workspace; the dispatcher no-ops
+            // otherwise so we still surface the entry for keyboard
+            // discoverability).
+            let workspace_tree_visible = app
+                .dock
+                .focused_leaf()
+                .and_then(|p| app.dock.leaf(p).ok())
+                .and_then(|leaf| leaf.tabs().get(leaf.active.0))
+                .and_then(|tab| match tab {
+                    Tab::Workspace(workspace_id) => app
+                        .workspaces
+                        .get(workspace_id)
+                        .map(|w| w.dock.find_tab(&crate::file::WorkspaceTab::VfsTree).is_some()),
+                    _ => None,
+                })
+                .unwrap_or(false);
+            out.push(
+                egui_palette::Entry::new(
+                    "Toggle VFS panel",
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleWorkspaceVfs),
+                )
+                .with_icon(icon::TREE_STRUCTURE)
+                .with_subtitle(panel_subtitle(workspace_tree_visible)),
+            );
+
+            // Toggle the right-hand tool panel as a unit (Plugins
+            // manager + every plugin mount tab). Distinct from the
+            // single-panel Plugins toggle above.
+            let tool_panel_visible = app.hidden_tool_tabs.is_empty()
+                && app.dock.iter_all_tabs().any(|(_, t)| is_tool_tab(t));
+            out.push(
+                egui_palette::Entry::new(
+                    "Toggle tool panel",
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::ToggleToolPanel),
+                )
+                .with_icon(icon::SQUARES_FOUR)
+                .with_subtitle(panel_subtitle(tool_panel_visible)),
+            );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-run-template-entry"),
@@ -5095,6 +5207,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::NewFile => handle_new_file(app),
                     PaletteCommand::OpenFile => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
                     PaletteCommand::BrowseVfs => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
+                    PaletteCommand::ToggleWorkspaceVfs => toggle_workspace_vfs(app),
+                    PaletteCommand::ToggleToolPanel => toggle_tool_panel(app),
                     PaletteCommand::ToggleConsole => app.toggle_console(),
                     PaletteCommand::ToggleInspector => app.toggle_inspector(),
                     PaletteCommand::TogglePlugins => app.toggle_plugins(),
@@ -6301,7 +6415,7 @@ fn render_workspace_tab(
     egui_dock::DockArea::new(inner_dock)
         .id(egui::Id::new(("hxy-workspace-dock", workspace_id.get())))
         .style(style)
-        .show_leaf_collapse_buttons(true)
+        .show_leaf_collapse_buttons(false)
         .show_inside(ui, &mut viewer);
 
     // Collapse-back trigger: if the workspace is left with only its
