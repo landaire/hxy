@@ -96,12 +96,29 @@ pub enum RegisterOrigin {
 pub enum Pending {
     /// First `g` of a `g`-prefixed motion (`gg`, `gu`, ...).
     G,
-    /// First `y` of a `yy` (linewise yank). Stage 3 keeps the
-    /// operator-pending state minimal -- only the doubled form is
-    /// recognised; arbitrary `y{motion}` lands in Stage 4.
+    /// First `y` of a `yy` (linewise yank). Operator-pending state
+    /// for arbitrary `y{motion}` is intentionally narrow -- only the
+    /// doubled form is recognised in Normal mode.
     Yank,
     /// First `d` of a `dd` (linewise delete).
     Delete,
+    /// `i` pressed in Visual / VisualLine; the next typed character
+    /// names the inner text object (`)`, `]`, `"`, `w`, ...).
+    TextObjectInner,
+    /// `a` pressed in Visual / VisualLine; the next typed character
+    /// names the around text object (delimiters included).
+    TextObjectAround,
+    /// `f` / `F` / `t` / `T`; the next typed character is the search
+    /// target. `before` distinguishes `t`/`T` from `f`/`F`.
+    FindChar { dir: FindDir, before: bool },
+}
+
+/// Direction for `f`/`F`/`t`/`T` find-char motions and other
+/// directional operators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindDir {
+    Forward,
+    Backward,
 }
 
 impl VimState {
@@ -149,142 +166,210 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
     let columns = editor.last_columns.map(|c| u64::from(c.get())).unwrap_or(16);
     let source_len = editor.source.len().get();
 
+    let frame_start_mode = editor.vim.mode;
+    let mut local_pending = editor.vim.pending;
     let presses: Vec<VimPress> = ctx.input_mut(|i| {
         let mut out = Vec::new();
-        i.events.retain(|event| match event {
-            egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } => {
-                if modifiers.command || modifiers.alt {
-                    return true;
+        i.events.retain(|event| {
+            let want_char = matches!(
+                local_pending,
+                Some(
+                    Pending::FindChar { .. } | Pending::TextObjectInner | Pending::TextObjectAround,
+                )
+            );
+            match event {
+                egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } => {
+                    if want_char {
+                        // Waiting on a literal character; the
+                        // accompanying Event::Text carries it. Swallow
+                        // the Key event so motions like `b` / `w` /
+                        // `i` don't fire as if we weren't pending.
+                        if matches!(key, Key::Escape) {
+                            out.push(VimPress::Escape);
+                            local_pending = None;
+                        }
+                        return false;
+                    }
+                    if modifiers.command || modifiers.alt {
+                        return true;
+                    }
+                    let shift = modifiers.shift;
+                    match key {
+                        Key::Escape => {
+                            out.push(VimPress::Escape);
+                            false
+                        }
+                        Key::Tab => {
+                            out.push(VimPress::TogglePane);
+                            false
+                        }
+                        Key::H => {
+                            out.push(VimPress::Motion(Motion::Left));
+                            false
+                        }
+                        Key::J => {
+                            out.push(VimPress::Motion(Motion::Down));
+                            false
+                        }
+                        Key::K => {
+                            out.push(VimPress::Motion(Motion::Up));
+                            false
+                        }
+                        Key::L => {
+                            out.push(VimPress::Motion(Motion::Right));
+                            false
+                        }
+                        Key::W => {
+                            out.push(VimPress::Motion(if shift {
+                                Motion::WordEndForwardBig
+                            } else {
+                                Motion::WordForward
+                            }));
+                            false
+                        }
+                        Key::B => {
+                            out.push(VimPress::Motion(if shift { Motion::WordBackBig } else { Motion::WordBack }));
+                            false
+                        }
+                        Key::E => {
+                            out.push(VimPress::Motion(if shift {
+                                Motion::WordEndForwardBig
+                            } else {
+                                Motion::WordEndForward
+                            }));
+                            false
+                        }
+                        Key::F => {
+                            let dir = if shift { FindDir::Backward } else { FindDir::Forward };
+                            let pending = Pending::FindChar { dir, before: false };
+                            out.push(VimPress::StartFindChar { dir, before: false });
+                            local_pending = Some(pending);
+                            false
+                        }
+                        Key::T => {
+                            let dir = if shift { FindDir::Backward } else { FindDir::Forward };
+                            let pending = Pending::FindChar { dir, before: true };
+                            out.push(VimPress::StartFindChar { dir, before: true });
+                            local_pending = Some(pending);
+                            false
+                        }
+                        Key::I => {
+                            if matches!(frame_start_mode, VimMode::Visual | VimMode::VisualLine) {
+                                out.push(VimPress::StartTextObject(false));
+                                local_pending = Some(Pending::TextObjectInner);
+                            } else {
+                                out.push(VimPress::EnterInsert);
+                            }
+                            false
+                        }
+                        Key::A if matches!(frame_start_mode, VimMode::Visual | VimMode::VisualLine) => {
+                            out.push(VimPress::StartTextObject(true));
+                            local_pending = Some(Pending::TextObjectAround);
+                            false
+                        }
+                        Key::V => {
+                            out.push(if shift { VimPress::EnterVisualLine } else { VimPress::EnterVisual });
+                            false
+                        }
+                        Key::Y => {
+                            out.push(VimPress::Yank);
+                            false
+                        }
+                        Key::P => {
+                            out.push(VimPress::Paste);
+                            false
+                        }
+                        Key::D => {
+                            out.push(VimPress::Delete);
+                            false
+                        }
+                        Key::X => {
+                            out.push(VimPress::DeleteByte);
+                            false
+                        }
+                        Key::G => {
+                            // Capital G = end-of-file; lowercase g
+                            // starts a `gg` sequence (resolved on the
+                            // next keypress).
+                            out.push(if shift { VimPress::Motion(Motion::EndOfFile) } else { VimPress::PendingG });
+                            false
+                        }
+                        // `$` (Shift+4) -- end of line / row. Must be
+                        // before the bare `Num4 -> Digit(4)` arm,
+                        // otherwise the unguarded arm wins.
+                        Key::Num4 if shift => {
+                            out.push(VimPress::Motion(Motion::LineEnd));
+                            false
+                        }
+                        Key::Num0 if !shift => {
+                            // Pure `0` with no count buffer is the line-
+                            // start motion; with a count buffer it's a
+                            // digit. The apply step inspects the count
+                            // buffer and routes accordingly.
+                            out.push(VimPress::Digit(0));
+                            false
+                        }
+                        Key::Num1 if !shift => {
+                            out.push(VimPress::Digit(1));
+                            false
+                        }
+                        Key::Num2 if !shift => {
+                            out.push(VimPress::Digit(2));
+                            false
+                        }
+                        Key::Num3 if !shift => {
+                            out.push(VimPress::Digit(3));
+                            false
+                        }
+                        Key::Num4 if !shift => {
+                            out.push(VimPress::Digit(4));
+                            false
+                        }
+                        Key::Num5 if !shift => {
+                            out.push(VimPress::Digit(5));
+                            false
+                        }
+                        Key::Num6 if !shift => {
+                            out.push(VimPress::Digit(6));
+                            false
+                        }
+                        Key::Num7 if !shift => {
+                            out.push(VimPress::Digit(7));
+                            false
+                        }
+                        Key::Num8 if !shift => {
+                            out.push(VimPress::Digit(8));
+                            false
+                        }
+                        Key::Num9 if !shift => {
+                            out.push(VimPress::Digit(9));
+                            false
+                        }
+                        _ => true,
+                    }
                 }
-                let shift = modifiers.shift;
-                match key {
-                    Key::Escape => {
-                        out.push(VimPress::Escape);
-                        false
+                egui::Event::Text(text) => {
+                    if want_char && let Some(c) = text.chars().next() {
+                        match local_pending {
+                            Some(Pending::FindChar { dir, before }) => {
+                                out.push(VimPress::FindCharResolved { c, dir, before });
+                            }
+                            Some(Pending::TextObjectInner) => {
+                                out.push(VimPress::TextObjectChar { c, around: false });
+                            }
+                            Some(Pending::TextObjectAround) => {
+                                out.push(VimPress::TextObjectChar { c, around: true });
+                            }
+                            _ => {}
+                        }
+                        local_pending = None;
                     }
-                    Key::Tab => {
-                        out.push(VimPress::TogglePane);
-                        false
-                    }
-                    Key::H => {
-                        out.push(VimPress::Motion(Motion::Left));
-                        false
-                    }
-                    Key::J => {
-                        out.push(VimPress::Motion(Motion::Down));
-                        false
-                    }
-                    Key::K => {
-                        out.push(VimPress::Motion(Motion::Up));
-                        false
-                    }
-                    Key::L => {
-                        out.push(VimPress::Motion(Motion::Right));
-                        false
-                    }
-                    Key::W => {
-                        out.push(VimPress::Motion(if shift { Motion::WordEndForwardBig } else { Motion::WordForward }));
-                        false
-                    }
-                    Key::B => {
-                        out.push(VimPress::Motion(if shift { Motion::WordBackBig } else { Motion::WordBack }));
-                        false
-                    }
-                    Key::E => {
-                        out.push(VimPress::Motion(if shift { Motion::WordEndForwardBig } else { Motion::WordEndForward }));
-                        false
-                    }
-                    Key::I => {
-                        out.push(VimPress::EnterInsert);
-                        false
-                    }
-                    Key::V => {
-                        out.push(if shift { VimPress::EnterVisualLine } else { VimPress::EnterVisual });
-                        false
-                    }
-                    Key::Y => {
-                        out.push(VimPress::Yank);
-                        false
-                    }
-                    Key::P => {
-                        out.push(VimPress::Paste);
-                        false
-                    }
-                    Key::D => {
-                        out.push(VimPress::Delete);
-                        false
-                    }
-                    Key::X => {
-                        out.push(VimPress::DeleteByte);
-                        false
-                    }
-                    Key::G => {
-                        // Capital G = end-of-file; lowercase g
-                        // starts a `gg` sequence (resolved on the
-                        // next keypress).
-                        out.push(if shift { VimPress::Motion(Motion::EndOfFile) } else { VimPress::PendingG });
-                        false
-                    }
-                    // `$` (Shift+4) -- end of line / row. Must be
-                    // before the bare `Num4 -> Digit(4)` arm,
-                    // otherwise the unguarded arm wins.
-                    Key::Num4 if shift => {
-                        out.push(VimPress::Motion(Motion::LineEnd));
-                        false
-                    }
-                    Key::Num0 if !shift => {
-                        // Pure `0` with no count buffer is the line-
-                        // start motion; with a count buffer it's a
-                        // digit. The apply step inspects the count
-                        // buffer and routes accordingly.
-                        out.push(VimPress::Digit(0));
-                        false
-                    }
-                    Key::Num1 if !shift => {
-                        out.push(VimPress::Digit(1));
-                        false
-                    }
-                    Key::Num2 if !shift => {
-                        out.push(VimPress::Digit(2));
-                        false
-                    }
-                    Key::Num3 if !shift => {
-                        out.push(VimPress::Digit(3));
-                        false
-                    }
-                    Key::Num4 if !shift => {
-                        out.push(VimPress::Digit(4));
-                        false
-                    }
-                    Key::Num5 if !shift => {
-                        out.push(VimPress::Digit(5));
-                        false
-                    }
-                    Key::Num6 if !shift => {
-                        out.push(VimPress::Digit(6));
-                        false
-                    }
-                    Key::Num7 if !shift => {
-                        out.push(VimPress::Digit(7));
-                        false
-                    }
-                    Key::Num8 if !shift => {
-                        out.push(VimPress::Digit(8));
-                        false
-                    }
-                    Key::Num9 if !shift => {
-                        out.push(VimPress::Digit(9));
-                        false
-                    }
-                    _ => true,
+                    // Text events otherwise leak literal letters into
+                    // any focused TextEdit -- always swallow.
+                    false
                 }
+                _ => true,
             }
-            // Swallow Text events too -- otherwise typing letters
-            // that happen to also be motions (h/j/k/l) leaks an
-            // Event::Text for some integrations and lands a literal
-            // 'h' in any focused TextEdit.
-            egui::Event::Text(_) => false,
-            _ => true,
         });
         out
     });
@@ -301,6 +386,9 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         match press {
             VimPress::Escape => {
                 editor.vim.clear_pending();
+                if matches!(editor.vim.mode, VimMode::Visual | VimMode::VisualLine) {
+                    editor.vim.mode = VimMode::Normal;
+                }
                 if let Some(sel) = editor.selection.as_mut() {
                     sel.anchor = sel.cursor;
                 }
@@ -414,6 +502,29 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                 editor.vim.clear_pending();
                 paste_register(editor, count);
             }
+            VimPress::StartFindChar { dir, before } => {
+                // Preserve `count` so `2f<c>` and `3T<c>` still work
+                // when the resolving char arrives.
+                editor.vim.pending = Some(Pending::FindChar { dir, before });
+            }
+            VimPress::FindCharResolved { c, dir, before } => {
+                let count = editor.vim.count_or_one();
+                editor.vim.clear_pending();
+                if let Some(target) = ascii_byte(c) {
+                    apply_find_char(editor, target, dir, before, count, columns, source_len);
+                }
+            }
+            VimPress::StartTextObject(around) => {
+                editor.vim.pending = Some(if around {
+                    Pending::TextObjectAround
+                } else {
+                    Pending::TextObjectInner
+                });
+            }
+            VimPress::TextObjectChar { c, around } => {
+                editor.vim.clear_pending();
+                apply_text_object(editor, c, around, source_len);
+            }
         }
     }
 
@@ -458,6 +569,16 @@ enum VimPress {
     /// `x` -- delete the byte under the cursor.
     DeleteByte,
     Motion(Motion),
+    /// `f`/`F`/`t`/`T` pressed; arms `Pending::FindChar` so the
+    /// retain pass can capture the next typed character.
+    StartFindChar { dir: FindDir, before: bool },
+    /// The character that resolves a pending find-char.
+    FindCharResolved { c: char, dir: FindDir, before: bool },
+    /// `i` / `a` pressed in Visual; arms `Pending::TextObject*`.
+    StartTextObject(bool),
+    /// The delimiter / object char that resolves a pending text
+    /// object (`)`, `]`, `"`, `w`, ...).
+    TextObjectChar { c: char, around: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -910,4 +1031,379 @@ fn paste_register(editor: &mut HexEditor, count: usize) {
     let landing = insert_at + payload_len.saturating_sub(1);
     let landing = landing.min(new_len - 1);
     editor.selection = Some(Selection::caret(ByteOffset::new(landing)));
+}
+
+/// Convert a typed character to its ASCII byte. Find-char and text
+/// objects only support ASCII targets; non-ASCII input is dropped.
+fn ascii_byte(c: char) -> Option<u8> {
+    if c.is_ascii() { Some(c as u8) } else { None }
+}
+
+/// `f`/`F`/`t`/`T`: move (or extend, in Visual) the cursor to the
+/// `count`-th occurrence of `target` on the current row (hex pane)
+/// or current line (ASCII pane). No-op if not found.
+fn apply_find_char(
+    editor: &mut HexEditor,
+    target: u8,
+    dir: FindDir,
+    before: bool,
+    count: usize,
+    columns: u64,
+    source_len: u64,
+) {
+    let cur = current_cursor(editor).unwrap_or(0);
+    if source_len == 0 {
+        return;
+    }
+    let (line_start, line_end) = line_bounds(editor, cur, columns, source_len);
+    let landing = match dir {
+        FindDir::Forward => {
+            let mut found = 0usize;
+            let mut hit = None;
+            let mut i = cur.saturating_add(1);
+            while i <= line_end {
+                if byte_at(editor, i) == Some(target) {
+                    found += 1;
+                    if found == count {
+                        hit = Some(i);
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            hit.map(|i| if before { i.saturating_sub(1) } else { i })
+        }
+        FindDir::Backward => {
+            if cur == 0 {
+                return;
+            }
+            let mut found = 0usize;
+            let mut hit = None;
+            let mut i = cur - 1;
+            loop {
+                if byte_at(editor, i) == Some(target) {
+                    found += 1;
+                    if found == count {
+                        hit = Some(i);
+                        break;
+                    }
+                }
+                if i == line_start {
+                    break;
+                }
+                i -= 1;
+            }
+            hit.map(|i| if before { (i + 1).min(line_end) } else { i })
+        }
+    };
+    if let Some(target) = landing {
+        set_cursor(editor, target);
+    }
+}
+
+/// `vi<delim>` / `va<delim>`: extend the live selection to cover the
+/// text object identified by `c`. Called only after `i` / `a` has
+/// armed `Pending::TextObject*` from Visual mode, so we already have
+/// a selection to mutate.
+fn apply_text_object(editor: &mut HexEditor, c: char, around: bool, source_len: u64) {
+    if source_len == 0 {
+        return;
+    }
+    let cur = current_cursor(editor).unwrap_or(0);
+    let Some((start, end_inclusive)) = text_object_range(editor, cur, source_len, c, around) else {
+        return;
+    };
+    if let Some(sel) = editor.selection.as_mut() {
+        sel.anchor = ByteOffset::new(start);
+        sel.cursor = ByteOffset::new(end_inclusive);
+    } else {
+        editor.selection = Some(Selection {
+            anchor: ByteOffset::new(start),
+            cursor: ByteOffset::new(end_inclusive),
+        });
+    }
+}
+
+/// Resolve a text-object character (`)`, `]`, `"`, `w`, ...) to an
+/// inclusive byte range. Brackets share a single nesting-aware
+/// helper; quotes are line-scoped without nesting; `w` / `W` reuse
+/// the word-classification machinery.
+fn text_object_range(
+    editor: &HexEditor,
+    cur: u64,
+    source_len: u64,
+    c: char,
+    around: bool,
+) -> Option<(u64, u64)> {
+    match c {
+        '(' | ')' | 'b' => bracket_range(editor, cur, source_len, b'(', b')', around),
+        '[' | ']' => bracket_range(editor, cur, source_len, b'[', b']', around),
+        '{' | '}' | 'B' => bracket_range(editor, cur, source_len, b'{', b'}', around),
+        '<' | '>' => bracket_range(editor, cur, source_len, b'<', b'>', around),
+        '"' => quote_range(editor, cur, source_len, b'"', around),
+        '\'' => quote_range(editor, cur, source_len, b'\'', around),
+        '`' => quote_range(editor, cur, source_len, b'`', around),
+        'w' => word_object_range(editor, cur, source_len, false, around),
+        'W' => word_object_range(editor, cur, source_len, true, around),
+        _ => None,
+    }
+}
+
+fn bracket_range(
+    editor: &HexEditor,
+    cur: u64,
+    source_len: u64,
+    open: u8,
+    close: u8,
+    around: bool,
+) -> Option<(u64, u64)> {
+    // Walk back to the enclosing open. A close encountered before
+    // its matching open lifts the depth so `vi)` from the middle of
+    // `(a(b)c)` picks the outer pair.
+    let open_pos = {
+        let mut depth: i32 = 0;
+        let mut i = cur;
+        loop {
+            let b = byte_at(editor, i)?;
+            // Skip the byte at the cursor if it's a close: vim treats
+            // a cursor on `)` as already inside the pair to its left.
+            if b == close && i != cur {
+                depth += 1;
+            } else if b == open {
+                if depth == 0 {
+                    break i;
+                }
+                depth -= 1;
+            }
+            if i == 0 {
+                return None;
+            }
+            i -= 1;
+        }
+    };
+    let close_pos = {
+        let mut depth: i32 = 0;
+        let mut i = open_pos;
+        loop {
+            if i >= source_len {
+                return None;
+            }
+            let b = byte_at(editor, i)?;
+            if b == open {
+                depth += 1;
+            } else if b == close {
+                depth -= 1;
+                if depth == 0 {
+                    break i;
+                }
+            }
+            i += 1;
+        }
+    };
+    if around {
+        Some((open_pos, close_pos))
+    } else if close_pos > open_pos + 1 {
+        Some((open_pos + 1, close_pos - 1))
+    } else {
+        None
+    }
+}
+
+fn quote_range(editor: &HexEditor, cur: u64, source_len: u64, q: u8, around: bool) -> Option<(u64, u64)> {
+    // Quotes don't nest; pair within the current ASCII line.
+    let line_start = find_line_start(editor, cur);
+    let line_end = find_line_end(editor, cur, source_len);
+    let mut open_pos = None;
+    let mut i = cur;
+    loop {
+        if byte_at(editor, i) == Some(q) {
+            open_pos = Some(i);
+            break;
+        }
+        if i == line_start {
+            break;
+        }
+        i -= 1;
+    }
+    let open_pos = open_pos?;
+    let mut close_pos = None;
+    let mut i = open_pos + 1;
+    while i <= line_end {
+        if byte_at(editor, i) == Some(q) {
+            close_pos = Some(i);
+            break;
+        }
+        i += 1;
+    }
+    let close_pos = close_pos?;
+    if around {
+        Some((open_pos, close_pos))
+    } else if close_pos > open_pos + 1 {
+        Some((open_pos + 1, close_pos - 1))
+    } else {
+        None
+    }
+}
+
+fn word_object_range(
+    editor: &HexEditor,
+    cur: u64,
+    source_len: u64,
+    big: bool,
+    around: bool,
+) -> Option<(u64, u64)> {
+    if matches!(editor.active_pane, Pane::Hex) {
+        // Hex pane: each byte is its own word; iw selects the byte
+        // at the cursor, aw extends across run-of-same-byte.
+        return Some((cur, cur));
+    }
+    let class = byte_at(editor, cur).map(|b| classify(b, big))?;
+    let mut start = cur;
+    while start > 0 {
+        let prev = start - 1;
+        if byte_at(editor, prev).map(|b| classify(b, big)) != Some(class) {
+            break;
+        }
+        start = prev;
+    }
+    let mut end = cur;
+    while end + 1 < source_len {
+        let next = end + 1;
+        if byte_at(editor, next).map(|b| classify(b, big)) != Some(class) {
+            break;
+        }
+        end = next;
+    }
+    if around {
+        // `aw` extends past trailing whitespace.
+        while end + 1 < source_len {
+            let next = end + 1;
+            match byte_at(editor, next).map(|b| classify(b, big)) {
+                Some(CharClass::Whitespace) => end = next,
+                _ => break,
+            }
+        }
+    }
+    Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hxy_core::ByteOffset;
+    use hxy_core::HexSource;
+    use hxy_core::MemorySource;
+    use hxy_core::Selection;
+
+    use super::*;
+
+    fn editor_with(bytes: &[u8], cursor: u64, pane: Pane) -> HexEditor {
+        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes.to_vec()));
+        let mut ed = HexEditor::new(source);
+        ed.set_active_pane(pane);
+        ed.selection = Some(Selection::caret(ByteOffset::new(cursor)));
+        ed
+    }
+
+    #[test]
+    fn bracket_inner_picks_enclosing_pair() {
+        // "fn (a + b)" -- cursor in the middle of "a + b".
+        let buf = b"fn (a + b)";
+        let ed = editor_with(buf, 6, Pane::Ascii);
+        let r = bracket_range(&ed, 6, buf.len() as u64, b'(', b')', false).unwrap();
+        assert_eq!(r, (4, 8));
+    }
+
+    #[test]
+    fn bracket_around_includes_delimiters() {
+        let buf = b"(abc)";
+        let ed = editor_with(buf, 2, Pane::Ascii);
+        let r = bracket_range(&ed, 2, buf.len() as u64, b'(', b')', true).unwrap();
+        assert_eq!(r, (0, 4));
+    }
+
+    #[test]
+    fn bracket_handles_nesting_outward() {
+        // Nested: outer pair is what `vi)` should pick from inside.
+        let buf = b"(a(b)c)";
+        let ed = editor_with(buf, 1, Pane::Ascii);
+        let r = bracket_range(&ed, 1, buf.len() as u64, b'(', b')', false).unwrap();
+        assert_eq!(r, (1, 5));
+    }
+
+    #[test]
+    fn quote_inner_within_line() {
+        let buf = b"foo \"hello\" bar";
+        let ed = editor_with(buf, 7, Pane::Ascii);
+        let r = quote_range(&ed, 7, buf.len() as u64, b'"', false).unwrap();
+        assert_eq!(r, (5, 9));
+    }
+
+    #[test]
+    fn word_object_inner_in_ascii() {
+        let buf = b"hello world";
+        let ed = editor_with(buf, 2, Pane::Ascii);
+        let r = word_object_range(&ed, 2, buf.len() as u64, false, false).unwrap();
+        assert_eq!(r, (0, 4));
+    }
+
+    #[test]
+    fn word_object_around_extends_through_trailing_ws() {
+        let buf = b"hello world";
+        let ed = editor_with(buf, 2, Pane::Ascii);
+        let r = word_object_range(&ed, 2, buf.len() as u64, false, true).unwrap();
+        // "hello " -- trailing space included.
+        assert_eq!(r, (0, 5));
+    }
+
+    #[test]
+    fn find_char_forward_lands_on_target() {
+        let buf = b"abcdefg";
+        let mut ed = editor_with(buf, 0, Pane::Ascii);
+        apply_find_char(&mut ed, b'd', FindDir::Forward, false, 1, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 3);
+    }
+
+    #[test]
+    fn find_char_t_lands_one_before() {
+        let buf = b"abcdefg";
+        let mut ed = editor_with(buf, 0, Pane::Ascii);
+        apply_find_char(&mut ed, b'd', FindDir::Forward, true, 1, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 2);
+    }
+
+    #[test]
+    fn find_char_count_picks_nth() {
+        let buf = b"a-b-c-d";
+        let mut ed = editor_with(buf, 0, Pane::Ascii);
+        apply_find_char(&mut ed, b'-', FindDir::Forward, false, 2, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 3);
+    }
+
+    #[test]
+    fn find_char_backward_within_line() {
+        let buf = b"abcdefg";
+        let mut ed = editor_with(buf, 6, Pane::Ascii);
+        apply_find_char(&mut ed, b'b', FindDir::Backward, false, 1, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 1);
+    }
+
+    #[test]
+    fn find_char_misses_quietly() {
+        let buf = b"abc\ndef";
+        let mut ed = editor_with(buf, 0, Pane::Ascii);
+        // 'z' isn't on the current ASCII line.
+        apply_find_char(&mut ed, b'z', FindDir::Forward, false, 1, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 0);
+    }
+
+    #[test]
+    fn find_char_stops_at_ascii_line_boundary() {
+        let buf = b"abc\nzzz";
+        let mut ed = editor_with(buf, 0, Pane::Ascii);
+        // 'z' is past the newline -- f shouldn't cross it.
+        apply_find_char(&mut ed, b'z', FindDir::Forward, false, 1, 16, buf.len() as u64);
+        assert_eq!(ed.selection.unwrap().cursor.get(), 0);
+    }
 }
