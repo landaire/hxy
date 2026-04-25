@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Guest-side wit-bindgen types for writing hxy plugins (VFS handler + template runtime)."
+description = "Guest-side bindings for writing hxy WASM plugins."
 
 [dependencies]
-wit-bindgen = "0.57.1"
+wit-bindgen = "0.57"
