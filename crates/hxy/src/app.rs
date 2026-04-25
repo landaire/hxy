@@ -969,6 +969,7 @@ impl eframe::App for HxyApp {
         dispatch_close_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_paste_shortcut(ui.ctx(), self);
+        dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -3168,6 +3169,27 @@ fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Ctrl+Tab / Ctrl+Shift+Tab cycle the active tab inside the focused
+/// pane only -- the shortcut never crosses dock leaves. Wraps around
+/// at the ends of the leaf's tab list.
+fn dispatch_tab_cycle(ctx: &egui::Context, app: &mut HxyApp) {
+    let forward = ctx.input_mut(|i| i.consume_shortcut(&NEXT_TAB));
+    let backward = ctx.input_mut(|i| i.consume_shortcut(&PREV_TAB));
+    if !forward && !backward {
+        return;
+    }
+    let Some(node_path) = app.dock.focused_leaf() else { return };
+    let Ok(leaf) = app.dock.leaf(node_path) else { return };
+    let count = leaf.tabs().len();
+    if count < 2 {
+        return;
+    }
+    let current = leaf.active.0.min(count - 1);
+    let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
+    let tab_path = egui_dock::TabPath::from((node_path, egui_dock::TabIndex(next)));
+    let _ = app.dock.set_active_tab(tab_path);
+}
+
 /// Render the "Save before closing?" modal when a close request
 /// is staged in `pending_close_tab`. Three terminal actions: Save
 /// -> save then close (only if save actually wrote bytes; a
@@ -5330,6 +5352,9 @@ const REDO: egui::KeyboardShortcut =
 const PASTE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
 const PASTE_AS_HEX: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::V);
+const NEXT_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Tab);
+const PREV_TAB: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Tab);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
