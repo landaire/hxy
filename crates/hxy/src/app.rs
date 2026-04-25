@@ -1654,14 +1654,18 @@ fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    let (new_file, save, save_as, toggle, undo, redo) = ctx.input_mut(|i| {
+    // egui's `consume_shortcut` ignores extra Shift / Alt, so the
+    // Shift variant has to be drained *before* the bare one or it'll
+    // be swallowed: Cmd+Shift+S would otherwise be eaten by
+    // `consume_shortcut(SAVE_FILE)`. Same for Cmd+Shift+Z vs Cmd+Z.
+    let (new_file, save_as, save, toggle, redo, undo) = ctx.input_mut(|i| {
         (
             i.consume_shortcut(&NEW_FILE),
-            i.consume_shortcut(&SAVE_FILE),
             i.consume_shortcut(&SAVE_FILE_AS),
+            i.consume_shortcut(&SAVE_FILE),
             i.consume_shortcut(&TOGGLE_EDIT_MODE),
-            i.consume_shortcut(&UNDO),
             i.consume_shortcut(&REDO),
+            i.consume_shortcut(&UNDO),
         )
     });
     if new_file {
@@ -1695,8 +1699,11 @@ fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
         return;
     }
     let (paste, paste_hex, paste_event_text) = ctx.input_mut(|i| {
-        let paste = i.consume_shortcut(&PASTE);
+        // Drain the Shift variant first; bare Cmd+V's `consume_shortcut`
+        // would otherwise also fire on Cmd+Shift+V (egui ignores
+        // extra modifiers).
         let paste_hex = i.consume_shortcut(&PASTE_AS_HEX);
+        let paste = i.consume_shortcut(&PASTE);
         // Drain any Event::Paste too: eframe generates one on plain
         // Cmd+V in addition to the Key event, so consuming only the
         // shortcut leaves the text event behind.
@@ -4168,8 +4175,10 @@ fn toggle_global_search(app: &mut HxyApp) {
 /// a workspace. Wraps at the ends of the leaf's tab list. Never
 /// crosses dock leaves.
 fn dispatch_tab_cycle(ctx: &egui::Context, app: &mut HxyApp) {
-    let forward = ctx.input_mut(|i| i.consume_shortcut(&NEXT_TAB));
+    // Drain Ctrl+Shift+Tab first; otherwise Ctrl+Tab's
+    // `consume_shortcut` swallows it (egui ignores extra Shift).
     let backward = ctx.input_mut(|i| i.consume_shortcut(&PREV_TAB));
+    let forward = !backward && ctx.input_mut(|i| i.consume_shortcut(&NEXT_TAB));
     if !forward && !backward {
         return;
     }
@@ -4375,8 +4384,14 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     // the full command palette. Match VS Code's split: filename
     // muscle memory goes to plain Cmd+P, the busier "search
     // everything" list takes the shift.
-    let quick = ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::QUICK_OPEN));
-    let full = !quick && ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::COMMAND_PALETTE));
+    //
+    // egui's `consume_shortcut` ignores extra Shift/Alt modifiers
+    // (per its own docstring on `InputState::consume_shortcut`), so
+    // Cmd+Shift+P matches both COMMAND_PALETTE *and* QUICK_OPEN.
+    // We have to check the more-specific shortcut first, otherwise
+    // Cmd+Shift+P silently routes through QUICK_OPEN.
+    let full = ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::COMMAND_PALETTE));
+    let quick = !full && ctx.input_mut(|i| i.consume_shortcut(&crate::shortcuts::QUICK_OPEN));
     if quick || full {
         let target_mode =
             if quick { crate::command_palette::Mode::QuickOpen } else { crate::command_palette::Mode::Main };
