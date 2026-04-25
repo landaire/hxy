@@ -13,6 +13,12 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use std::collections::BTreeMap;
+use std::collections::HashSet;
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
+
 use egui::Align2;
 use egui::Color32;
 use egui::FontId;
@@ -78,11 +84,22 @@ const SOURCE_FONT_SIZE: f32 = 28.0;
 /// rendered (so leaf viewports are up to date for this frame) and
 /// before any other handler that might consume keystrokes.
 ///
+/// `assignments` is a persistent map (`leaf_identity -> letter`)
+/// owned by the host. Leaves keep their letter across pick
+/// sessions even as the dock around them changes; closing a leaf
+/// for good drops its entry so the next new leaf can claim that
+/// letter.
+///
 /// Returns the outcome the caller must act on; this fn never
 /// touches the dock itself, it only reads layout and consumes input.
-pub fn tick<Tab>(ctx: &egui::Context, dock: &egui_dock::DockState<Tab>, pending: PendingPanePick) -> TickOutcome
+pub fn tick<Tab>(
+    ctx: &egui::Context,
+    dock: &egui_dock::DockState<Tab>,
+    pending: PendingPanePick,
+    assignments: &mut BTreeMap<u64, char>,
+) -> TickOutcome
 where
-    Tab: Clone,
+    Tab: Clone + Hash,
 {
     // Cancel immediately if Escape is pressed; even if there are no
     // targets we want this to still close cleanly.
@@ -90,26 +107,52 @@ where
         return TickOutcome::Cancel;
     }
 
-    // Targets = every leaf except the source (when there is one),
-    // in stable iteration order so labels don't shuffle between
-    // frames. Sourceless ops (Focus) include every leaf so the user
-    // can also "stay where I am" by picking the current one.
-    let mut targets: Vec<(NodePath, Rect)> = dock
+    // Build the candidate target set, keyed by a stable content
+    // hash of each leaf so the assignment table can survive other
+    // leaves opening / closing. The visit order matches dock
+    // iteration so newly-opened leaves get the lowest free letter
+    // available at their position.
+    let targets: Vec<(NodePath, Rect, u64)> = dock
         .iter_leaves()
         .filter(|(p, _)| pending.source.is_none_or(|s| *p != s))
-        .map(|(p, l)| (p, l.rect))
-        .filter(|(_, r)| r.is_finite() && r.width() > 1.0 && r.height() > 1.0)
+        .map(|(p, l)| (p, l.rect, leaf_identity(l)))
+        .filter(|(_, r, _)| r.is_finite() && r.width() > 1.0 && r.height() > 1.0)
         .collect();
-    // Stable label assignment: sort by (surface, node) so adding /
-    // removing leaves elsewhere doesn't relabel the survivors.
-    targets.sort_by_key(|(p, _)| (p.surface.0, p.node.0));
     if targets.is_empty() {
         return TickOutcome::Cancel;
     }
-    // Cap at 26 (a..z). Beyond that we'd need two-char labels which
-    // defeats the "press one key" UX; just hide the overflow leaves
-    // and let the user split fewer panes.
-    targets.truncate(26);
+
+    // Recycle: drop letter assignments whose leaf no longer exists,
+    // so a freshly-opened leaf can grab the freed letter.
+    let live: HashSet<u64> = targets.iter().map(|(_, _, h)| *h).collect();
+    assignments.retain(|k, _| live.contains(k));
+
+    // Two-pass assignment: keep existing letters first (so they
+    // stay stable across sessions) then fill in new leaves with
+    // the lowest free letter not already claimed.
+    let mut taken: HashSet<char> = assignments.values().copied().collect();
+    let mut labelled: Vec<(NodePath, Rect, char)> = Vec::with_capacity(targets.len());
+    for (path, rect, identity) in &targets {
+        if let Some(&letter) = assignments.get(identity) {
+            labelled.push((*path, *rect, letter));
+        }
+    }
+    for (path, rect, identity) in &targets {
+        if assignments.contains_key(identity) {
+            continue;
+        }
+        let Some(letter) = ('A'..='Z').find(|c| !taken.contains(c)) else {
+            // Beyond 26 leaves we'd need two-char labels; silently
+            // drop the overflow rather than render unassigned cards.
+            break;
+        };
+        assignments.insert(*identity, letter);
+        taken.insert(letter);
+        labelled.push((*path, *rect, letter));
+    }
+    // Render in dock-iteration order so visual pairing is stable
+    // across re-runs even if assignments came in a different order.
+    labelled.sort_by_key(|(p, _, _)| (p.surface.0, p.node.0));
 
     // Find the source leaf's rect for the "FROM" badge. iter_leaves
     // is the source of truth for layout this frame. Sourceless ops
@@ -118,14 +161,13 @@ where
         .source
         .and_then(|src| dock.iter_leaves().find(|(p, _)| *p == src).map(|(_, l)| l.rect));
 
-    // Look up which letter (if any) was pressed this frame. Walk
-    // a..z so the first match wins -- only one letter can be live
-    // anyway since each label is unique.
-    let pressed_letter = ctx.input_mut(|i| {
-        for (idx, _) in targets.iter().enumerate() {
-            let key = letter_key(idx);
-            if i.consume_key(Modifiers::NONE, key) {
-                return Some(idx);
+    // Look up which letter (if any) was pressed this frame. Match
+    // against the labelled set so we honour the assigned letter
+    // rather than positional order.
+    let pressed = ctx.input_mut(|i| {
+        for (path, _, letter) in labelled.iter() {
+            if i.consume_key(Modifiers::NONE, key_for_letter(*letter)) {
+                return Some(*path);
             }
         }
         None
@@ -154,12 +196,11 @@ where
     if let Some(rect) = source_rect {
         paint_source_badge(ctx, rect, pending.op, &visuals);
     }
-    for (idx, (_, rect)) in targets.iter().enumerate() {
-        paint_target_label(ctx, *rect, letter_for(idx), &visuals);
+    for (_, rect, letter) in labelled.iter() {
+        paint_target_label(ctx, *rect, *letter, &visuals);
     }
 
-    if let Some(idx) = pressed_letter {
-        let (target, _) = targets[idx];
+    if let Some(target) = pressed {
         return TickOutcome::Picked { source: pending.source, target, op: pending.op };
     }
 
@@ -169,14 +210,35 @@ where
     TickOutcome::Continue
 }
 
-fn letter_for(idx: usize) -> char {
-    debug_assert!(idx < 26, "letter_for called past z; targets must be capped first");
-    (b'A' + idx as u8) as char
+/// Hash of every tab in `leaf`, order-independent (XOR fold) so a
+/// user reordering tabs within a leaf doesn't reshuffle its letter.
+/// Adding or removing tabs *does* change the identity -- the leaf
+/// is conceptually "different" once its tab loadout changes, and
+/// that's a cheap price for a single-pass hash. Empty leaves are
+/// filtered out before this is called.
+fn leaf_identity<Tab: Hash>(leaf: &egui_dock::LeafNode<Tab>) -> u64 {
+    let mut combined: u64 = 0;
+    for tab in leaf.tabs() {
+        let mut h = DefaultHasher::new();
+        tab.hash(&mut h);
+        combined ^= h.finish();
+    }
+    combined
 }
 
-fn letter_key(idx: usize) -> Key {
+fn key_for_letter(letter: char) -> Key {
     use Key::*;
-    [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z][idx.min(25)]
+    match letter {
+        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E,
+        'F' => F, 'G' => G, 'H' => H, 'I' => I, 'J' => J,
+        'K' => K, 'L' => L, 'M' => M, 'N' => N, 'O' => O,
+        'P' => P, 'Q' => Q, 'R' => R, 'S' => S, 'T' => T,
+        'U' => U, 'V' => V, 'W' => W, 'X' => X, 'Y' => Y,
+        'Z' => Z,
+        // Anything outside A-Z is a programming error; map to A as
+        // a safe fallback so no input event fires.
+        _ => A,
+    }
 }
 
 fn paint_target_label(ctx: &egui::Context, leaf_rect: Rect, letter: char, visuals: &egui::Visuals) {

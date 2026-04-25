@@ -169,6 +169,14 @@ pub struct HxyApp {
     /// closes the palette, opening the palette cancels the picker.
     #[cfg(not(target_arch = "wasm32"))]
     pending_pane_pick: Option<crate::pane_pick::PendingPanePick>,
+    /// Persistent letter assignments for the visual pane picker,
+    /// keyed by a content hash of each leaf's tabs. Lets a leaf
+    /// keep the same letter across pick sessions even when other
+    /// leaves around it open / close. Stale entries (whose leaf
+    /// no longer exists) are evicted by `pane_pick::tick` so the
+    /// freed letter is available for the next new leaf.
+    #[cfg(not(target_arch = "wasm32"))]
+    pane_pick_letters: std::collections::BTreeMap<u64, char>,
     /// Set when the user tries to close a tab that has unsaved
     /// edits -- via Cmd+W or by clicking the tab's X. The modal
     /// renders next frame and asks Save / Don't Save / Cancel;
@@ -348,6 +356,8 @@ impl HxyApp {
             palette: crate::command_palette::PaletteState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pane_pick_letters: std::collections::BTreeMap::new(),
             pending_close_tab: None,
             tab_focus: TabFocus::Outer,
             pending_close_workspace_entry: None,
@@ -4325,7 +4335,7 @@ fn start_pane_focus(app: &mut HxyApp) {
 #[cfg(not(target_arch = "wasm32"))]
 fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(pending) = app.pending_pane_pick else { return };
-    let outcome = crate::pane_pick::tick(ctx, &app.dock, pending);
+    let outcome = crate::pane_pick::tick(ctx, &app.dock, pending, &mut app.pane_pick_letters);
     match outcome {
         crate::pane_pick::TickOutcome::Continue => {}
         crate::pane_pick::TickOutcome::Cancel => {
