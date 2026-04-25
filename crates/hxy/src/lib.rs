@@ -11,6 +11,7 @@ pub mod state;
 pub mod global_search;
 pub mod search;
 pub mod search_bar;
+pub mod shortcuts;
 pub mod tabs;
 pub mod vfs_panel;
 pub mod window;

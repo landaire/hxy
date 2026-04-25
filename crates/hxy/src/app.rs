@@ -6883,38 +6883,23 @@ fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
 }
 
 use crate::copy_format::CopyKind;
-
-const COPY_BYTES: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
-const COPY_HEX: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
-const NEW_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
-const CLOSE_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
-const SAVE_FILE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
-const SAVE_FILE_AS: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::S);
-const TOGGLE_EDIT_MODE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
-const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
-const REDO: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z);
-const PASTE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
-const PASTE_AS_HEX: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::V);
-const NEXT_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Tab);
-const PREV_TAB: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Tab);
-/// Alt+Tab swaps which dock `Ctrl+Tab` targets (outer dock vs the
-/// active workspace's inner dock). On macOS `egui::Modifiers::ALT`
-/// is the Option key.
-const TOGGLE_TAB_FOCUS: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::Tab);
-/// Cmd+K starts the visual pane-focus picker -- every leaf gets a
-/// letter overlay and pressing one snaps focus there. Inspired by
-/// wezterm / zellij's pane-jump bindings; our visual style matches
-/// the move/merge pickers we already have.
-const FOCUS_PANE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K);
-const FIND_LOCAL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
-const FIND_GLOBAL: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::F);
+use crate::shortcuts::CLOSE_TAB;
+use crate::shortcuts::COPY_BYTES;
+use crate::shortcuts::COPY_HEX;
+use crate::shortcuts::FIND_GLOBAL;
+use crate::shortcuts::FIND_LOCAL;
+use crate::shortcuts::FOCUS_PANE;
+use crate::shortcuts::NEW_FILE;
+use crate::shortcuts::NEXT_TAB;
+use crate::shortcuts::PASTE;
+use crate::shortcuts::PASTE_AS_HEX;
+use crate::shortcuts::PREV_TAB;
+use crate::shortcuts::REDO;
+use crate::shortcuts::SAVE_FILE;
+use crate::shortcuts::SAVE_FILE_AS;
+use crate::shortcuts::TOGGLE_EDIT_MODE;
+use crate::shortcuts::TOGGLE_TAB_FOCUS;
+use crate::shortcuts::UNDO;
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
