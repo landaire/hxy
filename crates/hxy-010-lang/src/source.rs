@@ -9,7 +9,7 @@ use std::cell::RefCell;
 
 use thiserror::Error;
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SourceError {
     #[error("read past end of source: requested [{offset}..{end}), source is {len} bytes")]
     OutOfBounds { offset: u64, end: u64, len: u64 },

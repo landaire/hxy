@@ -7,9 +7,15 @@
 //! `source.read` / `source.len` imports.
 
 use std::cell::RefCell;
+use std::time::Duration;
 
 use hxy_010_lang::ast::Program;
 use hxy_010_lang::{HexSource, Interpreter, NodeOut, RunResult, SourceError, parse, tokenize};
+
+/// Wall-clock cap on a single template execution. A runaway loop
+/// would otherwise hang the host indefinitely (the interpreter's
+/// step limit doesn't fire for tight loops with few statements).
+const EXECUTION_TIMEOUT: Duration = Duration::from_secs(5);
 use hxy_plugin_api::template;
 use hxy_plugin_api::template::source;
 use hxy_plugin_api::template::{Guest, GuestParsedTemplate};
@@ -64,7 +70,7 @@ impl GuestParsedTemplate for ParsedTemplate {
             return template::ResultTree { nodes: vec![], diagnostics: vec![], byte_palette: None };
         };
 
-        let interpreter = Interpreter::new(HostSource);
+        let interpreter = Interpreter::new(HostSource).with_timeout(EXECUTION_TIMEOUT);
         let result = interpreter.run(program);
         convert_result(result)
     }

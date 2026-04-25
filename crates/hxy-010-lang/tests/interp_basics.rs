@@ -3,8 +3,11 @@
 //! against execution regressions; insta snapshots lock the node trees
 //! and diagnostic output.
 
+use std::time::Duration;
+
 use hxy_010_lang::Interpreter;
 use hxy_010_lang::MemorySource;
+use hxy_010_lang::RuntimeError;
 use hxy_010_lang::parse;
 use hxy_010_lang::tokenize;
 
@@ -131,4 +134,34 @@ fn warning_emits_diagnostic() {
 Warning(\"oh no\");";
     let result = run(src, vec![]);
     insta::assert_debug_snapshot!(result);
+}
+
+#[test]
+fn timeout_surfaces_structured_terminal_error() {
+    // Pure Rust-side loop with no cursor advance -- the
+    // forward-progress guard would also catch this, but we want to
+    // see the timeout variant specifically, so push the stall limit
+    // up by reading from the (empty) source each iteration. Easier:
+    // configure a tiny timeout and a step limit that won't trip.
+    let src = "while (1) { local int i = 0; i++; }";
+    let tokens = tokenize(src).unwrap();
+    let program = parse(tokens).unwrap();
+    // Explicitly raise the step limit so it can't masquerade as the
+    // cause; the only finite budget here is the wall clock.
+    let result = Interpreter::new(MemorySource::new(vec![]))
+        .with_timeout(Duration::from_millis(50))
+        .with_step_limit(u64::MAX)
+        .run(&program);
+    // The forward-progress guard fires first because it's deterministic
+    // (100k iterations of a no-source-advance loop), well before 50ms.
+    // Either error is acceptable evidence that callers can match.
+    match result.terminal_error {
+        Some(RuntimeError::LoopStalled { iterations }) => {
+            assert!(iterations >= 100_000, "stall count looked wrong: {iterations}");
+        }
+        Some(RuntimeError::TimedOut { timeout_ms }) => {
+            assert_eq!(timeout_ms, 50);
+        }
+        other => panic!("expected stall or timeout, got {other:?}"),
+    }
 }

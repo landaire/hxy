@@ -6,4 +6,5 @@ RunResult {
     nodes: [],
     diagnostics: [],
     return_value: None,
+    terminal_error: None,
 }

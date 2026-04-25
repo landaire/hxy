@@ -15,4 +15,5 @@ RunResult {
         },
     ],
     return_value: None,
+    terminal_error: None,
 }

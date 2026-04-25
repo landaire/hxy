@@ -8,6 +8,8 @@
 //! restructuring.
 
 use std::collections::HashMap;
+use std::time::Duration;
+use std::time::Instant;
 
 use thiserror::Error;
 
@@ -32,7 +34,7 @@ use crate::value::PrimKind;
 use crate::value::ScalarKind;
 use crate::value::Value;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RuntimeError {
     #[error("undefined name `{name}`")]
     UndefinedName { name: String },
@@ -68,6 +70,20 @@ pub enum RuntimeError {
     /// Bitfield declared on a non-integer type.
     #[error("bitfield type `{ty}` must be an integer primitive")]
     BadBitfieldType { ty: String },
+
+    /// Wall-clock budget configured via [`Interpreter::with_timeout`]
+    /// elapsed mid-execution. The interpreter checks this every ~1024
+    /// statements, so the actual wall time may overshoot slightly.
+    #[error("template execution exceeded timeout of {timeout_ms} ms")]
+    TimedOut { timeout_ms: u64 },
+
+    /// A `while` / `do-while` / `for` body ran for many iterations
+    /// without the source cursor advancing -- almost always a bug in
+    /// the template (or in our handling of one of its built-ins) where
+    /// the loop's exit condition is gated on file position but nothing
+    /// inside the body actually consumes bytes.
+    #[error("loop made no source progress for {iterations} consecutive iterations")]
+    LoopStalled { iterations: u32 },
 }
 
 /// Non-fatal issue emitted during execution. Lines up with the WIT
@@ -130,6 +146,12 @@ pub struct RunResult {
     pub nodes: Vec<NodeOut>,
     pub diagnostics: Vec<Diagnostic>,
     pub return_value: Option<Value>,
+    /// Structured cause of the terminal failure, if execution stopped
+    /// because of a runtime error. The same error is also pushed into
+    /// `diagnostics` as a human-readable message; this field exists
+    /// so callers can match on the cause programmatically (e.g.
+    /// "did this template time out?") without parsing strings.
+    pub terminal_error: Option<RuntimeError>,
 }
 
 pub struct Interpreter<S: HexSource> {
@@ -158,6 +180,12 @@ pub struct Interpreter<S: HexSource> {
     /// references like `chunk[0].ihdr.color_type` resolve after the
     /// struct body has popped.
     field_storage: HashMap<String, Value>,
+    /// Spans for primitive arrays, keyed by the same dotted path
+    /// `field_storage` uses. Lets `arr[i]` indexing decode element
+    /// `i` lazily from the source instead of pre-materialising N
+    /// `Value`s into `field_storage` (which was catastrophically slow
+    /// for multi-MB byte arrays).
+    array_storage: HashMap<String, ArraySpan>,
     /// Current path prefix for [`field_storage`] writes. Segments
     /// accrete as the interpreter descends into struct bodies and
     /// array elements -- e.g. while reading `DirectoryEntries[2].Key`
@@ -181,6 +209,31 @@ pub struct Interpreter<S: HexSource> {
     /// template source flips this; default is left-to-right (high
     /// bits consumed first), matching 010's default.
     bitfield_right_to_left: bool,
+    /// Configured wall-clock budget. Materialised into [`Self::deadline`]
+    /// at the start of [`Self::run`] so the timer doesn't include
+    /// time the caller spent between construction and execution.
+    timeout: Option<Duration>,
+    /// Absolute instant after which [`Self::exec_stmt`] starts
+    /// returning [`RuntimeError::TimedOut`]. Computed from
+    /// [`Self::timeout`] when `run` begins.
+    deadline: Option<Instant>,
+}
+
+/// Bookkeeping for a primitive array stored once at read time and
+/// decoded element-by-element on access. Keeps `field_storage` from
+/// growing one entry per byte for `uchar data[N]`-style declarations.
+#[derive(Clone, Debug)]
+struct ArraySpan {
+    /// Source offset of element 0.
+    source_offset: u64,
+    /// Number of elements in the array.
+    count: u64,
+    /// Element primitive kind (carries width + signedness).
+    prim: PrimKind,
+    /// Endian to decode each element with -- captured at read time so
+    /// later `BigEndian()` / `LittleEndian()` calls can't change the
+    /// interpretation of an already-read array.
+    endian: Endian,
 }
 
 /// Key for [`Interpreter::field_counts`]. Newtype wrapper over the
@@ -247,10 +300,13 @@ impl<S: HexSource> Interpreter<S> {
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             field_storage: HashMap::new(),
+            array_storage: HashMap::new(),
             path: Vec::new(),
             field_counts: HashMap::new(),
             bitfield_slot: None,
             bitfield_right_to_left: false,
+            timeout: None,
+            deadline: None,
         };
         me.register_primitives();
         me.register_constants();
@@ -340,6 +396,22 @@ impl<S: HexSource> Interpreter<S> {
         self.field_storage.insert(key, value);
     }
 
+    /// Read element `idx` from a registered primitive array span and
+    /// decode it with the array's frozen endian. Out-of-bounds is a
+    /// runtime error rather than a clamp -- 010 itself returns
+    /// garbage in that case, but a clean error is more useful here.
+    fn decode_array_element(&self, span: &ArraySpan, idx: u64) -> Result<Value, RuntimeError> {
+        if idx >= span.count {
+            return Err(RuntimeError::Type(format!(
+                "array index out of bounds: {idx} >= {}",
+                span.count
+            )));
+        }
+        let off = span.source_offset + idx * span.prim.width as u64;
+        let bytes = self.cursor.read_at(off, span.prim.width as u64)?;
+        decode_prim(&bytes, span.prim, span.endian)
+    }
+
     /// Segment to push onto [`Self::path`] for the next struct-body
     /// descent. First occurrence of a name in the current scope uses
     /// the bare name so `chunk.type.cname`-style unindexed references
@@ -370,7 +442,17 @@ impl<S: HexSource> Interpreter<S> {
         self
     }
 
+    /// Wall-clock budget for [`Self::run`]. The deadline starts when
+    /// `run` is invoked, not at construction time. Checked every ~1024
+    /// statements so the overshoot is bounded but the per-step cost
+    /// stays in the noise.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     pub fn run(mut self, program: &Program) -> RunResult {
+        self.deadline = self.timeout.map(|d| Instant::now() + d);
         // First pass: register function definitions so callers can
         // appear textually before the callee.
         for item in &program.items {
@@ -381,6 +463,7 @@ impl<S: HexSource> Interpreter<S> {
         // Execute top-level statements in order. A `return` here is
         // the whole-template exit signal.
         let mut exit_value: Option<Value> = None;
+        let mut terminal_error: Option<RuntimeError> = None;
         for item in &program.items {
             let TopItem::Stmt(s) = item else { continue };
             match self.exec_stmt(s, None) {
@@ -396,11 +479,17 @@ impl<S: HexSource> Interpreter<S> {
                         file_offset: Some(self.cursor.tell()),
                         template_line: None,
                     });
+                    terminal_error = Some(e);
                     break;
                 }
             }
         }
-        RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: exit_value }
+        RunResult {
+            nodes: self.nodes,
+            diagnostics: self.diagnostics,
+            return_value: exit_value,
+            terminal_error,
+        }
     }
 
     fn register_primitives(&mut self) {
@@ -473,6 +562,15 @@ impl<S: HexSource> Interpreter<S> {
         if self.steps > self.step_limit {
             return Err(RuntimeError::Type(format!("exceeded step limit ({}) -- template aborted", self.step_limit)));
         }
+        // Wall-clock budget. `Instant::now()` is several hundred ns on
+        // Windows, so amortise the cost across ~1024 statements.
+        if self.steps & 0x3FF == 0
+            && let Some(deadline) = self.deadline
+            && Instant::now() >= deadline
+        {
+            let timeout_ms = self.timeout.map(|d| d.as_millis() as u64).unwrap_or(0);
+            return Err(RuntimeError::TimedOut { timeout_ms });
+        }
         match stmt {
             Stmt::Block { stmts, .. } => self.exec_block(stmts, parent),
             Stmt::Expr { expr, .. } => {
@@ -505,22 +603,28 @@ impl<S: HexSource> Interpreter<S> {
                 }
             }
             Stmt::While { cond, body, .. } => {
+                let mut stuck = StuckCounter::new();
                 while self.eval(cond)?.is_truthy() {
+                    let before = self.cursor.tell();
                     match self.exec_stmt(body, parent)? {
                         Flow::Break => break,
                         Flow::Continue | Flow::Next => {}
                         Flow::Return(v) => return Ok(Flow::Return(v)),
                     }
+                    stuck.observe(self.cursor.tell() == before)?;
                 }
                 Ok(Flow::Next)
             }
             Stmt::DoWhile { body, cond, .. } => {
+                let mut stuck = StuckCounter::new();
                 loop {
+                    let before = self.cursor.tell();
                     match self.exec_stmt(body, parent)? {
                         Flow::Break => break,
                         Flow::Continue | Flow::Next => {}
                         Flow::Return(v) => return Ok(Flow::Return(v)),
                     }
+                    stuck.observe(self.cursor.tell() == before)?;
                     if !self.eval(cond)?.is_truthy() {
                         break;
                     }
@@ -531,12 +635,14 @@ impl<S: HexSource> Interpreter<S> {
                 if let Some(init) = init {
                     self.exec_stmt(init, parent)?;
                 }
+                let mut stuck = StuckCounter::new();
                 loop {
                     if let Some(c) = cond
                         && !self.eval(c)?.is_truthy()
                     {
                         break;
                     }
+                    let before = self.cursor.tell();
                     match self.exec_stmt(body, parent)? {
                         Flow::Break => break,
                         Flow::Continue | Flow::Next => {}
@@ -545,6 +651,7 @@ impl<S: HexSource> Interpreter<S> {
                     if let Some(s) = step {
                         self.eval(s)?;
                     }
+                    stuck.observe(self.cursor.tell() == before)?;
                 }
                 Ok(Flow::Next)
             }
@@ -942,17 +1049,17 @@ impl<S: HexSource> Interpreter<S> {
                 attrs: rendered_attrs,
             });
             self.store_field(name, value.clone());
-            // Storage only (no tree node) for each element so
-            // `sig.btPngSignature[0]` resolves without fragmenting
-            // the tree.
-            for i in 0..count {
-                let start = (i * p.width as u64) as usize;
-                let end = start + p.width as usize;
-                let Some(slice) = bytes.get(start..end) else { break };
-                let Ok(elem) = decode_prim(slice, p, self.endian) else { continue };
-                let elem_path = format!("{}[{}]", self.storage_key(name), i);
-                self.store_at_path(elem_path, elem);
-            }
+            // Register an array span so `arr[i]` lookups can decode
+            // element `i` from the source on demand. Storing one
+            // entry per element used to be the dominant cost for
+            // large `uchar data[N]` arrays -- O(N) `format!()` +
+            // HashMap inserts per array, multiplied across every
+            // record in a multi-megabyte file.
+            let storage_key = self.storage_key(name);
+            self.array_storage.insert(
+                storage_key,
+                ArraySpan { source_offset: offset, count, prim: p, endian: self.endian },
+            );
             return Ok(value);
         }
         let array_ty = match &def {
@@ -1102,6 +1209,21 @@ impl<S: HexSource> Interpreter<S> {
                     for candidate in lookup_candidates(&path, &self.path_prefix()) {
                         if let Some(v) = self.field_storage.get(&candidate).cloned() {
                             return Ok(v);
+                        }
+                    }
+                    // Lazy primitive-array indexing: if the path
+                    // looks like `base[N]`, see whether `base` is a
+                    // registered array span and decode element `N`
+                    // from the source on demand. Skipped for Member
+                    // expressions -- those don't have a trailing
+                    // `[N]`, so the split would always fail.
+                    if matches!(expr, Expr::Index { .. })
+                        && let Some((base, idx)) = split_trailing_index(&path)
+                    {
+                        for candidate in lookup_candidates(base, &self.path_prefix()) {
+                            if let Some(span) = self.array_storage.get(&candidate).cloned() {
+                                return self.decode_array_element(&span, idx);
+                            }
                         }
                     }
                 }
@@ -1766,6 +1888,52 @@ fn strip_zero_indices(path: &str) -> String {
 /// Join a parent `prefix` with a field `segment`, suppressing the
 /// `.` separator when the segment is an index bracket (`[3]`) so the
 /// resulting key reads `arr[3]` rather than `arr.[3]`.
+/// Split a path ending in `[N]` into its base and the parsed index.
+/// Returns `None` if the path doesn't end with a closing bracket or
+/// the bracket contents aren't a valid unsigned integer. Used by the
+/// lazy primitive-array indexing path to find the parent span for a
+/// query like `frData[5]` or `entries[3].deFileName[2]`.
+fn split_trailing_index(path: &str) -> Option<(&str, u64)> {
+    let path = path.strip_suffix(']')?;
+    let bracket = path.rfind('[')?;
+    let inner = &path[bracket + 1..];
+    let idx = inner.parse::<u64>().ok()?;
+    Some((&path[..bracket], idx))
+}
+
+/// Threshold for the per-loop forward-progress guard: bail after
+/// this many consecutive iterations during which the source cursor
+/// didn't move. High enough to let counter loops run unmolested,
+/// low enough to surface a clearer diagnostic well before the
+/// wall-clock timeout fires.
+const LOOP_STALL_LIMIT: u32 = 100_000;
+
+/// Tracks how many consecutive iterations of a loop have failed to
+/// advance the source cursor. Lives on the Rust call stack of the
+/// loop's `exec_stmt` arm, so each loop instance gets its own
+/// counter without any state on the [`Interpreter`] itself.
+struct StuckCounter {
+    consecutive: u32,
+}
+
+impl StuckCounter {
+    fn new() -> Self {
+        Self { consecutive: 0 }
+    }
+
+    fn observe(&mut self, stalled: bool) -> Result<(), RuntimeError> {
+        if stalled {
+            self.consecutive += 1;
+            if self.consecutive >= LOOP_STALL_LIMIT {
+                return Err(RuntimeError::LoopStalled { iterations: self.consecutive });
+            }
+        } else {
+            self.consecutive = 0;
+        }
+        Ok(())
+    }
+}
+
 fn join_path(prefix: &str, segment: &str) -> String {
     if prefix.is_empty() {
         segment.to_owned()

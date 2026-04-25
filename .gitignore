@@ -3,6 +3,7 @@ dist/
 .cargo/config.toml
 .claude/
 *.log
+*.json.gz
 
 # cargo-fuzz: build outputs are reproducible, coverage profiles are
 # large. Seed corpus under fuzz/corpus/<target>/ IS tracked — once
