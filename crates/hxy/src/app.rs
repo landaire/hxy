@@ -4636,7 +4636,7 @@ fn install_mount_tab(
         token,
         title: title.clone(),
     };
-    let mut file = crate::file::OpenFile::from_bytes(id, title, Some(source), Vec::new());
+    let mut file = crate::file::OpenFile::from_bytes(id, title.clone(), Some(source), Vec::new());
     file.mount = Some(Arc::new(mount));
     file.show_vfs_tree = true;
     app.files.insert(id, file);
@@ -4646,7 +4646,12 @@ fn install_mount_tab(
     app.dock.push_to_focused_leaf(Tab::File(id));
     if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
         remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
+        // Make sure the new tab is the active one so its side
+        // panel renders immediately rather than waiting for the
+        // user to click it.
+        let _ = app.dock.set_active_tab(path);
     }
+    tracing::info!(plugin = %plugin.name(), title = %title, id = %id.get(), "mount tab installed");
 }
 
 fn handle_new_file(app: &mut HxyApp) {
