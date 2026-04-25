@@ -34,6 +34,20 @@ pub enum OpenTarget {
     Workspace(crate::file::WorkspaceId),
 }
 
+/// Which set of tabs the next `Ctrl+Tab` / `Ctrl+Shift+Tab` keypress
+/// should cycle. Updated by mouse clicks (`on_tab_button`) and by
+/// `Alt+Tab`. Persisted only for the running session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabFocus {
+    /// Cycling targets the outer dock's focused leaf -- top-level
+    /// tabs (File, Workspace, Inspector, ...).
+    #[default]
+    Outer,
+    /// Cycling targets the inner dock of this workspace -- its
+    /// editor / VFS tree / opened entries.
+    Workspace(crate::file::WorkspaceId),
+}
+
 pub struct HxyApp {
     dock: DockState<Tab>,
     files: HashMap<FileId, OpenFile>,
@@ -155,6 +169,12 @@ pub struct HxyApp {
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
     pending_close_tab: Option<PendingCloseTab>,
+    /// Tracks which dock the user's last tab-bar interaction was in,
+    /// so `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the correct surface
+    /// (outer dock vs a specific workspace's inner dock). Toggled
+    /// directly by `Alt+Tab`. Updated on mouse click via the
+    /// viewer's `on_tab_button` hook.
+    tab_focus: TabFocus,
     /// Same shape as `pending_close_tab` but written from the inner
     /// workspace dock's `on_close`. Drained alongside the regular
     /// pending-close slot; the modal treats them identically.
@@ -316,6 +336,7 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
             pending_close_tab: None,
+            tab_focus: TabFocus::Outer,
             pending_close_workspace_entry: None,
             pending_collapse_workspace: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1165,6 +1186,7 @@ impl eframe::App for HxyApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_plugin_events: &mut self.pending_plugin_events,
                 pending_close_tab: &mut self.pending_close_tab,
+                tab_focus: &mut self.tab_focus,
                 workspaces: &mut self.workspaces,
                 pending_close_workspace_entry: &mut self.pending_close_workspace_entry,
                 pending_collapse_workspace: &mut self.pending_collapse_workspace,
@@ -1261,6 +1283,7 @@ impl eframe::App for HxyApp {
         dispatch_paste_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_find_shortcut(ui.ctx(), self);
+        dispatch_tab_focus_toggle(ui.ctx(), self);
         dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
@@ -2737,7 +2760,13 @@ fn render_plugin_mount_tab(
     }
 }
 
-fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &mut PersistedState) {
+fn render_file_tab(
+    ui: &mut egui::Ui,
+    id: FileId,
+    file: &mut OpenFile,
+    state: &mut PersistedState,
+    tab_focus: TabFocus,
+) {
     let settings_base = state.app.offset_base;
     let mut new_base = settings_base;
 
@@ -2754,7 +2783,7 @@ fn render_file_tab(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile, state: &m
         .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }))
         .show_inside(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                status_bar_ui(ui, file, settings_base, &mut new_base);
+                status_bar_ui(ui, file, settings_base, &mut new_base, tab_focus);
             });
         });
 
@@ -3944,15 +3973,34 @@ fn toggle_global_search(app: &mut HxyApp) {
     app.global_search.open = true;
 }
 
-/// Ctrl+Tab / Ctrl+Shift+Tab cycle the active tab inside the focused
-/// pane only -- the shortcut never crosses dock leaves. Wraps around
-/// at the ends of the leaf's tab list.
+/// Ctrl+Tab / Ctrl+Shift+Tab cycle tabs in the surface implied by
+/// `app.tab_focus`: the outer dock's focused leaf when focus is on
+/// the outer dock, or the workspace's inner dock when focus is on
+/// a workspace. Wraps at the ends of the leaf's tab list. Never
+/// crosses dock leaves.
 fn dispatch_tab_cycle(ctx: &egui::Context, app: &mut HxyApp) {
     let forward = ctx.input_mut(|i| i.consume_shortcut(&NEXT_TAB));
     let backward = ctx.input_mut(|i| i.consume_shortcut(&PREV_TAB));
     if !forward && !backward {
         return;
     }
+    match app.tab_focus {
+        TabFocus::Outer => cycle_outer_focused_leaf(app, forward),
+        TabFocus::Workspace(workspace_id) => {
+            // If the workspace was closed since we last focused, fall
+            // back to the outer dock so the keystroke still does
+            // something useful.
+            if !app.workspaces.contains_key(&workspace_id) {
+                app.tab_focus = TabFocus::Outer;
+                cycle_outer_focused_leaf(app, forward);
+                return;
+            }
+            cycle_workspace_focused_leaf(app, workspace_id, forward);
+        }
+    }
+}
+
+fn cycle_outer_focused_leaf(app: &mut HxyApp, forward: bool) {
     let Some(node_path) = app.dock.focused_leaf() else { return };
     let Ok(leaf) = app.dock.leaf(node_path) else { return };
     let count = leaf.tabs().len();
@@ -3963,6 +4011,50 @@ fn dispatch_tab_cycle(ctx: &egui::Context, app: &mut HxyApp) {
     let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
     let tab_path = egui_dock::TabPath::from((node_path, egui_dock::TabIndex(next)));
     let _ = app.dock.set_active_tab(tab_path);
+}
+
+fn cycle_workspace_focused_leaf(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId, forward: bool) {
+    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
+    // The workspace's inner dock has its own focused-leaf concept;
+    // when nothing is focused (e.g. immediately after restore) we
+    // default to the main surface root so cycling still works.
+    let node_path = workspace
+        .dock
+        .focused_leaf()
+        .unwrap_or(egui_dock::NodePath { surface: egui_dock::SurfaceIndex::main(), node: egui_dock::NodeIndex::root() });
+    let Ok(leaf) = workspace.dock.leaf(node_path) else { return };
+    let count = leaf.tabs().len();
+    if count < 2 {
+        return;
+    }
+    let current = leaf.active.0.min(count - 1);
+    let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
+    let tab_path = egui_dock::TabPath::from((node_path, egui_dock::TabIndex(next)));
+    let _ = workspace.dock.set_active_tab(tab_path);
+}
+
+/// Alt+Tab toggles `tab_focus` between the outer dock and the
+/// workspace currently active in the outer dock. If the active outer
+/// tab isn't a workspace, the toggle is a no-op (there's nothing to
+/// switch to).
+fn dispatch_tab_focus_toggle(ctx: &egui::Context, app: &mut HxyApp) {
+    if !ctx.input_mut(|i| i.consume_shortcut(&TOGGLE_TAB_FOCUS)) {
+        return;
+    }
+    match app.tab_focus {
+        TabFocus::Outer => {
+            // Only switch into a workspace if the active outer tab
+            // *is* one. Otherwise there's no inner dock to cycle.
+            if let Some((_, tab)) = app.dock.find_active_focused()
+                && let Tab::Workspace(workspace_id) = *tab
+            {
+                app.tab_focus = TabFocus::Workspace(workspace_id);
+            }
+        }
+        TabFocus::Workspace(_) => {
+            app.tab_focus = TabFocus::Outer;
+        }
+    }
 }
 
 /// Render the "Save before closing?" modal when a close request
@@ -5880,6 +5972,10 @@ struct HxyTabViewer<'a> {
     /// X-clicks a dirty File tab. The app drains this after the
     /// dock pass and renders the save-prompt modal next frame.
     pending_close_tab: &'a mut Option<PendingCloseTab>,
+    /// Mutated whenever the user clicks an outer tab button so
+    /// `Ctrl+Tab` knows to cycle the outer dock next, or hands off
+    /// to a workspace inner dock when the user clicks into one.
+    tab_focus: &'a mut TabFocus,
     /// File-mounted VFS workspaces. The viewer renders each
     /// `Tab::Workspace` by spinning up an inner `DockArea` against
     /// `workspace.dock`.
@@ -6008,7 +6104,7 @@ impl TabViewer for HxyTabViewer<'_> {
             }
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
-                    render_file_tab(ui, *id, file, self.state);
+                    render_file_tab(ui, *id, file, self.state, *self.tab_focus);
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
@@ -6037,8 +6133,18 @@ impl TabViewer for HxyTabViewer<'_> {
                     self.state,
                     self.pending_close_workspace_entry,
                     self.pending_collapse_workspace,
+                    self.tab_focus,
                 );
             }
+        }
+    }
+
+    fn on_tab_button(&mut self, _tab: &mut Self::Tab, response: &egui::Response) {
+        // Mouse clicks on an outer tab snap focus to the outer dock
+        // so the next Ctrl+Tab cycles top-level tabs. Hover / drag
+        // don't count -- only an actual click is a focus event.
+        if response.clicked() {
+            *self.tab_focus = TabFocus::Outer;
         }
     }
 
@@ -6145,6 +6251,7 @@ impl TabViewer for HxyTabViewer<'_> {
 /// Render a `Tab::Workspace` body: spin up an inner DockArea against
 /// the workspace's `dock` and dispatch to `WorkspaceTabViewer` for
 /// each sub-tab (Editor, VfsTree, Entry).
+#[allow(clippy::too_many_arguments)]
 fn render_workspace_tab(
     ui: &mut egui::Ui,
     workspace_id: crate::file::WorkspaceId,
@@ -6153,6 +6260,7 @@ fn render_workspace_tab(
     state: &mut PersistedState,
     pending_close_workspace_entry: &mut Option<PendingCloseTab>,
     pending_collapse_workspace: &mut Vec<crate::file::WorkspaceId>,
+    tab_focus: &mut TabFocus,
 ) {
     let Some(workspace) = workspaces.get_mut(&workspace_id) else {
         ui.colored_label(egui::Color32::RED, format!("missing workspace {workspace_id:?}"));
@@ -6169,6 +6277,7 @@ fn render_workspace_tab(
         workspace_id,
         mount: &mount,
         pending_close_workspace_entry,
+        tab_focus,
     };
     let style = egui_dock::Style::from_egui(ui.style());
     egui_dock::DockArea::new(inner_dock)
@@ -6202,6 +6311,9 @@ struct WorkspaceTabViewer<'a> {
     workspace_id: crate::file::WorkspaceId,
     mount: &'a Arc<MountedVfs>,
     pending_close_workspace_entry: &'a mut Option<PendingCloseTab>,
+    /// Updated by `on_tab_button` when the user clicks an inner tab,
+    /// so subsequent `Ctrl+Tab` cycles cycle this workspace's dock.
+    tab_focus: &'a mut TabFocus,
 }
 
 impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
@@ -6254,7 +6366,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             crate::file::WorkspaceTab::Editor => match self.files.get_mut(&self.editor_id) {
-                Some(file) => render_file_tab(ui, self.editor_id, file, self.state),
+                Some(file) => render_file_tab(ui, self.editor_id, file, self.state, *self.tab_focus),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing editor {:?}", self.editor_id));
                 }
@@ -6278,7 +6390,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 }
             }
             crate::file::WorkspaceTab::Entry(file_id) => match self.files.get_mut(file_id) {
-                Some(file) => render_file_tab(ui, *file_id, file, self.state),
+                Some(file) => render_file_tab(ui, *file_id, file, self.state, *self.tab_focus),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing entry {file_id:?}"));
                 }
@@ -6295,6 +6407,15 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
 
     fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
         [false, false]
+    }
+
+    fn on_tab_button(&mut self, _tab: &mut Self::Tab, response: &egui::Response) {
+        // Click on an inner sub-tab snaps focus to this workspace's
+        // inner dock so Ctrl+Tab starts cycling Editor / VfsTree /
+        // Entry instead of the outer dock.
+        if response.clicked() {
+            *self.tab_focus = TabFocus::Workspace(self.workspace_id);
+        }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
@@ -6349,8 +6470,28 @@ fn status_bar_ui(
     file: &mut OpenFile,
     base: crate::settings::OffsetBase,
     new_base: &mut crate::settings::OffsetBase,
+    tab_focus: TabFocus,
 ) {
     ui.horizontal(|ui| {
+        // Tab-focus chip on the far left so Ctrl+Tab's effect is
+        // legible at a glance. "Outer" = top-level tabs cycle; "VFS"
+        // = the surrounding workspace's inner tabs cycle. Click a
+        // tab in the other dock to switch, or press Alt+Tab.
+        let (icon, label, tooltip) = match tab_focus {
+            TabFocus::Outer => (
+                egui_phosphor::regular::SQUARES_FOUR,
+                "Tabs: Outer",
+                "Ctrl+Tab cycles top-level tabs. Alt+Tab to switch into a workspace.",
+            ),
+            TabFocus::Workspace(_) => (
+                egui_phosphor::regular::TREE_STRUCTURE,
+                "Tabs: VFS",
+                "Ctrl+Tab cycles workspace sub-tabs. Alt+Tab to switch back to outer tabs.",
+            ),
+        };
+        ui.label(format!("{icon} {label}")).on_hover_text(tooltip);
+        ui.separator();
+
         if let Some(hov) = file.hovered {
             let value = format_offset(hov.get(), base);
             copyable_status_label(
@@ -6478,6 +6619,11 @@ const PASTE_AS_HEX: egui::KeyboardShortcut =
 const NEXT_TAB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Tab);
 const PREV_TAB: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Tab);
+/// Alt+Tab swaps which dock `Ctrl+Tab` targets (outer dock vs the
+/// active workspace's inner dock). On macOS `egui::Modifiers::ALT`
+/// is the Option key.
+const TOGGLE_TAB_FOCUS: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::Tab);
 const FIND_LOCAL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
 const FIND_GLOBAL: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::F);
