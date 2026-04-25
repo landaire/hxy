@@ -1328,6 +1328,8 @@ impl eframe::App for HxyApp {
         dispatch_paste_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_find_shortcut(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        dispatch_focus_pane_shortcut(ui.ctx(), self);
         dispatch_tab_focus_toggle(ui.ctx(), self);
         dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
@@ -4099,6 +4101,20 @@ fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Cmd+K stages the visual pane-focus picker. No-op when a picker
+/// session is already active so a double-press doesn't rebind state
+/// mid-pick.
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_focus_pane_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    if !ctx.input_mut(|i| i.consume_shortcut(&FOCUS_PANE)) {
+        return;
+    }
+    if app.pending_pane_pick.is_some() {
+        return;
+    }
+    start_pane_focus(app);
+}
+
 /// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
 /// opens the cross-file search results tab. The shortcut runs after
 /// the palette so a Cmd+F typed while the palette is open isn't
@@ -4286,7 +4302,19 @@ enum CloseTabAction {
 fn start_pane_pick(app: &mut HxyApp, op: crate::pane_pick::PaneOp) {
     let Some(source) = resolve_target_leaf(app) else { return };
     app.palette.close();
-    app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick { op, source });
+    app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick { op, source: Some(source) });
+}
+
+/// Sourceless variant: stage a pane pick whose op doesn't need a
+/// "from" leaf (currently just `Focus`). Every leaf in the dock
+/// becomes a target. No-op when there's no dock (shouldn't happen).
+#[cfg(not(target_arch = "wasm32"))]
+fn start_pane_focus(app: &mut HxyApp) {
+    app.palette.close();
+    app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick {
+        op: crate::pane_pick::PaneOp::Focus,
+        source: None,
+    });
 }
 
 /// Drive one frame of the visual pane picker. Reads layout from the
@@ -4306,8 +4334,26 @@ fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
         crate::pane_pick::TickOutcome::Picked { source, target, op } => {
             app.pending_pane_pick = None;
             match op {
-                crate::pane_pick::PaneOp::MoveTab => dock_move_tab_to(app, source, target),
-                crate::pane_pick::PaneOp::Merge => dock_merge_to(app, source, target),
+                crate::pane_pick::PaneOp::MoveTab => {
+                    if let Some(source) = source {
+                        dock_move_tab_to(app, source, target);
+                    }
+                }
+                crate::pane_pick::PaneOp::Merge => {
+                    if let Some(source) = source {
+                        dock_merge_to(app, source, target);
+                    }
+                }
+                crate::pane_pick::PaneOp::Focus => {
+                    // Move keyboard focus + active tab into the
+                    // picked leaf. Snap TabFocus back to Outer so the
+                    // next Ctrl+Tab cycles top-level tabs in the
+                    // newly focused pane (rather than continuing to
+                    // cycle the previously-active workspace's inner
+                    // dock).
+                    app.dock.set_focused_node_and_surface(target);
+                    app.tab_focus = TabFocus::Outer;
+                }
             }
         }
     }
@@ -4861,6 +4907,15 @@ fn build_palette_entries(
                 .with_icon(icon::CROSSHAIR_SIMPLE)
                 .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
             );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-focus-pane"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::FocusPane),
+                )
+                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle"))
+                .with_shortcut(fmt(&FOCUS_PANE)),
+            );
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::copy_format::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
@@ -5303,6 +5358,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::MoveTabDown => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down)),
                     PaletteCommand::MoveTabVisual => start_pane_pick(app, crate::pane_pick::PaneOp::MoveTab),
                     PaletteCommand::MergeVisual => start_pane_pick(app, crate::pane_pick::PaneOp::Merge),
+                    PaletteCommand::FocusPane => start_pane_focus(app),
                     PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
                     PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
@@ -6851,6 +6907,11 @@ const PREV_TAB: egui::KeyboardShortcut =
 /// is the Option key.
 const TOGGLE_TAB_FOCUS: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::Tab);
+/// Cmd+K starts the visual pane-focus picker -- every leaf gets a
+/// letter overlay and pressing one snaps focus there. Inspired by
+/// wezterm / zellij's pane-jump bindings; our visual style matches
+/// the move/merge pickers we already have.
+const FOCUS_PANE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K);
 const FIND_LOCAL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
 const FIND_GLOBAL: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::F);

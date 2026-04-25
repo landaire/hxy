@@ -37,15 +37,20 @@ pub enum PaneOp {
     /// Move every tab from the source leaf into the target and
     /// remove the now-empty source so the parent split collapses.
     Merge,
+    /// Move keyboard focus to the picked leaf. Sourceless: every
+    /// leaf in the dock is a target, including the currently
+    /// focused one (a no-op pick).
+    Focus,
 }
 
 /// State of a picker session. The app stores `Option<PendingPanePick>`
 /// and clears it once a target letter is pressed (operation runs)
-/// or Escape is pressed (cancelled).
+/// or Escape is pressed (cancelled). `source` is `None` for
+/// sourceless ops like `Focus`.
 #[derive(Clone, Copy, Debug)]
 pub struct PendingPanePick {
     pub op: PaneOp,
-    pub source: NodePath,
+    pub source: Option<NodePath>,
 }
 
 /// Outcome of a single tick. The app applies it after `tick` returns
@@ -58,8 +63,9 @@ pub enum TickOutcome {
     /// the picker state.
     Cancel,
     /// User pressed a target letter. Execute the staged op against
-    /// `target` and clear the picker state.
-    Picked { source: NodePath, target: NodePath, op: PaneOp },
+    /// `target` and clear the picker state. `source` is `None` for
+    /// sourceless ops like `Focus`.
+    Picked { source: Option<NodePath>, target: NodePath, op: PaneOp },
 }
 
 /// Visual constants. Tuned to read clearly over a hex view -- a big
@@ -84,11 +90,13 @@ where
         return TickOutcome::Cancel;
     }
 
-    // Targets = every leaf except the source, in stable iteration
-    // order so labels don't shuffle between frames.
+    // Targets = every leaf except the source (when there is one),
+    // in stable iteration order so labels don't shuffle between
+    // frames. Sourceless ops (Focus) include every leaf so the user
+    // can also "stay where I am" by picking the current one.
     let mut targets: Vec<(NodePath, Rect)> = dock
         .iter_leaves()
-        .filter(|(p, _)| *p != pending.source)
+        .filter(|(p, _)| pending.source.is_none_or(|s| *p != s))
         .map(|(p, l)| (p, l.rect))
         .filter(|(_, r)| r.is_finite() && r.width() > 1.0 && r.height() > 1.0)
         .collect();
@@ -104,11 +112,11 @@ where
     targets.truncate(26);
 
     // Find the source leaf's rect for the "FROM" badge. iter_leaves
-    // is the source of truth for layout this frame.
-    let source_rect = dock
-        .iter_leaves()
-        .find(|(p, _)| *p == pending.source)
-        .map(|(_, l)| l.rect);
+    // is the source of truth for layout this frame. Sourceless ops
+    // (Focus) skip the badge entirely.
+    let source_rect = pending
+        .source
+        .and_then(|src| dock.iter_leaves().find(|(p, _)| *p == src).map(|(_, l)| l.rect));
 
     // Look up which letter (if any) was pressed this frame. Walk
     // a..z so the first match wins -- only one letter can be live
@@ -199,6 +207,9 @@ fn paint_source_badge(ctx: &egui::Context, leaf_rect: Rect, op: PaneOp, visuals:
     let label = match op {
         PaneOp::MoveTab => "MOVE FROM",
         PaneOp::Merge => "MERGE FROM",
+        // Focus is sourceless; the caller doesn't paint a badge for
+        // it. Match arm exists for exhaustiveness only.
+        PaneOp::Focus => return,
     };
     let centre = leaf_rect.center();
     let id = Id::new("hxy-pane-pick-source");

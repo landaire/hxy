@@ -246,6 +246,10 @@ pub enum PaletteCommand {
     /// `pane_pick` module.
     MoveTabVisual,
     MergeVisual,
+    /// Visual focus picker: like the move/merge variants but
+    /// sourceless -- every leaf in the dock gets a letter, and
+    /// pressing one moves keyboard focus + active-tab to that leaf.
+    FocusPane,
     ToggleEditMode,
     /// Copy the active tab's caret offset as a formatted number.
     CopyCaretOffset,
