@@ -2015,14 +2015,37 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     /// Map an identifier in node-chain position to the most plausible
-    /// emitted node: magic identifiers (`parent`, `this`) resolve to
-    /// the active enclosing struct, bare names take the most recent
-    /// node with that name from the by-name index.
+    /// emitted node. Magic identifiers (`parent`, `this`) resolve to
+    /// the active enclosing struct; bare names prefer a sibling of
+    /// the current scope (child of `this` / `parent` / their
+    /// ancestors), falling back to a top-level node, and only as a
+    /// last resort take the most-recently-emitted node anywhere.
+    /// Without the scope filter, a name like "header" would
+    /// happily resolve to a nested struct's `header` child even
+    /// when the caller wanted the outer struct's sibling.
     fn find_node_idx_for_ident(&self, name: &str) -> Option<NodeIdx> {
         match name {
             "parent" => self.current_parent,
             "this" => self.most_recent_struct_idx(),
-            other => self.nodes_by_name.get(other).and_then(|v| v.last().copied()),
+            other => {
+                // Walk the enclosing-struct chain (this, then
+                // parent, then grandparent, ...) looking for a
+                // child named `other`.
+                let mut cur = self.this_stack.last().copied().or(self.current_parent);
+                while let Some(idx) = cur {
+                    if let Some(found) = self.find_first_child_idx(idx, other) {
+                        return Some(found);
+                    }
+                    cur = self.nodes[idx.as_usize()].parent;
+                }
+                // Top-level fallback (`Outer o; ... eval somewhere
+                // that references `o`).
+                if let Some(top) = self.find_top_level_idx(other) {
+                    return Some(top);
+                }
+                // Last resort: most recent emission of that name.
+                self.nodes_by_name.get(other).and_then(|v| v.last().copied())
+            }
         }
     }
 
