@@ -541,6 +541,28 @@ impl<S: HexSource> Interpreter<S> {
 /// variants come up in real corpus templates (DTED elevation data
 /// uses `s24`, for example) but aren't worth listing exhaustively
 /// in the static primitive table.
+/// Truncate or re-tag a numeric value to a declared primitive type.
+/// Used when a local variable is declared `Type name = expr;` and
+/// `Type` is a primitive integer (e.g. `u64 pos = -1` should store
+/// the all-ones u64 bit pattern). Non-numeric values pass through.
+fn coerce_value_to_prim(v: Value, p: PrimKind) -> Value {
+    match p.class {
+        PrimClass::Int => {
+            let raw = v.to_i128().unwrap_or(0);
+            if p.signed {
+                let bits = (p.width as u32) * 8;
+                let shift = 128 - bits;
+                let signed = (raw << shift) >> shift;
+                Value::SInt { value: signed, kind: p }
+            } else {
+                let mask: u128 = if p.width >= 16 { u128::MAX } else { (1u128 << (p.width as u32 * 8)) - 1 };
+                Value::UInt { value: (raw as u128) & mask, kind: p }
+            }
+        }
+        _ => v,
+    }
+}
+
 fn generic_int_primitive(name: &str) -> Option<PrimKind> {
     let (signed, rest) = match name.as_bytes().first()? {
         b'u' => (false, &name[1..]),
@@ -816,6 +838,16 @@ impl<S: HexSource> Interpreter<S> {
         // were already handled above; this catches the rest.
         if init.is_some() && placement.is_none() && pointer_width.is_none() {
             let value = self.eval(init.as_ref().unwrap())?;
+            // Truncate / re-pack to the declared type when it's a
+            // primitive integer. ImHex's `u64 pos = -1` stores
+            // 0xFFFFFFFFFFFFFFFF; without truncation the value
+            // stays as SInt(-1) and comparisons against the all-
+            // ones bit pattern fail.
+            let value = if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) {
+                coerce_value_to_prim(value, p)
+            } else {
+                value
+            };
             self.current_scope_mut().vars.insert(name.clone(), value);
             return Ok(Flow::Next);
         }
@@ -2061,11 +2093,17 @@ impl<S: HexSource> Interpreter<S> {
                 Value::UInt { value: 0, kind: PrimKind::u64() }
             }
             "builtin::std::mem::find_string_in_range"
-            | "builtin::std::mem::find_sequence_in_range" => {
+            | "builtin::std::mem::find_sequence_in_range"
+            | "std::mem::find_string_in_range"
+            | "std::mem::find_sequence_in_range" => {
                 // Not modelled yet -- `MagicSearch<...>` and friends
-                // call this. Return -1 (sentinel for "not found")
-                // so the caller's `if (address < 0) break;` exits
-                // the search loop cleanly.
+                // call this. ImHex's documented sentinel for "not
+                // found" is `-1` (signed). Templates that use this
+                // typically `if (pos < 0) break;` -- which works
+                // directly. Templates that compare against
+                // `0xFFFFFFFFFFFFFFFF` cast through a `u64 pos = ...`
+                // assignment, which `coerce_value_to_prim` truncates
+                // -1 to the all-ones u64 bit pattern for them.
                 Value::SInt { value: -1, kind: PrimKind::s128() }
             }
             // Random-access reads. `std::mem::read_unsigned(off, n)`
