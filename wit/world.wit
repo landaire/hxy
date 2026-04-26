@@ -248,15 +248,20 @@ interface template {
     /// carry. User-defined composite kinds (structs, enums) live in
     /// [`node-type`] instead. The UI renders these with canonical
     /// names (uchar, uint32, ...) regardless of the source spelling.
+    /// `u128-k` / `s128-k` cover the wider integer types ImHex's
+    /// pattern language exposes natively; runtimes that don't decode
+    /// them can stash the raw 16 bytes in [`value::bytes-val`].
     enum scalar-kind {
         u8-k,
         u16-k,
         u32-k,
         u64-k,
+        u128-k,
         s8-k,
         s16-k,
         s32-k,
         s64-k,
+        s128-k,
         f32-k,
         f64-k,
         bool-k,
@@ -289,6 +294,11 @@ interface template {
     /// Leaf node value. Integers chosen rather than a generic `bytes`
     /// because the common case is a scalar field and we want to be
     /// able to format it correctly downstream.
+    ///
+    /// 128-bit integers don't have a dedicated variant -- WIT's WASM
+    /// numerics stop at 64 bits, and packing high+low through tuples
+    /// burns binding-side ergonomics for a rarely-decoded value. Use
+    /// [`bytes-val`] (16 bytes) for those.
     variant value {
         u8-val(u8),
         u16-val(u16),
@@ -300,6 +310,7 @@ interface template {
         s64-val(s64),
         f32-val(f32),
         f64-val(f64),
+        bool-val(bool),
         bytes-val(list<u8>),
         string-val(string),
         /// Name + numeric value, e.g. `COMP_DEFLATE` / `8`.

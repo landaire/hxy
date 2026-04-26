@@ -106,8 +106,13 @@ fn to_result_tree(r: hxy_010_lang::RunResult) -> wit::ResultTree {
 }
 
 fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
+    // 010 spells the display hint with a `<format=hex>` attribute;
+    // the canonical key the rest of the host reads is
+    // [`hxy_plugin_host::FORMAT_ATTR`]. Promote both names to the
+    // typed [`DisplayHint`] field so consumers can branch without
+    // re-parsing strings.
     let display = n.attrs.iter().find_map(|(k, v)| {
-        if k == "format" {
+        if k == "format" || k == hxy_plugin_host::FORMAT_ATTR {
             Some(match v.as_str() {
                 "hex" => wit::DisplayHint::Hex,
                 "decimal" => wit::DisplayHint::Decimal,
@@ -120,9 +125,10 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
         }
     });
     // Every attribute the interpreter recorded flows through so the
-    // UI (and other hosts) can act on them -- notably `hxy_endian` on
-    // primitive arrays, which the hex-view tooltip uses to decode
-    // individual elements on hover.
+    // UI (and other hosts) can act on them -- notably the canonical
+    // `hxy_endian` (see `hxy_plugin_host::ENDIAN_ATTR`) on primitive
+    // arrays, which the hex-view tooltip uses to decode individual
+    // elements on hover.
     let attributes: Vec<(String, String)> = n.attrs.clone();
     wit::Node {
         name: n.name.clone(),
@@ -190,7 +196,7 @@ fn convert_value(v: &hxy_010_lang::Value) -> wit::Value {
         }
         hxy_010_lang::Value::Char { value, .. } => wit::Value::U8Val(*value as u8),
         hxy_010_lang::Value::Str(s) => wit::Value::StringVal(s.clone()),
-        hxy_010_lang::Value::Bool(b) => wit::Value::U8Val(u8::from(*b)),
+        hxy_010_lang::Value::Bool(b) => wit::Value::BoolVal(*b),
     }
 }
 

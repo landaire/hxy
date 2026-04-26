@@ -35,20 +35,24 @@ pub use crate::bindings::template_world::exports::hxy::vfs::template::Severity;
 pub use crate::bindings::template_world::exports::hxy::vfs::template::Span;
 pub use crate::bindings::template_world::exports::hxy::vfs::template::Value;
 
-/// Canonical display name for a [`ScalarKind`] -- matches 010 Editor
-/// spelling (uchar / uint32 / float) since that's the template language
-/// most hxy users will have typed for themselves. Plugins emit the
-/// typed enum; this decides what shows up in the UI column.
+/// Canonical display name for a [`ScalarKind`]. Spelled in 010-style
+/// (uchar / uint32 / float) since that's the language most hxy users
+/// will have typed for themselves; the ImHex-style spellings (`u8` /
+/// `u32` / ...) are an alias the renderer can swap to per-template
+/// later. Plugins emit the typed enum; this decides what shows up in
+/// the UI column.
 pub fn scalar_kind_name(k: ScalarKind) -> &'static str {
     match k {
         ScalarKind::U8K => "uchar",
         ScalarKind::U16K => "ushort",
         ScalarKind::U32K => "uint32",
         ScalarKind::U64K => "uint64",
+        ScalarKind::U128K => "uint128",
         ScalarKind::S8K => "char",
         ScalarKind::S16K => "int16",
         ScalarKind::S32K => "int32",
         ScalarKind::S64K => "int64",
+        ScalarKind::S128K => "int128",
         ScalarKind::F32K => "float",
         ScalarKind::F64K => "double",
         ScalarKind::BoolK => "bool",
@@ -71,12 +75,45 @@ pub fn node_type_label(ty: &NodeType) -> String {
     }
 }
 
+// Canonical attribute keys runtimes can stash on [`Node::attributes`].
+// Both the in-process 010 adapter and any future ImHex adapter should
+// emit these spellings so renderers don't grow two parallel lookups
+// for the same concept. Free-form attributes (e.g. format-spec
+// strings, plugin-specific metadata) are still allowed -- callers
+// just shouldn't squat on these key names for unrelated values.
+
 /// Attribute key a runtime can set to mark a node as a bitfield
 /// extraction. The value is a decimal bit count. Consumers use this
 /// to render bitfields as `B<bits>` rather than the parent integer
 /// type (the underlying storage is usually shared between several
 /// fields, so showing `uint` for all of them erases the distinction).
 pub const BITFIELD_BITS_ATTR: &str = "hxy_bits";
+
+/// Endian the value was decoded with. `"little"` or `"big"`. Used by
+/// the hover tooltip to re-decode array elements without re-walking
+/// the template.
+pub const ENDIAN_ATTR: &str = "hxy_endian";
+
+/// Per-byte foreground tint -- six- or eight-digit hex (`"RRGGBB"` or
+/// `"AARRGGBB"`). Maps to ImHex's `[[color("...")]]` and to
+/// `<fgcolor=0x...>` in 010's style. Renderer paints the chars over
+/// the byte; falls back to the byte-class palette when absent.
+pub const COLOR_ATTR: &str = "hxy_color";
+
+/// Per-byte background tint, same encoding as [`COLOR_ATTR`]. Used
+/// for ImHex's `[[bg_color]]` and 010's `<bgcolor=0x...>`.
+pub const BG_COLOR_ATTR: &str = "hxy_bg_color";
+
+/// Free-form description shown in the template panel's tooltip /
+/// inline annotation. Sourced from ImHex's `[[comment("...")]]` and
+/// 010's `<comment="...">`.
+pub const COMMENT_ATTR: &str = "hxy_comment";
+
+/// Display formatter selector -- one of `"hex"`, `"decimal"`,
+/// `"binary"`, `"ascii"`, `"timestamp"`. Mirrors [`DisplayHint`] but
+/// in attribute form so a plugin that hasn't filled in `display`
+/// can still nudge the renderer through the generic attribute path.
+pub const FORMAT_ATTR: &str = "hxy_format";
 
 /// UI label for a node, bitfield-aware. Falls back to
 /// [`node_type_label`] when the `hxy_bits` attribute is absent.

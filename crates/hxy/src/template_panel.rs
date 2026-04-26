@@ -498,6 +498,7 @@ fn format_value(node: &Node) -> Option<String> {
         Value::S64Val(x) => format!("{x}"),
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
+        Value::BoolVal(b) => format!("{b}"),
         Value::BytesVal(b) => format!("{} bytes", b.len()),
         Value::StringVal(s) => summarise_string(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
@@ -696,8 +697,11 @@ fn array_element_row(
     )
     .ok()?;
     let bytes = source.read(range).ok()?;
-    let endian =
-        leaf.attributes.iter().find_map(|(k, v)| (k == "hxy_endian").then_some(v.as_str())).unwrap_or("little");
+    let endian = leaf
+        .attributes
+        .iter()
+        .find_map(|(k, v)| (k == hxy_plugin_host::ENDIAN_ATTR).then_some(v.as_str()))
+        .unwrap_or("little");
     let value = decode_scalar_bytes(kind, &bytes, endian)?;
     let type_label = scalar_kind_name(kind);
     Some(format!("{type_label} [{index}] = {value}"))
@@ -710,6 +714,7 @@ fn scalar_kind_width(kind: hxy_plugin_host::template::ScalarKind) -> Option<u64>
         K::U16K | K::S16K => 2,
         K::U32K | K::S32K | K::F32K => 4,
         K::U64K | K::S64K | K::F64K => 8,
+        K::U128K | K::S128K => 16,
         K::BytesK | K::StringK => return None,
     })
 }
@@ -725,6 +730,8 @@ fn scalar_kind_name(kind: hxy_plugin_host::template::ScalarKind) -> &'static str
         K::S32K => "int32",
         K::U64K => "uint64",
         K::S64K => "int64",
+        K::U128K => "uint128",
+        K::S128K => "int128",
         K::F32K => "float",
         K::F64K => "double",
         K::BoolK => "bool",
@@ -756,6 +763,20 @@ fn decode_scalar_bytes(kind: hxy_plugin_host::template::ScalarKind, bytes: &[u8]
         K::S8K => format!("{}", *bytes.first()? as i8),
         K::U16K | K::U32K | K::U64K => format!("{}", read_u(bytes)),
         K::S16K | K::S32K | K::S64K => format!("{}", read_i(bytes)),
+        K::U128K | K::S128K => {
+            // 128-bit ints don't have a u128/i128 path through `read_u`
+            // / `read_i`. Render as `0x` + raw bytes in source-endian
+            // order so the inspector still shows the bits the user
+            // wrote, just without a typed numeric form.
+            let mut out = String::with_capacity(2 + bytes.len() * 2);
+            out.push_str("0x");
+            let iter: Box<dyn Iterator<Item = &u8>> =
+                if big { Box::new(bytes.iter()) } else { Box::new(bytes.iter().rev()) };
+            for b in iter {
+                out.push_str(&format!("{b:02X}"));
+            }
+            out
+        }
         K::F32K => {
             let arr: [u8; 4] = bytes.try_into().ok()?;
             let v = if big { f32::from_be_bytes(arr) } else { f32::from_le_bytes(arr) };
@@ -785,6 +806,7 @@ fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
         Value::S64Val(x) => format!("{x}"),
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
+        Value::BoolVal(b) => format!("{b}"),
         Value::BytesVal(b) => format!("{} bytes", b.len()),
         Value::StringVal(s) => format!("{:?}", summarise_string(s)),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),

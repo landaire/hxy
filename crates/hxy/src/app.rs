@@ -3982,6 +3982,9 @@ fn format_scalar_literal(v: &hxy_plugin_host::template::Value, syntax: StructSyn
             // comment so it's still visible in the output.
             format!("{value} /* {name} */")
         }
+        Value::BoolVal(b) => match syntax {
+            StructSyntax::Rust | StructSyntax::C => format!("{b}"),
+        },
     }
 }
 
