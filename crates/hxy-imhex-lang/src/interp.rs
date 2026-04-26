@@ -441,11 +441,35 @@ impl<S: HexSource> Interpreter<S> {
             match self.types.get(&name) {
                 Some(TypeDef::Alias(target)) => name = target.leaf().to_owned(),
                 Some(def) => return Ok(def.clone()),
-                None => return Err(RuntimeError::UnknownType { name: ty.leaf().to_owned() }),
+                None => {
+                    if let Some(prim) = generic_int_primitive(&name) {
+                        return Ok(TypeDef::Primitive(prim));
+                    }
+                    return Err(RuntimeError::UnknownType { name: ty.leaf().to_owned() });
+                }
             }
         }
         Err(RuntimeError::UnknownType { name: ty.leaf().to_owned() })
     }
+}
+
+/// Recognise ImHex's arbitrary-width integer primitives spelled as
+/// `uN` / `sN` for any bit-count that is a multiple of 8 between 8
+/// and 128 inclusive (`u24`, `s40`, `u56`, ...). The byte-aligned
+/// variants come up in real corpus templates (DTED elevation data
+/// uses `s24`, for example) but aren't worth listing exhaustively
+/// in the static primitive table.
+fn generic_int_primitive(name: &str) -> Option<PrimKind> {
+    let (signed, rest) = match name.as_bytes().first()? {
+        b'u' => (false, &name[1..]),
+        b's' => (true, &name[1..]),
+        _ => return None,
+    };
+    let bits: u32 = rest.parse().ok()?;
+    if bits == 0 || bits > 128 || !bits.is_multiple_of(8) {
+        return None;
+    }
+    Some(PrimKind { class: PrimClass::Int, width: (bits / 8) as u8, signed })
 }
 
 // ---------------------------------------------------------------------------

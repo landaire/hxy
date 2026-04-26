@@ -370,6 +370,44 @@ fn anonymous_typed_field_with_attrs() {
 }
 
 #[test]
+fn match_pattern_alternation_with_pipe() {
+    // `(0 ... 15 | 26 ... 53 | 99): ...` -- corpus templates use
+    // `|` and `||` as shorthand for listing alternative patterns
+    // inside one arm group. Both must parse without bit-or'ing the
+    // upper range bound into the next pattern.
+    let ast = parse_str(
+        "\
+fn classify(u8 x) {
+    match (x) {
+        (0 ... 15 | 26 ... 53 | 99): { return 1; }
+        (1 || 3): { return 2; }
+        (_): { return 0; }
+    }
+}
+",
+    );
+    let TopItem::Function(f) = &ast.items[0] else { panic!() };
+    let Stmt::Match { arms, .. } = &f.body[0] else { panic!() };
+    assert_eq!(arms[0].patterns.len(), 3);
+    assert_eq!(arms[1].patterns.len(), 2);
+}
+
+#[test]
+fn generic_int_primitive_lookup() {
+    // `u24`, `s40`, etc. aren't in the static primitive table but
+    // should still resolve as byte-aligned int types at runtime.
+    use hxy_imhex_lang::Interpreter;
+    use hxy_imhex_lang::MemorySource;
+    let src = "u24 v;";
+    let tokens = hxy_imhex_lang::tokenize(src).unwrap();
+    let prog = hxy_imhex_lang::parse(tokens).unwrap();
+    let result = Interpreter::new(MemorySource::new(vec![0x01, 0x02, 0x03])).run(&prog);
+    assert!(result.terminal_error.is_none(), "u24 should read 3 bytes: {:?}", result.terminal_error);
+    let v = result.nodes.iter().find(|n| n.name == "v").unwrap();
+    assert_eq!(v.length, 3);
+}
+
+#[test]
 fn match_tuple_scrutinee_compat() {
     // Tuple-style scrutinee `match (a, b) { ... }`. Multi-value
     // matching isn't modelled yet, but the syntax must not reject.

@@ -849,7 +849,14 @@ impl Parser {
         let mut patterns = Vec::new();
         loop {
             patterns.push(self.parse_match_pattern()?);
-            if !self.eat_kind(&TokenKind::Comma) {
+            // Patterns inside one arm group can be separated by `,`,
+            // `|` (alternation, C-style), or `||` (alternation,
+            // logical-or spelling). Corpus templates use all three
+            // shorthand forms; we treat them equivalently.
+            if !self.eat_kind(&TokenKind::Comma)
+                && !self.eat_kind(&TokenKind::Pipe)
+                && !self.eat_kind(&TokenKind::PipePipe)
+            {
                 break;
             }
         }
@@ -870,12 +877,17 @@ impl Parser {
             let t = self.bump().unwrap();
             return Ok(MatchPattern::Wildcard { span: t.span });
         }
-        let lo = self.parse_expr()?;
+        // Patterns parse at a binding power above `|` so the
+        // alternation separator `(0 ... 15 | 26 ... 53)` doesn't get
+        // eaten as a bit-or in the upper bound. Anything above the
+        // BitOr Pratt level (12) works; using 13 keeps `&`, `^`, and
+        // arithmetic still in scope.
+        let lo = self.parse_expr_bp(MATCH_PATTERN_BP)?;
         // Range: `lo .. hi` or `lo ... hi`. We accept either spelling.
         if self.eat_kind(&TokenKind::Dot) {
             self.expect_kind(&TokenKind::Dot, "..")?;
             let _ = self.eat_kind(&TokenKind::Dot); // optional 3rd dot
-            let hi = self.parse_expr()?;
+            let hi = self.parse_expr_bp(MATCH_PATTERN_BP)?;
             let span = Span::new(lo.span().start, hi.span().end);
             return Ok(MatchPattern::Range { lo, hi, span });
         }
@@ -1200,9 +1212,13 @@ impl Parser {
             && (ident == "in" || ident == "out")
         {
             self.bump();
-            // Optional section identifier after `in` / `out`.
-            if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
-                self.bump();
+            // The section after `in` / `out` can be either an
+            // identifier (`in mem_section`) or an expression
+            // (`in 0`, `in std::mem::sections::main`). Parse and
+            // drop it for now; the renderer doesn't model named
+            // memory sections yet.
+            if !matches!(self.peek_kind(), Some(TokenKind::Semi | TokenKind::LBracketBracket | TokenKind::Eq)) {
+                let _ = self.parse_expr()?;
             }
         }
         let init = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
@@ -1350,6 +1366,10 @@ const ATTR_VALUE_BP: u8 = 1;
 /// prefix/postfix so identifiers + integer literals + `(...)` /
 /// arithmetic still parse correctly.
 const TEMPLATE_ARG_BP: u8 = 21;
+/// Bound for expressions used inside a match arm pattern. Has to sit
+/// above `|` (BitOr, `(11, 12)`) so `(a | b)` reads as alternation
+/// between two patterns, not a bit-or'd single value.
+const MATCH_PATTERN_BP: u8 = 13;
 
 fn infix_bp(op: &TokenKind) -> Option<(u8, u8)> {
     Some(match op {

@@ -303,9 +303,18 @@ fn string_inner(input: &mut &str) -> ModalResult<String> {
         match input.chars().next() {
             Some('"') | None => return Ok(out),
             Some('\\') => {
-                any.parse_next(input)?;
-                let esc = any.parse_next(input)?;
-                out.push(decode_escape(esc));
+                let cp = decode_escape_in(input)?;
+                if let Some(c) = char::from_u32(cp) {
+                    out.push(c);
+                } else {
+                    // Bytes that aren't valid Unicode (e.g. raw `\xFF`)
+                    // get pushed as their replacement codepoint. The
+                    // common hex-escape use case in patterns is to
+                    // spell magic-byte sequences, where exact byte
+                    // round-trip matters less than the literal not
+                    // breaking the lex stream.
+                    out.push(char::from_u32(cp & 0x7F).unwrap_or('?'));
+                }
             }
             Some(c) => {
                 any.parse_next(input)?;
@@ -321,16 +330,57 @@ fn lex_char(input: &mut &str) -> ModalResult<TokenKind> {
 
 fn char_inner(input: &mut &str) -> ModalResult<u32> {
     match input.chars().next() {
-        Some('\\') => {
-            any.parse_next(input)?;
-            let esc = any.parse_next(input)?;
-            Ok(decode_escape(esc) as u32)
-        }
+        Some('\\') => decode_escape_in(input),
         Some(c) => {
             any.parse_next(input)?;
             Ok(c as u32)
         }
         None => Err(winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new())),
+    }
+}
+
+/// Consume a backslash escape from `input` and return the decoded
+/// codepoint. Handles `\n`, `\r`, `\t`, `\0`, `\\`, `\'`, `\"` plus
+/// the longer forms used by ImHex / 010 templates: `\xNN` (one or
+/// two hex digits), `\u{N..N}` (any number of hex digits), and `\NN`
+/// (one to three octal digits). Unknown escapes round-trip the next
+/// raw character so we don't choke on extensions.
+fn decode_escape_in(input: &mut &str) -> ModalResult<u32> {
+    any.parse_next(input)?; // consume `\`
+    let next = match input.chars().next() {
+        Some(c) => c,
+        None => return Err(winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new())),
+    };
+    match next {
+        'x' | 'X' => {
+            any.parse_next(input)?; // consume `x`
+            let digits: &str = take_while(1..=2, |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
+            Ok(u32::from_str_radix(digits, 16).unwrap_or(0))
+        }
+        'u' => {
+            any.parse_next(input)?; // consume `u`
+            if input.starts_with('{') {
+                any.parse_next(input)?; // consume `{`
+                let digits: &str = take_while(1..=8, |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
+                if input.starts_with('}') {
+                    any.parse_next(input)?;
+                }
+                Ok(u32::from_str_radix(digits, 16).unwrap_or(0))
+            } else {
+                // `\uNNNN` (no braces) -- four hex digits, like JSON.
+                let digits: &str = take_while(1..=4, |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
+                Ok(u32::from_str_radix(digits, 16).unwrap_or(0))
+            }
+        }
+        '0'..='7' => {
+            // Octal escape: `\0`, `\07`, `\377`. Up to three digits.
+            let digits: &str = take_while(1..=3, |c: char| ('0'..='7').contains(&c)).parse_next(input)?;
+            Ok(u32::from_str_radix(digits, 8).unwrap_or(0))
+        }
+        _ => {
+            any.parse_next(input)?;
+            Ok(decode_escape(next) as u32)
+        }
     }
 }
 
