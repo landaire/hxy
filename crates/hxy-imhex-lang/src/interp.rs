@@ -1934,10 +1934,22 @@ impl<S: HexSource> Interpreter<S> {
                 return Ok(Value::UInt { value: self.source.len() as u128, kind: PrimKind::u64() });
             }
         }
-        // For complex expressions (member chains, indexing) we
-        // evaluate and use the dynamic value's apparent size. This
-        // is degraded relative to ImHex's compile-time sizeof but
-        // covers the common runtime case.
+        // For complex expressions (member chains, indexing) try the
+        // node-tree path first so `addressof(stl.triangles[i].points)`
+        // returns the points array's offset / length instead of 0
+        // / a value-derived guess.
+        if let Ok(Some(idx)) = self.resolve_node_chain(operand) {
+            let n = &self.nodes[idx.as_usize()];
+            return Ok(match kind {
+                ReflectKind::Sizeof => Value::UInt { value: n.length as u128, kind: PrimKind::u64() },
+                ReflectKind::Addressof => Value::UInt { value: n.offset as u128, kind: PrimKind::u64() },
+                ReflectKind::Typeof => Value::Str(format!("{:?}", n.ty)),
+            });
+        }
+        // Fallback: evaluate as a value and use its apparent size.
+        // Degraded relative to ImHex's compile-time sizeof but
+        // covers expressions that don't bottom out at an emitted
+        // node.
         let v = self.eval(operand)?;
         Ok(match kind {
             ReflectKind::Sizeof => Value::UInt { value: value_byte_size(&v) as u128, kind: PrimKind::u64() },
