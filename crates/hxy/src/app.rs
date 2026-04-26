@@ -7600,8 +7600,6 @@ fn render_compare_tab(
         None => (None, None),
     };
 
-    let mut a_minimap: Option<egui::Rect> = None;
-    let mut b_minimap: Option<egui::Rect> = None;
     egui::CentralPanel::default().show_inside(ui, |ui| {
         let avail = ui.available_width();
         let half = (avail * 0.5).max(160.0);
@@ -7610,8 +7608,7 @@ fn render_compare_tab(
                 egui::Vec2::new(half, ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    a_minimap =
-                        render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges, a_map.clone());
+                    render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges, a_map.clone());
                 },
             );
             ui.separator();
@@ -7619,71 +7616,17 @@ fn render_compare_tab(
                 egui::Vec2::new(ui.available_width(), ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    b_minimap =
-                        render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges, b_map.clone());
+                    render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges, b_map.clone());
                 },
             );
         });
     });
-    if let (Some(a_rect), Some(b_rect)) = (a_minimap, b_minimap)
-        && let Some(diff) = session.diff.as_ref()
-    {
-        paint_compare_leader_lines(ui, a_rect, b_rect, diff);
-    }
 
     // After both panes have rendered this frame, mirror the side
     // the user just scrolled onto the other so their row maps
     // stay aligned. The row maps already give them identical
     // total heights; this just propagates the scrollbar position.
     session.sync_scroll();
-}
-
-/// Faint horizontal lines drawn from one pane's minimap to the
-/// other for every Added / Removed / Changed hunk. The leader's
-/// y is pulled from the source-side minimap (where the bytes
-/// actually live) and projected onto the destination's minimap
-/// at the gap-row Y produced by the row-map alignment.
-#[cfg(not(target_arch = "wasm32"))]
-fn paint_compare_leader_lines(
-    ui: &egui::Ui,
-    a_rect: egui::Rect,
-    b_rect: egui::Rect,
-    diff: &crate::compare::DiffResult,
-) {
-    use crate::compare::HunkKind;
-
-    let painter = ui.painter();
-    for hunk in diff.changes() {
-        let color = match hunk.kind {
-            HunkKind::Added => egui::Color32::from_rgb(60, 200, 100),
-            HunkKind::Removed => egui::Color32::from_rgb(220, 90, 90),
-            HunkKind::Changed => egui::Color32::from_rgb(220, 160, 60),
-            HunkKind::Equal => continue,
-        };
-        let a_y = source_y(a_rect, hunk.a_offset, hunk.a_len, diff.a_len);
-        let b_y = source_y(b_rect, hunk.b_offset, hunk.b_len, diff.b_len);
-        let stroke = egui::Stroke::new(1.0, color.gamma_multiply(0.5));
-        painter.line_segment(
-            [
-                egui::Pos2::new(a_rect.right(), a_y),
-                egui::Pos2::new(b_rect.left(), b_y),
-            ],
-            stroke,
-        );
-    }
-}
-
-/// Vertical center of the hunk's range projected into a minimap.
-/// `total` is the side's full byte length so we can scale the
-/// hunk offset to a fraction of the minimap height.
-#[cfg(not(target_arch = "wasm32"))]
-fn source_y(rect: egui::Rect, offset: u64, len: u64, total: u64) -> f32 {
-    if total == 0 {
-        return rect.center().y;
-    }
-    let mid = offset.saturating_add(len / 2).min(total) as f32;
-    let frac = mid / total as f32;
-    rect.top() + frac * rect.height()
 }
 
 /// Sorted-by-start `(start, end_exclusive, kind)` ranges for one
@@ -7722,24 +7665,37 @@ fn render_compare_pane(
     salt: egui::Id,
     diff_ranges: &[(u64, u64, crate::compare::HunkKind)],
     row_map: Option<Vec<hxy_view::RowSlot>>,
-) -> Option<egui::Rect> {
+) {
     ui.horizontal(|ui| {
         ui.strong(&pane.display_name);
         ui.checkbox(&mut pane.diff_colors, hxy_i18n::t("compare-diff-colors-toggle"));
     });
     let columns = state.app.hex_columns;
     let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
-    // Compare panes always show a colored minimap -- the per-pane
-    // visual is the whole point of the feature, so we don't gate it
-    // behind the user's global Show-Minimap toggle.
+    // Per-frame storage for the field boundary + color slices the
+    // minimap consults. Built from `diff_ranges` only when the
+    // pane has Diff Colors on; otherwise the slices stay empty
+    // and the minimap falls back to the user's value palette /
+    // the disable-coloring setting.
+    let mut diff_field_bounds: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> = Vec::new();
+    let mut diff_field_colors: Vec<egui::Color32> = Vec::new();
+    if pane.diff_colors {
+        for (start, end_exclusive, kind) in diff_ranges {
+            let len = hxy_core::ByteLen::new(end_exclusive - start);
+            diff_field_bounds.push((hxy_core::ByteOffset::new(*start), len));
+            diff_field_colors.push(compare_kind_color(*kind));
+        }
+    }
     let mut view = pane
         .editor
         .view()
         .id_salt(salt)
         .columns(columns)
         .value_highlight(highlight)
-        .minimap(true)
-        .minimap_colored(true);
+        .minimap(state.app.show_minimap)
+        .minimap_colored(state.app.minimap_colored)
+        .field_boundaries(&diff_field_bounds)
+        .field_colors(&diff_field_colors);
     if let Some(map) = row_map {
         view = view.row_map(map);
     }
@@ -7759,7 +7715,18 @@ fn render_compare_pane(
             compare_kind_style(kind, text_mode)
         });
     }
-    view.show(ui).minimap_rect
+    let _ = view.show(ui);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compare_kind_color(kind: crate::compare::HunkKind) -> egui::Color32 {
+    use crate::compare::HunkKind;
+    match kind {
+        HunkKind::Added => egui::Color32::from_rgb(60, 200, 100),
+        HunkKind::Removed => egui::Color32::from_rgb(220, 90, 90),
+        HunkKind::Changed => egui::Color32::from_rgb(220, 160, 60),
+        HunkKind::Equal => egui::Color32::TRANSPARENT,
+    }
 }
 
 /// Pick the diff color for `kind`, applied to either the byte fill

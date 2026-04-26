@@ -1124,9 +1124,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     hover_span,
                     field_boundaries,
                     field_colors,
-                    byte_styler.as_deref(),
                 );
-                response.minimap_rect = Some(minimap_rect);
             }
 
             draw_scrollbar(
@@ -1163,11 +1161,6 @@ pub struct HexViewResponse {
     pub scroll_offset: f32,
     /// Visible viewport height (in pixels).
     pub viewport_height: f32,
-    /// Screen-space rect of the minimap, when one was rendered this
-    /// frame. Hosts that paint overlays *between* two views (e.g.
-    /// the file-comparison leader lines) need this to know where
-    /// each side's minimap lives.
-    pub minimap_rect: Option<Rect>,
     /// Byte range actually rendered this frame (after clipping). Useful
     /// for consumers that want to paint overlays only over visible bytes.
     pub visible_range: Option<ByteRange>,
@@ -2337,7 +2330,6 @@ fn draw_minimap<S: HexSource + ?Sized>(
     hover_span: Option<ByteRange>,
     field_boundaries: &[(ByteOffset, ByteLen)],
     field_colors: &[Color32],
-    byte_styler: Option<&dyn Fn(u8, ByteOffset) -> ByteStyle>,
 ) {
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
@@ -2403,10 +2395,9 @@ fn draw_minimap<S: HexSource + ?Sized>(
         for (c, byte) in chunk.iter().enumerate() {
             let x = minimap_rect.left() + c as f32 * cell_w;
             let offset = row_base_offset + c as u64;
-            let styler_bg = byte_styler.and_then(|f| f(*byte, ByteOffset::new(offset)).bg);
             let field_color =
                 if field_override { field_color_for(field_boundaries, field_colors, offset) } else { None };
-            let color = styler_bg.or(field_color).unwrap_or_else(|| {
+            let color = field_color.unwrap_or_else(|| {
                 if colored {
                     palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
                 } else {
