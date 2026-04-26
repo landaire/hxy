@@ -174,6 +174,11 @@ fn run_with_deadline(
     let interrupt = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
     let interrupt_for_thread = interrupt.clone();
+    // Detach the worker. Joining could block past the deadline if a
+    // single statement (e.g. an O(N) member lookup in a deep tree)
+    // hasn't reached the next interrupt poll yet. The interrupt
+    // still trips the thread on its next step boundary, so it
+    // self-terminates without blocking the test.
     let _ = thread::spawn(move || {
         let result = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver)

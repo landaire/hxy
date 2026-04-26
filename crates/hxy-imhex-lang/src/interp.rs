@@ -588,12 +588,10 @@ impl<S: HexSource> Interpreter<S> {
         if self.steps > self.step_limit {
             return Err(RuntimeError::StepLimitHit { step_limit: self.step_limit });
         }
-        // Poll the external cancel flag every 1024 statements. The
-        // tight every-step variant showed up in profiles for big
-        // templates; 1024 keeps the worst-case cancel latency under
-        // a millisecond on the hot path while leaving the rest of
-        // the loop branch-predictor friendly.
-        if self.steps.is_multiple_of(1024) && self.interrupt.load(Ordering::Relaxed) {
+        // Poll the external cancel flag on every step. A relaxed
+        // atomic load is cheap (single instruction) so the bound on
+        // worst-case cancel latency is one statement.
+        if self.interrupt.load(Ordering::Relaxed) {
             return Err(RuntimeError::TimedOut { timeout_ms: 0 });
         }
         match stmt {
@@ -786,11 +784,23 @@ impl<S: HexSource> Interpreter<S> {
             return Ok(Flow::Next);
         }
         let mut all_attrs = attrs_to_pairs(attrs);
+        // `[[no_unique_address]]` -- the field reads at the current
+        // cursor but doesn't advance it. Common idiom for inspecting
+        // bytes without consuming them (e.g. read the whole file as
+        // a sibling `data` field that visualisations hook off, then
+        // continue parsing from offset 0). Treated as an implicit
+        // placement at the current cursor.
+        let no_unique_address =
+            attrs.0.iter().any(|a| a.name == "no_unique_address");
         // `Type x @ offset;` -- save the running cursor, jump to
         // the placed address, read, then restore. The save/restore
         // is critical: ImHex placement reads don't advance the
         // surrounding sequential cursor.
-        let saved_pos = if placement.is_some() { Some(self.cursor_tell()) } else { None };
+        let saved_pos = if placement.is_some() || no_unique_address {
+            Some(self.cursor_tell())
+        } else {
+            None
+        };
         if let Some(p) = placement {
             let offset_value = self.eval(p)?;
             let offset = offset_value
@@ -1305,26 +1315,37 @@ impl<S: HexSource> Interpreter<S> {
                 _ => self.lookup_ident(name),
             },
             Expr::Path { segments, .. } => {
-                // `EnumType::Variant` -- if the head segment names a
-                // known enum and the tail names one of its variants,
-                // evaluate to the variant's integer value. This is
-                // common in placement reads like `@ Type::Header`.
-                if segments.len() == 2
-                    && let Some(TypeDef::Enum(decl)) = self.types.get(&segments[0]).cloned()
-                {
-                    let variant_name = &segments[1];
-                    let mut running: i128 = 0;
-                    for variant in &decl.variants {
-                        if let Some(value_expr) = variant.value.as_ref() {
-                            running = self.eval(value_expr)?.to_i128().unwrap_or(running);
+                // `Foo::...::Enum::Variant` -- treat the trailing
+                // segment as a variant name and walk the prefix
+                // looking for a registered enum. We try every prefix
+                // length so both `Tag::Variant` and the namespaced
+                // `std::mem::Endian::Big` shape land. The interpreter
+                // registers types under both their bare and fully-
+                // qualified spellings, so the lookup needs only one
+                // attempt per prefix length.
+                if segments.len() >= 2 {
+                    let variant_name = segments.last().cloned().unwrap_or_default();
+                    for prefix_len in (1..segments.len()).rev() {
+                        let key: String = segments[..prefix_len].join("::");
+                        if let Some(TypeDef::Enum(decl)) = self.types.get(&key).cloned() {
+                            let mut running: i128 = 0;
+                            for variant in &decl.variants {
+                                if let Some(value_expr) = variant.value.as_ref() {
+                                    running = self.eval(value_expr)?.to_i128().unwrap_or(running);
+                                }
+                                if variant.name == variant_name {
+                                    return Ok(Value::UInt {
+                                        value: running as u128,
+                                        kind: PrimKind::u64(),
+                                    });
+                                }
+                                running = running.saturating_add(1);
+                            }
+                            // Found the enum but not the variant --
+                            // fall through to the leaf-ident path,
+                            // which will surface a useful error.
+                            break;
                         }
-                        if &variant.name == variant_name {
-                            return Ok(Value::UInt {
-                                value: running as u128,
-                                kind: PrimKind::u64(),
-                            });
-                        }
-                        running = running.saturating_add(1);
                     }
                 }
                 // Fall back to the bare leaf for `std::print` and
@@ -1371,57 +1392,17 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(new_val)
             }
             Expr::Member { target, field, .. } => {
-                // `parent.field` / `this.field` -- magic identifiers
-                // resolved against the active enclosing struct.
-                // `parent` looks one struct up (the node whose
-                // `current_parent` was set when we entered the body
-                // we're inside); `this` is the current struct.
-                if let Expr::Ident { name, .. } = target.as_ref() {
-                    match name.as_str() {
-                        "parent" => {
-                            if let Some(idx) = self.current_parent
-                                && let Some(v) = self.lookup_member_under(idx, field)
-                            {
-                                return Ok(v);
-                            }
-                        }
-                        "this" => {
-                            // `this` is the struct currently being
-                            // read. The most recent emitted struct
-                            // node is our best handle on it.
-                            if let Some(idx) = self.most_recent_struct_idx()
-                                && let Some(v) = self.lookup_member_under(idx, field)
-                            {
-                                return Ok(v);
-                            }
-                        }
-                        _ => {
-                            if let Some(v) = self.lookup_member_in_struct(name, field) {
-                                return Ok(v);
-                            }
-                        }
-                    }
-                }
-                // `arr[i].field` -- find the i-th node named `arr` in
-                // emission order and look up `field` under it.
-                // Array elements share their name with the array
-                // itself; the i-th occurrence is element `i`.
-                if let Expr::Index { target: arr, index, .. } = target.as_ref()
-                    && let Expr::Ident { name, .. } = arr.as_ref()
+                // Resolve the chain by walking left-to-right and
+                // tracking which emitted node we're currently
+                // pointing at. The chain accepts magic identifiers
+                // (`parent` / `this`), bare struct names, indexed
+                // accesses (`lumps[i]`), and member hops, so
+                // expressions like `file_header.lumps[i].fileofs`
+                // resolve in one pass.
+                if let Some(idx) = self.resolve_node_chain(target)?
+                    && let Some(v) = self.lookup_member_under(idx, field)
                 {
-                    let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
-                    let mut seen = 0usize;
-                    for (idx, n) in self.nodes.iter().enumerate() {
-                        if n.name == *name {
-                            if seen == i {
-                                if let Some(v) = self.lookup_member_under(NodeIdx::new(idx as u32), field) {
-                                    return Ok(v);
-                                }
-                                break;
-                            }
-                            seen += 1;
-                        }
-                    }
+                    return Ok(v);
                 }
                 Err(RuntimeError::Type(format!("unresolved member `.{field}`")))
             }
@@ -1571,20 +1552,6 @@ impl<S: HexSource> Interpreter<S> {
         Err(RuntimeError::UndefinedName { name: name.to_owned() })
     }
 
-    fn lookup_member_in_struct(&self, struct_name: &str, field: &str) -> Option<Value> {
-        // Find the most recent emitted node with the matching struct
-        // name, then locate a child node (parent==idx) with the
-        // requested field name.
-        let mut owner_idx: Option<NodeIdx> = None;
-        for (i, n) in self.nodes.iter().enumerate().rev() {
-            if n.name == struct_name {
-                owner_idx = Some(NodeIdx::new(i as u32));
-                break;
-            }
-        }
-        self.lookup_member_under(owner_idx?, field)
-    }
-
     /// Look up a child node whose `parent == owner_idx` and whose
     /// name matches `field`. Walks the tree right-to-left so the
     /// most-recently-emitted match wins (matters for repeated names
@@ -1594,6 +1561,90 @@ impl<S: HexSource> Interpreter<S> {
             if n.parent == Some(owner_idx) && n.name == field {
                 return n.value.clone();
             }
+        }
+        None
+    }
+
+    /// Walk a chain of `Ident` / `Member` / `Index` expressions and
+    /// return the [`NodeIdx`] it ultimately points at. Returns
+    /// `Ok(None)` when the chain doesn't refer to an emitted node
+    /// (e.g. it bottoms out at a literal). Used by the [`Expr::Member`]
+    /// arm so nested accesses like `file_header.lumps[i].fileofs`
+    /// resolve through the same logic as `parent.foo`.
+    fn resolve_node_chain(&mut self, expr: &Expr) -> Result<Option<NodeIdx>, RuntimeError> {
+        match expr {
+            Expr::Ident { name, .. } => Ok(self.find_node_idx_for_ident(name)),
+            Expr::Member { target, field, .. } => {
+                let Some(parent_idx) = self.resolve_node_chain(target)? else {
+                    return Ok(None);
+                };
+                Ok(self.find_first_child_idx(parent_idx, field))
+            }
+            Expr::Index { target, index, .. } => {
+                // For `name[i]`, find the i-th occurrence of the
+                // array's name under its parent. For nested cases
+                // (`outer.lumps[i]`), the parent comes from the
+                // recursive resolution.
+                let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
+                match target.as_ref() {
+                    Expr::Ident { name, .. } => Ok(self.find_nth_node_idx(name, i, None)),
+                    Expr::Member { target: outer, field, .. } => {
+                        let Some(outer_idx) = self.resolve_node_chain(outer)? else {
+                            return Ok(None);
+                        };
+                        Ok(self.find_nth_node_idx(field, i, Some(outer_idx)))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Map an identifier in node-chain position to the most plausible
+    /// emitted node: magic identifiers (`parent`, `this`) resolve to
+    /// the active enclosing struct, bare names walk the emitted node
+    /// list right-to-left for the most recent match.
+    fn find_node_idx_for_ident(&self, name: &str) -> Option<NodeIdx> {
+        match name {
+            "parent" => self.current_parent,
+            "this" => self.most_recent_struct_idx(),
+            other => {
+                for (i, n) in self.nodes.iter().enumerate().rev() {
+                    if n.name == other {
+                        return Some(NodeIdx::new(i as u32));
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn find_first_child_idx(&self, parent_idx: NodeIdx, name: &str) -> Option<NodeIdx> {
+        for (i, n) in self.nodes.iter().enumerate() {
+            if n.parent == Some(parent_idx) && n.name == name {
+                return Some(NodeIdx::new(i as u32));
+            }
+        }
+        None
+    }
+
+    /// Find the `index`-th node named `name`. With `parent`, only
+    /// considers direct children of that parent; without, considers
+    /// every emitted node.
+    fn find_nth_node_idx(&self, name: &str, index: usize, parent: Option<NodeIdx>) -> Option<NodeIdx> {
+        let mut seen = 0usize;
+        for (i, n) in self.nodes.iter().enumerate() {
+            if n.name != name {
+                continue;
+            }
+            if parent.is_some() && n.parent != parent {
+                continue;
+            }
+            if seen == index {
+                return Some(NodeIdx::new(i as u32));
+            }
+            seen += 1;
         }
         None
     }

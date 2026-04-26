@@ -152,23 +152,27 @@ fn probe_template(
     let program = Arc::new(program);
     let prog_for_thread = program.clone();
     let interrupt_for_thread = interrupt.clone();
+    // Detach the worker rather than joining: in pathological cases
+    // a single statement can dominate runtime (deep recursion in a
+    // big node tree), and joining would block the probe waiting
+    // for an interpreter that's already past the deadline. The
+    // interrupt flag still trips the worker on its next exec_stmt,
+    // so it self-terminates -- we just don't wait for it.
     let _ = thread::spawn(move || {
         let result = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver_for_thread)
-            .with_step_limit(500_000)
+            .with_step_limit(200_000)
             .with_interrupt(interrupt_for_thread)
             .run(&prog_for_thread);
         let _ = tx.send(result);
     });
     let start = Instant::now();
-    let result = match rx.recv_timeout(TEMPLATE_DEADLINE) {
-        Ok(r) => Some(r),
-        Err(_) => {
-            interrupt.store(true, Ordering::Relaxed);
-            eprintln!("     (timeout after {} ms; interrupt sent)", start.elapsed().as_millis());
-            None
-        }
-    };
+    let recv = rx.recv_timeout(TEMPLATE_DEADLINE);
+    if recv.is_err() {
+        interrupt.store(true, Ordering::Relaxed);
+        eprintln!("     (timeout after {} ms; interrupt sent)", start.elapsed().as_millis());
+    }
+    let result = recv.ok();
     match result {
         Some(r) => match r.terminal_error {
             None => totals.run_ok += 1,
