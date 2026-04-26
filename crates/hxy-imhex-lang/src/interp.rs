@@ -152,6 +152,14 @@ enum TypeDef {
 #[derive(Clone, Default)]
 struct Scope {
     vars: HashMap<String, Value>,
+    /// Aliases from local names to emitted-node indices. Populated
+    /// when a function call passes an emitted node by name (the
+    /// caller's `imageSpec`) and the function's parameter
+    /// (`imSpec`) needs `imSpec.height` to resolve through the
+    /// caller's node tree. Without this, `imSpec` evaluates to
+    /// `Void` (structs don't bind a value) and member access
+    /// fails with `unresolved member .height`.
+    node_aliases: HashMap<String, NodeIdx>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1854,9 +1862,20 @@ impl<S: HexSource> Interpreter<S> {
                     _ => return Err(RuntimeError::Type("call target must be an identifier".into())),
                 };
                 let evaluated: Vec<Value> = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?;
+                // For each arg expression, also try to resolve it
+                // to an emitted-node index. Functions like
+                // `GetImageDataSize(ImageSpec imSpec) { return
+                // imSpec.height * ...; }` need the parameter to
+                // route member access through the caller's node
+                // tree -- the bare struct value is `Void`.
+                let mut arg_node_refs: Vec<Option<NodeIdx>> = Vec::with_capacity(args.len());
+                for a in args {
+                    let idx = self.resolve_node_chain(a).ok().flatten();
+                    arg_node_refs.push(idx);
+                }
                 let mut last_err: Option<RuntimeError> = None;
                 for name in &names {
-                    match self.call_named(name, &evaluated) {
+                    match self.call_named_with_aliases(name, &evaluated, &arg_node_refs) {
                         Ok(v) => return Ok(v),
                         Err(RuntimeError::UndefinedName { .. }) => continue,
                         Err(e) => last_err = Some(e),
@@ -2098,6 +2117,14 @@ impl<S: HexSource> Interpreter<S> {
             "parent" => self.current_parent,
             "this" => self.most_recent_struct_idx(),
             other => {
+                // Function-parameter aliases first: `imSpec` inside
+                // `GetImageDataSize(imSpec)` should route through
+                // the caller's `imageSpec` node.
+                for scope in self.scopes.iter().rev() {
+                    if let Some(idx) = scope.node_aliases.get(other) {
+                        return Some(*idx);
+                    }
+                }
                 // Walk the enclosing-struct chain (this, then
                 // parent, then grandparent, ...) looking for a
                 // child named `other`.
@@ -2153,7 +2180,12 @@ impl<S: HexSource> Interpreter<S> {
         self.current_scope_mut().vars.insert(name.to_owned(), value);
     }
 
-    fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+    fn call_named_with_aliases(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        node_aliases: &[Option<NodeIdx>],
+    ) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, args)? {
             return Ok(v);
         }
@@ -2181,6 +2213,9 @@ impl<S: HexSource> Interpreter<S> {
         for (i, p) in func.params.iter().enumerate() {
             let v = args.get(i).cloned().unwrap_or(Value::Void);
             self.current_scope_mut().vars.insert(p.name.clone(), v);
+            if let Some(Some(node_idx)) = node_aliases.get(i) {
+                self.current_scope_mut().node_aliases.insert(p.name.clone(), *node_idx);
+            }
         }
         // Inside the fn, `parent` should resolve to the struct
         // whose body did the call (the caller's `this`). Save and
