@@ -88,11 +88,15 @@ Kind which;
     assert_no_terminal_error(&result);
     let node = &result.nodes[0];
     assert!(matches!(node.ty, NodeType::EnumType(ref n) if n == "Kind"));
-    assert!(matches!(node.value, Some(Value::Str(ref s)) if s == "Small"));
+    // Enum nodes carry the raw integer as their value (so
+    // comparisons with `Kind::Variant` work) and the matched
+    // variant name as a `hxy_enum_variant` attribute.
+    assert!(matches!(node.value, Some(Value::UInt { value: 1, .. })));
+    assert!(node.attrs.iter().any(|(k, v)| k == "hxy_enum_variant" && v == "Small"));
 }
 
 #[test]
-fn enum_with_unmatched_value_renders_numerically() {
+fn enum_with_unmatched_value_keeps_raw_numeric() {
     let src = "\
 enum Kind : u8 {
     A = 1,
@@ -102,7 +106,8 @@ Kind which;
 ";
     let result = run(src, vec![99]);
     assert_no_terminal_error(&result);
-    assert!(matches!(result.nodes[0].value, Some(Value::Str(ref s)) if s == "99"));
+    assert!(matches!(result.nodes[0].value, Some(Value::UInt { value: 99, .. })));
+    assert!(!result.nodes[0].attrs.iter().any(|(k, _)| k == "hxy_enum_variant"));
 }
 
 #[test]

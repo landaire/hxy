@@ -106,7 +106,9 @@ Tagged<\"label\"> t;
 ";
     let result = run(src, vec![1]);
     assert_no_terminal_error(&result);
-    assert!(matches!(result.nodes.first().unwrap().value, Some(Value::Str(ref s)) if s == "A"));
+    let node = result.nodes.first().unwrap();
+    assert!(matches!(node.value, Some(Value::UInt { value: 1, .. })));
+    assert!(node.attrs.iter().any(|(k, v)| k == "hxy_enum_variant" && v == "A"));
 }
 
 // ---------------------------------------------------------------------------

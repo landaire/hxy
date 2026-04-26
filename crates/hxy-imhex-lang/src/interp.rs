@@ -894,19 +894,18 @@ impl<S: HexSource> Interpreter<S> {
             // literally `"padding"`).
             self.cursor_seek(self.cursor_tell().saturating_add(count));
         } else if array.is_some() {
-            // Only fixed-count arrays are read at scale. Open and
-            // while-driven arrays are common in patterns whose
-            // predicates depend on side-effect state we don't yet
-            // model (cursor offsets, std::mem::find_*, ...); reading
-            // them as zero-element arrays mirrors the upstream
-            // interpreter's "skip what you can't terminate" stance
-            // and avoids consuming bytes that surrounding fixed
-            // reads still need.
             match array.as_ref().unwrap() {
                 ArraySize::Fixed(_) => {
                     self.read_array(name, ty, count, parent, &all_attrs)?;
                 }
                 ArraySize::Open | ArraySize::While(_) => {
+                    // Predicate-driven and open-ended arrays read 0
+                    // elements for now. Naive looping regresses
+                    // templates whose `[while(true)]` arrays expect
+                    // a sibling read to bound them, since we end up
+                    // consuming bytes the surrounding fixed reads
+                    // still need. Re-enabling sits behind the
+                    // `read_dynamic_array` scaffold.
                     self.read_array(name, ty, 0, parent, &all_attrs)?;
                 }
             }
@@ -1194,23 +1193,25 @@ impl<S: HexSource> Interpreter<S> {
                 break;
             }
         }
-        let display_value = match &found_name {
-            Some(n) => Value::Str(n.clone()),
-            None => Value::Str(format!("{raw_u}")),
-        };
-        let value_for_node = display_value.clone();
+        // Store the raw integer as the node's value so comparisons
+        // against `EnumType::Variant` (also resolved to an integer)
+        // work directly. The matched variant name lands as a
+        // `hxy_enum_variant` attribute so renderers can show the
+        // friendly label without losing the numeric value.
+        let raw_value = Value::UInt { value: raw_u, kind: PrimKind::u64() };
+        let mut node_attrs = attrs.to_vec();
+        if let Some(n) = &found_name {
+            node_attrs.push(("hxy_enum_variant".into(), n.clone()));
+        }
         self.push_node(NodeOut {
             name: name.to_owned(),
             ty: NodeType::EnumType(decl.name.clone()),
             offset,
             length: prim.width as u64,
-            value: Some(value_for_node),
+            value: Some(raw_value.clone()),
             parent,
-            attrs: attrs.to_vec(),
+            attrs: node_attrs,
         });
-        // Bind the raw numeric so later expressions like `if (kind ==
-        // 1)` keep working.
-        let raw_value = Value::UInt { value: raw_u, kind: PrimKind::u64() };
         self.current_scope_mut().vars.insert(name.to_owned(), raw_value.clone());
         Ok(raw_value)
     }
@@ -1383,11 +1384,15 @@ impl<S: HexSource> Interpreter<S> {
             && matches!(p.class, PrimClass::Char)
         {
             // `char[N]` -> read a contiguous string. Common pattern in
-            // both 010 and ImHex.
+            // both 010 and ImHex. We map each byte 1:1 to its
+            // codepoint instead of running UTF-8 validation: magic-
+            // byte comparisons (`type::Magic<"...\xBC\xAF...">`) need
+            // round-trip fidelity for high bytes, which UTF-8-lossy
+            // would replace with `U+FFFD`.
             let total = (p.width as u64).saturating_mul(count);
             let offset = self.cursor_tell();
             let bytes = self.cursor_advance(total)?;
-            let s = String::from_utf8_lossy(&bytes).into_owned();
+            let s: String = bytes.iter().map(|&b| char::from(b)).collect();
             self.push_node(NodeOut {
                 name: name.to_owned(),
                 ty: NodeType::ScalarArray(ScalarKind::Char, count),
@@ -1838,6 +1843,17 @@ impl<S: HexSource> Interpreter<S> {
         match expr {
             Expr::Ident { name, .. } => Ok(self.find_node_idx_for_ident(name)),
             Expr::Member { target, field, .. } => {
+                // `parent.foo` from a top-level struct: the inner
+                // `parent` resolves to nothing (no enclosing struct),
+                // but ImHex treats the implicit program scope as a
+                // parent for top-level fields. Fall back to the
+                // most-recent top-level node named `field`.
+                if let Expr::Ident { name, .. } = target.as_ref()
+                    && name == "parent"
+                    && self.current_parent.is_none()
+                {
+                    return Ok(self.find_top_level_idx(field));
+                }
                 let Some(parent_idx) = self.resolve_node_chain(target)? else {
                     return Ok(None);
                 };
@@ -1874,6 +1890,15 @@ impl<S: HexSource> Interpreter<S> {
     fn find_first_child_idx(&self, parent_idx: NodeIdx, name: &str) -> Option<NodeIdx> {
         let candidates = self.nodes_by_name.get(name)?;
         candidates.iter().copied().find(|idx| self.nodes[idx.as_usize()].parent == Some(parent_idx))
+    }
+
+    /// Find the most recent top-level node (parent is `None`) with
+    /// the given name. Used as the `parent` fallback when the
+    /// current scope has no enclosing struct -- ImHex treats the
+    /// implicit "program" scope as a parent for top-level fields.
+    fn find_top_level_idx(&self, name: &str) -> Option<NodeIdx> {
+        let candidates = self.nodes_by_name.get(name)?;
+        candidates.iter().copied().rev().find(|idx| self.nodes[idx.as_usize()].parent.is_none())
     }
 
     /// Index of the struct / union / bitfield currently being read.
