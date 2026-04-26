@@ -105,11 +105,16 @@ pub fn start_server(ctx: &egui::Context) -> Option<egui_inbox::UiInbox<Vec<PathB
             return None;
         }
     };
-    // `reclaim_name` overwrites a stale Unix socket file left behind
-    // by a previous crashed instance. A *live* peer at the same name
-    // would have already answered our `try_send_to_running_instance`
-    // probe before we got here, so it's safe to reclaim now.
-    let listener = match ListenerOptions::new().name(name).reclaim_name(true).create_sync() {
+    // `try_overwrite` is the option that actually unlinks a stale
+    // Unix socket file left behind by a previous crashed instance --
+    // `reclaim_name` only does cleanup on Drop, not before bind.
+    // Combining both means we both pick up after our own crash *and*
+    // tidy up after ourselves on a clean exit. A live peer at the
+    // same name would have already answered our
+    // `try_send_to_running_instance` probe before we got here, so
+    // displacing whatever's at the path now is safe.
+    let listener =
+        match ListenerOptions::new().name(name).reclaim_name(true).try_overwrite(true).create_sync() {
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(error = %e, "ipc: bind socket; CLI forwarding disabled");
