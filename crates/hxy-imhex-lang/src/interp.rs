@@ -1461,14 +1461,26 @@ impl<S: HexSource> Interpreter<S> {
                 // the fully-qualified path first (so a namespaced
                 // builtin like `std::print` wins over a same-leaf
                 // user function), then the bare leaf as a fallback.
-                let names: Vec<String> = match callee.as_ref() {
-                    Expr::Ident { name, .. } => vec![name.clone()],
+                //
+                // `builtin::...` paths are special: they're hooks
+                // for runtime-provided functions (`builtin::std::mem::
+                // base_address`, etc.). The std library wraps them
+                // in user-level shims of the same leaf name, so a
+                // leaf-fallback would resolve `builtin::base_address`
+                // back to the user function and infinite-recurse.
+                // We disable the leaf fallback for any path rooted
+                // in `builtin`.
+                let (names, is_builtin) = match callee.as_ref() {
+                    Expr::Ident { name, .. } => (vec![name.clone()], false),
                     Expr::Path { segments, .. } => {
+                        let is_builtin = segments.first().map(String::as_str) == Some("builtin");
                         let mut v = vec![segments.join("::")];
-                        if let Some(leaf) = segments.last() {
+                        if !is_builtin
+                            && let Some(leaf) = segments.last()
+                        {
                             v.push(leaf.clone());
                         }
-                        v
+                        (v, is_builtin)
                     }
                     _ => return Err(RuntimeError::Type("call target must be an identifier".into())),
                 };
@@ -1480,6 +1492,14 @@ impl<S: HexSource> Interpreter<S> {
                         Err(RuntimeError::UndefinedName { .. }) => continue,
                         Err(e) => last_err = Some(e),
                     }
+                }
+                if is_builtin {
+                    // Unimplemented runtime hook -- return Void rather
+                    // than failing the whole template. Templates that
+                    // depend on the actual builtin value will get
+                    // wrong-but-progressing results; templates that
+                    // just route through the wrapper see no harm.
+                    return Ok(Value::Void);
                 }
                 Err(last_err
                     .unwrap_or(RuntimeError::UndefinedName { name: names.first().cloned().unwrap_or_default() }))
@@ -1761,12 +1781,32 @@ impl<S: HexSource> Interpreter<S> {
                 });
                 return Err(RuntimeError::Type(format!("assert failed: {msg}")));
             }
-            // File-level queries.
-            "std::mem::eof" => Value::Bool(self.cursor_tell() >= self.source.len()),
-            "std::mem::size" | "std::mem::file_size" => {
+            // File-level queries. Both the std-library shim names
+            // (`std::mem::base_address`, ...) and the underlying
+            // `builtin::std::mem::*` paths are wired up so the
+            // shim's `return builtin::std::mem::base_address();`
+            // round-trips to a real value instead of returning Void.
+            "std::mem::eof" | "builtin::std::mem::eof" => Value::Bool(self.cursor_tell() >= self.source.len()),
+            "std::mem::size" | "std::mem::file_size" | "builtin::std::mem::size" => {
                 Value::UInt { value: self.source.len() as u128, kind: PrimKind::u64() }
             }
-            "std::mem::current_offset" => Value::UInt { value: self.cursor_tell() as u128, kind: PrimKind::u64() },
+            "std::mem::current_offset" | "builtin::std::mem::current_offset" => {
+                Value::UInt { value: self.cursor_tell() as u128, kind: PrimKind::u64() }
+            }
+            "std::mem::base_address" | "builtin::std::mem::base_address" => {
+                // MemorySource exposes bytes starting at offset 0;
+                // there's no pre-mapped base. Hosts that wrap
+                // arbitrary memory regions can override later.
+                Value::UInt { value: 0, kind: PrimKind::u64() }
+            }
+            "builtin::std::mem::find_string_in_range"
+            | "builtin::std::mem::find_sequence_in_range" => {
+                // Not modelled yet -- `MagicSearch<...>` and friends
+                // call this. Return -1 (sentinel for "not found")
+                // so the caller's `if (address < 0) break;` exits
+                // the search loop cleanly.
+                Value::SInt { value: -1, kind: PrimKind::s128() }
+            }
             // Random-access reads. `std::mem::read_unsigned(off, n)`
             // / `read_signed(off, n)` return n-byte ints from the
             // source. `read_string(off, n)` returns n bytes lossy
