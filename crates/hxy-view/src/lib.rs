@@ -1112,6 +1112,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     field_boundaries,
                     field_colors,
                 );
+                response.minimap_rect = Some(minimap_rect);
             }
 
             draw_scrollbar(
@@ -1148,6 +1149,11 @@ pub struct HexViewResponse {
     pub scroll_offset: f32,
     /// Visible viewport height (in pixels).
     pub viewport_height: f32,
+    /// Screen-space rect of the minimap, when one was rendered this
+    /// frame. Hosts that paint overlays *between* two views (e.g.
+    /// the file-comparison leader lines) need this to know where
+    /// each side's minimap lives.
+    pub minimap_rect: Option<Rect>,
     /// Byte range actually rendered this frame (after clipping). Useful
     /// for consumers that want to paint overlays only over visible bytes.
     pub visible_range: Option<ByteRange>,
