@@ -14,3 +14,9 @@ dist/
 # our runs are currently clean.
 fuzz/target/
 fuzz/coverage/
+
+# Cloned at runtime by the application (and at test time by
+# `scripts/fetch_imhex_patterns.sh`) to provide ImHex's GPL-licensed
+# pattern corpus + `std/` library. Kept out of the source tree on
+# purpose -- we link to it but do not redistribute it.
+.imhex-patterns/
