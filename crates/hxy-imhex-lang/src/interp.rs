@@ -342,6 +342,18 @@ impl<S: HexSource> Interpreter<S> {
                 self.register_function(&f.name, f.clone());
             }
             Stmt::UsingAlias { new_name, template_params, source, .. } => {
+                // `using Foo;` (forward declaration: source path
+                // points at `Foo` itself) is a no-op when `Foo` is
+                // already in the type table -- ImHex uses this
+                // shape inside namespaces to forward-reference an
+                // outer type. Without this guard we'd overwrite the
+                // real definition with a self-alias and every
+                // lookup would loop until the depth limit hits.
+                let is_self_forward =
+                    template_params.is_empty() && source.template_args.is_empty() && source.leaf() == new_name;
+                if is_self_forward && self.types.contains_key(new_name) {
+                    return;
+                }
                 self.register_type(
                     new_name,
                     TypeDef::Alias { params: template_params.clone(), target: source.clone() },
@@ -1989,6 +2001,18 @@ impl<S: HexSource> Interpreter<S> {
     fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, args)? {
             return Ok(v);
+        }
+        // `u8(x)`, `u32(x)`, `s64(x)`, ... -- primitive cast via
+        // call syntax. ImHex templates use this to coerce an enum
+        // member back to its raw integer (`u8(type) <= 0x7F`).
+        if let Some(prim) = self
+            .types
+            .get(name)
+            .and_then(|d| if let TypeDef::Primitive(p) = d { Some(*p) } else { None })
+            .or_else(|| generic_int_primitive(name))
+            && let Some(arg) = args.first()
+        {
+            return Ok(coerce_value_to_prim(arg.clone(), prim));
         }
         let Some(func) = self.functions.get(name).cloned() else {
             return Err(RuntimeError::UndefinedName { name: name.to_owned() });
