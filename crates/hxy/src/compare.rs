@@ -439,45 +439,119 @@ pub struct CompareRowMaps {
     pub b: Vec<hxy_view::RowSlot>,
 }
 
-/// Build a parallel row map for both sides of `diff` at the given
-/// row width. Each diff hunk emits `max(rows_in_a, rows_in_b)` rows;
-/// whichever side has fewer rows for that hunk is padded with
-/// [`hxy_view::RowSlot::Gap`] entries so the two maps stay the
-/// same length and aligned visually.
+/// Build a parallel row map for both sides of `diff`. Each side's
+/// Real slots are at 16-aligned (`columns`-aligned) offsets -- the
+/// natural hex-grid rows of that side, no partial-row breaks at
+/// hunk boundaries. The two maps end up the same length: gaps are
+/// inserted on the shorter side to align added / removed regions.
+///
+/// Visual alignment is row-level rather than byte-level: a
+/// 5-byte change that starts mid-row colors the affected bytes via
+/// the per-byte styler, but the row itself stays 16 bytes wide and
+/// aligned with its neighbors. Compare it to most hex-diff tools
+/// (Beyond Compare, etc.) which take the same compromise.
 pub fn build_row_maps(diff: &DiffResult, columns: u64) -> CompareRowMaps {
-    let mut a = Vec::new();
-    let mut b = Vec::new();
+    use std::collections::BTreeMap;
+
     if columns == 0 {
-        return CompareRowMaps { a, b };
+        return CompareRowMaps { a: Vec::new(), b: Vec::new() };
     }
+    let a_natural = natural_rows(diff.a_len, columns);
+    let b_natural = natural_rows(diff.b_len, columns);
+
+    // Per-side `(insert_before_natural_row_idx -> gap_count)` plan.
+    // Multiple plan entries on the same row sum.
+    let mut a_gaps: BTreeMap<usize, u64> = BTreeMap::new();
+    let mut b_gaps: BTreeMap<usize, u64> = BTreeMap::new();
+
     for hunk in &diff.hunks {
-        push_hunk_rows(&mut a, &mut b, hunk, columns);
+        match hunk.kind {
+            HunkKind::Added => {
+                // B has bytes A doesn't. A needs `ceil(b_len/cols)`
+                // gap rows, inserted at the row boundary nearest the
+                // insertion point on A.
+                let count = hunk.b_len.div_ceil(columns);
+                let at = (hunk.a_offset.div_ceil(columns)) as usize;
+                *a_gaps.entry(at).or_default() += count;
+            }
+            HunkKind::Removed => {
+                let count = hunk.a_len.div_ceil(columns);
+                let at = (hunk.b_offset.div_ceil(columns)) as usize;
+                *b_gaps.entry(at).or_default() += count;
+            }
+            HunkKind::Changed => {
+                // Each side emits `ceil(its_len/cols)` rows; pad the
+                // shorter side with gaps right after the changed
+                // region on that side.
+                let rows_a = hunk.a_len.div_ceil(columns);
+                let rows_b = hunk.b_len.div_ceil(columns);
+                if rows_a < rows_b {
+                    let count = rows_b - rows_a;
+                    let at = ((hunk.a_offset + hunk.a_len).div_ceil(columns)) as usize;
+                    *a_gaps.entry(at).or_default() += count;
+                } else if rows_b < rows_a {
+                    let count = rows_a - rows_b;
+                    let at = ((hunk.b_offset + hunk.b_len).div_ceil(columns)) as usize;
+                    *b_gaps.entry(at).or_default() += count;
+                }
+            }
+            HunkKind::Equal => {}
+        }
     }
+
+    let mut a = interleave_with_gaps(&a_natural, &a_gaps);
+    let mut b = interleave_with_gaps(&b_natural, &b_gaps);
+
+    // Safety net: if the math produced different lengths (rounding
+    // drift on hunk boundaries), pad the shorter map with end gaps
+    // so both views stay row-aligned.
+    let max_len = a.len().max(b.len());
+    a.resize(max_len, hxy_view::RowSlot::Gap);
+    b.resize(max_len, hxy_view::RowSlot::Gap);
+
     CompareRowMaps { a, b }
 }
 
-fn push_hunk_rows(
-    a: &mut Vec<hxy_view::RowSlot>,
-    b: &mut Vec<hxy_view::RowSlot>,
-    hunk: &DiffHunk,
-    columns: u64,
-) {
-    let rows_a = hunk.a_len.div_ceil(columns);
-    let rows_b = hunk.b_len.div_ceil(columns);
-    let total = rows_a.max(rows_b);
-    for r in 0..total {
-        a.push(slot_for_side(hunk.a_offset, hunk.a_len, columns, r));
-        b.push(slot_for_side(hunk.b_offset, hunk.b_len, columns, r));
+/// Natural 16-aligned row stream for one side: `Real(0, cols)`,
+/// `Real(cols, cols)`, ..., with the last slot possibly shorter
+/// than `cols` when `side_len` doesn't land on a row boundary.
+fn natural_rows(side_len: u64, columns: u64) -> Vec<hxy_view::RowSlot> {
+    let mut rows = Vec::new();
+    if side_len == 0 || columns == 0 {
+        return rows;
     }
+    let mut offset = 0u64;
+    while offset < side_len {
+        let len = (side_len - offset).min(columns) as u16;
+        rows.push(hxy_view::RowSlot::Real { offset, len });
+        offset += columns;
+    }
+    rows
 }
 
-fn slot_for_side(side_offset: u64, side_len: u64, columns: u64, row: u64) -> hxy_view::RowSlot {
-    let row_start = row * columns;
-    if row_start >= side_len {
-        return hxy_view::RowSlot::Gap;
+/// Splice gap rows into a side's natural row stream at the
+/// positions named by `gaps` (BTreeMap key = "insert before this
+/// natural row index", value = number of gaps to insert).
+fn interleave_with_gaps(
+    natural: &[hxy_view::RowSlot],
+    gaps: &std::collections::BTreeMap<usize, u64>,
+) -> Vec<hxy_view::RowSlot> {
+    let total_gaps: u64 = gaps.values().sum();
+    let mut out = Vec::with_capacity(natural.len() + total_gaps as usize);
+    for (i, row) in natural.iter().enumerate() {
+        if let Some(count) = gaps.get(&i) {
+            for _ in 0..*count {
+                out.push(hxy_view::RowSlot::Gap);
+            }
+        }
+        out.push(*row);
     }
-    let len = (side_len - row_start).min(columns) as u16;
-    hxy_view::RowSlot::Real { offset: side_offset + row_start, len }
+    if let Some(count) = gaps.get(&natural.len()) {
+        for _ in 0..*count {
+            out.push(hxy_view::RowSlot::Gap);
+        }
+    }
+    out
 }
 
 fn diff_op_to_hunk(op: DiffOp) -> DiffHunk {
@@ -593,17 +667,47 @@ mod tests {
     }
 
     #[test]
+    fn row_maps_use_natural_alignment_for_same_length_changed() {
+        // a and b have a tiny equal prefix then differ -- the prior
+        // algorithm would have emitted a partial 2-byte row at
+        // offset 2 followed by a row at offset 4. The fix keeps
+        // natural 4-byte (cols) alignment on both sides since the
+        // total lengths match.
+        let s = session(b"abXYZW", b"abMNOP");
+        let diff = s.diff.expect("diff");
+        let maps = build_row_maps(&diff, 4);
+        assert_eq!(maps.a.len(), maps.b.len());
+        // Both sides have 6 bytes -> 2 rows of 4+2 at offsets 0 and 4.
+        for slot in &maps.a {
+            if let hxy_view::RowSlot::Real { offset, .. } = slot {
+                assert!(offset.is_multiple_of(4), "A slot at non-aligned offset: {:?}", slot);
+            }
+        }
+        for slot in &maps.b {
+            if let hxy_view::RowSlot::Real { offset, .. } = slot {
+                assert!(offset.is_multiple_of(4), "B slot at non-aligned offset: {:?}", slot);
+            }
+        }
+    }
+
+    #[test]
     fn row_maps_pad_added_with_gaps_on_a() {
-        // a = "abcdef", b = "abXYZcdef" -- 3 bytes inserted at offset 2.
+        // 6 bytes on A vs 9 bytes on B (3 inserted). With cols=4:
+        // A has 2 natural rows; B has 3 natural rows; A needs 1 gap.
         let s = session(b"abcdef", b"abXYZcdef");
         let diff = s.diff.expect("diff");
         let maps = build_row_maps(&diff, 4);
         assert_eq!(maps.a.len(), maps.b.len());
-        // Expect gap rows on A wherever B has the inserted bytes.
         let gaps_a = maps.a.iter().filter(|s| s.is_gap()).count();
         let gaps_b = maps.b.iter().filter(|s| s.is_gap()).count();
-        assert!(gaps_a >= 1, "A side should have a gap row for the insertion: {:?}", maps.a);
-        assert_eq!(gaps_b, 0, "B side should be all real rows: {:?}", maps.b);
+        assert!(gaps_a >= 1, "A should have at least one gap: {:?}", maps.a);
+        assert_eq!(gaps_b, 0, "B should be all-real rows: {:?}", maps.b);
+        // A's Real slots stay at 4-aligned offsets.
+        for slot in &maps.a {
+            if let hxy_view::RowSlot::Real { offset, .. } = slot {
+                assert!(offset.is_multiple_of(4), "non-aligned A slot: {:?}", slot);
+            }
+        }
     }
 
     #[test]

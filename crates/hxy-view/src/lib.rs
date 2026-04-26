@@ -1124,6 +1124,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     hover_span,
                     field_boundaries,
                     field_colors,
+                    byte_styler.as_deref(),
                 );
                 response.minimap_rect = Some(minimap_rect);
             }
@@ -2319,6 +2320,7 @@ impl ByteClass {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn draw_minimap<S: HexSource + ?Sized>(
     ui: &mut Ui,
     scroll_id: egui::Id,
@@ -2335,6 +2337,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
     hover_span: Option<ByteRange>,
     field_boundaries: &[(ByteOffset, ByteLen)],
     field_colors: &[Color32],
+    byte_styler: Option<&dyn Fn(u8, ByteOffset) -> ByteStyle>,
 ) {
     if minimap_rect.width() < 1.0 || minimap_rect.height() < 1.0 || source_len.get() == 0 {
         return;
@@ -2400,9 +2403,10 @@ fn draw_minimap<S: HexSource + ?Sized>(
         for (c, byte) in chunk.iter().enumerate() {
             let x = minimap_rect.left() + c as f32 * cell_w;
             let offset = row_base_offset + c as u64;
+            let styler_bg = byte_styler.and_then(|f| f(*byte, ByteOffset::new(offset)).bg);
             let field_color =
                 if field_override { field_color_for(field_boundaries, field_colors, offset) } else { None };
-            let color = field_color.unwrap_or_else(|| {
+            let color = styler_bg.or(field_color).unwrap_or_else(|| {
                 if colored {
                     palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
                 } else {
