@@ -85,9 +85,12 @@ pub struct PersistedDock {
     pub schema_version: u32,
     pub outer: DockState<PersistedTab>,
     /// Inner-dock layout per workspace, keyed by the workspace's
-    /// parent file [`TabSource`]. Entries are dropped on restore if
-    /// no live workspace ends up matching the key.
-    pub workspace_layouts: HashMap<TabSource, DockState<PersistedWorkspaceTab>>,
+    /// parent file [`TabSource`]. Stored as a `Vec` of pairs (not
+    /// a `HashMap`) because JSON object keys must be strings and
+    /// [`TabSource`] is an enum -- the round-trip would fail at
+    /// serialise time. Entries are dropped on restore if no live
+    /// workspace ends up matching the key.
+    pub workspace_layouts: Vec<(TabSource, DockState<PersistedWorkspaceTab>)>,
 }
 
 /// Reverse maps the host needs while restoring: stable identifier ->
@@ -112,7 +115,7 @@ pub fn live_to_persisted(
     mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
 ) -> PersistedDock {
     let outer_persisted = outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts));
-    let mut workspace_layouts: HashMap<TabSource, DockState<PersistedWorkspaceTab>> = HashMap::new();
+    let mut workspace_layouts: Vec<(TabSource, DockState<PersistedWorkspaceTab>)> = Vec::new();
     for ws in workspaces.values() {
         let Some(parent_source) = files.get(&ws.editor_id).and_then(|f| f.source_kind.clone()) else {
             // Workspace whose parent file is anonymous / sourceless --
@@ -120,7 +123,7 @@ pub fn live_to_persisted(
             continue;
         };
         let inner = ws.dock.filter_map_tabs(|t| live_to_persisted_workspace_tab(t, files));
-        workspace_layouts.insert(parent_source, inner);
+        workspace_layouts.push((parent_source, inner));
     }
     PersistedDock { schema_version: SCHEMA_VERSION, outer: outer_persisted, workspace_layouts }
 }
