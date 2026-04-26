@@ -104,11 +104,67 @@ pub struct CompareSession {
     /// caches per-diff data (minimap row colors, etc.) can detect
     /// staleness without comparing the whole diff structure.
     pub diff_serial: u64,
+    /// Cached fingerprints of each side at the last diff, used to
+    /// detect that an edit has happened so the host can debounce a
+    /// recompute. See [`Self::needs_recompute_debounced`].
+    last_diff_fingerprint: Option<(PaneFingerprint, PaneFingerprint)>,
+    /// Wall-clock time of the most recent observed mutation. Used
+    /// as the start of the debounce window.
+    edit_at: Option<std::time::Instant>,
 }
+
+/// Cheap "did this side change?" snapshot pulled from the public
+/// editor API -- undo-stack length plus source length covers
+/// inserts, deletes, in-place writes, undo, redo, swap-source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PaneFingerprint {
+    undo_len: usize,
+    source_len: u64,
+}
+
+impl PaneFingerprint {
+    fn for_pane(pane: &ComparePane) -> Self {
+        Self {
+            undo_len: pane.editor.undo_stack().len(),
+            source_len: pane.editor.source().len().get(),
+        }
+    }
+}
+
+/// Outcome of [`CompareSession::needs_recompute_debounced`]. The
+/// host both updates its UI based on the variant *and* uses the
+/// `RecomputeAfter` deadline to schedule the next repaint so the
+/// debounce fires even with no further input.
+#[derive(Clone, Copy, Debug)]
+pub enum DebouncedDecision {
+    /// Nothing changed since the last diff -- skip.
+    Idle,
+    /// Edits are happening; wait until at least `after` from now
+    /// before recomputing. The host should call
+    /// `ctx.request_repaint_after(after)` so an idle session
+    /// eventually flushes.
+    WaitFor(std::time::Duration),
+    /// Edits have settled long enough; recompute now.
+    Recompute,
+}
+
+/// Idle window the host waits before recomputing the diff after
+/// observing a mutation. Tuned for "type a few bytes, see the diff
+/// catch up" -- short enough to feel live, long enough to avoid
+/// churning the diff on every keystroke for a multi-MiB file.
+pub const RECOMPUTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl CompareSession {
     pub fn new(id: CompareId, a: ComparePane, b: ComparePane) -> Self {
-        Self { id, a, b, diff: None, diff_serial: 0 }
+        Self {
+            id,
+            a,
+            b,
+            diff: None,
+            diff_serial: 0,
+            last_diff_fingerprint: None,
+            edit_at: None,
+        }
     }
 
     /// Recompute the diff from the current patched view of both
@@ -121,7 +177,39 @@ impl CompareSession {
         let hunks = ops.into_iter().map(diff_op_to_hunk).collect();
         self.diff = Some(DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 });
         self.diff_serial = self.diff_serial.wrapping_add(1);
+        self.last_diff_fingerprint =
+            Some((PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b)));
+        self.edit_at = None;
         Ok(())
+    }
+
+    /// Inspect whether either side has mutated since the last diff
+    /// and, if so, return how long the host should wait before
+    /// recomputing. `now` is wall-clock time; passing
+    /// `Instant::now()` is the typical use.
+    pub fn needs_recompute_debounced(&mut self, now: std::time::Instant) -> DebouncedDecision {
+        let current = (PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b));
+        let changed = match self.last_diff_fingerprint {
+            Some(last) => last != current,
+            None => self.diff.is_none(),
+        };
+        if !changed {
+            self.edit_at = None;
+            return DebouncedDecision::Idle;
+        }
+        let edit_at = match self.edit_at {
+            Some(t) => t,
+            None => {
+                self.edit_at = Some(now);
+                now
+            }
+        };
+        let elapsed = now.duration_since(edit_at);
+        if elapsed >= RECOMPUTE_DEBOUNCE {
+            DebouncedDecision::Recompute
+        } else {
+            DebouncedDecision::WaitFor(RECOMPUTE_DEBOUNCE - elapsed)
+        }
     }
 }
 
@@ -280,5 +368,25 @@ mod tests {
         assert_eq!(diff.change_count(), 0);
         assert_eq!(diff.a_len, 0);
         assert_eq!(diff.b_len, 0);
+    }
+
+    #[test]
+    fn debounce_idle_when_nothing_changed() {
+        let mut s = session(b"abc", b"abc");
+        let now = std::time::Instant::now();
+        assert!(matches!(s.needs_recompute_debounced(now), DebouncedDecision::Idle));
+    }
+
+    #[test]
+    fn debounce_waits_then_recomputes_after_edit() {
+        let mut s = session(b"abc", b"abc");
+        s.a.editor.request_write(0, vec![b'X']).unwrap();
+        let t0 = std::time::Instant::now();
+        match s.needs_recompute_debounced(t0) {
+            DebouncedDecision::WaitFor(d) => assert!(d <= RECOMPUTE_DEBOUNCE),
+            other => panic!("expected WaitFor, got {other:?}"),
+        }
+        let after = t0 + RECOMPUTE_DEBOUNCE + std::time::Duration::from_millis(1);
+        assert!(matches!(s.needs_recompute_debounced(after), DebouncedDecision::Recompute));
     }
 }

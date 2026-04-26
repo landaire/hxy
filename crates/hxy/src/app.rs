@@ -7500,17 +7500,33 @@ fn read_picker_source(app: &HxyApp, side: &ComparePickerSource) -> Result<Picked
 
 /// Render the body of a `Tab::Compare`. Top toolbar, two hex panes
 /// side-by-side, diff table at the bottom. Synchronized scroll with
-/// gap rows / minimap leader lines / per-pane diff coloring overlay
-/// are deferred to a follow-up; this commit lands the wire and the
-/// table so the user can navigate hunks.
+/// gap rows / minimap leader lines are deferred to a follow-up; this
+/// commit lands the wire, the table, the diff color overlay, and a
+/// debounced live recompute.
 #[cfg(not(target_arch = "wasm32"))]
 fn render_compare_tab(
     ui: &mut egui::Ui,
     session: &mut crate::compare::CompareSession,
     state: &mut PersistedState,
 ) {
+    use crate::compare::DebouncedDecision;
+
     let id = session.id;
     let tab_id = ui.id().with(("hxy-compare", id.get()));
+
+    // Debounced live recompute: if either side mutated since the last
+    // diff, wait `RECOMPUTE_DEBOUNCE` of edit-quiet time before
+    // re-running. We schedule a future repaint so an idle compare
+    // tab still flushes its pending diff after the typing stops.
+    match session.needs_recompute_debounced(std::time::Instant::now()) {
+        DebouncedDecision::Idle => {}
+        DebouncedDecision::WaitFor(d) => ui.ctx().request_repaint_after(d),
+        DebouncedDecision::Recompute => {
+            if let Err(e) = session.recompute() {
+                tracing::warn!(error = %e, "compare debounced recompute");
+            }
+        }
+    }
 
     egui::Panel::top(tab_id.with("toolbar"))
         .resizable(false)
@@ -7544,6 +7560,11 @@ fn render_compare_tab(
             render_compare_diff_table(ui, session);
         });
 
+    let (a_ranges, b_ranges) = match session.diff.as_ref() {
+        Some(d) => (compare_pane_ranges(d, crate::compare::CompareSide::A), compare_pane_ranges(d, crate::compare::CompareSide::B)),
+        None => (Vec::new(), Vec::new()),
+    };
+
     egui::CentralPanel::default().show_inside(ui, |ui| {
         let avail = ui.available_width();
         let half = (avail * 0.5).max(160.0);
@@ -7551,16 +7572,44 @@ fn render_compare_tab(
             ui.allocate_ui_with_layout(
                 egui::Vec2::new(half, ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
-                |ui| render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a")),
+                |ui| render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges),
             );
             ui.separator();
             ui.allocate_ui_with_layout(
                 egui::Vec2::new(ui.available_width(), ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
-                |ui| render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b")),
+                |ui| render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges),
             );
         });
     });
+}
+
+/// Sorted-by-start `(start, end_exclusive, kind)` ranges for one
+/// side's coloring. Skips hunks that don't have any bytes on that
+/// side (Added on A, Removed on B) so the styler's binary search
+/// only inspects ranges with non-zero length.
+#[cfg(not(target_arch = "wasm32"))]
+fn compare_pane_ranges(diff: &crate::compare::DiffResult, side: crate::compare::CompareSide) -> Vec<(u64, u64, crate::compare::HunkKind)> {
+    use crate::compare::CompareSide;
+    use crate::compare::HunkKind;
+
+    diff.changes()
+        .filter_map(|h| {
+            let (offset, len) = match side {
+                CompareSide::A => (h.a_offset, h.a_len),
+                CompareSide::B => (h.b_offset, h.b_len),
+            };
+            if len == 0 {
+                return None;
+            }
+            // Project Added on the A side / Removed on the B side
+            // into nothing (they have len == 0 on that side, just
+            // filtered above). The kind we keep is whatever the
+            // user-visible color should be on this side.
+            Some((offset, offset + len, h.kind))
+        })
+        .filter(|(_, _, kind)| !matches!(kind, HunkKind::Equal))
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7569,6 +7618,7 @@ fn render_compare_pane(
     pane: &mut crate::compare::ComparePane,
     state: &mut PersistedState,
     salt: egui::Id,
+    diff_ranges: &[(u64, u64, crate::compare::HunkKind)],
 ) {
     ui.horizontal(|ui| {
         ui.strong(&pane.display_name);
@@ -7576,7 +7626,44 @@ fn render_compare_pane(
     });
     let columns = state.app.hex_columns;
     let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
-    let _ = pane.editor.view().id_salt(salt).columns(columns).value_highlight(highlight).show(ui);
+    let mut view = pane.editor.view().id_salt(salt).columns(columns).value_highlight(highlight);
+    if pane.diff_colors && !diff_ranges.is_empty() {
+        let ranges = diff_ranges.to_vec();
+        let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
+        view = view.byte_styler(move |_byte, offset| {
+            let off = offset.get();
+            let idx = ranges.partition_point(|(start, _, _)| *start <= off);
+            if idx == 0 {
+                return hxy_view::ByteStyle { bg: None, fg: None };
+            }
+            let (_, end_exclusive, kind) = ranges[idx - 1];
+            if off >= end_exclusive {
+                return hxy_view::ByteStyle { bg: None, fg: None };
+            }
+            compare_kind_style(kind, text_mode)
+        });
+    }
+    let _ = view.show(ui);
+}
+
+/// Pick the diff color for `kind`, applied to either the byte fill
+/// or the text depending on the user's global byte-highlight-mode
+/// setting -- so compare colors land in the same channel as
+/// template colors.
+#[cfg(not(target_arch = "wasm32"))]
+fn compare_kind_style(kind: crate::compare::HunkKind, text_mode: bool) -> hxy_view::ByteStyle {
+    use crate::compare::HunkKind;
+    let color = match kind {
+        HunkKind::Added => egui::Color32::from_rgb(60, 200, 100),
+        HunkKind::Removed => egui::Color32::from_rgb(220, 90, 90),
+        HunkKind::Changed => egui::Color32::from_rgb(220, 160, 60),
+        HunkKind::Equal => return hxy_view::ByteStyle { bg: None, fg: None },
+    };
+    if text_mode {
+        hxy_view::ByteStyle { bg: None, fg: Some(color) }
+    } else {
+        hxy_view::ByteStyle { bg: Some(color), fg: None }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
