@@ -1899,7 +1899,10 @@ impl<S: HexSource> Interpreter<S> {
                     }
                     return Ok(total);
                 }
-                None => return Ok(0),
+                // Unknown name -- fall through to the caller's
+                // dynamic-value sizing path. Returning Ok(0) here
+                // would shadow live values like a `str` parameter.
+                None => return Err(RuntimeError::UnknownType { name: name.to_owned() }),
             }
         }
         Ok(0)
