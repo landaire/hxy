@@ -829,6 +829,14 @@ impl<S: HexSource> Interpreter<S> {
             self.current_scope_mut().vars.insert(name.clone(), default);
             return Ok(Flow::Next);
         }
+        // `const Type name = expr;` -- a compile-time constant,
+        // not a source read. ImHex evaluates `expr` once and binds
+        // the result without advancing the cursor.
+        if *is_const && init.is_some() {
+            let value = self.eval(init.as_ref().unwrap())?;
+            self.current_scope_mut().vars.insert(name.clone(), value);
+            return Ok(Flow::Next);
+        }
         let mut all_attrs = attrs_to_pairs(attrs);
         // `[[no_unique_address]]` -- the field reads at the current
         // cursor but doesn't advance it. Common idiom for inspecting
