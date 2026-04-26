@@ -6337,7 +6337,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
                     PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
                     PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
-                    PaletteCommand::CompareFiles => app.palette.open_at(crate::command_palette::Mode::CompareSideA),
+                    PaletteCommand::CompareFiles => start_compare_palette_flow(app),
                     PaletteCommand::CompareFilesDialog => start_compare_picker(app),
                 }
             }
@@ -7611,8 +7611,38 @@ pub enum ComparePickerSource {
 #[cfg(not(target_arch = "wasm32"))]
 fn start_compare_picker(app: &mut HxyApp) {
     app.palette.close();
-    app.compare_picker =
-        Some(ComparePickerState { a: ComparePickerSource::Unset, b: ComparePickerSource::Unset });
+    // Pre-fill A with whatever tab is focused -- the typical
+    // "compare this against X" workflow already has A in front
+    // of the user. Anonymous buffers fall through to Unset
+    // because they can't be compared (no stable identity to
+    // re-read bytes from).
+    let auto_a = match active_file_id(app)
+        .and_then(|id| app.files.get(&id).map(|f| (id, f)))
+    {
+        Some((id, f)) if f.source_kind.is_some() => ComparePickerSource::OpenFile(id),
+        _ => ComparePickerSource::Unset,
+    };
+    app.compare_picker = Some(ComparePickerState { a: auto_a, b: ComparePickerSource::Unset });
+}
+
+/// Open the palette into the compare cascade, auto-selecting the
+/// focused tab as A and jumping straight to the B-pick when
+/// possible. Falls back to the A-pick mode if there's no active
+/// file or the focused buffer is anonymous (no stable source).
+#[cfg(not(target_arch = "wasm32"))]
+fn start_compare_palette_flow(app: &mut HxyApp) {
+    use crate::command_palette::ComparePickState;
+    use crate::command_palette::Mode;
+    let auto_a = active_file_id(app)
+        .and_then(|id| app.files.get(&id))
+        .and_then(|f| f.source_kind.clone());
+    match auto_a {
+        Some(source) => {
+            app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
+            app.palette.open_at(Mode::CompareSideB);
+        }
+        None => app.palette.open_at(Mode::CompareSideA),
+    }
 }
 
 /// Render the compare picker modal, if open. Confirm spawns a
