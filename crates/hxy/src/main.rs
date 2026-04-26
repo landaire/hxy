@@ -50,7 +50,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
-    let (sink, loaded_app, loaded_tabs, loaded_grants, plugin_state_store) = {
+    let (sink, loaded_app, loaded_tabs, loaded_grants, loaded_dock_layout, plugin_state_store) = {
         let _guard = runtime.enter();
         match runtime.block_on(persist::open_db()) {
             Ok(pool) => {
@@ -75,6 +75,13 @@ fn main() -> eframe::Result<()> {
                         hxy_plugin_host::PluginGrants::default()
                     }
                 };
+                let dock_layout = match runtime.block_on(persist::load_dock_layout(&pool)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load dock layout -- starting with default");
+                        None
+                    }
+                };
                 let state_store: Arc<dyn hxy_plugin_host::StateStore> =
                     Arc::new(persist::SqliteStateStore::new(pool.clone(), Arc::clone(&runtime)));
                 (
@@ -82,12 +89,13 @@ fn main() -> eframe::Result<()> {
                     app_settings,
                     tabs,
                     grants,
+                    dock_layout,
                     Some(state_store),
                 )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "open settings database");
-                (None, None, None, hxy_plugin_host::PluginGrants::default(), None)
+                (None, None, None, hxy_plugin_host::PluginGrants::default(), None, None)
             }
         }
     };
@@ -97,6 +105,7 @@ fn main() -> eframe::Result<()> {
         app: loaded_app.unwrap_or_default(),
         open_tabs: loaded_tabs.unwrap_or_default(),
         plugin_grants: loaded_grants,
+        dock_layout_json: loaded_dock_layout,
     });
 
     let viewport = egui::ViewportBuilder::default()

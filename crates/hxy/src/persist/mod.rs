@@ -14,10 +14,12 @@ mod plugin_state;
 mod save;
 
 pub use kv::load_app_settings;
+pub use kv::load_dock_layout;
 pub use kv::load_open_tabs;
 pub use kv::load_plugin_grants;
 pub use kv::load_window_settings;
 pub use kv::store_app_settings;
+pub use kv::store_dock_layout;
 pub use kv::store_open_tabs;
 pub use kv::store_plugin_grants;
 pub use kv::store_window_settings;

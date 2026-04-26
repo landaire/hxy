@@ -34,7 +34,7 @@ pub struct OpenTabState {
     pub as_workspace: bool,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct PersistedState {
     pub window: WindowSettings,
     pub app: AppSettings,
@@ -44,6 +44,32 @@ pub struct PersistedState {
     /// writes it through the same `state.read()` / `state.write()`
     /// path the rest of [`PersistedState`] uses.
     pub plugin_grants: hxy_plugin_host::PluginGrants,
+    /// Cached JSON of the most recent dock-layout snapshot.
+    /// Stored as a string rather than the typed
+    /// [`crate::persisted_dock::PersistedDock`] so the per-frame
+    /// dirty check stays a cheap byte comparison and so the field
+    /// carries the wasm-stripped feature gate without
+    /// ricocheting through every consumer of [`PersistedState`].
+    /// `None` until the host snapshots the dock at least once.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub dock_layout_json: Option<String>,
+}
+
+impl PartialEq for PersistedState {
+    fn eq(&self, other: &Self) -> bool {
+        let base = self.window == other.window
+            && self.app == other.app
+            && self.open_tabs == other.open_tabs
+            && self.plugin_grants == other.plugin_grants;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            base && self.dock_layout_json == other.dock_layout_json
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            base
+        }
+    }
 }
 
 pub type SharedPersistedState = Arc<RwLock<PersistedState>>;

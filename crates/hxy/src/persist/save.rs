@@ -8,6 +8,7 @@ use tokio::runtime::Runtime;
 
 use crate::persist::PersistResult;
 use crate::persist::store_app_settings;
+use crate::persist::store_dock_layout;
 use crate::persist::store_open_tabs;
 use crate::persist::store_plugin_grants;
 use crate::persist::store_window_settings;
@@ -32,11 +33,15 @@ impl SaveSink {
         let app = state.app.clone();
         let tabs = state.open_tabs.clone();
         let plugin_grants = state.plugin_grants.clone();
+        let dock_layout = state.dock_layout_json.clone();
         self.runtime.block_on(async move {
             store_window_settings(&pool, &window).await?;
             store_app_settings(&pool, &app).await?;
             store_open_tabs(&pool, &tabs).await?;
             store_plugin_grants(&pool, &plugin_grants).await?;
+            if let Some(json) = dock_layout.as_deref() {
+                store_dock_layout(&pool, json).await?;
+            }
             Ok(())
         })
     }

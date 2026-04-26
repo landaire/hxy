@@ -15,6 +15,7 @@ const KEY_WINDOW: &str = "window";
 const KEY_APP: &str = "app_settings";
 const KEY_OPEN_TABS: &str = "open_tabs";
 const KEY_PLUGIN_GRANTS: &str = "plugin_grants";
+const KEY_DOCK_LAYOUT: &str = "dock_layout";
 
 async fn fetch(pool: &SqlitePool, key: &str) -> PersistResult<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
@@ -75,4 +76,28 @@ pub async fn load_plugin_grants(pool: &SqlitePool) -> PersistResult<Option<hxy_p
 
 pub async fn store_plugin_grants(pool: &SqlitePool, grants: &hxy_plugin_host::PluginGrants) -> PersistResult<()> {
     store(pool, KEY_PLUGIN_GRANTS, grants).await
+}
+
+/// Load the most recent dock-layout snapshot as a raw JSON string.
+/// The host parses it into [`crate::persisted_dock::PersistedDock`]
+/// at restore time -- keeping it a string here lets the dirty check
+/// stay a cheap byte compare and keeps schema-rejection logic out
+/// of the storage layer.
+pub async fn load_dock_layout(pool: &SqlitePool) -> PersistResult<Option<String>> {
+    fetch(pool, KEY_DOCK_LAYOUT).await
+}
+
+/// Persist a dock-layout JSON blob. The caller is responsible for
+/// shape (typically [`crate::persisted_dock::PersistedDock`]); this
+/// helper just round-trips bytes.
+pub async fn store_dock_layout(pool: &SqlitePool, json: &str) -> PersistResult<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(KEY_DOCK_LAYOUT)
+    .bind(json)
+    .execute(pool)
+    .await
+    .map_err(PersistError::Query)?;
+    Ok(())
 }

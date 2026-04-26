@@ -945,6 +945,10 @@ impl HxyApp {
             }
         }
         self.state.write().open_tabs = surviving;
+        // After every tab has been remounted to a live FileId /
+        // WorkspaceId / MountId, replay the saved dock layout on top
+        // so splits / sizes / focus / window state survive.
+        self.apply_persisted_dock_layout();
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1183,6 +1187,89 @@ impl HxyApp {
             }
         }
     }
+
+    /// Snapshot the live outer dock + every workspace's inner dock
+    /// into [`crate::state::PersistedState::dock_layout_json`].
+    /// Compares against the previous JSON before writing so the
+    /// per-frame [`Self::save_if_dirty`] check correctly elides a
+    /// disk write when nothing actually changed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn snapshot_dock_layout(&mut self) {
+        let snapshot = crate::persisted_dock::live_to_persisted(
+            &self.dock,
+            &self.workspaces,
+            &self.files,
+            &self.mounts,
+        );
+        let json = match serde_json::to_string(&snapshot) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "serialize dock layout -- skipping snapshot");
+                return;
+            }
+        };
+        let mut g = self.state.write();
+        if g.dock_layout_json.as_deref() != Some(json.as_str()) {
+            g.dock_layout_json = Some(json);
+        }
+    }
+
+    /// Translate the most recently loaded
+    /// [`crate::state::PersistedState::dock_layout_json`] back into
+    /// live dock state and replace the freshly-restored default
+    /// layout. No-op if the blob is absent, malformed, or carries
+    /// an unknown schema version -- in any of those cases the host
+    /// keeps the layout that [`Self::restore_open_tabs`] just built
+    /// from `open_tabs` alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_persisted_dock_layout(&mut self) {
+        let json = match self.state.read().dock_layout_json.clone() {
+            Some(j) => j,
+            None => return,
+        };
+        let snapshot: crate::persisted_dock::PersistedDock = match serde_json::from_str(&json) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "decode dock layout -- keeping default layout");
+                return;
+            }
+        };
+        if snapshot.schema_version != crate::persisted_dock::SCHEMA_VERSION {
+            tracing::info!(
+                version = snapshot.schema_version,
+                expected = crate::persisted_dock::SCHEMA_VERSION,
+                "dock layout schema mismatch -- keeping default layout"
+            );
+            return;
+        }
+        let files_by_source: HashMap<TabSource, FileId> =
+            self.files.iter().filter_map(|(id, f)| f.source_kind.clone().map(|s| (s, *id))).collect();
+        let workspaces_by_parent: HashMap<TabSource, crate::file::WorkspaceId> = self
+            .workspaces
+            .iter()
+            .filter_map(|(id, ws)| {
+                let parent = self.files.get(&ws.editor_id)?.source_kind.clone()?;
+                Some((parent, *id))
+            })
+            .collect();
+        let mounts_by_token: HashMap<(String, String), crate::file::MountId> = self
+            .mounts
+            .iter()
+            .map(|(id, m)| ((m.plugin_name.clone(), m.token.clone()), *id))
+            .collect();
+        let maps = crate::persisted_dock::RestoreMaps {
+            files_by_source: &files_by_source,
+            workspaces_by_parent: &workspaces_by_parent,
+            mounts_by_token: &mounts_by_token,
+        };
+        let (outer, inner_by_id) = crate::persisted_dock::persisted_to_live(&snapshot, &maps);
+        self.dock = outer;
+        for (ws_id, inner_dock) in inner_by_id {
+            if let Some(ws) = self.workspaces.get_mut(&ws_id) {
+                ws.dock = inner_dock;
+            }
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1353,6 +1440,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         render_close_tab_dialog(ui.ctx(), self);
 
+        #[cfg(not(target_arch = "wasm32"))]
+        self.snapshot_dock_layout();
         self.save_if_dirty(&snapshot_before);
     }
 

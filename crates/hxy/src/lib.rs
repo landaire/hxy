@@ -48,6 +48,8 @@ pub mod patch_persist;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod persisted_dock;
 
 #[cfg(target_os = "macos")]
 pub mod menu;
