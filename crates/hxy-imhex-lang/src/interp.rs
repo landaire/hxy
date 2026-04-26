@@ -1961,12 +1961,15 @@ impl<S: HexSource> Interpreter<S> {
         let Some(func) = self.functions.get(name).cloned() else {
             return Err(RuntimeError::UndefinedName { name: name.to_owned() });
         };
-        if func.params.len() != args.len() {
-            return Err(RuntimeError::Type(format!("{} expects {} args, got {}", name, func.params.len(), args.len())));
-        }
+        // Tolerate arity mismatches at the call site. ImHex functions
+        // often declare default-valued trailing params (`fn f(u32 n,
+        // str msg = "")`); our parser drops the default expression
+        // but the caller still passes fewer args. We bind missing
+        // params to Void and ignore extras.
         self.scopes.push(Scope::default());
-        for (p, v) in func.params.iter().zip(args.iter()) {
-            self.current_scope_mut().vars.insert(p.name.clone(), v.clone());
+        for (i, p) in func.params.iter().enumerate() {
+            let v = args.get(i).cloned().unwrap_or(Value::Void);
+            self.current_scope_mut().vars.insert(p.name.clone(), v);
         }
         let saved_return = self.return_value.take();
         let mut result = Value::Void;
@@ -2221,13 +2224,17 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
         BinOp::Sub => Value::SInt { value: li.wrapping_sub(ri), kind: PrimKind::s64() },
         BinOp::Mul => Value::SInt { value: li.wrapping_mul(ri), kind: PrimKind::s64() },
         BinOp::Div => Value::SInt {
-            value: li.checked_div(ri).ok_or_else(|| RuntimeError::Type("integer divide by zero".into()))?,
+            // Treat division by zero as 0 rather than halting --
+            // ImHex templates frequently compute sizes using a
+            // value that's zero before a header is read; aborting
+            // the run on those is more disruptive than emitting a
+            // wrong-but-progressing answer.
+            value: li.checked_div(ri).unwrap_or(0),
             kind: PrimKind::s64(),
         },
-        BinOp::Rem => Value::SInt {
-            value: li.checked_rem(ri).ok_or_else(|| RuntimeError::Type("integer remainder by zero".into()))?,
-            kind: PrimKind::s64(),
-        },
+        BinOp::Rem => {
+            Value::SInt { value: li.checked_rem(ri).unwrap_or(0), kind: PrimKind::s64() }
+        }
         BinOp::BitAnd => Value::SInt { value: li & ri, kind: PrimKind::s64() },
         BinOp::BitOr => Value::SInt { value: li | ri, kind: PrimKind::s64() },
         BinOp::BitXor => Value::SInt { value: li ^ ri, kind: PrimKind::s64() },
