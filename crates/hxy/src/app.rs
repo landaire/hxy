@@ -7360,7 +7360,7 @@ fn render_compare_picker(ctx: &egui::Context, app: &mut HxyApp) {
             });
         });
     if confirm {
-        if let Err(e) = spawn_compare_from_picker(app, &state) {
+        if let Err(e) = spawn_compare_from_picker(app, ctx, &state) {
             tracing::warn!(error = %e, "spawn compare");
         }
     }
@@ -7431,6 +7431,7 @@ fn render_compare_picker_combo(
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_compare_from_picker(
     app: &mut HxyApp,
+    ctx: &egui::Context,
     state: &ComparePickerState,
 ) -> Result<(), CompareSpawnError> {
     let a = read_picker_source(app, &state.a)?;
@@ -7442,9 +7443,11 @@ fn spawn_compare_from_picker(
         crate::compare::ComparePane::from_bytes(a.name, a.source, a.bytes),
         crate::compare::ComparePane::from_bytes(b.name, b.source, b.bytes),
     );
-    if let Err(e) = session.recompute() {
-        tracing::warn!(error = %e, "compare initial diff");
-    }
+    // Run the initial diff on a worker thread so confirming the
+    // picker for two large files doesn't freeze the UI -- the
+    // tab opens immediately, the diff fills in once the worker
+    // returns.
+    session.request_recompute(ctx);
     app.compares.insert(id, session);
     app.dock.push_to_focused_leaf(Tab::Compare(id));
     if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
@@ -7532,30 +7535,35 @@ fn render_compare_tab(
     let id = session.id;
     let tab_id = ui.id().with(("hxy-compare", id.get()));
 
+    // Pull any worker result in first so the rest of the frame
+    // sees up-to-date diff state.
+    session.poll_recompute();
     // Debounced live recompute: if either side mutated since the last
     // diff, wait `RECOMPUTE_DEBOUNCE` of edit-quiet time before
-    // re-running. We schedule a future repaint so an idle compare
-    // tab still flushes its pending diff after the typing stops.
+    // spawning a worker. The diff itself runs on a thread so the
+    // UI never freezes -- even a multi-MiB completely-unrelated
+    // diff degenerates gracefully via `RECOMPUTE_DEADLINE`.
     match session.needs_recompute_debounced(std::time::Instant::now()) {
         DebouncedDecision::Idle => {}
         DebouncedDecision::WaitFor(d) => ui.ctx().request_repaint_after(d),
-        DebouncedDecision::Recompute => {
-            if let Err(e) = session.recompute() {
-                tracing::warn!(error = %e, "compare debounced recompute");
-            }
-        }
+        DebouncedDecision::Recompute => session.request_recompute(ui.ctx()),
     }
 
     egui::Panel::top(tab_id.with("toolbar"))
         .resizable(false)
         .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("compare-recompute")).clicked()
-                    && let Err(e) = session.recompute()
+                let recomputing = session.is_recomputing();
+                if ui
+                    .add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute")))
+                    .clicked()
                 {
-                    tracing::warn!(error = %e, "compare recompute");
+                    session.request_recompute(ui.ctx());
                 }
-                if let Some(diff) = &session.diff {
+                if recomputing {
+                    ui.spinner();
+                    ui.weak(hxy_i18n::t("compare-status-recomputing"));
+                } else if let Some(diff) = &session.diff {
                     ui.weak(hxy_i18n::t_args(
                         "compare-status",
                         &[

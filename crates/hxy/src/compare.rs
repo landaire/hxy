@@ -23,6 +23,7 @@ use hxy_vfs::TabSource;
 use similar::Algorithm;
 use similar::DiffOp;
 use similar::capture_diff_slices;
+use similar::capture_diff_slices_deadline;
 
 use crate::file::EditMode;
 
@@ -117,6 +118,10 @@ pub struct CompareSession {
     /// wheel and propagate that motion to the other side so the
     /// row maps stay aligned.
     last_synced_scroll: f32,
+    /// Worker handle while a background diff is in flight. `None`
+    /// when no recompute is pending. Polling-only -- see
+    /// [`Self::poll_recompute`].
+    pending_recompute: Option<RecomputePending>,
 }
 
 /// Cheap "did this side change?" snapshot pulled from the public
@@ -160,6 +165,27 @@ pub enum DebouncedDecision {
 /// churning the diff on every keystroke for a multi-MiB file.
 pub const RECOMPUTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Maximum wall-clock time the worker thread is allowed to spend
+/// on a single Myers diff. Past this, [`similar`] falls back to
+/// an approximation -- the result is still a valid diff, just less
+/// granular. Bounds the worst case for completely-unrelated
+/// inputs where Myers degenerates to O(N*D) with D ~= N.
+pub const RECOMPUTE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// In-flight worker thread state. The session keeps one of these
+/// while a background diff is running; each frame the host calls
+/// [`CompareSession::poll_recompute`] which `try_recv`s the
+/// channel and applies the result if ready.
+struct RecomputePending {
+    rx: std::sync::mpsc::Receiver<DiffResult>,
+    /// Fingerprint of the inputs the worker is computing against,
+    /// stored on the session so we can update
+    /// [`CompareSession::last_diff_fingerprint`] correctly when the
+    /// worker finishes -- not the *current* fingerprint, which may
+    /// have moved on while the worker ran.
+    fingerprint: (PaneFingerprint, PaneFingerprint),
+}
+
 impl CompareSession {
     pub fn new(id: CompareId, a: ComparePane, b: ComparePane) -> Self {
         Self {
@@ -171,6 +197,77 @@ impl CompareSession {
             last_diff_fingerprint: None,
             edit_at: None,
             last_synced_scroll: 0.0,
+            pending_recompute: None,
+        }
+    }
+
+    /// `true` while a worker thread is computing the diff. Hosts
+    /// can use this to render a "computing…" indicator and to
+    /// avoid issuing another recompute request.
+    pub fn is_recomputing(&self) -> bool {
+        self.pending_recompute.is_some()
+    }
+
+    /// Spawn a worker thread that computes the diff with a
+    /// [`RECOMPUTE_DEADLINE`] safety net. The thread reads from
+    /// owned `Vec<u8>` snapshots (taken synchronously here) so it
+    /// can outlive the editor without aliasing patched-source
+    /// state. `ctx` is cloned into the worker so completing the
+    /// diff requests an immediate UI repaint instead of waiting on
+    /// the next ambient repaint.
+    pub fn request_recompute(&mut self, ctx: &egui::Context) {
+        if self.pending_recompute.is_some() {
+            return;
+        }
+        let a_bytes = match read_all(&self.a.editor) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "compare: read side a");
+                return;
+            }
+        };
+        let b_bytes = match read_all(&self.b.editor) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "compare: read side b");
+                return;
+            }
+        };
+        let fingerprint = (PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx_clone = ctx.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + RECOMPUTE_DEADLINE;
+            let ops = capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline));
+            let hunks: Vec<DiffHunk> = ops.into_iter().map(diff_op_to_hunk).collect();
+            let result = DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 };
+            let _ = tx.send(result);
+            ctx_clone.request_repaint();
+        });
+        self.pending_recompute = Some(RecomputePending { rx, fingerprint });
+    }
+
+    /// Try to receive the worker's diff result. Call once per
+    /// frame; on success the diff is swapped in and the
+    /// fingerprint that the worker computed against is stored, so
+    /// the debounce logic can detect any edits that happened
+    /// while the worker was running and schedule a follow-up.
+    pub fn poll_recompute(&mut self) {
+        let Some(pending) = self.pending_recompute.as_ref() else { return };
+        match pending.rx.try_recv() {
+            Ok(diff) => {
+                self.diff = Some(diff);
+                self.diff_serial = self.diff_serial.wrapping_add(1);
+                self.last_diff_fingerprint = Some(pending.fingerprint);
+                self.edit_at = None;
+                self.pending_recompute = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // Worker died without sending -- drop the slot so
+                // the next debounce can try again.
+                self.pending_recompute = None;
+            }
         }
     }
 
@@ -236,8 +333,15 @@ impl CompareSession {
     /// Inspect whether either side has mutated since the last diff
     /// and, if so, return how long the host should wait before
     /// recomputing. `now` is wall-clock time; passing
-    /// `Instant::now()` is the typical use.
+    /// `Instant::now()` is the typical use. Returns
+    /// [`DebouncedDecision::Idle`] while a worker is already
+    /// running -- the host's next [`Self::poll_recompute`] call
+    /// will pick up the result and any post-worker edits will
+    /// re-fire the debounce naturally.
     pub fn needs_recompute_debounced(&mut self, now: std::time::Instant) -> DebouncedDecision {
+        if self.pending_recompute.is_some() {
+            return DebouncedDecision::Idle;
+        }
         let current = (PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b));
         let changed = match self.last_diff_fingerprint {
             Some(last) => last != current,

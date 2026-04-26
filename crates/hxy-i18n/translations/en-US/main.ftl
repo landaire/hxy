@@ -136,6 +136,7 @@ tab-compare-title = Compare: { $a } / { $b }
 compare-recompute = Recompute diff
 compare-status = { $a } vs { $b } -- { $changes } change(s)
 compare-status-pending = Diff pending
+compare-status-recomputing = Computing diff…
 compare-no-differences = No differences
 compare-table-kind = Kind
 compare-table-a-range = A
