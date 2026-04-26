@@ -31,6 +31,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::ast::ArraySize;
 use crate::ast::AssignOp;
@@ -192,6 +194,11 @@ pub struct Interpreter<S: HexSource> {
     /// Active namespace prefix while collecting decls inside a
     /// `namespace foo::bar { ... }` block. Empty at the top level.
     namespace_stack: Vec<String>,
+    /// External cancel flag. When set, every step bails out with
+    /// [`RuntimeError::TimedOut`]. Hosts wire this up to a wall-clock
+    /// deadline so a runaway template can't stall the renderer or
+    /// the corpus probe.
+    interrupt: Arc<AtomicBool>,
 }
 
 impl<S: HexSource> Interpreter<S> {
@@ -212,9 +219,21 @@ impl<S: HexSource> Interpreter<S> {
             resolver: Arc::new(NoImportResolver),
             imported: HashSet::new(),
             namespace_stack: Vec::new(),
+            interrupt: Arc::new(AtomicBool::new(false)),
         };
         me.register_primitives();
         me
+    }
+
+    /// Plug in an external cancel flag. The interpreter polls it on
+    /// every statement step and bails out with
+    /// [`RuntimeError::TimedOut`] when the flag flips to `true`.
+    /// Hosts use this to enforce a wall-clock deadline (the
+    /// in-process step counter can't bound CPU when individual
+    /// steps walk a large node tree).
+    pub fn with_interrupt(mut self, interrupt: Arc<AtomicBool>) -> Self {
+        self.interrupt = interrupt;
+        self
     }
 
     /// Plug an import resolver so the interpreter can pull in
@@ -568,6 +587,14 @@ impl<S: HexSource> Interpreter<S> {
         self.steps = self.steps.saturating_add(1);
         if self.steps > self.step_limit {
             return Err(RuntimeError::StepLimitHit { step_limit: self.step_limit });
+        }
+        // Poll the external cancel flag every 1024 statements. The
+        // tight every-step variant showed up in profiles for big
+        // templates; 1024 keeps the worst-case cancel latency under
+        // a millisecond on the hot path while leaving the rest of
+        // the loop branch-predictor friendly.
+        if self.steps.is_multiple_of(1024) && self.interrupt.load(Ordering::Relaxed) {
+            return Err(RuntimeError::TimedOut { timeout_ms: 0 });
         }
         match stmt {
             Stmt::Block { stmts, .. } => {
