@@ -566,6 +566,11 @@ impl<S: HexSource> Interpreter<S> {
             Stmt::Break { .. } => Ok(Flow::Break),
             Stmt::Continue { .. } => Ok(Flow::Continue),
             Stmt::FieldDecl { .. } => self.exec_field_decl(stmt, parent),
+            // Bitfield-only stmts only show up inside a bitfield body
+            // walked by `read_bitfield`. If one slips through here
+            // (e.g. mistakenly placed at top level), treat it as a
+            // no-op rather than crashing the run.
+            Stmt::BitfieldField { .. } => Ok(Flow::Next),
             Stmt::Match { scrutinee, arms, .. } => self.exec_match(scrutinee, arms, parent),
             // The remaining variants are declarations the prepass
             // already collected -- nothing to execute.
@@ -945,15 +950,14 @@ impl<S: HexSource> Interpreter<S> {
         parent: Option<NodeIdx>,
         attrs: &[(String, String)],
     ) -> Result<Value, RuntimeError> {
-        // Compute total bits and pick the smallest power-of-two byte
-        // width that fits. ImHex's bitfields lay out fields in the
-        // declaration order across one underlying integer slot.
+        // Compute total bits by collecting every BitfieldField in the
+        // body, recursing into conditionals so nested fields still
+        // contribute to the slot width. We pessimistically include
+        // both branches of any if/match; the runtime walk only
+        // emits / binds the fields whose enclosing branch actually
+        // executes.
         let mut total_bits: u32 = 0;
-        for f in &decl.fields {
-            let w = self.eval(&f.width)?;
-            let bits = w.to_i128().unwrap_or(0).max(0) as u32;
-            total_bits = total_bits.saturating_add(bits);
-        }
+        self.bitfield_body_total_bits(&decl.body, &mut total_bits)?;
         let width_bytes = total_bits.div_ceil(8).max(1).next_power_of_two().min(16) as u8;
         let width_bytes = match width_bytes {
             1..=2 => width_bytes,
@@ -980,28 +984,113 @@ impl<S: HexSource> Interpreter<S> {
         // order -- matches the ImHex default; the `bitfield_order`
         // attribute can override at a future phase.
         let mut consumed: u32 = 0;
-        for f in &decl.fields {
-            let w = self.eval(&f.width)?;
-            let bits = w.to_i128().unwrap_or(0).max(0) as u32;
-            if bits == 0 {
-                continue;
-            }
-            let mask: u128 = if bits >= 128 { u128::MAX } else { (1u128 << bits) - 1 };
-            let value_u = (raw_u >> consumed) & mask;
-            consumed = consumed.saturating_add(bits);
-            let field_attrs = vec![("hxy_bits".into(), bits.to_string())];
-            self.nodes.push(NodeOut {
-                name: f.name.clone(),
-                ty: NodeType::Scalar(ScalarKind::U64),
-                offset,
-                length: 0,
-                value: Some(Value::UInt { value: value_u, kind: PrimKind::u64() }),
-                parent: Some(bf_idx),
-                attrs: field_attrs,
-            });
-            self.current_scope_mut().vars.insert(f.name.clone(), Value::UInt { value: value_u, kind: PrimKind::u64() });
-        }
+        self.exec_bitfield_body(&decl.body, raw_u, offset, bf_idx, &mut consumed)?;
         Ok(Value::UInt { value: raw_u, kind: PrimKind::u128() })
+    }
+
+    fn bitfield_body_total_bits(&mut self, body: &[Stmt], total: &mut u32) -> Result<(), RuntimeError> {
+        for stmt in body {
+            match stmt {
+                Stmt::BitfieldField { width, .. } => {
+                    let bits = self.eval(width)?.to_i128().unwrap_or(0).max(0) as u32;
+                    *total = total.saturating_add(bits);
+                }
+                Stmt::If { then_branch, else_branch, .. } => {
+                    if let Stmt::Block { stmts, .. } = then_branch.as_ref() {
+                        self.bitfield_body_total_bits(stmts, total)?;
+                    } else {
+                        self.bitfield_body_total_bits(std::slice::from_ref(then_branch.as_ref()), total)?;
+                    }
+                    if let Some(e) = else_branch.as_deref() {
+                        if let Stmt::Block { stmts, .. } = e {
+                            self.bitfield_body_total_bits(stmts, total)?;
+                        } else {
+                            self.bitfield_body_total_bits(std::slice::from_ref(e), total)?;
+                        }
+                    }
+                }
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        self.bitfield_body_total_bits(&arm.body, total)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn exec_bitfield_body(
+        &mut self,
+        body: &[Stmt],
+        raw_u: u128,
+        slot_offset: u64,
+        bf_idx: NodeIdx,
+        consumed: &mut u32,
+    ) -> Result<(), RuntimeError> {
+        for stmt in body {
+            match stmt {
+                Stmt::BitfieldField { name, width, .. } => {
+                    let bits = self.eval(width)?.to_i128().unwrap_or(0).max(0) as u32;
+                    if bits == 0 {
+                        continue;
+                    }
+                    let mask: u128 = if bits >= 128 { u128::MAX } else { (1u128 << bits) - 1 };
+                    let value_u = (raw_u >> *consumed) & mask;
+                    *consumed = consumed.saturating_add(bits);
+                    let field_attrs = vec![("hxy_bits".into(), bits.to_string())];
+                    self.nodes.push(NodeOut {
+                        name: name.clone(),
+                        ty: NodeType::Scalar(ScalarKind::U64),
+                        offset: slot_offset,
+                        length: 0,
+                        value: Some(Value::UInt { value: value_u, kind: PrimKind::u64() }),
+                        parent: Some(bf_idx),
+                        attrs: field_attrs,
+                    });
+                    self.current_scope_mut()
+                        .vars
+                        .insert(name.clone(), Value::UInt { value: value_u, kind: PrimKind::u64() });
+                }
+                Stmt::If { cond, then_branch, else_branch, .. } => {
+                    let take_then = self.eval(cond)?.is_truthy();
+                    let branch: &Stmt = if take_then {
+                        then_branch.as_ref()
+                    } else if let Some(e) = else_branch.as_deref() {
+                        e
+                    } else {
+                        continue;
+                    };
+                    if let Stmt::Block { stmts, .. } = branch {
+                        self.exec_bitfield_body(stmts, raw_u, slot_offset, bf_idx, consumed)?;
+                    } else {
+                        self.exec_bitfield_body(std::slice::from_ref(branch), raw_u, slot_offset, bf_idx, consumed)?;
+                    }
+                }
+                Stmt::Match { scrutinee, arms, .. } => {
+                    let value = self.eval(scrutinee)?;
+                    for arm in arms {
+                        if self.arm_matches(&value, &arm.patterns)? {
+                            self.exec_bitfield_body(&arm.body, raw_u, slot_offset, bf_idx, consumed)?;
+                            break;
+                        }
+                    }
+                }
+                Stmt::Expr { expr, .. } => {
+                    self.eval(expr)?;
+                }
+                // Computed value: `Type name = expr;`. ImHex bitfield
+                // bodies use this to expose derived fields without
+                // consuming bits. We bind the initializer so later
+                // expressions can see it but emit no node.
+                Stmt::FieldDecl { name, init: Some(e), .. } => {
+                    let v = self.eval(e)?;
+                    self.current_scope_mut().vars.insert(name.clone(), v);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn read_array(

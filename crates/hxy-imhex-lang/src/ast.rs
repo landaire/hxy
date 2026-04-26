@@ -117,24 +117,18 @@ pub struct EnumVariant {
 }
 
 /// `bitfield Name { name : N; padding : N; ... };`.
+///
+/// The body is a flat list of statements rather than a list of
+/// fields-only because ImHex bitfields can include `if`/`match`
+/// branches, computed `Type name = expr;` derived values, and
+/// byte-aligned regular reads alongside the usual `name : width;`
+/// bit-slice fields. The interpreter walks the body in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BitfieldDecl {
     pub name: String,
     pub template_params: Vec<String>,
-    pub fields: Vec<BitfieldField>,
+    pub body: Vec<Stmt>,
     pub attrs: Attrs,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct BitfieldField {
-    pub name: String,
-    pub width: Expr,
-    /// Optional type prefix: `Type name : width;`. ImHex uses this
-    /// to project a bit-slice as an enum or other typed value.
-    /// Currently captured for round-tripping; the interpreter still
-    /// reads raw integer bits.
-    pub ty: Option<TypeRef>,
     pub span: Span,
 }
 
@@ -152,6 +146,18 @@ pub enum Stmt {
     /// Nested function: `fn name(...) { ... }` inside a `namespace`
     /// or struct body. The top-level form lives in [`TopItem::Function`].
     FnDecl(FunctionDef),
+
+    /// `[Type] name : width [[attrs]];` -- a bit-slice field, only
+    /// legal inside a [`BitfieldDecl`] body. The optional type
+    /// projects the bit-slice as a typed value (typically an enum);
+    /// when `None`, the bits are read as a raw unsigned integer.
+    BitfieldField {
+        ty: Option<TypeRef>,
+        name: String,
+        width: Expr,
+        attrs: Attrs,
+        span: Span,
+    },
 
     /// `[const] Type name [array] [@ offset] [= init] [[attrs]];`.
     /// One declaration -- comma-separated declarators are unrolled

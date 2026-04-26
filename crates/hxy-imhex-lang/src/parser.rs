@@ -24,7 +24,6 @@ use crate::ast::Attr;
 use crate::ast::Attrs;
 use crate::ast::BinOp;
 use crate::ast::BitfieldDecl;
-use crate::ast::BitfieldField;
 use crate::ast::EnumDecl;
 use crate::ast::EnumVariant;
 use crate::ast::Expr;
@@ -206,6 +205,17 @@ impl Parser {
     }
 }
 
+/// True when the token at `parser.pos + offset` is something the
+/// soft-ident path would accept (an ident or one of the keywords
+/// soft-ident treats as a name).
+fn is_soft_ident_at(parser: &Parser, offset: usize) -> bool {
+    match parser.peek_at(offset).map(|t| &t.kind) {
+        Some(TokenKind::Ident(_)) => true,
+        Some(k) => soft_ident_name(k).is_some(),
+        None => false,
+    }
+}
+
 /// Keywords that may also appear in identifier position. Returning
 /// `Some(name)` lets the soft-ident path accept the token.
 fn soft_ident_name(kind: &TokenKind) -> Option<&'static str> {
@@ -216,6 +226,11 @@ fn soft_ident_name(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Keyword(Keyword::This) => "this",
         TokenKind::Keyword(Keyword::Be) => "be",
         TokenKind::Keyword(Keyword::Le) => "le",
+        // `template` is a normal field name in a few corpus templates
+        // (e.g. `DialogItemTemplate template [[inline]];`). The
+        // `template<...>` prefix form uses it in keyword position only
+        // at the start of a decl, where this fallback isn't reached.
+        TokenKind::Keyword(Keyword::Template) => "template",
         _ => return None,
     })
 }
@@ -550,9 +565,9 @@ impl Parser {
         let (name, _) = self.expect_ident()?;
         let template_params = self.parse_optional_template_params()?;
         self.expect_kind(&TokenKind::LBrace, "{")?;
-        let mut fields = Vec::new();
+        let mut body = Vec::new();
         while !matches!(self.peek_kind(), Some(TokenKind::RBrace) | None) {
-            fields.push(self.parse_bitfield_field()?);
+            body.push(self.parse_bitfield_entry()?);
         }
         self.expect_kind(&TokenKind::RBrace, "}")?;
         let attrs = self.parse_optional_attrs()?;
@@ -560,18 +575,93 @@ impl Parser {
         Ok(Stmt::BitfieldDecl(BitfieldDecl {
             name,
             template_params,
-            fields,
+            body,
             attrs,
             span: Span::new(kw.span.start, end),
         }))
     }
 
-    fn parse_bitfield_field(&mut self) -> Result<BitfieldField, ParseError> {
+    /// One entry inside a bitfield body. A bit-slice field
+    /// (`[Type] name : width;`) is the common shape, but the body
+    /// can also contain `if`/`match` branches, `Type name = expr;`
+    /// computed values, and byte-aligned regular reads -- so we
+    /// fall back to [`Self::parse_stmt`] when the next tokens don't
+    /// look like a bit-slice.
+    fn parse_bitfield_entry(&mut self) -> Result<Stmt, ParseError> {
+        if self.looks_like_bitfield_field() {
+            return self.parse_bitfield_field();
+        }
+        // Drop a stray `;`.
+        if self.eat_kind(&TokenKind::Semi) {
+            return Ok(Stmt::Block { stmts: Vec::new(), span: self.last_span() });
+        }
+        self.parse_stmt()
+    }
+
+    /// True when the upcoming tokens look like a `[Type] name : width`
+    /// bit-slice field. We need to disambiguate this from regular
+    /// `Type name = expr;` derived values and `Type name;` byte reads.
+    fn looks_like_bitfield_field(&self) -> bool {
+        // Walk past an optional be/le prefix and one or two idents
+        // (with optional `::` segments and `<...>` template args)
+        // until we either hit `:` (bit-slice) or `=` / `;` / `[` /
+        // `@` / `*` (regular field decl).
+        let mut i = 0;
+        if matches!(
+            self.peek_at(i).map(|t| &t.kind),
+            Some(TokenKind::Keyword(Keyword::Be) | TokenKind::Keyword(Keyword::Le))
+        ) {
+            i += 1;
+        }
+        // First ident.
+        if !is_soft_ident_at(self, i) {
+            return false;
+        }
+        i += 1;
+        // Optional `::Ident` repeats.
+        while matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::ColonColon)) {
+            i += 1;
+            if !is_soft_ident_at(self, i) {
+                return false;
+            }
+            i += 1;
+        }
+        // Optional `<...>` template args -- skip with depth tracking.
+        if matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Lt)) {
+            let mut depth = 1usize;
+            i += 1;
+            let limit = i + 64;
+            while i < limit && depth > 0 {
+                match self.peek_at(i).map(|t| &t.kind) {
+                    Some(TokenKind::Lt) => depth += 1,
+                    Some(TokenKind::Gt) => depth -= 1,
+                    None => return false,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if depth != 0 {
+                return false;
+            }
+        }
+        // After the type (or type-or-name), what follows decides:
+        //   `:` -- bit-slice (no type prefix).
+        //   `Ident :` -- bit-slice with type prefix.
+        //   anything else (`=`, `;`, `[`, `*`, `@`) -- regular decl.
+        match self.peek_at(i).map(|t| &t.kind) {
+            Some(TokenKind::Colon) => true,
+            Some(k) if soft_ident_name(k).is_some() || matches!(k, TokenKind::Ident(_)) => {
+                matches!(self.peek_at(i + 1).map(|t| &t.kind), Some(TokenKind::Colon))
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_bitfield_field(&mut self) -> Result<Stmt, ParseError> {
         // ImHex bitfields accept either `name : width` or
-        // `Type name : width`, the latter for projecting bits as an
-        // enum/typed value. We parse a TypeRef speculatively: if the
-        // next token is `:`, the "type" was actually the name; else
-        // it's a real prefix and we read the name after it.
+        // `Type name : width`. We parse a TypeRef speculatively: if
+        // the next token is `:`, the "type" was actually the name;
+        // else it's a real prefix and we read the name after it.
         let head = self.parse_type_ref()?;
         let (ty, name, name_span) = if matches!(self.peek_kind(), Some(TokenKind::Colon)) {
             let name = head.path.last().cloned().unwrap_or_default();
@@ -582,10 +672,10 @@ impl Parser {
         };
         self.expect_kind(&TokenKind::Colon, ":")?;
         let width = self.parse_expr()?;
-        let _ = self.parse_optional_attrs()?;
+        let attrs = self.parse_optional_attrs()?;
         let end = self.expect_kind(&TokenKind::Semi, ";")?.span.end;
         let start = ty.as_ref().map(|t| t.span.start).unwrap_or(name_span.start);
-        Ok(BitfieldField { name, width, ty, span: Span::new(start, end) })
+        Ok(Stmt::BitfieldField { ty, name, width, attrs, span: Span::new(start, end) })
     }
 
     fn parse_namespace(&mut self) -> Result<Stmt, ParseError> {
@@ -733,6 +823,13 @@ impl Parser {
         let kw = self.bump().unwrap(); // `match`
         self.expect_kind(&TokenKind::LParen, "(")?;
         let scrutinee = self.parse_expr()?;
+        // Tuple-style scrutinee `match (a, b) { ... }`: the first
+        // expression becomes the (single) scrutinee, additional
+        // expressions are accepted for round-tripping but currently
+        // dropped. Full multi-value matching arrives in a later phase.
+        while self.eat_kind(&TokenKind::Comma) {
+            let _ = self.parse_expr()?;
+        }
         self.expect_kind(&TokenKind::RParen, ")")?;
         self.expect_kind(&TokenKind::LBrace, "{")?;
         let mut arms = Vec::new();
@@ -820,6 +917,14 @@ impl Parser {
     fn parse_decl_or_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.looks_like_padding() {
             return self.parse_padding_decl();
+        }
+        // Bitfield-style `[Type] name : width;` -- legal inside
+        // bitfield bodies, including their nested `if`/`match`
+        // branches. Outside a bitfield context the stmt becomes a
+        // no-op at run time (see `Stmt::BitfieldField` handling in
+        // exec_stmt), so peeking here is safe.
+        if self.looks_like_bitfield_field() {
+            return self.parse_bitfield_field();
         }
         if self.looks_like_field_decl() {
             return self.parse_field_decl(false);
@@ -1019,7 +1124,16 @@ impl Parser {
         if matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Star)) {
             i += 1;
         }
-        matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        // After the type (and optional `*`), the declarator must
+        // start with either an identifier (regular field name) or a
+        // `[[` / `;` (anonymous field). We also accept soft-ident
+        // keywords (`auto`, `parent`, `this`, `template`, ...) since
+        // some corpus templates use those words as field names.
+        match self.peek_at(i).map(|t| &t.kind) {
+            Some(TokenKind::Ident(_)) | Some(TokenKind::LBracketBracket) | Some(TokenKind::Semi) => true,
+            Some(k) => soft_ident_name(k).is_some(),
+            None => false,
+        }
     }
 
     fn parse_field_decl(&mut self, is_const_prefix: bool) -> Result<Stmt, ParseError> {
@@ -1056,7 +1170,17 @@ impl Parser {
         // dropped for now -- modelling pointer reads requires
         // address-resolution work that lands in phase 4.
         let is_pointer = self.eat_kind(&TokenKind::Star);
-        let (name, _) = self.expect_soft_ident()?;
+        // Anonymous fields: `Type [[attrs]];` and `Type;` apply the
+        // type as an inline read with no bound name. We synthesise a
+        // skipping placeholder so the interpreter still emits a node
+        // but the renderer / scripts won't see a meaningful name.
+        let (name, _) = if !is_pointer
+            && matches!(self.peek_kind(), Some(TokenKind::LBracketBracket | TokenKind::Semi))
+        {
+            (String::new(), Span::new(start, start))
+        } else {
+            self.expect_soft_ident()?
+        };
         let array = self.parse_optional_array_size()?;
         // Pointer width: `: u32` -- captured so the interpreter can
         // do an address-indirected read.
@@ -1582,7 +1706,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Return { span, .. }
         | Stmt::Break { span }
         | Stmt::Continue { span }
-        | Stmt::FieldDecl { span, .. } => *span,
+        | Stmt::FieldDecl { span, .. }
+        | Stmt::BitfieldField { span, .. } => *span,
         Stmt::StructDecl(s) => s.span,
         Stmt::EnumDecl(e) => e.span,
         Stmt::BitfieldDecl(b) => b.span,

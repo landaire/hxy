@@ -77,7 +77,7 @@ bitfield Flags {
     );
     let TopItem::Stmt(Stmt::BitfieldDecl(b)) = &ast.items[0] else { panic!() };
     assert_eq!(b.name, "Flags");
-    assert_eq!(b.fields.len(), 3);
+    assert_eq!(b.body.len(), 3);
 }
 
 #[test]
@@ -239,13 +239,40 @@ bitfield Flags {
 ",
     );
     let TopItem::Stmt(Stmt::BitfieldDecl(decl)) = &ast.items[0] else { panic!() };
-    assert_eq!(decl.fields.len(), 3);
-    assert_eq!(decl.fields[0].name, "A");
-    assert!(decl.fields[0].ty.as_ref().is_some_and(|t| t.leaf() == "bool"));
-    assert_eq!(decl.fields[1].name, "plain");
-    assert!(decl.fields[1].ty.is_none());
-    assert_eq!(decl.fields[2].name, "tagged");
-    assert!(decl.fields[2].ty.as_ref().is_some_and(|t| t.leaf() == "SomeEnum"));
+    let fields: Vec<_> = decl
+        .body
+        .iter()
+        .filter_map(|s| if let Stmt::BitfieldField { ty, name, .. } = s { Some((name, ty)) } else { None })
+        .collect();
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].0, "A");
+    assert!(fields[0].1.as_ref().is_some_and(|t| t.leaf() == "bool"));
+    assert_eq!(fields[1].0, "plain");
+    assert!(fields[1].1.is_none());
+    assert_eq!(fields[2].0, "tagged");
+    assert!(fields[2].1.as_ref().is_some_and(|t| t.leaf() == "SomeEnum"));
+}
+
+#[test]
+fn bitfield_body_supports_if_and_computed() {
+    // Bitfield bodies can contain conditional fields and derived /
+    // computed values alongside the usual `name : width;` shape.
+    let ast = parse_str(
+        "\
+bitfield Flags {
+    a : 4;
+    if (a > 0) {
+        b : 4;
+    }
+    auto sum = a + 1;
+};
+",
+    );
+    let TopItem::Stmt(Stmt::BitfieldDecl(decl)) = &ast.items[0] else { panic!() };
+    assert_eq!(decl.body.len(), 3);
+    assert!(matches!(decl.body[0], Stmt::BitfieldField { .. }));
+    assert!(matches!(decl.body[1], Stmt::If { .. }));
+    assert!(matches!(decl.body[2], Stmt::FieldDecl { .. }));
 }
 
 #[test]
@@ -304,4 +331,64 @@ fn whitespace_separated_attribute_close_accepted() {
     // The parser should accept the pair as `]]`.
     let ast = parse_str("u8 b [[name(\"x\")] ];");
     assert_eq!(ast.items.len(), 1);
+}
+
+#[test]
+fn template_keyword_in_field_name_position() {
+    // `template` is a real ImHex keyword (`template<...> struct ...`)
+    // but a few corpus patterns use it as a regular field name --
+    // soft-ident accepts it where ambiguity is otherwise resolved.
+    let ast = parse_str("DialogItemTemplate template [[inline]];");
+    assert_eq!(ast.items.len(), 1);
+}
+
+#[test]
+fn anonymous_typed_field_with_attrs() {
+    // `Type [[attrs]];` -- a name-less inline read. ImHex emits the
+    // value but the field has no bound name. We model it as a
+    // FieldDecl with an empty name.
+    let ast = parse_str("FDTToken[[hidden]];");
+    let TopItem::Stmt(Stmt::FieldDecl { name, ty, .. }) = &ast.items[0] else { panic!() };
+    assert!(name.is_empty());
+    assert_eq!(ty.leaf(), "FDTToken");
+}
+
+#[test]
+fn match_tuple_scrutinee_compat() {
+    // Tuple-style scrutinee `match (a, b) { ... }`. Multi-value
+    // matching isn't modelled yet, but the syntax must not reject.
+    let ast = parse_str(
+        "\
+fn pick(u8 a, u8 b) {
+    match (a, b) {
+        (0): { return 0; }
+        (_): { return 1; }
+    }
+}
+",
+    );
+    assert_eq!(ast.items.len(), 1);
+}
+
+#[test]
+fn bitfield_match_arm_field_in_body() {
+    // Bitfield bodies can contain `match` blocks whose arms carry
+    // additional bit-slice fields. We need both the match-stmt
+    // dispatch in bitfield-entry parsing AND the arm body to
+    // accept `name : width;` shapes via the regular stmt fallback.
+    let ast = parse_str(
+        "\
+bitfield B {
+    op : 4;
+    match (op) {
+        (1): { a : 4; }
+        (2): { b : 4; }
+        (_): { rest : 4; }
+    }
+};
+",
+    );
+    let TopItem::Stmt(Stmt::BitfieldDecl(decl)) = &ast.items[0] else { panic!() };
+    assert!(matches!(decl.body[0], Stmt::BitfieldField { .. }));
+    assert!(matches!(decl.body[1], Stmt::Match { .. }));
 }
