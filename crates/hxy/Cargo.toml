@@ -61,6 +61,7 @@ egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
 egui-notify = "0.22.0"
 egui-palette = { workspace = true }
+similar = { version = "3.1.0", default-features = false, features = ["bytes"] }
 
 # Built-in 010 Editor Binary Template runtime -- linked as regular
 # Rust instead of being wrapped in a WASM component. User-supplied

@@ -155,6 +155,13 @@ fn live_to_persisted_tab(
                 title: m.display_name.clone(),
             }
         }
+        // Compare tabs aren't persisted across restarts: the diff is
+        // recomputed on demand and pinning a CompareId would require
+        // serialising both panes' editor state, which is more work
+        // than the feature warrants today. Returning `None` filters
+        // the leaf out of the saved layout while letting the
+        // surrounding splits / sizes survive.
+        Tab::Compare(_) => return None,
     })
 }
 

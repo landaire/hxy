@@ -8,6 +8,8 @@ pub mod file;
 pub mod settings;
 pub mod state;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod compare;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod global_search;
 pub mod search;
 pub mod search_bar;

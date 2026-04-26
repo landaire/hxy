@@ -131,6 +131,31 @@ palette-toggle-vim = Toggle Vim mode
 palette-toggle-vim-subtitle-on = Currently ON -- switch back to standard input
 palette-toggle-vim-subtitle-off = Currently OFF -- switch to modal editing
 
+# File comparison
+tab-compare-title = Compare: { $a } / { $b }
+compare-recompute = Recompute diff
+compare-status = { $a } vs { $b } -- { $changes } change(s)
+compare-status-pending = Diff pending
+compare-no-differences = No differences
+compare-table-kind = Kind
+compare-table-a-range = A
+compare-table-b-range = B
+compare-table-size = Size
+compare-kind-added = Added
+compare-kind-removed = Removed
+compare-kind-changed = Changed
+compare-diff-colors-toggle = Diff colors
+compare-picker-title = Compare files
+compare-picker-body = Pick the A and B sources to compare. Open files appear in the dropdown; "Browse…" reads from disk.
+compare-picker-side-a = A:
+compare-picker-side-b = B:
+compare-picker-unset = (pick a file)
+compare-picker-browse = Browse…
+compare-picker-confirm = Compare
+compare-picker-cancel = Cancel
+palette-compare-files = Compare files…
+palette-compare-files-subtitle = Open a side-by-side byte diff between two sources
+
 # Search bar
 search-find-label = Find:
 search-replace-label = Replace:

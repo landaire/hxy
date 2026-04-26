@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::compare::CompareId;
 use crate::file::FileId;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::file::MountId;
@@ -41,6 +43,10 @@ pub enum Tab {
     /// highlighted in the corresponding hex view via its selection.
     #[cfg(not(target_arch = "wasm32"))]
     SearchResults,
+    /// Side-by-side diff between two byte sources. Indexes into
+    /// `HxyApp::compares` for the [`crate::compare::CompareSession`].
+    #[cfg(not(target_arch = "wasm32"))]
+    Compare(CompareId),
 }
 
 impl Tab {

@@ -272,6 +272,9 @@ pub enum PaletteCommand {
     CopySelectionLength,
     /// Copy the active tab's total source length.
     CopyFileLength,
+    /// Open the file-comparison picker so the user can pick the A
+    /// and B sources and spawn a `Tab::Compare`.
+    CompareFiles,
 }
 
 #[derive(Clone)]
