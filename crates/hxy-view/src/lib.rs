@@ -647,6 +647,13 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
     /// `None` leaves both panes at full intensity (the previous
     /// behaviour; appropriate for read-only tabs).
     active_pane: Option<Pane>,
+    /// Optional non-linear row stream. When `Some`, the renderer
+    /// uses one `RowSlot` per visual row instead of computing
+    /// addresses linearly from the source length. Used by the
+    /// file-comparison view to insert blank gap rows that keep two
+    /// parallel views horizontally aligned. `None` keeps the
+    /// default linear behaviour.
+    row_map: Option<Vec<RowSlot>>,
 }
 
 /// Which half of a byte cell the nibble-edit cursor sits on.
@@ -656,6 +663,49 @@ pub struct HexView<'s, S: HexSource + ?Sized> {
 pub enum NibbleSide {
     High,
     Low,
+}
+
+/// One visual row in the rendered hex view. Default rendering is
+/// linear -- row N covers bytes `[N*cols, (N+1)*cols)`. Consumers
+/// that want a non-linear row stream (the file-comparison view's
+/// gap-row alignment between two sides) supply a list of `RowSlot`
+/// entries via [`HexView::row_map`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowSlot {
+    /// Render `len` bytes starting at `offset`. `len <= cols`.
+    /// `offset` does not have to be a multiple of `cols`.
+    Real { offset: u64, len: u16 },
+    /// Render nothing for this row -- no address, no bytes, no
+    /// selection. The row still occupies one row's worth of
+    /// vertical space so two parallel-rendered views can stay
+    /// horizontally aligned even when their byte streams diverge.
+    Gap,
+}
+
+impl RowSlot {
+    pub fn real(offset: u64, len: u16) -> Self {
+        Self::Real { offset, len }
+    }
+    pub fn is_gap(self) -> bool {
+        matches!(self, Self::Gap)
+    }
+    /// Inclusive byte range, or `None` for [`RowSlot::Gap`].
+    pub fn byte_range(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Real { offset, len } => Some((offset, offset + len as u64)),
+            Self::Gap => None,
+        }
+    }
+}
+
+/// Find the visual row whose slot contains `byte`. Returns the
+/// first row whose slot covers (offset..offset+len). `None` when
+/// no slot owns it (e.g. gap rows or off-the-end).
+fn row_for_byte(slots: &[RowSlot], byte: u64) -> Option<usize> {
+    slots.iter().position(|s| match s {
+        RowSlot::Real { offset, len } => *offset <= byte && byte < *offset + *len as u64,
+        RowSlot::Gap => false,
+    })
 }
 
 /// Which of the two row panes a pointer interacted with, or which
@@ -691,6 +741,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             id_salt: None,
             nibble_cursor: None,
             active_pane: None,
+            row_map: None,
         }
     }
 
@@ -754,6 +805,16 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     /// choice (or theme default).
     pub fn byte_styler(mut self, f: impl Fn(u8, ByteOffset) -> ByteStyle + 's) -> Self {
         self.byte_styler = Some(Box::new(f));
+        self
+    }
+
+    /// Override the default linear row stream with an explicit list
+    /// of [`RowSlot`]s -- one per visual row. Used by file-comparison
+    /// views to insert blank gap rows that keep two parallel views
+    /// horizontally aligned. Slot `len` must not exceed
+    /// [`HexView::columns`]; the renderer handles partial rows.
+    pub fn row_map(mut self, slots: Vec<RowSlot>) -> Self {
+        self.row_map = Some(slots);
         self
     }
 
@@ -863,6 +924,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             id_salt,
             nibble_cursor,
             active_pane,
+            row_map,
         } = self;
         let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
         ui.push_id(salt, |ui| {
@@ -871,7 +933,10 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                     .unwrap_or_else(|| HighlightPalette::for_theme_and_mode(ui.visuals().dark_mode, mode));
                 (mode, palette)
             });
-            let total_rows = row_count(source.len(), columns);
+            let total_rows = match row_map.as_ref() {
+                Some(slots) => slots.len(),
+                None => row_count(source.len(), columns),
+            };
             let address_chars = address_chars_override.unwrap_or_else(|| address_hex_width(source.len()));
             let font_id = TextStyle::Monospace.resolve(ui.style());
             let row_height = ui.text_style_height(&TextStyle::Monospace);
@@ -888,9 +953,12 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             // `scroll_to_byte` takes precedence: compute the target row's
             // top Y from columns + row_height.
             let pending_v_offset = scroll_to_byte
-                .map(|b| {
-                    let row = b.get() / u64::from(columns.get());
-                    (row as f32) * row_height
+                .and_then(|b| {
+                    let row = match row_map.as_ref() {
+                        Some(slots) => row_for_byte(slots, b.get())?,
+                        None => (b.get() / u64::from(columns.get())) as usize,
+                    };
+                    Some((row as f32) * row_height)
                 })
                 .or_else(|| ui.ctx().data_mut(|d| d.remove_temp::<f32>(scroll_id)))
                 .or(initial_scroll);
@@ -987,6 +1055,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                             field_boundaries,
                             nibble_cursor,
                             active_pane,
+                            row_map.as_deref(),
                             &mut response,
                         );
                     })
@@ -1022,6 +1091,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 columns,
                 v_offset,
                 address_formatter.as_deref(),
+                row_map.as_deref(),
             );
 
             if minimap {
@@ -1374,6 +1444,37 @@ struct HitCtx<'a> {
     columns: ColumnCount,
     total_rows: usize,
     source_len: ByteLen,
+    /// `Some` when the renderer is using a non-linear row stream;
+    /// hit-test consults the slot for `(row, col)` to translate to
+    /// the underlying byte offset (or a no-hit on Gap rows).
+    row_map: Option<&'a [RowSlot]>,
+}
+
+impl HitCtx<'_> {
+    /// Translate `(row, col)` from a [`HitRowCol`] into the byte
+    /// offset under the pointer. `None` when the row is a gap or
+    /// the column is past the slot's `len`.
+    fn byte_offset_at(&self, row: usize, col: usize) -> Option<ByteOffset> {
+        let cols = usize::from(self.columns.get());
+        match self.row_map {
+            Some(slots) => match slots.get(row).copied()? {
+                RowSlot::Real { offset, len } => {
+                    if col >= len as usize {
+                        return None;
+                    }
+                    Some(ByteOffset::new(offset + col as u64))
+                }
+                RowSlot::Gap => None,
+            },
+            None => {
+                let off = (row as u64) * cols as u64 + col as u64;
+                if off >= self.source_len.get() {
+                    return None;
+                }
+                Some(ByteOffset::new(off))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1404,6 +1505,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     field_boundaries: &[(ByteOffset, ByteLen)],
     nibble_cursor: Option<NibbleSide>,
     active_pane: Option<Pane>,
+    row_map: Option<&[RowSlot]>,
     response_out: &mut HexViewResponse,
 ) {
     let cols = usize::from(columns.get());
@@ -1411,7 +1513,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     let block_size = Vec2::new(layout.total_width, total_height);
     let (block_rect, response) = ui.allocate_exact_size(block_size, Sense::click_and_drag());
 
-    let hit = HitCtx { layout, block_rect, row_height, columns, total_rows, source_len };
+    let hit = HitCtx { layout, block_rect, row_height, columns, total_rows, source_len, row_map };
 
     // Clip-driven visibility: paint only rows that intersect the scroll
     // area's clip rect, letting the area scroll with pixel granularity
@@ -1426,18 +1528,18 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         return;
     };
 
-    let range_start = (first_visible as u64).saturating_mul(cols as u64).min(source_len.get());
-    let range_end = (last_visible_exclusive as u64).saturating_mul(cols as u64).min(source_len.get());
-    let Ok(read_range) = ByteRange::new(ByteOffset::new(range_start), ByteOffset::new(range_end)) else {
-        return;
-    };
-    let bytes = match source.read(read_range) {
-        Ok(b) => b,
-        Err(e) => {
-            response_out.error = Some(e);
-            return;
-        }
-    };
+    // One [`RowRead`] per visible row -- linear rendering builds
+    // them from a single bulk read, the row-map path issues per-row
+    // reads so partial / non-contiguous offsets work and gap rows
+    // contribute an empty entry.
+    let (rows, read_range) =
+        match read_visible_rows(source, row_map, first_visible, last_visible_exclusive, cols, source_len) {
+            Ok(v) => v,
+            Err(e) => {
+                response_out.error = Some(e);
+                return;
+            }
+        };
 
     let weak = ui.visuals().weak_text_color();
     let colors = RowColors {
@@ -1474,7 +1576,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         source_len,
     };
     let painter = ui.painter_at(block_rect);
-    paint_rows(&painter, &ctx, block_rect, first_visible, &bytes);
+    paint_rows(&painter, &ctx, block_rect, first_visible, &rows);
 
     let mut interacted_pane = None;
     apply_interaction(ui, &response, &hit, selection, &mut interacted_pane);
@@ -1482,7 +1584,7 @@ fn paint_and_interact<S: HexSource + ?Sized>(
 
     response_out.hovered_offset = hover_offset;
     response_out.cursor_offset = cursor_offset;
-    response_out.visible_range = Some(read_range);
+    response_out.visible_range = read_range;
     response_out.layout = Some(HexViewLayout { block_rect, row_height, columns, source_len, inner: *layout });
 
     if let Some(add) = context_menu {
@@ -1505,23 +1607,90 @@ fn visible_rows(block_rect: &Rect, row_height: f32, total_rows: usize, clip: Rec
     if first >= last { None } else { Some((first, last)) }
 }
 
+/// Bytes + metadata for one rendered row in the visible window.
+/// `bytes` is empty for [`RowSlot::Gap`] rows; the renderer paints
+/// nothing for those.
+struct RowRead {
+    /// First byte offset of this row's slot. Unused for gaps.
+    offset: ByteOffset,
+    bytes: Vec<u8>,
+    is_gap: bool,
+}
+
+/// Read every visible row's bytes, dispatching on whether the
+/// caller supplied a [`RowSlot`] map or wants the default linear
+/// stream. Returns the per-row read plus the aggregate
+/// [`ByteRange`] covering everything just read (for
+/// `HexViewResponse::visible_range`).
+fn read_visible_rows<S: HexSource + ?Sized>(
+    source: &S,
+    row_map: Option<&[RowSlot]>,
+    first_visible: usize,
+    last_visible_exclusive: usize,
+    cols: usize,
+    source_len: ByteLen,
+) -> Result<(Vec<RowRead>, Option<ByteRange>), CoreError> {
+    if let Some(slots) = row_map {
+        let mut rows = Vec::with_capacity(last_visible_exclusive.saturating_sub(first_visible));
+        let mut min_offset: Option<u64> = None;
+        let mut max_offset: Option<u64> = None;
+        for slot in &slots[first_visible..last_visible_exclusive] {
+            match *slot {
+                RowSlot::Real { offset, len } => {
+                    let end = offset + len as u64;
+                    let range = ByteRange::new(ByteOffset::new(offset), ByteOffset::new(end))?;
+                    let bytes = source.read(range)?;
+                    min_offset = Some(min_offset.map_or(offset, |o: u64| o.min(offset)));
+                    max_offset = Some(max_offset.map_or(end, |hi: u64| hi.max(end)));
+                    rows.push(RowRead { offset: ByteOffset::new(offset), bytes, is_gap: false });
+                }
+                RowSlot::Gap => {
+                    rows.push(RowRead { offset: ByteOffset::new(0), bytes: Vec::new(), is_gap: true });
+                }
+            }
+        }
+        let aggregate = match (min_offset, max_offset) {
+            (Some(lo), Some(hi)) => Some(ByteRange::new(ByteOffset::new(lo), ByteOffset::new(hi))?),
+            _ => None,
+        };
+        Ok((rows, aggregate))
+    } else {
+        let range_start = (first_visible as u64).saturating_mul(cols as u64).min(source_len.get());
+        let range_end = (last_visible_exclusive as u64).saturating_mul(cols as u64).min(source_len.get());
+        let read_range = ByteRange::new(ByteOffset::new(range_start), ByteOffset::new(range_end))?;
+        let bytes = source.read(read_range)?;
+        let mut rows = Vec::with_capacity(last_visible_exclusive.saturating_sub(first_visible));
+        for (chunk_idx, chunk) in bytes.chunks(cols).enumerate() {
+            let row_idx = first_visible + chunk_idx;
+            rows.push(RowRead {
+                offset: ByteOffset::new((row_idx as u64) * cols as u64),
+                bytes: chunk.to_vec(),
+                is_gap: false,
+            });
+        }
+        Ok((rows, Some(read_range)))
+    }
+}
+
 /// Paint in two passes so marker strokes (cursor/hover) end up on top of
 /// every neighboring row's tint -- otherwise the cell to the right of the
 /// cursor can paint its tint *over* the cursor stroke.
-fn paint_rows(painter: &egui::Painter, ctx: &PaintCtx<'_>, block_rect: Rect, first_visible: usize, bytes: &[u8]) {
-    let cols = usize::from(ctx.columns.get());
-
-    for (chunk_idx, chunk) in bytes.chunks(cols).enumerate() {
-        let row_idx = first_visible + chunk_idx;
+fn paint_rows(painter: &egui::Painter, ctx: &PaintCtx<'_>, block_rect: Rect, first_visible: usize, rows: &[RowRead]) {
+    for (visible_idx, row) in rows.iter().enumerate() {
+        if row.is_gap {
+            continue;
+        }
+        let row_idx = first_visible + visible_idx;
         let row_origin = row_origin_for(block_rect, row_idx, ctx.row_height);
-        let row_first_offset = ByteOffset::new((row_idx as u64) * (cols as u64));
-        paint_row_backs_and_glyphs(painter, ctx, row_origin, row_first_offset, chunk);
+        paint_row_backs_and_glyphs(painter, ctx, row_origin, row.offset, &row.bytes);
     }
-    for (chunk_idx, chunk) in bytes.chunks(cols).enumerate() {
-        let row_idx = first_visible + chunk_idx;
+    for (visible_idx, row) in rows.iter().enumerate() {
+        if row.is_gap {
+            continue;
+        }
+        let row_idx = first_visible + visible_idx;
         let row_origin = row_origin_for(block_rect, row_idx, ctx.row_height);
-        let row_first_offset = ByteOffset::new((row_idx as u64) * (cols as u64));
-        paint_row_marks(painter, ctx, row_origin, row_first_offset, chunk.len());
+        paint_row_marks(painter, ctx, row_origin, row.offset, row.bytes.len());
     }
 }
 
@@ -1880,12 +2049,13 @@ fn apply_interaction(
         return;
     }
 
+    let _ = cols;
     let pos = response.interact_pointer_pos().or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()));
     let Some(pos) = pos else { return };
     let Some(rc) = hit.layout.hit_test(hit.block_rect, pos, hit.row_height, hit.total_rows) else {
         return;
     };
-    let Some(hit_offset) = hit_to_offset(rc, cols, hit.source_len) else { return };
+    let Some(hit_offset) = hit_to_offset(hit, rc) else { return };
 
     if response.drag_started() || response.clicked() {
         // Report the pane the click landed in so the consumer can
@@ -1913,19 +2083,21 @@ fn apply_interaction(
     }
 }
 
-fn hit_to_offset(hit: HitRowCol, cols: usize, source_len: ByteLen) -> Option<ByteOffset> {
-    let offset = (hit.row as u64).checked_mul(cols as u64)?.checked_add(hit.col as u64)?;
-    if source_len.get() == 0 {
-        // Empty buffer: the only valid cursor position is the EOF
-        // insertion point at 0. Clicking anywhere in the empty
-        // canvas parks the caret there so the user can start
-        // typing into a fresh anonymous tab.
+fn hit_to_offset(hit: &HitCtx<'_>, rc: HitRowCol) -> Option<ByteOffset> {
+    if let Some(byte) = hit.byte_offset_at(rc.row, rc.col) {
+        return Some(byte);
+    }
+    // Linear path with empty source / past-EOF clicks: park the
+    // caret at the EOF cursor position. For row-mapped views, gap
+    // hits genuinely have no byte under them, so leave them as
+    // None and let the caller skip the interaction.
+    if hit.row_map.is_some() {
+        return None;
+    }
+    if hit.source_len.get() == 0 {
         return Some(ByteOffset::new(0));
     }
-    if offset >= source_len.get() {
-        return Some(ByteOffset::new(source_len.get() - 1));
-    }
-    Some(ByteOffset::new(offset))
+    Some(ByteOffset::new(hit.source_len.get() - 1))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1937,7 +2109,7 @@ fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<
         return None;
     }
     let rc = hit.layout.hit_test(hit.block_rect, pos, hit.row_height, hit.total_rows)?;
-    hit_to_offset(rc, usize::from(hit.columns.get()), hit.source_len)
+    hit_to_offset(hit, rc)
 }
 
 /// Color source for byte-value tinting. Plugins can hand a fully-
@@ -2531,6 +2703,7 @@ fn paint_column_header(
 /// at scroll boundaries get cut at the edges instead of leaking into
 /// the header band or the H scrollbar gutter.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn paint_address_column(
     ui: &mut Ui,
     rect: Rect,
@@ -2541,6 +2714,7 @@ fn paint_address_column(
     columns: ColumnCount,
     v_offset: f32,
     formatter: Option<&dyn Fn(ByteOffset, usize) -> String>,
+    row_map: Option<&[RowSlot]>,
 ) {
     if rect.width() < 1.0 || rect.height() < 1.0 {
         return;
@@ -2551,27 +2725,41 @@ fn paint_address_column(
     // off-by-a-pixel content paint or a glyph straddling the viewport
     // edge could otherwise leak colored byte tints into the gutter.
     painter.rect_filled(rect, 0.0, ui.visuals().panel_fill);
-    if source_len.get() == 0 {
-        return;
-    }
     let color = ui.visuals().weak_text_color();
-    let cols = columns.as_u64();
-    let len = source_len.get();
-    // Match `paint_rows`: only the rows that hold at least one byte
-    // get an address. The trailing EOF-cursor row (when the buffer
-    // ends on a row boundary) intentionally has no address shown,
-    // mirroring the inside-scroll behaviour.
-    let rows_with_bytes = len.div_ceil(cols);
-    let first_row = (v_offset / row_height).floor().max(0.0) as u64;
-    let last_row_exclusive =
-        ((v_offset + rect.height()) / row_height).ceil().max(0.0) as u64;
-    let last = last_row_exclusive.min(rows_with_bytes);
-    if first_row >= last {
-        return;
-    }
-    for row_idx in first_row..last {
-        let row_first_offset = ByteOffset::new(row_idx * cols);
-        let y = rect.top() + (row_idx as f32) * row_height - v_offset;
+    let first_row = (v_offset / row_height).floor().max(0.0) as usize;
+    let last_row_exclusive = ((v_offset + rect.height()) / row_height).ceil().max(0.0) as usize;
+
+    let row_offsets: Box<dyn Iterator<Item = (usize, Option<ByteOffset>)>> = match row_map {
+        Some(slots) => {
+            let last = last_row_exclusive.min(slots.len());
+            if first_row >= last {
+                return;
+            }
+            Box::new((first_row..last).map(|idx| {
+                let off = match slots[idx] {
+                    RowSlot::Real { offset, .. } => Some(ByteOffset::new(offset)),
+                    RowSlot::Gap => None,
+                };
+                (idx, off)
+            }))
+        }
+        None => {
+            if source_len.get() == 0 {
+                return;
+            }
+            let cols = columns.as_u64();
+            let rows_with_bytes = source_len.get().div_ceil(cols) as usize;
+            let last = last_row_exclusive.min(rows_with_bytes);
+            if first_row >= last {
+                return;
+            }
+            Box::new((first_row..last).map(move |idx| (idx, Some(ByteOffset::new((idx as u64) * cols)))))
+        }
+    };
+
+    for (idx, maybe_offset) in row_offsets {
+        let Some(row_first_offset) = maybe_offset else { continue };
+        let y = rect.top() + (idx as f32) * row_height - v_offset;
         let label = match formatter {
             Some(f) => f(row_first_offset, layout.address_chars),
             None => format_address(row_first_offset, layout.address_chars),

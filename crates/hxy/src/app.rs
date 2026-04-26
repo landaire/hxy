@@ -7560,9 +7560,18 @@ fn render_compare_tab(
             render_compare_diff_table(ui, session);
         });
 
-    let (a_ranges, b_ranges) = match session.diff.as_ref() {
-        Some(d) => (compare_pane_ranges(d, crate::compare::CompareSide::A), compare_pane_ranges(d, crate::compare::CompareSide::B)),
-        None => (Vec::new(), Vec::new()),
+    let cols = state.app.hex_columns.as_u64();
+    let (a_ranges, b_ranges, row_maps) = match session.diff.as_ref() {
+        Some(d) => (
+            compare_pane_ranges(d, crate::compare::CompareSide::A),
+            compare_pane_ranges(d, crate::compare::CompareSide::B),
+            Some(crate::compare::build_row_maps(d, cols)),
+        ),
+        None => (Vec::new(), Vec::new(), None),
+    };
+    let (a_map, b_map): (Option<Vec<hxy_view::RowSlot>>, Option<Vec<hxy_view::RowSlot>>) = match row_maps {
+        Some(m) => (Some(m.a), Some(m.b)),
+        None => (None, None),
     };
 
     egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -7572,13 +7581,13 @@ fn render_compare_tab(
             ui.allocate_ui_with_layout(
                 egui::Vec2::new(half, ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
-                |ui| render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges),
+                |ui| render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges, a_map.clone()),
             );
             ui.separator();
             ui.allocate_ui_with_layout(
                 egui::Vec2::new(ui.available_width(), ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
-                |ui| render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges),
+                |ui| render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges, b_map.clone()),
             );
         });
     });
@@ -7619,6 +7628,7 @@ fn render_compare_pane(
     state: &mut PersistedState,
     salt: egui::Id,
     diff_ranges: &[(u64, u64, crate::compare::HunkKind)],
+    row_map: Option<Vec<hxy_view::RowSlot>>,
 ) {
     ui.horizontal(|ui| {
         ui.strong(&pane.display_name);
@@ -7637,6 +7647,9 @@ fn render_compare_pane(
         .value_highlight(highlight)
         .minimap(true)
         .minimap_colored(true);
+    if let Some(map) = row_map {
+        view = view.row_map(map);
+    }
     if pane.diff_colors && !diff_ranges.is_empty() {
         let ranges = diff_ranges.to_vec();
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);

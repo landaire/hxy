@@ -276,6 +276,56 @@ pub enum HunkKind {
     Changed,
 }
 
+/// Per-side row map (one [`hxy_view::RowSlot`] per visual row) plus
+/// the shared row count. Both sides have the same length so the two
+/// hex views render in lockstep with horizontally aligned rows even
+/// when the underlying byte streams have different lengths.
+pub struct CompareRowMaps {
+    pub a: Vec<hxy_view::RowSlot>,
+    pub b: Vec<hxy_view::RowSlot>,
+}
+
+/// Build a parallel row map for both sides of `diff` at the given
+/// row width. Each diff hunk emits `max(rows_in_a, rows_in_b)` rows;
+/// whichever side has fewer rows for that hunk is padded with
+/// [`hxy_view::RowSlot::Gap`] entries so the two maps stay the
+/// same length and aligned visually.
+pub fn build_row_maps(diff: &DiffResult, columns: u64) -> CompareRowMaps {
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    if columns == 0 {
+        return CompareRowMaps { a, b };
+    }
+    for hunk in &diff.hunks {
+        push_hunk_rows(&mut a, &mut b, hunk, columns);
+    }
+    CompareRowMaps { a, b }
+}
+
+fn push_hunk_rows(
+    a: &mut Vec<hxy_view::RowSlot>,
+    b: &mut Vec<hxy_view::RowSlot>,
+    hunk: &DiffHunk,
+    columns: u64,
+) {
+    let rows_a = hunk.a_len.div_ceil(columns);
+    let rows_b = hunk.b_len.div_ceil(columns);
+    let total = rows_a.max(rows_b);
+    for r in 0..total {
+        a.push(slot_for_side(hunk.a_offset, hunk.a_len, columns, r));
+        b.push(slot_for_side(hunk.b_offset, hunk.b_len, columns, r));
+    }
+}
+
+fn slot_for_side(side_offset: u64, side_len: u64, columns: u64, row: u64) -> hxy_view::RowSlot {
+    let row_start = row * columns;
+    if row_start >= side_len {
+        return hxy_view::RowSlot::Gap;
+    }
+    let len = (side_len - row_start).min(columns) as u16;
+    hxy_view::RowSlot::Real { offset: side_offset + row_start, len }
+}
+
 fn diff_op_to_hunk(op: DiffOp) -> DiffHunk {
     match op {
         DiffOp::Equal { old_index, new_index, len } => DiffHunk {
@@ -375,6 +425,43 @@ mod tests {
         let mut s = session(b"abc", b"abc");
         let now = std::time::Instant::now();
         assert!(matches!(s.needs_recompute_debounced(now), DebouncedDecision::Idle));
+    }
+
+    #[test]
+    fn row_maps_align_equal_buffers() {
+        let s = session(b"abcdefgh", b"abcdefgh");
+        let diff = s.diff.expect("diff");
+        let maps = build_row_maps(&diff, 4);
+        assert_eq!(maps.a.len(), maps.b.len());
+        assert_eq!(maps.a.len(), 2);
+        assert_eq!(maps.a, vec![hxy_view::RowSlot::real(0, 4), hxy_view::RowSlot::real(4, 4)]);
+        assert_eq!(maps.b, maps.a);
+    }
+
+    #[test]
+    fn row_maps_pad_added_with_gaps_on_a() {
+        // a = "abcdef", b = "abXYZcdef" -- 3 bytes inserted at offset 2.
+        let s = session(b"abcdef", b"abXYZcdef");
+        let diff = s.diff.expect("diff");
+        let maps = build_row_maps(&diff, 4);
+        assert_eq!(maps.a.len(), maps.b.len());
+        // Expect gap rows on A wherever B has the inserted bytes.
+        let gaps_a = maps.a.iter().filter(|s| s.is_gap()).count();
+        let gaps_b = maps.b.iter().filter(|s| s.is_gap()).count();
+        assert!(gaps_a >= 1, "A side should have a gap row for the insertion: {:?}", maps.a);
+        assert_eq!(gaps_b, 0, "B side should be all real rows: {:?}", maps.b);
+    }
+
+    #[test]
+    fn row_maps_pad_removed_with_gaps_on_b() {
+        let s = session(b"abXYZcdef", b"abcdef");
+        let diff = s.diff.expect("diff");
+        let maps = build_row_maps(&diff, 4);
+        assert_eq!(maps.a.len(), maps.b.len());
+        let gaps_a = maps.a.iter().filter(|s| s.is_gap()).count();
+        let gaps_b = maps.b.iter().filter(|s| s.is_gap()).count();
+        assert_eq!(gaps_a, 0);
+        assert!(gaps_b >= 1);
     }
 
     #[test]
