@@ -807,14 +807,21 @@ impl<S: HexSource> Interpreter<S> {
         };
         let _ = is_const;
         // `auto` typed locals don't read from the source. A bare
-        // `auto x = expr;` evaluates the initializer and binds the
-        // result into the current scope.
-        if ty.leaf() == "auto" {
-            let value = match init {
-                Some(e) => self.eval(e)?,
-                None => Value::Void,
-            };
+        // Any decl with an initializer (`auto x = ...`, `u32 start
+        // = $;`, `Type x = expr;`) is a local variable: bind the
+        // evaluated expression and don't read from the source.
+        // ImHex distinguishes "type-prefixed read" from "local
+        // variable" by whether the `= init` is present.
+        // Placement reads (`Type x @ offset = ...`) and io vars
+        // were already handled above; this catches the rest.
+        if init.is_some() && placement.is_none() && pointer_width.is_none() {
+            let value = self.eval(init.as_ref().unwrap())?;
             self.current_scope_mut().vars.insert(name.clone(), value);
+            return Ok(Flow::Next);
+        }
+        if ty.leaf() == "auto" {
+            // Bare `auto x;` (no init) -- nothing to bind.
+            self.current_scope_mut().vars.insert(name.clone(), Value::Void);
             return Ok(Flow::Next);
         }
         // `bool x in;` / `Type x out;` -- input/output variables
