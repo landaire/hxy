@@ -973,8 +973,19 @@ impl HxyApp {
                 Ok(())
             }
             TabSource::VfsEntry { parent, entry_path } => {
-                let parent_mount = self.find_mount_for_source(parent.as_ref())
-                    .ok_or_else(|| parent_missing(parent.as_ref()))?;
+                let Some(parent_mount) = self.find_mount_for_source(parent.as_ref()) else {
+                    // Parent mount currently unavailable. If it's a
+                    // plugin mount that landed in `Failed` state, the
+                    // tab is preserved in `open_tabs` so it survives
+                    // restart and a successful retry will fan out to
+                    // open it; otherwise propagate the standard
+                    // "parent missing" error so callers can drop it.
+                    return if self.parent_mount_pending(parent.as_ref()) {
+                        Ok(())
+                    } else {
+                        Err(parent_missing(parent.as_ref()))
+                    };
+                };
                 let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
                     .map_err(|e| crate::file::FileOpenError::Read { path: entry_path.into(), source: e })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
@@ -1023,11 +1034,15 @@ impl HxyApp {
                         token: token.clone(),
                         reason: "plugin no longer installed".to_owned(),
                     })?;
-                let mount = plugin.mount_by_token(token).map_err(|e| crate::file::FileOpenError::PluginMount {
-                    plugin_name: plugin_name.clone(),
-                    token: token.clone(),
-                    reason: e.to_string(),
-                })?;
+                // Failures here are expected at restore (xbox offline,
+                // network blocked, ...) -- preserve the tab as a
+                // placeholder rather than dropping it. The user can
+                // click the plugin-supplied retry button to re-invoke
+                // `mount_by_token` later.
+                let status = match plugin.mount_by_token(token) {
+                    Ok(mount) => crate::file::MountStatus::Ready(Arc::new(mount)),
+                    Err(e) => crate::file::MountStatus::Failed { message: e.message, retry_label: e.retry_label },
+                };
                 let mount_id = crate::file::MountId::new(self.next_mount_id);
                 self.next_mount_id += 1;
                 self.mounts.insert(
@@ -1036,7 +1051,7 @@ impl HxyApp {
                         display_name: title.clone(),
                         plugin_name: plugin_name.clone(),
                         token: token.clone(),
-                        mount: Arc::new(mount),
+                        status,
                     },
                 );
                 let _ = as_workspace; // plugin mount tabs always show the tree
@@ -1047,6 +1062,19 @@ impl HxyApp {
                 Ok(())
             }
         }
+    }
+
+    /// Whether `source` references a plugin mount that currently
+    /// exists in `self.mounts` but is in a [`crate::file::MountStatus::Failed`]
+    /// state. Used by `restore_one_tab` to decide whether a missing
+    /// VfsEntry parent is "deferred until retry succeeds" (preserve
+    /// the tab) or "genuinely gone" (drop it).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parent_mount_pending(&self, source: &TabSource) -> bool {
+        let TabSource::PluginMount { plugin_name, token, .. } = source else { return false };
+        self.mounts
+            .values()
+            .any(|m| m.plugin_name == *plugin_name && m.token == *token && m.status.live().is_none())
     }
 
     /// If `id`'s source is a `TabSource::VfsEntry` whose mount has
@@ -1090,7 +1118,7 @@ impl HxyApp {
                 .mounts
                 .values()
                 .find(|m| m.plugin_name == *plugin_name && m.token == *token)
-                .map(|m| m.mount.clone()),
+                .and_then(|m| m.status.live().cloned()),
             #[cfg(target_arch = "wasm32")]
             TabSource::PluginMount { .. } => None,
             other => {
@@ -1401,6 +1429,8 @@ impl eframe::App for HxyApp {
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_pending_mount_retries(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_external_open_requests(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2136,7 +2166,10 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                     token: entry.token.clone(),
                     title: entry.display_name.clone(),
                 };
-                let mount = entry.mount.clone();
+                let Some(mount) = entry.status.live().cloned() else {
+                    tracing::warn!(entry = %entry_path, "plugin mount not ready -- ignoring entry open");
+                    continue;
+                };
                 let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
                     Ok(b) => b,
                     Err(e) => {
@@ -2996,15 +3029,25 @@ fn ensure_vfs_tree_visible(app: &mut HxyApp, workspace_id: crate::file::Workspac
     );
 }
 
-/// Render a `Tab::PluginMount`. The whole tab body is the VFS tree
-/// for the mount; clicking an entry queues a `PendingVfsOpen::Mount`
-/// for the post-dock drain to turn into a regular `Tab::File`.
+/// Render a `Tab::PluginMount`. The whole tab body is either the
+/// VFS tree (when the mount is [`MountStatus::Ready`]) or a
+/// plugin-supplied error placeholder + optional retry button (when
+/// [`MountStatus::Failed`]). Tree clicks queue a
+/// `PendingVfsOpen::PluginMount`; retry clicks queue a
+/// `MountId` under [`PENDING_MOUNT_RETRY_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
 fn render_plugin_mount_tab(
     ui: &mut egui::Ui,
     mount_id: crate::file::MountId,
-    mount: &Arc<hxy_vfs::MountedVfs>,
+    plugin: &crate::file::MountedPlugin,
 ) {
+    let mount = match &plugin.status {
+        crate::file::MountStatus::Ready(m) => m,
+        crate::file::MountStatus::Failed { message, retry_label } => {
+            render_failed_mount_placeholder(ui, mount_id, &plugin.display_name, message, retry_label.as_deref());
+            return;
+        }
+    };
     let scope = egui::Id::new(("hxy-plugin-mount-vfs", mount_id.get()));
     let events = crate::vfs_panel::show(ui, scope, &*mount.fs);
     let mut to_open: Vec<String> = Vec::new();
@@ -3019,6 +3062,129 @@ fn render_plugin_mount_tab(
                 queue.push(PendingVfsOpen::PluginMount { mount_id, entry_path: p });
             }
         });
+    }
+}
+
+/// Body for a `Tab::PluginMount` whose mount isn't established
+/// (couldn't connect, plugin returned an error on remount, etc.).
+/// Renders the plugin's `message` verbatim and -- when the plugin
+/// supplied `retry_label` -- a button that queues a retry under
+/// [`PENDING_MOUNT_RETRY_KEY`] for the post-dock drain to pick up.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_failed_mount_placeholder(
+    ui: &mut egui::Ui,
+    mount_id: crate::file::MountId,
+    title: &str,
+    message: &str,
+    retry_label: Option<&str>,
+) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(24.0);
+        ui.heading(title);
+        ui.add_space(12.0);
+        ui.label(message);
+        if let Some(label) = retry_label {
+            ui.add_space(16.0);
+            if ui.button(label).clicked() {
+                ui.ctx().data_mut(|d| {
+                    let queue: &mut Vec<crate::file::MountId> =
+                        d.get_temp_mut_or_default(egui::Id::new(PENDING_MOUNT_RETRY_KEY));
+                    queue.push(mount_id);
+                });
+            }
+        }
+    });
+}
+
+/// Egui temp-data key for the retry queue populated by
+/// [`render_failed_mount_placeholder`] and drained by
+/// [`drain_pending_mount_retries`].
+#[cfg(not(target_arch = "wasm32"))]
+const PENDING_MOUNT_RETRY_KEY: &str = "hxy_pending_mount_retry";
+
+/// Drain any pending retry-mount clicks captured by failed-mount
+/// placeholders during the dock pass. Each entry calls
+/// `mount_by_token` again with the same token; on success the
+/// `MountedPlugin` flips to `Ready` and the next render shows the
+/// VFS tree, on failure the placeholder updates to whatever the
+/// plugin reports this time.
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_pending_mount_retries(ctx: &egui::Context, app: &mut HxyApp) {
+    let pending: Vec<crate::file::MountId> = ctx
+        .data_mut(|d| d.remove_temp::<Vec<crate::file::MountId>>(egui::Id::new(PENDING_MOUNT_RETRY_KEY)))
+        .unwrap_or_default();
+    for mount_id in pending {
+        retry_failed_mount(app, mount_id);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retry_failed_mount(app: &mut HxyApp, mount_id: crate::file::MountId) {
+    let Some(entry) = app.mounts.get(&mount_id) else { return };
+    if entry.status.live().is_some() {
+        return;
+    }
+    let plugin_name = entry.plugin_name.clone();
+    let token = entry.token.clone();
+    let display = entry.display_name.clone();
+    let plugin = match app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() {
+        Some(p) => p,
+        None => {
+            app.console_log(
+                ConsoleSeverity::Error,
+                format!("Mount {display}"),
+                "plugin no longer installed",
+            );
+            return;
+        }
+    };
+    let became_ready = match plugin.mount_by_token(&token) {
+        Ok(mount) => {
+            app.console_log(ConsoleSeverity::Info, format!("Mount {display}"), "remount succeeded");
+            if let Some(entry) = app.mounts.get_mut(&mount_id) {
+                entry.status = crate::file::MountStatus::Ready(Arc::new(mount));
+            }
+            true
+        }
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Warning, format!("Mount {display}"), e.message.clone());
+            if let Some(entry) = app.mounts.get_mut(&mount_id) {
+                entry.status = crate::file::MountStatus::Failed { message: e.message, retry_label: e.retry_label };
+            }
+            false
+        }
+    };
+    if !became_ready {
+        return;
+    }
+    // Mount is now live -- replay any persisted VfsEntry tabs whose
+    // parent is this mount's PluginMount source. They were preserved
+    // in `open_tabs` during the original restore via
+    // `parent_mount_pending`; now the live FileId can finally be
+    // allocated. Tabs that fail to read this time around drop out
+    // silently (they were missing already from the user's POV).
+    let parent_source = TabSource::PluginMount {
+        plugin_name: plugin_name.clone(),
+        token: token.clone(),
+        title: display.clone(),
+    };
+    let to_open: Vec<crate::state::OpenTabState> = app
+        .state
+        .read()
+        .open_tabs
+        .iter()
+        .filter(|t| matches!(&t.source, TabSource::VfsEntry { parent, .. } if parent.as_ref() == &parent_source))
+        .filter(|t| {
+            // Skip entries that already have a live tab from a prior
+            // retry (or from session-level deferred-then-success).
+            !app.files.values().any(|f| f.source_kind.as_ref() == Some(&t.source))
+        })
+        .cloned()
+        .collect();
+    for tab in to_open {
+        if let Err(e) = app.restore_one_tab(&tab, false) {
+            tracing::warn!(error = %e, "open vfs entry after mount retry");
+        }
     }
 }
 
@@ -6014,7 +6180,7 @@ fn install_mount_tab(
         display_name: title.clone(),
         plugin_name: plugin_name.clone(),
         token: token.clone(),
-        mount: Arc::new(mount),
+        status: crate::file::MountStatus::Ready(Arc::new(mount)),
     };
     app.mounts.insert(mount_id, entry);
 
@@ -6562,7 +6728,7 @@ impl TabViewer for HxyTabViewer<'_> {
             },
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
-                Some(m) => render_plugin_mount_tab(ui, *mount_id, &m.mount),
+                Some(m) => render_plugin_mount_tab(ui, *mount_id, m),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
                 }

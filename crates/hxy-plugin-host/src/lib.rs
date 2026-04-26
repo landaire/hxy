@@ -29,6 +29,7 @@ pub use commands::PromptRequest;
 pub use grants::PermissionGrants;
 pub use grants::PluginGrants;
 pub use grants::PluginKey;
+pub use handler::MountByTokenError;
 pub use handler::PluginHandler;
 pub use manifest::ManifestError;
 pub use manifest::Permissions;

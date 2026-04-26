@@ -29,6 +29,26 @@ use crate::commands::InvokeOutcome;
 use crate::commands::PluginCommand;
 use crate::host::HostState;
 
+/// Failure returned by [`PluginHandler::mount_by_token`]. `message`
+/// is plugin-supplied (or, for host-side traps, a short host-rendered
+/// description). `retry_label` is `Some` when the failure is
+/// recoverable by re-invoking `mount_by_token` with the same token --
+/// the host renders a button with that label; `None` means no
+/// affordance is shown.
+#[derive(Debug, Clone)]
+pub struct MountByTokenError {
+    pub message: String,
+    pub retry_label: Option<String>,
+}
+
+impl std::fmt::Display for MountByTokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MountByTokenError {}
+
 pub struct PluginHandler {
     name: String,
     engine: Engine,
@@ -269,16 +289,25 @@ impl PluginHandler {
     /// shape (typically a [`crate::fresh_token`]). The instantiated
     /// store has an empty placeholder source -- the plugin should
     /// not call `source.read` on a token-driven mount.
-    pub fn mount_by_token(&self, token: &str) -> Result<MountedVfs, HandlerError> {
+    ///
+    /// Failures arrive as [`MountByTokenError`] which carries both
+    /// the plugin's error message and an optional `retry_label` --
+    /// when present, the host renders a button that re-invokes
+    /// `mount_by_token` with the same token (xbox going offline,
+    /// etc.). Host-side traps (instantiate, wasm call) carry a
+    /// `None` retry-label since the failure is structural and
+    /// retrying without changing anything is unlikely to help.
+    pub fn mount_by_token(&self, token: &str) -> Result<MountedVfs, MountByTokenError> {
         let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
         let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
-        let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| HandlerError::Internal(format!("instantiate for mount-by-token: {e}")))?;
+        let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker).map_err(|e| {
+            MountByTokenError { message: format!("instantiate for mount-by-token: {e}"), retry_label: None }
+        })?;
         let mount_resource = plugin
             .hxy_vfs_handler()
             .call_mount_by_token(&mut store, token)
-            .map_err(|e| HandlerError::Internal(format!("call mount-by-token: {e}")))?
-            .map_err(HandlerError::Malformed)?;
+            .map_err(|e| MountByTokenError { message: format!("call mount-by-token: {e}"), retry_label: None })?
+            .map_err(|e| MountByTokenError { message: e.message, retry_label: e.retry_label })?;
         let inner = Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }));
         let block_cache = Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
             crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,

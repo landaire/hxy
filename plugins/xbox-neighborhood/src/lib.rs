@@ -97,9 +97,21 @@ impl Guest for Plugin {
 
     fn mount_by_token(
         token: String,
-    ) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
-        let mount = ConsoleMount::connect(&token)?;
-        Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(mount))
+    ) -> Result<
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount,
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError,
+    > {
+        match ConsoleMount::connect(&token) {
+            Ok(mount) => Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(mount)),
+            Err(message) => Err(hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError {
+                message,
+                // Connection failures are recoverable: the user can
+                // power the kit on, plug in the network cable, etc.
+                // and click the host's retry button to call this
+                // again with the same address token.
+                retry_label: Some("Reconnect to xbox".to_string()),
+            }),
+        }
     }
 }
 

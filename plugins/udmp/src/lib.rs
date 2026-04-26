@@ -99,8 +99,16 @@ impl Guest for Plugin {
         Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(mount))
     }
 
-    fn mount_by_token(_token: String) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
-        Err("udmp does not support token-driven mounts".to_string())
+    fn mount_by_token(
+        _token: String,
+    ) -> Result<
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount,
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError,
+    > {
+        Err(hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError {
+            message: "udmp does not support token-driven mounts".to_string(),
+            retry_label: None,
+        })
     }
 }
 

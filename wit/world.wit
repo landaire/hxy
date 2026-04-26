@@ -75,6 +75,17 @@ interface handler {
     /// Short, human-readable identifier for logs.
     name: func() -> string;
 
+    /// Failure shape for `mount-by-token`. The host renders `message`
+    /// in a placeholder where the live mount UI would have been; if
+    /// `retry-label` is `some`, a button with that label is offered
+    /// and clicking it re-invokes `mount-by-token` with the same
+    /// token. Plugins whose error has no recovery path (e.g. the
+    /// configured profile was deleted) leave `retry-label` as `none`.
+    record mount-error {
+        message: string,
+        retry-label: option<string>,
+    }
+
     /// Parse the imported `source` and return a live mount. The plugin
     /// may call `source.read` any number of times during and after this
     /// call; the host keeps the source alive for the mount's lifetime.
@@ -84,8 +95,9 @@ interface handler {
     /// command's `invoke` returned `mount-request { token, title }`:
     /// the host hands the same token back so the plugin can identify
     /// which connection / saved profile the user picked. Plugins that
-    /// don't expose token-driven mounts return an error.
-    mount-by-token: func(token: string) -> result<mount, string>;
+    /// don't expose token-driven mounts return a `mount-error` whose
+    /// `retry-label` is `none`.
+    mount-by-token: func(token: string) -> result<mount, mount-error>;
 }
 
 /// Opaque per-plugin storage. The host treats the blob as bytes;

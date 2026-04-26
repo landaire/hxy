@@ -77,14 +77,40 @@ impl MountId {
 }
 
 /// A plugin mount the user has opened. Backs a `Tab::PluginMount` --
-/// the tab renders the VFS tree and clicking an entry opens a regular
-/// `Tab::File` whose bytes come from this mount.
+/// the tab renders the VFS tree (or a failure placeholder, see
+/// [`MountStatus`]) and clicking an entry opens a regular
+/// `Tab::File` whose bytes come from the live mount.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MountedPlugin {
     pub display_name: String,
     pub plugin_name: String,
     pub token: String,
-    pub mount: Arc<MountedVfs>,
+    pub status: MountStatus,
+}
+
+/// Whether a plugin mount is currently usable. Restored mounts may
+/// arrive in [`MountStatus::Failed`] when remounting failed (xbox
+/// kit offline, deleted profile, etc.); the host renders a
+/// placeholder tab with the plugin's message and -- when
+/// `retry_label` is `Some` -- a button that re-invokes
+/// `mount_by_token` with the same token.
+#[cfg(not(target_arch = "wasm32"))]
+pub enum MountStatus {
+    Ready(Arc<MountedVfs>),
+    Failed { message: String, retry_label: Option<String> },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MountStatus {
+    /// Live mount handle when ready, `None` when the mount couldn't
+    /// be established. Use this rather than matching `Status` directly
+    /// at every read site.
+    pub fn live(&self) -> Option<&Arc<MountedVfs>> {
+        match self {
+            MountStatus::Ready(m) => Some(m),
+            MountStatus::Failed { .. } => None,
+        }
+    }
 }
 
 /// Identifier for a `Workspace` -- the nested-dock representation of a

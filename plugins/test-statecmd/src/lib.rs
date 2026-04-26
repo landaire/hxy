@@ -100,7 +100,12 @@ impl Guest for Plugin {
         Err("test-statecmd does not expose a file mount".to_string())
     }
 
-    fn mount_by_token(token: String) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
+    fn mount_by_token(
+        token: String,
+    ) -> Result<
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount,
+        hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError,
+    > {
         // Use the token as the synthetic "session id" so the host's
         // tab title can include it for visual confirmation that the
         // token round-tripped intact.

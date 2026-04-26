@@ -18,6 +18,7 @@ use hxy_plugin_api::handler::GuestCommands;
 use hxy_plugin_api::handler::GuestMount;
 use hxy_plugin_api::handler::InvokeResult;
 use hxy_plugin_api::handler::Metadata;
+use hxy_plugin_api::handler::exports::hxy::vfs::handler::MountError;
 use hxy_plugin_api::handler::source;
 
 struct Plugin;
@@ -37,8 +38,13 @@ impl Guest for Plugin {
         Ok(hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount::new(Mount))
     }
 
-    fn mount_by_token(_token: String) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, String> {
-        Err("passthrough does not support token-driven mounts".to_string())
+    fn mount_by_token(
+        _token: String,
+    ) -> Result<hxy_plugin_api::handler::exports::hxy::vfs::handler::Mount, MountError> {
+        Err(MountError {
+            message: "passthrough does not support token-driven mounts".to_string(),
+            retry_label: None,
+        })
     }
 }
 
