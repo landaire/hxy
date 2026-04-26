@@ -27,6 +27,11 @@ pub struct PaletteState {
     /// answer is routed back via `respond_to_prompt`) and the
     /// title rendered as the palette hint.
     pub plugin_prompt: Option<PluginPromptState>,
+    /// In-progress compare-files pick when `mode` is one of the
+    /// `Compare*` variants. Holds the A side once the user has
+    /// chosen it so the B-pick mode can filter A out of its
+    /// own lists.
+    pub compare_pick: Option<ComparePickState>,
 }
 
 #[derive(Clone)]
@@ -49,6 +54,7 @@ impl Default for PaletteState {
             inner: egui_palette::State::default(),
             plugin_cascade: None,
             plugin_prompt: None,
+            compare_pick: None,
         }
     }
 }
@@ -59,9 +65,20 @@ impl PaletteState {
         // Cleared on every mode switch -- the only entry paths
         // into populated plugin buffers are `enter_plugin_cascade`
         // / `enter_plugin_prompt`, so any other transition should
-        // drop them.
+        // drop them. Compare-pick state survives only across the
+        // CompareSideA → CompareSideB sequence and is cleared by
+        // any transition outside that family.
         self.plugin_cascade = None;
         self.plugin_prompt = None;
+        if !matches!(
+            mode,
+            Mode::CompareSideA
+                | Mode::CompareSideARecent
+                | Mode::CompareSideB
+                | Mode::CompareSideBRecent
+        ) {
+            self.compare_pick = None;
+        }
         self.inner.open();
     }
 
@@ -69,6 +86,7 @@ impl PaletteState {
         self.inner.close();
         self.plugin_cascade = None;
         self.plugin_prompt = None;
+        self.compare_pick = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -166,6 +184,29 @@ pub enum Mode {
     /// [`Action::RespondToPlugin`]. Context (plugin name + command
     /// id + title) lives on [`PaletteState::plugin_prompt`].
     PluginPrompt,
+    /// First step of the palette-driven file comparison: pick
+    /// the A side. Top-level entries are open files plus
+    /// "Recent files…" / "Browse…" cascades.
+    CompareSideA,
+    /// Cascade reached from [`Mode::CompareSideA`]'s
+    /// "Recent files…" entry. Picking a recent path completes
+    /// the A pick and advances to [`Mode::CompareSideB`].
+    CompareSideARecent,
+    /// Pick the B side. The chosen A is on
+    /// [`PaletteState::compare_pick`] so we can filter it out of
+    /// this list. Same cascades as `CompareSideA`.
+    CompareSideB,
+    /// Recent-files cascade for the B pick.
+    CompareSideBRecent,
+}
+
+/// State carried while the palette is walking the user through
+/// the compare-files state machine. `picked_a` is `Some` once the
+/// user has chosen the A side; the B-pick modes use it to filter
+/// A out of their own lists.
+#[derive(Clone, Debug)]
+pub struct ComparePickState {
+    pub picked_a: Option<hxy_vfs::TabSource>,
 }
 
 /// Which scope a [`Mode::SetColumnsLocal`] / [`Mode::SetColumnsGlobal`]
@@ -200,7 +241,11 @@ impl Mode {
             | Mode::SetColumnsLocal
             | Mode::SetColumnsGlobal
             | Mode::PluginCascade
-            | Mode::PluginPrompt => Some(Mode::Main),
+            | Mode::PluginPrompt
+            | Mode::CompareSideA => Some(Mode::Main),
+            Mode::CompareSideARecent => Some(Mode::CompareSideA),
+            Mode::CompareSideB => Some(Mode::CompareSideA),
+            Mode::CompareSideBRecent => Some(Mode::CompareSideB),
         }
     }
 }
@@ -272,9 +317,15 @@ pub enum PaletteCommand {
     CopySelectionLength,
     /// Copy the active tab's total source length.
     CopyFileLength,
-    /// Open the file-comparison picker so the user can pick the A
-    /// and B sources and spawn a `Tab::Compare`.
+    /// Drive the file-comparison flow through the command palette
+    /// itself: the user picks A from open files / recents / browse,
+    /// then B (with A filtered out), and a `Tab::Compare` opens.
+    /// Entry point that switches into [`Mode::CompareSideA`].
     CompareFiles,
+    /// Same outcome as `CompareFiles`, but routed through the modal
+    /// picker dialog. Kept for users who prefer the side-by-side
+    /// comboboxes.
+    CompareFilesDialog,
 }
 
 #[derive(Clone)]
@@ -329,6 +380,22 @@ pub enum Action {
     /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
     /// when the query doesn't parse).
     NoOp,
+    /// User picked a source for the compare A or B side. The
+    /// dispatcher captures A and switches into B-mode; on B it
+    /// finalises by spawning a [`crate::compare::CompareSession`]
+    /// and closes the palette.
+    CompareSelectSource { side: CompareSide, source: hxy_vfs::TabSource },
+    /// Open the OS file dialog for the indicated side; whatever
+    /// the user picks routes back through
+    /// `Action::CompareSelectSource`.
+    CompareBrowse(CompareSide),
+}
+
+/// Which side of a compare pick a palette entry contributes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareSide {
+    A,
+    B,
 }
 
 /// Render the palette and return an outcome if the user activated
@@ -345,6 +412,9 @@ pub fn show(
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
         Mode::UninstallPlugin => hxy_i18n::t("palette-hint-uninstall-plugin"),
         Mode::Recent => hxy_i18n::t("palette-hint-recent"),
+        Mode::CompareSideA => hxy_i18n::t("palette-hint-compare-side-a"),
+        Mode::CompareSideARecent | Mode::CompareSideBRecent => hxy_i18n::t("palette-hint-recent"),
+        Mode::CompareSideB => hxy_i18n::t("palette-hint-compare-side-b"),
         Mode::GoToOffset => hxy_i18n::t("palette-hint-go-to-offset"),
         Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),
         Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),

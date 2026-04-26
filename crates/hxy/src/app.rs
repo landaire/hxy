@@ -5662,6 +5662,14 @@ fn build_palette_entries(
                 .with_subtitle(hxy_i18n::t("palette-compare-files-subtitle")),
             );
             out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-compare-files-dialog"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::CompareFilesDialog),
+                )
+                .with_icon(icon::COLUMNS)
+                .with_subtitle(hxy_i18n::t("palette-compare-files-dialog-subtitle")),
+            );
+            out.push(
                 egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitRight))
                     .with_icon(icon::ARROW_SQUARE_RIGHT),
             );
@@ -5924,6 +5932,107 @@ fn build_palette_entries(
                     .unwrap_or_else(|| recent.path.display().to_string());
                 let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
                     .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                if let Some(parent) = recent.path.parent() {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
+            }
+        }
+        Mode::CompareSideA | Mode::CompareSideB => {
+            let side = if matches!(app.palette.mode, Mode::CompareSideA) {
+                crate::command_palette::CompareSide::A
+            } else {
+                crate::command_palette::CompareSide::B
+            };
+            let picked_a = app
+                .palette
+                .compare_pick
+                .as_ref()
+                .and_then(|p| p.picked_a.clone());
+            for file in app.files.values() {
+                // Anonymous buffers can't be compared (no stable
+                // identity to read fresh bytes from), so they don't
+                // appear in the picker.
+                let Some(source) = file.source_kind.clone() else {
+                    continue;
+                };
+                // On the B pick, drop A from the list so the user
+                // can't accidentally compare a file with itself.
+                if matches!(side, crate::command_palette::CompareSide::B)
+                    && picked_a.as_ref().is_some_and(|a| a == &source)
+                {
+                    continue;
+                }
+                let mut entry = egui_palette::Entry::new(
+                    file.display_name.clone(),
+                    Action::CompareSelectSource { side, source },
+                )
+                .with_icon(icon::FILE);
+                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                out.push(entry);
+            }
+            let recent_mode = match side {
+                crate::command_palette::CompareSide::A => Mode::CompareSideARecent,
+                crate::command_palette::CompareSide::B => Mode::CompareSideBRecent,
+            };
+            if !app.state.read().app.recent_files.is_empty() {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-open-recent-entry"),
+                        Action::SwitchMode(recent_mode),
+                    )
+                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                );
+            }
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("compare-picker-browse"),
+                    Action::CompareBrowse(side),
+                )
+                .with_icon(icon::FOLDER_OPEN),
+            );
+        }
+        Mode::CompareSideARecent | Mode::CompareSideBRecent => {
+            let side = if matches!(app.palette.mode, Mode::CompareSideARecent) {
+                crate::command_palette::CompareSide::A
+            } else {
+                crate::command_palette::CompareSide::B
+            };
+            let picked_a_path = app
+                .palette
+                .compare_pick
+                .as_ref()
+                .and_then(|p| p.picked_a.as_ref())
+                .and_then(|s| match s {
+                    TabSource::Filesystem(p) => Some(p.clone()),
+                    _ => None,
+                });
+            let open_paths: std::collections::HashSet<std::path::PathBuf> =
+                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
+            for recent in &app.state.read().app.recent_files {
+                if open_paths.contains(&recent.path) {
+                    continue;
+                }
+                if matches!(side, crate::command_palette::CompareSide::B)
+                    && picked_a_path.as_ref().is_some_and(|a| a == &recent.path)
+                {
+                    continue;
+                }
+                let name = recent
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| recent.path.display().to_string());
+                let mut entry = egui_palette::Entry::new(
+                    name,
+                    Action::CompareSelectSource {
+                        side,
+                        source: TabSource::Filesystem(recent.path.clone()),
+                    },
+                )
+                .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
                 if let Some(parent) = recent.path.parent() {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -6228,7 +6337,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
                     PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
                     PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
-                    PaletteCommand::CompareFiles => start_compare_picker(app),
+                    PaletteCommand::CompareFiles => app.palette.open_at(crate::command_palette::Mode::CompareSideA),
+                    PaletteCommand::CompareFilesDialog => start_compare_picker(app),
                 }
             }
         }
@@ -6364,6 +6474,83 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             // Enter presses don't get the user stuck on an inert
             // row, but don't dispatch any other effect.
             app.palette.close();
+        }
+        crate::command_palette::Action::CompareSelectSource { side, source } => {
+            use crate::command_palette::CompareSide;
+            use crate::command_palette::ComparePickState;
+            use crate::command_palette::Mode;
+            match side {
+                CompareSide::A => {
+                    app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
+                    app.palette.open_at(Mode::CompareSideB);
+                }
+                CompareSide::B => {
+                    let Some(pick) = app.palette.compare_pick.take() else {
+                        app.palette.close();
+                        return;
+                    };
+                    let Some(a) = pick.picked_a else {
+                        app.palette.close();
+                        return;
+                    };
+                    app.palette.close();
+                    spawn_compare_from_palette(app, ctx, a, source);
+                }
+            }
+        }
+        crate::command_palette::Action::CompareBrowse(side) => {
+            use crate::command_palette::CompareSide;
+            use crate::command_palette::ComparePickState;
+            use crate::command_palette::Mode;
+            let Some(path) = rfd::FileDialog::new().pick_file() else {
+                return;
+            };
+            let source = TabSource::Filesystem(path);
+            match side {
+                CompareSide::A => {
+                    app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
+                    app.palette.open_at(Mode::CompareSideB);
+                }
+                CompareSide::B => {
+                    let Some(pick) = app.palette.compare_pick.take() else {
+                        app.palette.close();
+                        return;
+                    };
+                    let Some(a) = pick.picked_a else {
+                        app.palette.close();
+                        return;
+                    };
+                    app.palette.close();
+                    spawn_compare_from_palette(app, ctx, a, source);
+                }
+            }
+        }
+    }
+}
+
+/// Finalise a palette-driven compare: reuse [`HxyApp::spawn_compare_from_sources`]
+/// to read fresh bytes for each side, push the resulting tab, and
+/// kick the initial diff worker. Failures only log -- the palette
+/// already closed so we don't strand the user in a half-state.
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_compare_from_palette(
+    app: &mut HxyApp,
+    ctx: &egui::Context,
+    a: TabSource,
+    b: TabSource,
+) {
+    match app.spawn_compare_from_sources(a, b) {
+        Ok(id) => {
+            if let Some(session) = app.compares.get_mut(&id) {
+                session.request_recompute(ctx);
+            }
+            app.dock.push_to_focused_leaf(Tab::Compare(id));
+            if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
+                remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "spawn compare from palette");
         }
     }
 }
@@ -7667,6 +7854,8 @@ fn render_compare_tab(
                 {
                     session.request_recompute(ui.ctx());
                 }
+                ui.checkbox(&mut session.sync_scroll_enabled, hxy_i18n::t("compare-sync-scroll"))
+                    .on_hover_text(hxy_i18n::t("compare-sync-scroll-tooltip"));
                 if recomputing {
                     ui.spinner();
                     ui.weak(hxy_i18n::t("compare-status-recomputing"));

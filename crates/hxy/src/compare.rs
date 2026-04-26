@@ -129,6 +129,12 @@ pub struct CompareSession {
     /// committing a selection. Cleared when the table loses
     /// hover.
     pub hovered_hunk: Option<usize>,
+    /// User-toggleable scroll mirroring between the two panes.
+    /// On (default) -- whichever pane the user just scrolled
+    /// drives the other; off -- panes scroll independently. Lives
+    /// on the session because it's per-tab UX, not a global app
+    /// setting.
+    pub sync_scroll_enabled: bool,
 }
 
 /// Cheap "did this side change?" snapshot pulled from the public
@@ -206,6 +212,7 @@ impl CompareSession {
             last_synced_scroll: 0.0,
             pending_recompute: None,
             hovered_hunk: None,
+            sync_scroll_enabled: true,
         }
     }
 
@@ -284,8 +291,14 @@ impl CompareSession {
     /// frame so [`hxy_view::HexEditor::scroll_offset`] reflects the
     /// just-rendered position. Equality is compared with a small
     /// epsilon because egui's scroll values can wiggle by a sub-
-    /// pixel when content height changes underfoot.
+    /// pixel when content height changes underfoot. No-op when
+    /// `sync_scroll_enabled` is off -- the user has opted out of
+    /// the lockstep behaviour for this tab.
     pub fn sync_scroll(&mut self) {
+        if !self.sync_scroll_enabled {
+            self.last_synced_scroll = self.a.editor.scroll_offset();
+            return;
+        }
         let a = self.a.editor.scroll_offset();
         let b = self.b.editor.scroll_offset();
         let eps = 0.5_f32;
