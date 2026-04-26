@@ -553,6 +553,18 @@ impl<S: HexSource> Interpreter<S> {
 /// variants come up in real corpus templates (DTED elevation data
 /// uses `s24`, for example) but aren't worth listing exhaustively
 /// in the static primitive table.
+/// Count the leading `parent` hops in a chain like `parent`,
+/// `parent.parent`, `parent.parent.parent`, etc. Returns `None` for
+/// any other shape so the caller can fall through to regular
+/// member resolution.
+fn count_parent_hops(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Ident { name, .. } if name == "parent" => Some(1),
+        Expr::Member { target, field, .. } if field == "parent" => count_parent_hops(target).map(|n| n + 1),
+        _ => None,
+    }
+}
+
 /// Truncate or re-tag a numeric value to a declared primitive type.
 /// Used when a local variable is declared `Type name = expr;` and
 /// `Type` is a primitive integer (e.g. `u64 pos = -1` should store
@@ -1680,13 +1692,38 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(new_val)
             }
             Expr::Member { target, field, .. } => {
-                // Resolve the chain by walking left-to-right and
-                // tracking which emitted node we're currently
-                // pointing at. The chain accepts magic identifiers
-                // (`parent` / `this`), bare struct names, indexed
-                // accesses (`lumps[i]`), and member hops, so
-                // expressions like `file_header.lumps[i].fileofs`
-                // resolve in one pass.
+                // `parent[.parent]*.field` -- count the parent hops
+                // and walk up the tree-parent chain that many times
+                // before looking up the field. ImHex treats array
+                // elements (and other wrapper nodes) as transparent
+                // for parent resolution, so we keep walking up if
+                // the immediate ancestor doesn't have the field.
+                if let Some(hops) = count_parent_hops(target) {
+                    let mut cur = self.current_parent;
+                    for _ in 0..(hops - 1) {
+                        cur = match cur.and_then(|idx| self.nodes[idx.as_usize()].parent) {
+                            Some(p) => Some(p),
+                            None => break,
+                        };
+                    }
+                    loop {
+                        match cur {
+                            Some(idx) => {
+                                if let Some(v) = self.lookup_member_under(idx, field) {
+                                    return Ok(v);
+                                }
+                                cur = self.nodes[idx.as_usize()].parent;
+                            }
+                            None => {
+                                if let Some(idx) = self.find_top_level_idx(field) {
+                                    return Ok(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    return Err(RuntimeError::Type(format!("unresolved member `.{field}`")));
+                }
                 if let Some(idx) = self.resolve_node_chain(target)?
                     && let Some(v) = self.lookup_member_under(idx, field)
                 {
@@ -1695,12 +1732,31 @@ impl<S: HexSource> Interpreter<S> {
                 Err(RuntimeError::Type(format!("unresolved member `.{field}`")))
             }
             Expr::Index { target, index, .. } => {
-                // Phase 1: `arr[i]` returns the raw index value. The
-                // renderer doesn't need indexed reads to drive its
-                // tree; later phases hook this up to lazy primitive-
-                // array decoding.
-                let _ = self.eval(target)?;
-                self.eval(index)
+                // Resolve `arr[i]` against the emitted node tree
+                // (returns the i-th element's value when found),
+                // string/byte literals (returns the i-th char/byte),
+                // or falls back to the raw index value for cases
+                // where neither model fits.
+                let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
+                // Try the node-tree path first so eval'd struct
+                // arrays return their actual element value.
+                if let Some(arr_idx) = self.resolve_node_chain(target)?
+                    && let Some(elem) = self.find_first_child_idx(arr_idx, &format!("[{i}]"))
+                {
+                    return Ok(self.nodes[elem.as_usize()].value.clone().unwrap_or(Value::Void));
+                }
+                let target_val = self.eval(target)?;
+                if let Value::Str(s) = &target_val
+                    && let Some(c) = s.chars().nth(i)
+                {
+                    return Ok(Value::Char { value: c as u32, kind: PrimKind::char() });
+                }
+                if let Value::Bytes(b) = &target_val
+                    && let Some(byte) = b.get(i).copied()
+                {
+                    return Ok(Value::UInt { value: byte as u128, kind: PrimKind::u8() });
+                }
+                Ok(Value::UInt { value: i as u128, kind: PrimKind::u64() })
             }
             Expr::Call { callee, args, .. } => {
                 // Build a list of candidate names to try in order:
@@ -1907,18 +1963,24 @@ impl<S: HexSource> Interpreter<S> {
         match expr {
             Expr::Ident { name, .. } => Ok(self.find_node_idx_for_ident(name)),
             Expr::Member { target, field, .. } => {
-                // `parent.foo` walks up through tree parents looking
-                // for the first ancestor that has `foo` as a child.
-                // ImHex treats array elements (and similar wrapper
-                // nodes) as transparent for `parent` resolution: from
-                // inside an array element, `parent.x` reaches past
-                // the array node itself to the struct that declared
-                // the array field. Falls back to the implicit top-
-                // level scope when no enclosing struct has it.
-                if let Expr::Ident { name, .. } = target.as_ref()
-                    && name == "parent"
-                {
+                // `parent.foo`, `parent.parent.foo`, `parent.parent.
+                // parent.foo`, ... -- count the leading `parent` hops
+                // and walk up the tree-parent chain that many times,
+                // then look up `foo` at that level. ImHex treats
+                // array elements (and similar wrapper nodes) as
+                // transparent for `parent` resolution, so we *also*
+                // skip past ancestors that don't have a struct/
+                // bitfield/union shape -- otherwise `parent` from
+                // inside an array element would just hit the array
+                // node and stop.
+                if let Some(hops) = count_parent_hops(target) {
                     let mut cur = self.current_parent;
+                    for _ in 0..(hops - 1) {
+                        cur = match cur.and_then(|idx| self.nodes[idx.as_usize()].parent) {
+                            Some(p) => Some(p),
+                            None => break,
+                        };
+                    }
                     loop {
                         match cur {
                             Some(idx) => {
@@ -2027,6 +2089,14 @@ impl<S: HexSource> Interpreter<S> {
             let v = args.get(i).cloned().unwrap_or(Value::Void);
             self.current_scope_mut().vars.insert(p.name.clone(), v);
         }
+        // Inside the fn, `parent` should resolve to the struct
+        // whose body did the call (the caller's `this`). Save and
+        // restore around the fn body so a regular `parent.foo`
+        // inside resolves through the call site.
+        let saved_parent = self.current_parent;
+        if let Some(caller_this) = self.this_stack.last().copied() {
+            self.current_parent = Some(caller_this);
+        }
         let saved_return = self.return_value.take();
         let mut result = Value::Void;
         for s in &func.body {
@@ -2041,6 +2111,7 @@ impl<S: HexSource> Interpreter<S> {
             }
         }
         self.return_value = saved_return;
+        self.current_parent = saved_parent;
         self.scopes.pop();
         Ok(result)
     }
