@@ -175,6 +175,12 @@ pub struct Interpreter<S: HexSource> {
     functions: HashMap<String, FunctionDef>,
     scopes: Vec<Scope>,
     nodes: Vec<NodeOut>,
+    /// Name -> indices of every emitted node with that name, in
+    /// emission order. Built incrementally to keep `parent.x.y.z`
+    /// chains close to O(name-collisions) per hop instead of O(N).
+    /// The big device-tree-shaped corpus templates (fdt, pck, ...)
+    /// time out without this index.
+    nodes_by_name: HashMap<String, Vec<NodeIdx>>,
     diagnostics: Vec<Diagnostic>,
     endian: Endian,
     steps: u64,
@@ -210,6 +216,7 @@ impl<S: HexSource> Interpreter<S> {
             functions: HashMap::new(),
             scopes: vec![Scope::default()],
             nodes: Vec::new(),
+            nodes_by_name: HashMap::new(),
             diagnostics: Vec::new(),
             endian: Endian::Little,
             steps: 0,
@@ -840,7 +847,7 @@ impl<S: HexSource> Interpreter<S> {
             let post_addr = self.cursor_tell();
             // Mark the address slot as a leaf so the renderer can
             // show "pointer here".
-            self.nodes.push(NodeOut {
+            self.push_node(NodeOut {
                 name: format!("{name}__ptr"),
                 ty: NodeType::Unknown(format!("ptr<{}>", ty.leaf())),
                 offset: addr_offset,
@@ -885,6 +892,16 @@ impl<S: HexSource> Interpreter<S> {
         self.scopes.last_mut().expect("scope stack empty")
     }
 
+    /// Push a node onto the emitted list and keep the by-name index
+    /// in sync. Always use this instead of touching `self.nodes`
+    /// directly so the lookup path stays consistent.
+    fn push_node(&mut self, node: NodeOut) -> NodeIdx {
+        let idx = NodeIdx::new(self.nodes.len() as u32);
+        self.nodes_by_name.entry(node.name.clone()).or_default().push(idx);
+        self.nodes.push(node);
+        idx
+    }
+
     /// Read the address of a pointer field. `addr_ty` must resolve
     /// to an integer primitive (typical: `u32`, `u64`); other shapes
     /// fall back to a u32 read since templates do that 90% of the
@@ -920,7 +937,7 @@ impl<S: HexSource> Interpreter<S> {
                 as u64;
             let offset = self.cursor_tell();
             let bytes = self.cursor_advance(n)?;
-            self.nodes.push(NodeOut {
+            self.push_node(NodeOut {
                 name: name.to_owned(),
                 ty: NodeType::ScalarArray(ScalarKind::U8, n),
                 offset,
@@ -938,7 +955,7 @@ impl<S: HexSource> Interpreter<S> {
                 let bytes = self.cursor_advance(p.width as u64)?;
                 let value = decode_prim(&bytes, p, self.endian)?;
                 let kind_for_node = ScalarKind::from_prim(p);
-                self.nodes.push(NodeOut {
+                self.push_node(NodeOut {
                     name: name.to_owned(),
                     ty: NodeType::Scalar(kind_for_node),
                     offset,
@@ -968,7 +985,7 @@ impl<S: HexSource> Interpreter<S> {
     ) -> Result<Value, RuntimeError> {
         let offset = self.cursor_tell();
         let idx = NodeIdx::new(self.nodes.len() as u32);
-        self.nodes.push(NodeOut {
+        self.push_node(NodeOut {
             name: name.to_owned(),
             ty: NodeType::StructType(decl.name.clone()),
             offset,
@@ -1099,7 +1116,7 @@ impl<S: HexSource> Interpreter<S> {
             None => Value::Str(format!("{raw_u}")),
         };
         let value_for_node = display_value.clone();
-        self.nodes.push(NodeOut {
+        self.push_node(NodeOut {
             name: name.to_owned(),
             ty: NodeType::EnumType(decl.name.clone()),
             offset,
@@ -1144,7 +1161,7 @@ impl<S: HexSource> Interpreter<S> {
             decode_prim(&bytes, PrimKind { class: PrimClass::Int, width: width_bytes, signed: false }, self.endian)?;
         let raw_u = raw.to_i128().unwrap_or(0) as u128;
         let bf_idx = NodeIdx::new(self.nodes.len() as u32);
-        self.nodes.push(NodeOut {
+        self.push_node(NodeOut {
             name: name.to_owned(),
             ty: NodeType::BitfieldType(decl.name.clone()),
             offset,
@@ -1212,7 +1229,7 @@ impl<S: HexSource> Interpreter<S> {
                     let value_u = (raw_u >> *consumed) & mask;
                     *consumed = consumed.saturating_add(bits);
                     let field_attrs = vec![("hxy_bits".into(), bits.to_string())];
-                    self.nodes.push(NodeOut {
+                    self.push_node(NodeOut {
                         name: name.clone(),
                         ty: NodeType::Scalar(ScalarKind::U64),
                         offset: slot_offset,
@@ -1285,7 +1302,7 @@ impl<S: HexSource> Interpreter<S> {
             let offset = self.cursor_tell();
             let bytes = self.cursor_advance(total)?;
             let s = String::from_utf8_lossy(&bytes).into_owned();
-            self.nodes.push(NodeOut {
+            self.push_node(NodeOut {
                 name: name.to_owned(),
                 ty: NodeType::ScalarArray(ScalarKind::Char, count),
                 offset,
@@ -1301,7 +1318,7 @@ impl<S: HexSource> Interpreter<S> {
         let offset = self.cursor_tell();
         let parent_idx = NodeIdx::new(self.nodes.len() as u32);
         let arr_ty_label = ty.leaf().to_owned();
-        self.nodes.push(NodeOut {
+        self.push_node(NodeOut {
             name: name.to_owned(),
             ty: NodeType::Unknown(format!("{arr_ty_label}[{count}]")),
             offset,
@@ -1582,8 +1599,14 @@ impl<S: HexSource> Interpreter<S> {
     /// most-recently-emitted match wins (matters for repeated names
     /// inside a long-lived parent like an array).
     fn lookup_member_under(&self, owner_idx: NodeIdx, field: &str) -> Option<Value> {
-        for n in self.nodes.iter().rev() {
-            if n.parent == Some(owner_idx) && n.name == field {
+        // Walk the by-name index right-to-left so the most-recently-
+        // emitted child wins when `field` shows up on more than one
+        // sibling (matters for repeated names inside a long-lived
+        // parent like an array).
+        let candidates = self.nodes_by_name.get(field)?;
+        for &idx in candidates.iter().rev() {
+            let n = &self.nodes[idx.as_usize()];
+            if n.parent == Some(owner_idx) {
                 return n.value.clone();
             }
         }
@@ -1623,30 +1646,19 @@ impl<S: HexSource> Interpreter<S> {
 
     /// Map an identifier in node-chain position to the most plausible
     /// emitted node: magic identifiers (`parent`, `this`) resolve to
-    /// the active enclosing struct, bare names walk the emitted node
-    /// list right-to-left for the most recent match.
+    /// the active enclosing struct, bare names take the most recent
+    /// node with that name from the by-name index.
     fn find_node_idx_for_ident(&self, name: &str) -> Option<NodeIdx> {
         match name {
             "parent" => self.current_parent,
             "this" => self.most_recent_struct_idx(),
-            other => {
-                for (i, n) in self.nodes.iter().enumerate().rev() {
-                    if n.name == other {
-                        return Some(NodeIdx::new(i as u32));
-                    }
-                }
-                None
-            }
+            other => self.nodes_by_name.get(other).and_then(|v| v.last().copied()),
         }
     }
 
     fn find_first_child_idx(&self, parent_idx: NodeIdx, name: &str) -> Option<NodeIdx> {
-        for (i, n) in self.nodes.iter().enumerate() {
-            if n.parent == Some(parent_idx) && n.name == name {
-                return Some(NodeIdx::new(i as u32));
-            }
-        }
-        None
+        let candidates = self.nodes_by_name.get(name)?;
+        candidates.iter().copied().find(|idx| self.nodes[idx.as_usize()].parent == Some(parent_idx))
     }
 
     /// Index of the most recently emitted struct / union / bitfield
