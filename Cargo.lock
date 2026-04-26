@@ -2806,6 +2806,7 @@ dependencies = [
  "hxy-010-lang",
  "hxy-core",
  "hxy-i18n",
+ "hxy-imhex-lang",
  "hxy-plugin-host",
  "hxy-vfs",
  "hxy-view",
@@ -2865,6 +2866,15 @@ dependencies = [
  "fluent-templates",
  "sys-locale",
  "unic-langid",
+]
+
+[[package]]
+name = "hxy-imhex-lang"
+version = "0.2.0"
+dependencies = [
+ "insta",
+ "thiserror 2.0.18",
+ "winnow 0.7.15",
 ]
 
 [[package]]
