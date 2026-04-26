@@ -351,6 +351,15 @@ pub enum Expr {
         operand: Box<Expr>,
         span: Span,
     },
+
+    /// Carries a nested [`TypeRef`] in expression position. Comes up
+    /// in template-arg lists when an arg is itself a type
+    /// instantiation (`Foo<Bar<u32>>`). The interpreter resolves
+    /// it as a type-valued operand at use time.
+    TypeRefExpr {
+        ty: Box<TypeRef>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,7 +387,8 @@ impl Expr {
             | Expr::Member { span, .. }
             | Expr::Assign { span, .. }
             | Expr::Ternary { span, .. }
-            | Expr::Reflect { span, .. } => *span,
+            | Expr::Reflect { span, .. }
+            | Expr::TypeRefExpr { span, .. } => *span,
         }
     }
 }

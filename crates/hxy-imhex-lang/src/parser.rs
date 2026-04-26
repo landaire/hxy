@@ -1137,12 +1137,19 @@ impl Parser {
             i += 1;
         }
         // After the type (and optional `*`), the declarator must
-        // start with either an identifier (regular field name) or a
-        // `[[` / `;` (anonymous field). We also accept soft-ident
-        // keywords (`auto`, `parent`, `this`, `template`, ...) since
-        // some corpus templates use those words as field names.
+        // start with either an identifier (regular field name), a
+        // `[[` / `;` (anonymous field), or `@` (anonymous placement
+        // read like `IFDS @ Header.Offset;`). We also accept soft-
+        // ident keywords (`auto`, `parent`, `this`, `template`, ...)
+        // since some corpus templates use those words as field
+        // names.
         match self.peek_at(i).map(|t| &t.kind) {
-            Some(TokenKind::Ident(_)) | Some(TokenKind::LBracketBracket) | Some(TokenKind::Semi) => true,
+            Some(
+                TokenKind::Ident(_)
+                | TokenKind::LBracketBracket
+                | TokenKind::Semi
+                | TokenKind::At,
+            ) => true,
             Some(k) => soft_ident_name(k).is_some(),
             None => false,
         }
@@ -1182,12 +1189,13 @@ impl Parser {
         // dropped for now -- modelling pointer reads requires
         // address-resolution work that lands in phase 4.
         let is_pointer = self.eat_kind(&TokenKind::Star);
-        // Anonymous fields: `Type [[attrs]];` and `Type;` apply the
-        // type as an inline read with no bound name. We synthesise a
-        // skipping placeholder so the interpreter still emits a node
-        // but the renderer / scripts won't see a meaningful name.
+        // Anonymous fields: `Type [[attrs]];`, `Type;`, and
+        // `Type @ offset;` apply the type as an inline read with no
+        // bound name. We synthesise a skipping placeholder so the
+        // interpreter still emits a node but the renderer / scripts
+        // won't see a meaningful name.
         let (name, _) = if !is_pointer
-            && matches!(self.peek_kind(), Some(TokenKind::LBracketBracket | TokenKind::Semi))
+            && matches!(self.peek_kind(), Some(TokenKind::LBracketBracket | TokenKind::Semi | TokenKind::At))
         {
             (String::new(), Span::new(start, start))
         } else {
@@ -1282,17 +1290,17 @@ impl Parser {
             end = span.end;
         }
         let template_args = if self.eat_kind(&TokenKind::Lt) {
-            // Template instantiation: `Bytes<16>`, `Optional<u32>`.
-            // Args parse at a binding power *above* the comparison
-            // ops so the closing `>` doesn't get eaten as a "greater
-            // than" operator. Phase 1 only supports literal /
-            // identifier args; nested template instantiations will
-            // need a richer expression form, but those are rare in
-            // the corpus and can land later.
+            // Template instantiation: `Bytes<16>`, `Optional<u32>`,
+            // `Foo<Bar<u32>>`. Args parse at a binding power above
+            // the comparison ops so the closing `>` doesn't get
+            // eaten as a "greater than" operator. When an arg
+            // itself starts with `Ident<` we recurse into a nested
+            // [`Self::parse_type_ref`] so the inner template args
+            // round-trip through the AST.
             let mut args = Vec::new();
             if !matches!(self.peek_kind(), Some(TokenKind::Gt)) {
                 loop {
-                    args.push(self.parse_expr_bp(TEMPLATE_ARG_BP)?);
+                    args.push(self.parse_template_arg()?);
                     if !self.eat_kind(&TokenKind::Comma) {
                         break;
                     }
@@ -1305,6 +1313,37 @@ impl Parser {
             Vec::new()
         };
         Ok(TypeRef { path, template_args, span: Span::new(head_span.start, end) })
+    }
+
+    /// Parse one template argument. Most args are simple expressions
+    /// (`Bytes<4>`, `Magic<"GIF">`), but corpus templates also nest
+    /// type instantiations (`Foo<Bar<u32>>`). When the argument
+    /// starts with `Ident<` (or with namespace-qualified `Ident`
+    /// segments before the `<`), we recurse into [`Self::parse_type_ref`]
+    /// and wrap the resulting [`TypeRef`] in [`Expr::TypeRefExpr`].
+    fn parse_template_arg(&mut self) -> Result<Expr, ParseError> {
+        if self.looks_like_nested_type_arg() {
+            let ty = self.parse_type_ref()?;
+            let span = ty.span;
+            return Ok(Expr::TypeRefExpr { ty: Box::new(ty), span });
+        }
+        self.parse_expr_bp(TEMPLATE_ARG_BP)
+    }
+
+    fn looks_like_nested_type_arg(&self) -> bool {
+        let mut i = 0;
+        if !matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        i += 1;
+        while matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::ColonColon)) {
+            i += 1;
+            if !matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+                return false;
+            }
+            i += 1;
+        }
+        matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Lt))
     }
 
     fn parse_optional_attrs(&mut self) -> Result<Attrs, ParseError> {
@@ -1809,5 +1848,6 @@ fn with_span(expr: Expr, span: Span) -> Expr {
         Expr::Assign { op, target, value, .. } => Expr::Assign { op, target, value, span },
         Expr::Ternary { cond, then_val, else_val, .. } => Expr::Ternary { cond, then_val, else_val, span },
         Expr::Reflect { kind, operand, .. } => Expr::Reflect { kind, operand, span },
+        Expr::TypeRefExpr { ty, .. } => Expr::TypeRefExpr { ty, span },
     }
 }

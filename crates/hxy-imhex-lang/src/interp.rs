@@ -1306,6 +1306,12 @@ impl<S: HexSource> Interpreter<S> {
                     .unwrap_or(RuntimeError::UndefinedName { name: names.first().cloned().unwrap_or_default() }))
             }
             Expr::Reflect { kind, operand, .. } => self.eval_reflect(*kind, operand),
+            // A nested type reference in expression position: only
+            // shows up inside template-arg lists (`Foo<Bar<X>>`).
+            // We don't have a first-class "type value" yet -- emit
+            // the type name as a string so callers that read it as a
+            // tag (e.g. via `std::format`) get something useful.
+            Expr::TypeRefExpr { ty, .. } => Ok(Value::Str(ty.path.join("::"))),
         }
     }
 

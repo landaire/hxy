@@ -370,6 +370,36 @@ fn anonymous_typed_field_with_attrs() {
 }
 
 #[test]
+fn nested_template_args() {
+    // `Foo<Bar<u32>>` -- the inner `Bar<u32>` is itself a type
+    // reference. The outer parser detects `Ident<` in argument
+    // position and recurses into parse_type_ref, wrapping the
+    // result in `Expr::TypeRefExpr`.
+    let ast = parse_str("Foo<Bar<u32>, 4> x;");
+    let TopItem::Stmt(Stmt::FieldDecl { ty, .. }) = &ast.items[0] else { panic!() };
+    assert_eq!(ty.template_args.len(), 2);
+    let Expr::TypeRefExpr { ty: inner, .. } = &ty.template_args[0] else {
+        panic!("first template arg should be a nested type ref")
+    };
+    assert_eq!(inner.path, vec!["Bar".to_owned()]);
+    assert_eq!(inner.template_args.len(), 1);
+    assert!(matches!(ty.template_args[1], Expr::IntLit { value: 4, .. }));
+}
+
+#[test]
+fn anonymous_field_with_placement() {
+    // `Type @ offset;` -- name-less inline read at an absolute
+    // offset (corpus uses this for embedded TIFF tables and the
+    // like).
+    let ast = parse_str("u32 Header; IFDS @ Header;");
+    assert_eq!(ast.items.len(), 2);
+    let TopItem::Stmt(Stmt::FieldDecl { name, ty, placement, .. }) = &ast.items[1] else { panic!() };
+    assert!(name.is_empty());
+    assert_eq!(ty.leaf(), "IFDS");
+    assert!(placement.is_some());
+}
+
+#[test]
 fn match_pattern_alternation_with_pipe() {
     // `(0 ... 15 | 26 ... 53 | 99): ...` -- corpus templates use
     // `|` and `||` as shorthand for listing alternative patterns
