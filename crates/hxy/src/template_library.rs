@@ -1,19 +1,12 @@
 //! Auto-detected template library.
 //!
-//! Scans the user's templates directory for `.bt` files and reads the
-//! 010 Editor header convention each one carries at the top:
-//!
-//! ```text
-//! //      File: ZIP.bt
-//! // File Mask: *.zip,*.jar
-//! //  ID Bytes: 50 4B //PK
-//! ```
-//!
-//! Matching an opened file against these fields is enough to suggest
-//! (or auto-run) the right template without a manual picker.
-//!
-//! Only `.bt` is recognised today -- the comment style is idiomatic to
-//! 010 templates. Other runtimes can ship their own detectors later.
+//! Scans the user's templates directory for template source files
+//! and reads each one's metadata header. Two conventions are
+//! supported: 010 Editor's `.bt` style (`// File Mask: *.zip` /
+//! `// ID Bytes: 50 4B`) and ImHex's `.hexpat` / `.pat` style
+//! (`#pragma MIME application/zip` / `#pragma magic [50 4B 03 04]
+//! @ 0x00`). Both surface as the same [`TemplateEntry`] shape so
+//! the palette can rank them uniformly against an opened file.
 //!
 //! Only the header is parsed; the body is handed verbatim to the
 //! runtime when the user actually runs the template.
@@ -56,20 +49,43 @@ pub struct TemplateLibrary {
 }
 
 impl TemplateLibrary {
-    /// Scan `dir` for `.bt` files and parse each one's header. A
-    /// missing dir yields an empty library (hosts may call this with
-    /// a path that doesn't exist yet).
+    /// Scan `dir` (recursively) for template source files and parse
+    /// each one's header. `.bt` uses the 010 Editor metadata
+    /// convention; `.hexpat` / `.pat` use ImHex `#pragma` directives.
+    /// A missing dir yields an empty library (hosts may call this
+    /// with a path that doesn't exist yet).
     pub fn load_from(dir: Option<&Path>) -> Self {
         let Some(dir) = dir else { return Self::default() };
-        let Ok(read) = fs::read_dir(dir) else { return Self::default() };
         let mut entries = Vec::new();
-        for entry in read.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("bt") {
-                continue;
-            }
-            if let Some(parsed) = parse_template(&path) {
-                entries.push(parsed);
+        let mut stack: VecDeque<PathBuf> = VecDeque::from([dir.to_path_buf()]);
+        // Cap the walk so a misconfigured templates dir pointing at,
+        // say, the user's home directory doesn't tarpit the app on
+        // startup. The 010 corpus is ~300 files, the ImHex corpus is
+        // ~270; 4096 leaves headroom.
+        let mut budget = 4096usize;
+        while let Some(d) = stack.pop_front()
+            && budget > 0
+        {
+            let Ok(read) = fs::read_dir(&d) else { continue };
+            for entry in read.flatten() {
+                if budget == 0 {
+                    break;
+                }
+                budget -= 1;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push_back(path);
+                    continue;
+                }
+                let Some(ext) = path.extension().and_then(|s| s.to_str()) else { continue };
+                let format = match ext {
+                    "bt" => TemplateFormat::Bt010,
+                    "hexpat" | "pat" => TemplateFormat::ImHex,
+                    _ => continue,
+                };
+                if let Some(parsed) = parse_template(&path, format) {
+                    entries.push(parsed);
+                }
             }
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -132,12 +148,33 @@ impl TemplateLibrary {
     }
 }
 
-fn parse_template(path: &Path) -> Option<TemplateEntry> {
+/// Which header-comment dialect to read out of a template source.
+#[derive(Clone, Copy, Debug)]
+enum TemplateFormat {
+    /// 010 Editor `.bt`: `// File Mask: *.zip` / `// ID Bytes: 50 4B`.
+    Bt010,
+    /// ImHex `.hexpat` / `.pat`: `#pragma MIME application/zip` /
+    /// `#pragma magic [ 50 4B 03 04 ] @ 0x00`.
+    ImHex,
+}
+
+fn parse_template(path: &Path, format: TemplateFormat) -> Option<TemplateEntry> {
     let contents = fs::read(path).ok()?;
     let head = &contents[..contents.len().min(HEADER_READ_LIMIT)];
     let text = std::str::from_utf8(head).ok()?;
     let name = path.file_name()?.to_string_lossy().into_owned();
 
+    let (extensions, magic) = match format {
+        TemplateFormat::Bt010 => parse_bt_header(text),
+        TemplateFormat::ImHex => parse_imhex_header(text),
+    };
+    if extensions.is_empty() && magic.is_empty() {
+        return None;
+    }
+    Some(TemplateEntry { path: path.to_path_buf(), name, extensions, magic })
+}
+
+fn parse_bt_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
     let mut extensions = Vec::new();
     let mut magic = Vec::new();
     for line in text.lines() {
@@ -150,10 +187,112 @@ fn parse_template(path: &Path) -> Option<TemplateEntry> {
             magic.extend(parse_id_bytes(rest));
         }
     }
-    if extensions.is_empty() && magic.is_empty() {
-        return None;
+    (extensions, magic)
+}
+
+/// Read ImHex `#pragma MIME` and `#pragma magic` directives. Magic
+/// patterns are only registered when they're anchored at offset 0 --
+/// the magic-prefix matcher in [`TemplateLibrary::suggest`] doesn't
+/// model offsets. Wildcard nibbles (`0?`) in patterns are skipped
+/// rather than matched fuzzily.
+fn parse_imhex_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
+    let mut extensions = Vec::new();
+    let mut magic = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#pragma") else { continue };
+        let rest = rest.trim_start();
+        if let Some(value) = rest.strip_prefix("MIME")
+            && let Some(ext) = mime_to_extension(value.trim())
+        {
+            extensions.push(ext);
+        } else if let Some(value) = rest.strip_prefix("magic")
+            && let Some(bytes) = parse_imhex_magic(value.trim())
+        {
+            magic.push(bytes);
+        }
     }
-    Some(TemplateEntry { path: path.to_path_buf(), name, extensions, magic })
+    (extensions, magic)
+}
+
+/// Map common MIME types to a file extension hint. The table is
+/// deliberately small -- ImHex's MIME pragmas span hundreds of
+/// vendor types, so we only cover ones that round-trip cleanly to
+/// a stable extension. Templates without a recognised MIME still
+/// get registered when they declare a magic pattern.
+fn mime_to_extension(mime: &str) -> Option<String> {
+    let mime = mime.split_whitespace().next()?;
+    let suffix = match mime {
+        "application/zip" => "zip",
+        "application/gzip" | "application/x-gzip" => "gz",
+        "application/x-bzip2" => "bz2",
+        "application/x-tar" => "tar",
+        "application/x-7z-compressed" => "7z",
+        "application/x-rar-compressed" | "application/vnd.rar" => "rar",
+        "application/json" => "json",
+        "application/pdf" => "pdf",
+        "application/x-elf" | "application/x-executable" => "elf",
+        "application/x-mach-binary" => "macho",
+        "application/wasm" => "wasm",
+        "application/vnd.android.package-archive" => "apk",
+        "application/vnd.ms-cab-compressed" => "cab",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/webp" => "webp",
+        "image/x-icon" => "ico",
+        "image/svg+xml" => "svg",
+        "image/tiff" => "tiff",
+        "audio/mpeg" => "mp3",
+        "audio/ogg" => "ogg",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/flac" => "flac",
+        "audio/midi" => "mid",
+        "video/mp4" => "mp4",
+        "video/x-matroska" => "mkv",
+        "video/webm" => "webm",
+        "font/ttf" => "ttf",
+        "font/otf" => "otf",
+        "font/woff" => "woff",
+        "font/woff2" => "woff2",
+        _ => return None,
+    };
+    Some(suffix.to_owned())
+}
+
+/// `[ 50 4B 03 04 ] @ 0x00` -> `Some([0x50, 0x4B, 0x03, 0x04])`.
+/// We only emit a pattern when the offset annotation is zero (or
+/// absent), since the suggester only matches against the head of
+/// the file. Wildcard nibbles (`0?`, `?F`) cause the whole pattern
+/// to be skipped for now.
+fn parse_imhex_magic(raw: &str) -> Option<Vec<u8>> {
+    let lb = raw.find('[')?;
+    let rb = raw[lb + 1..].find(']')?;
+    let body = &raw[lb + 1..lb + 1 + rb];
+    let after = raw[lb + 1 + rb + 1..].trim_start();
+    if let Some(rest) = after.strip_prefix('@') {
+        let offset_text = rest.split_whitespace().next().unwrap_or("0");
+        let offset = parse_offset_literal(offset_text);
+        if offset != Some(0) {
+            return None;
+        }
+    }
+    let mut out = Vec::new();
+    for token in body.split_whitespace() {
+        if token.contains('?') {
+            return None;
+        }
+        out.push(u8::from_str_radix(token, 16).ok()?);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn parse_offset_literal(s: &str) -> Option<u64> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok();
+    }
+    s.parse().ok()
 }
 
 /// `"File Mask: *.zip"` -> `Some("*.zip")` for a given field name.
@@ -415,12 +554,18 @@ fn expand_into(
     Ok(())
 }
 
-/// List every `.bt` file currently installed in `dir`, sorted by name.
+/// List every template source file currently installed in `dir`,
+/// sorted by name. Recognises 010 `.bt` and ImHex `.hexpat` / `.pat`.
 /// Used by the "Uninstall template..." palette mode.
 pub fn list_installed_templates(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<PathBuf> =
-        read.flatten().map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("bt")).collect();
+    let mut out: Vec<PathBuf> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            matches!(p.extension().and_then(|s| s.to_str()), Some("bt") | Some("hexpat") | Some("pat"))
+        })
+        .collect();
     out.sort();
     out
 }
@@ -467,6 +612,48 @@ mod tests {
         let lib = TemplateLibrary { entries: vec![other, png] };
         let head = [0x89, 0x50, 0x4E, 0x47, 0x0D];
         assert_eq!(lib.suggest(Some("bin"), &head).unwrap().name, "PNG.bt");
+    }
+
+    #[test]
+    fn imhex_magic_pragma_at_offset_zero() {
+        let (exts, magic) = parse_imhex_header(
+            "#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n",
+        );
+        assert_eq!(exts, vec!["zip"]);
+        assert_eq!(magic, vec![vec![0x50, 0x4B, 0x03, 0x04]]);
+    }
+
+    #[test]
+    fn imhex_magic_pragma_skips_non_zero_offsets_and_wildcards() {
+        // Offset != 0 is silently skipped: the magic-prefix matcher
+        // can't anchor anywhere else.
+        let (_, magic) = parse_imhex_header("#pragma magic [ AA BB ] @ 0x10\n");
+        assert!(magic.is_empty());
+        // Wildcard nibbles drop the whole pattern.
+        let (_, magic) = parse_imhex_header("#pragma magic [ 0? FF ] @ 0x00\n");
+        assert!(magic.is_empty());
+    }
+
+    #[test]
+    fn imhex_template_round_trips_through_load_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("zip.hexpat"),
+            "#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\nstruct S { u32 x; };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("png.hexpat"),
+            "#pragma magic [ 89 50 4E 47 0D 0A 1A 0A ] @ 0x00\n",
+        )
+        .unwrap();
+        let lib = TemplateLibrary::load_from(Some(tmp.path()));
+        assert_eq!(lib.entries.len(), 2);
+        let zip = lib.entries.iter().find(|e| e.name == "zip.hexpat").unwrap();
+        assert_eq!(zip.extensions, vec!["zip"]);
+        assert_eq!(zip.magic, vec![vec![0x50, 0x4B, 0x03, 0x04]]);
+        let head = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
+        assert_eq!(lib.suggest(None, &head).unwrap().name, "png.hexpat");
     }
 
     #[test]
