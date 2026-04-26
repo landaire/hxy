@@ -142,6 +142,7 @@ compare-table-kind = Kind
 compare-table-a-range = A
 compare-table-b-range = B
 compare-table-size = Size
+compare-table-size-fmt = a={ $a } b={ $b }
 compare-kind-added = Added
 compare-kind-removed = Removed
 compare-kind-changed = Changed

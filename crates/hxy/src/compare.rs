@@ -122,6 +122,13 @@ pub struct CompareSession {
     /// when no recompute is pending. Polling-only -- see
     /// [`Self::poll_recompute`].
     pending_recompute: Option<RecomputePending>,
+    /// Index into [`Self::diff`]'s `hunks` of the row the diff
+    /// table currently has hovered. Drives the secondary fill the
+    /// hex panes paint via `hover_span` so hovering a row in the
+    /// table previews the affected bytes in both views without
+    /// committing a selection. Cleared when the table loses
+    /// hover.
+    pub hovered_hunk: Option<usize>,
 }
 
 /// Cheap "did this side change?" snapshot pulled from the public
@@ -198,6 +205,7 @@ impl CompareSession {
             edit_at: None,
             last_synced_scroll: 0.0,
             pending_recompute: None,
+            hovered_hunk: None,
         }
     }
 

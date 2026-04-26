@@ -7706,6 +7706,19 @@ fn render_compare_tab(
         Some(m) => (Some(m.a), Some(m.b)),
         None => (None, None),
     };
+    // Resolve the diff-table's hovered row to a per-side byte
+    // range so each pane can render the secondary "hover" tint
+    // around the corresponding bytes.
+    let (a_hover, b_hover) = match (session.hovered_hunk, session.diff.as_ref()) {
+        (Some(idx), Some(d)) => {
+            let hunk = d.hunks.get(idx).copied();
+            (
+                hunk.and_then(|h| pane_hover_span(h.a_offset, h.a_len)),
+                hunk.and_then(|h| pane_hover_span(h.b_offset, h.b_len)),
+            )
+        }
+        _ => (None, None),
+    };
 
     egui::CentralPanel::default().show_inside(ui, |ui| {
         let avail = ui.available_width();
@@ -7715,7 +7728,15 @@ fn render_compare_tab(
                 egui::Vec2::new(half, ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    render_compare_pane(ui, &mut session.a, state, tab_id.with("pane-a"), &a_ranges, a_map.clone());
+                    render_compare_pane(
+                        ui,
+                        &mut session.a,
+                        state,
+                        tab_id.with("pane-a"),
+                        &a_ranges,
+                        a_map.clone(),
+                        a_hover,
+                    );
                 },
             );
             ui.separator();
@@ -7723,7 +7744,15 @@ fn render_compare_tab(
                 egui::Vec2::new(ui.available_width(), ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    render_compare_pane(ui, &mut session.b, state, tab_id.with("pane-b"), &b_ranges, b_map.clone());
+                    render_compare_pane(
+                        ui,
+                        &mut session.b,
+                        state,
+                        tab_id.with("pane-b"),
+                        &b_ranges,
+                        b_map.clone(),
+                        b_hover,
+                    );
                 },
             );
         });
@@ -7764,6 +7793,18 @@ fn compare_pane_ranges(diff: &crate::compare::DiffResult, side: crate::compare::
         .collect()
 }
 
+/// Convert a hunk's `(offset, len)` for one side into a
+/// [`hxy_core::ByteRange`] for the hex view's `hover_span`. Returns
+/// `None` for zero-length sides (Added on A / Removed on B), which
+/// leaves the corresponding pane unhighlighted.
+#[cfg(not(target_arch = "wasm32"))]
+fn pane_hover_span(offset: u64, len: u64) -> Option<hxy_core::ByteRange> {
+    if len == 0 {
+        return None;
+    }
+    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(offset), hxy_core::ByteOffset::new(offset + len)).ok()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn render_compare_pane(
     ui: &mut egui::Ui,
@@ -7772,6 +7813,7 @@ fn render_compare_pane(
     salt: egui::Id,
     diff_ranges: &[(u64, u64, crate::compare::HunkKind)],
     row_map: Option<Vec<hxy_view::RowSlot>>,
+    hover_span: Option<hxy_core::ByteRange>,
 ) {
     ui.horizontal(|ui| {
         ui.strong(&pane.display_name);
@@ -7803,6 +7845,9 @@ fn render_compare_pane(
         .minimap_colored(state.app.minimap_colored)
         .field_boundaries(&diff_field_bounds)
         .field_colors(&diff_field_colors);
+    if let Some(span) = hover_span {
+        view = view.hover_span(Some(span));
+    }
     if let Some(map) = row_map {
         view = view.row_map(map);
     }
@@ -7862,46 +7907,148 @@ fn compare_kind_style(kind: crate::compare::HunkKind, text_mode: bool) -> hxy_vi
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_compare_diff_table(ui: &mut egui::Ui, session: &mut crate::compare::CompareSession) {
-    use crate::compare::HunkKind;
+    use egui_table::Column;
+    use egui_table::HeaderRow;
+    use egui_table::Table;
 
     let Some(diff) = session.diff.clone() else {
         ui.weak(hxy_i18n::t("compare-status-pending"));
         return;
     };
-    let changes: Vec<crate::compare::DiffHunk> = diff.changes().copied().collect();
-    if changes.is_empty() {
+    // Persist the (filtered-changes-index → original-hunk-index)
+    // mapping so click / hover dispatch can write back to
+    // `session.hovered_hunk` (which stores indices into the full
+    // hunks array, not the filtered changes list).
+    let visible: Vec<(usize, crate::compare::DiffHunk)> = diff
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| !matches!(h.kind, crate::compare::HunkKind::Equal))
+        .map(|(i, h)| (i, *h))
+        .collect();
+    if visible.is_empty() {
         ui.weak(hxy_i18n::t("compare-no-differences"));
         return;
     }
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new(ui.id().with("hxy-compare-grid")).striped(true).num_columns(4).show(ui, |ui| {
-            ui.strong(hxy_i18n::t("compare-table-kind"));
-            ui.strong(hxy_i18n::t("compare-table-a-range"));
-            ui.strong(hxy_i18n::t("compare-table-b-range"));
-            ui.strong(hxy_i18n::t("compare-table-size"));
-            ui.end_row();
-            for hunk in &changes {
-                let (kind_label, color) = match hunk.kind {
-                    HunkKind::Added => (hxy_i18n::t("compare-kind-added"), egui::Color32::from_rgb(60, 200, 100)),
-                    HunkKind::Removed => (hxy_i18n::t("compare-kind-removed"), egui::Color32::from_rgb(220, 90, 90)),
-                    HunkKind::Changed => (hxy_i18n::t("compare-kind-changed"), egui::Color32::from_rgb(220, 160, 60)),
-                    HunkKind::Equal => continue,
-                };
-                if ui.selectable_label(false, egui::RichText::new(kind_label).color(color)).clicked() {
-                    if hunk.a_len > 0 {
-                        scroll_pane_to(&mut session.a, hunk.a_offset, hunk.a_len);
-                    }
-                    if hunk.b_len > 0 {
-                        scroll_pane_to(&mut session.b, hunk.b_offset, hunk.b_len);
-                    }
-                }
-                ui.label(format_range(hunk.a_offset, hunk.a_len));
-                ui.label(format_range(hunk.b_offset, hunk.b_len));
-                ui.label(format!("a={} b={}", hunk.a_len, hunk.b_len));
-                ui.end_row();
+
+    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    let mut any_hover: Option<usize> = None;
+    let mut click: Option<crate::compare::DiffHunk> = None;
+    let id_seed = ui.id().with(("hxy-compare-table", session.id.get()));
+
+    let mut delegate = CompareTableDelegate {
+        visible: &visible,
+        hovered_hunk: session.hovered_hunk,
+        any_hover: &mut any_hover,
+        click: &mut click,
+        row_height,
+    };
+
+    Table::new()
+        .id_salt(id_seed)
+        .num_rows(visible.len() as u64)
+        .columns(vec![
+            Column::new(96.0).range(60.0..=200.0).resizable(true).id(egui::Id::new("cmp-col-kind")),
+            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-a")),
+            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-b")),
+            Column::new(160.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-size")),
+        ])
+        .headers(vec![HeaderRow::new(row_height)])
+        .auto_size_mode(egui_table::AutoSizeMode::OnParentResize)
+        .show(ui, &mut delegate);
+
+    if any_hover != session.hovered_hunk {
+        session.hovered_hunk = any_hover;
+    }
+    if let Some(hunk) = click {
+        if hunk.a_len > 0 {
+            scroll_pane_to(&mut session.a, hunk.a_offset, hunk.a_len);
+        }
+        if hunk.b_len > 0 {
+            scroll_pane_to(&mut session.b, hunk.b_offset, hunk.b_len);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CompareTableDelegate<'a> {
+    visible: &'a [(usize, crate::compare::DiffHunk)],
+    hovered_hunk: Option<usize>,
+    any_hover: &'a mut Option<usize>,
+    click: &'a mut Option<crate::compare::DiffHunk>,
+    row_height: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl egui_table::TableDelegate for CompareTableDelegate<'_> {
+    fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
+        let key = match cell.col_range.start {
+            0 => "compare-table-kind",
+            1 => "compare-table-a-range",
+            2 => "compare-table-b-range",
+            3 => "compare-table-size",
+            _ => return,
+        };
+        ui.add_space(6.0);
+        ui.strong(hxy_i18n::t(key));
+    }
+
+    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
+        let Some((hunk_idx, hunk)) = self.visible.get(row_nr as usize).copied() else { return };
+        let row_rect = ui.max_rect();
+        ui.push_id(("hxy-compare-row", row_nr), |ui| {
+            let row_id = ui.id().with("interact");
+            let resp = ui.interact(row_rect, row_id, egui::Sense::click());
+            // Mirror the template panel: cell labels eat hover /
+            // click responses, so fall back to "pointer in rect"
+            // checks so the whole row behaves as one target.
+            let over_row = ui.rect_contains_pointer(row_rect);
+            if over_row {
+                *self.any_hover = Some(hunk_idx);
+            }
+            let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
+            if clicked_row {
+                *self.click = Some(hunk);
+            }
+            if self.hovered_hunk == Some(hunk_idx) {
+                ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35));
             }
         });
-    });
+    }
+
+    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
+        use crate::compare::HunkKind;
+        let Some((_, hunk)) = self.visible.get(cell.row_nr as usize).copied() else { return };
+        ui.add_space(6.0);
+        match cell.col_nr {
+            0 => {
+                let (key, color) = match hunk.kind {
+                    HunkKind::Added => ("compare-kind-added", egui::Color32::from_rgb(60, 200, 100)),
+                    HunkKind::Removed => ("compare-kind-removed", egui::Color32::from_rgb(220, 90, 90)),
+                    HunkKind::Changed => ("compare-kind-changed", egui::Color32::from_rgb(220, 160, 60)),
+                    HunkKind::Equal => return,
+                };
+                ui.label(egui::RichText::new(hxy_i18n::t(key)).color(color).strong());
+            }
+            1 => {
+                ui.label(format_range(hunk.a_offset, hunk.a_len));
+            }
+            2 => {
+                ui.label(format_range(hunk.b_offset, hunk.b_len));
+            }
+            3 => {
+                ui.label(hxy_i18n::t_args(
+                    "compare-table-size-fmt",
+                    &[("a", &hunk.a_len.to_string()), ("b", &hunk.b_len.to_string())],
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn default_row_height(&self) -> f32 {
+        self.row_height
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
