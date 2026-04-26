@@ -111,6 +111,12 @@ pub struct CompareSession {
     /// Wall-clock time of the most recent observed mutation. Used
     /// as the start of the debounce window.
     edit_at: Option<std::time::Instant>,
+    /// Last vertical scroll position the host saw both panes
+    /// agreeing on. Used by [`Self::sync_scroll`] to detect which
+    /// side moved when the user dragged a scrollbar / used the
+    /// wheel and propagate that motion to the other side so the
+    /// row maps stay aligned.
+    last_synced_scroll: f32,
 }
 
 /// Cheap "did this side change?" snapshot pulled from the public
@@ -164,7 +170,51 @@ impl CompareSession {
             diff_serial: 0,
             last_diff_fingerprint: None,
             edit_at: None,
+            last_synced_scroll: 0.0,
         }
+    }
+
+    /// Mirror whichever pane the user just scrolled onto the other
+    /// pane. Called after both panes have rendered for the current
+    /// frame so [`hxy_view::HexEditor::scroll_offset`] reflects the
+    /// just-rendered position. Equality is compared with a small
+    /// epsilon because egui's scroll values can wiggle by a sub-
+    /// pixel when content height changes underfoot.
+    pub fn sync_scroll(&mut self) {
+        let a = self.a.editor.scroll_offset();
+        let b = self.b.editor.scroll_offset();
+        let eps = 0.5_f32;
+        if (a - b).abs() <= eps {
+            self.last_synced_scroll = a;
+            return;
+        }
+        let a_moved = (a - self.last_synced_scroll).abs() > eps;
+        let b_moved = (b - self.last_synced_scroll).abs() > eps;
+        let leader = match (a_moved, b_moved) {
+            (true, false) => a,
+            (false, true) => b,
+            // Both moved this frame -- a tie. Take the side that
+            // moved further as a heuristic for "the one the user
+            // is actually dragging."
+            (true, true) => {
+                if (a - self.last_synced_scroll).abs() >= (b - self.last_synced_scroll).abs() {
+                    a
+                } else {
+                    b
+                }
+            }
+            // Neither moved past the epsilon yet they disagree --
+            // residual mismatch from a previous frame's
+            // recompute. Snap to A.
+            (false, false) => a,
+        };
+        if (a - leader).abs() > eps {
+            self.a.editor.set_scroll_to(leader);
+        }
+        if (b - leader).abs() > eps {
+            self.b.editor.set_scroll_to(leader);
+        }
+        self.last_synced_scroll = leader;
     }
 
     /// Recompute the diff from the current patched view of both

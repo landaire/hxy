@@ -7591,6 +7591,12 @@ fn render_compare_tab(
             );
         });
     });
+
+    // After both panes have rendered this frame, mirror the side
+    // the user just scrolled onto the other so their row maps
+    // stay aligned. The row maps already give them identical
+    // total heights; this just propagates the scrollbar position.
+    session.sync_scroll();
 }
 
 /// Sorted-by-start `(start, end_exclusive, kind)` ranges for one
