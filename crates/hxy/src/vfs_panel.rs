@@ -9,6 +9,7 @@
 use egui_ltreeview::Action;
 use egui_ltreeview::NodeBuilder;
 use egui_ltreeview::TreeView;
+use egui_ltreeview::TreeViewState;
 use hxy_vfs::vfs::FileSystem;
 
 /// Events emitted by the panel on a given frame. Returned via
@@ -19,11 +20,24 @@ pub enum VfsPanelEvent {
     OpenEntry(String),
 }
 
-/// Render the panel for `fs` and return any events produced this frame.
-/// `id_scope` must be unique across every panel currently on screen --
-/// workspaces and plugin mounts each pass a domain-tagged id so a
-/// `WorkspaceId(1)` panel can't collide with a `MountId(1)` panel.
-pub fn show(ui: &mut egui::Ui, id_scope: egui::Id, fs: &dyn FileSystem) -> Vec<VfsPanelEvent> {
+/// Render the panel for `fs` and return any events produced this
+/// frame. `id_scope` must be unique across every panel currently on
+/// screen -- workspaces and plugin mounts each pass a domain-tagged
+/// id so a `WorkspaceId(1)` panel can't collide with a `MountId(1)`
+/// panel.
+///
+/// `expanded` is the persisted list of currently-open directory
+/// paths (relative to the panel's root, leading slash). On the
+/// first frame the panel re-applies the saved openness to the
+/// underlying [`TreeViewState`]; on every frame it writes back any
+/// changes the user made by clicking expanders -- caller persists
+/// the slice across restarts.
+pub fn show(
+    ui: &mut egui::Ui,
+    id_scope: egui::Id,
+    fs: &dyn FileSystem,
+    expanded: &mut Vec<String>,
+) -> Vec<VfsPanelEvent> {
     // Clip everything painted by the tree to our allocated rect so
     // long entry names don't overflow horizontally into the hex view.
     ui.set_clip_rect(ui.max_rect());
@@ -40,11 +54,26 @@ pub fn show(ui: &mut egui::Ui, id_scope: egui::Id, fs: &dyn FileSystem) -> Vec<V
         });
     });
 
+    let mut now_open: Vec<String> = Vec::new();
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         let tree_id = id_scope.with("hxy_vfs_tree");
-        let (response, actions) = TreeView::new(tree_id).show(ui, |builder| {
-            walk(builder, fs, "", &mut totals);
+        // Use `show_state` so we can seed openness from the
+        // persisted `expanded` set on the first frame for this
+        // tree id. A sentinel in egui temp memory tracks whether
+        // we've already applied the seed.
+        let mut state: TreeViewState<String> = TreeViewState::load(ui, tree_id).unwrap_or_default();
+        let seeded_key = tree_id.with("hxy_vfs_seeded");
+        let seeded: bool = ui.ctx().data(|d| d.get_temp(seeded_key)).unwrap_or(false);
+        if !seeded {
+            for path in expanded.iter() {
+                state.set_openness(format!("D:{path}"), true);
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(seeded_key, true));
+        }
+        let (response, actions) = TreeView::new(tree_id).show_state(ui, &mut state, |builder| {
+            walk(builder, fs, "", &mut totals, &mut now_open);
         });
+        state.store(ui, tree_id);
 
         // `egui_ltreeview`'s `Action::Activate` (double-click on a
         // leaf) doesn't reliably fire. We synthesise the semantic we
@@ -87,6 +116,15 @@ pub fn show(ui: &mut egui::Ui, id_scope: egui::Id, fs: &dyn FileSystem) -> Vec<V
     );
     ui.ctx().data_mut(|d| d.insert_temp(footer_text, text));
 
+    // Sync the persisted expansion list with what the tree actually
+    // has open this frame. Sort + dedup so a no-op render doesn't
+    // flap the dirty check on every cycle.
+    now_open.sort();
+    now_open.dedup();
+    if *expanded != now_open {
+        *expanded = now_open;
+    }
+
     events
 }
 
@@ -101,6 +139,7 @@ fn walk(
     fs: &dyn FileSystem,
     path: &str,
     totals: &mut Totals,
+    now_open: &mut Vec<String>,
 ) {
     let Ok(entries) = fs.read_dir(if path.is_empty() { "/" } else { path }) else { return };
     let mut dirs: Vec<String> = Vec::new();
@@ -121,6 +160,9 @@ fn walk(
         let id = format!("D:{full}");
         let label = format!("{} {}", egui_phosphor::regular::FOLDER, name);
         let is_open = builder.node(NodeBuilder::dir(id).label(label).default_open(false));
+        if is_open {
+            now_open.push(full.clone());
+        }
         totals.dirs += 1;
         // Lazy descent: only recurse into children when the user has
         // actually expanded this node. For in-memory VFS handlers
@@ -128,7 +170,7 @@ fn walk(
         // mount like xbox-neighborhood it pulls the entire remote
         // filesystem on the UI thread and freezes the frame loop.
         if is_open {
-            walk(builder, fs, &full, totals);
+            walk(builder, fs, &full, totals, now_open);
         }
         builder.close_dir();
     }

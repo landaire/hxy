@@ -53,6 +53,16 @@ pub struct PersistedState {
     /// `None` until the host snapshots the dock at least once.
     #[cfg(not(target_arch = "wasm32"))]
     pub dock_layout_json: Option<String>,
+    /// Expanded directory paths in each VFS panel, keyed by the
+    /// parent source the panel renders. Cleared per-source if the
+    /// panel re-opens with no surviving entries -- the format only
+    /// records dirs that exist as of the most recent render, so
+    /// stale entries fall out automatically when a tree is rebuilt.
+    /// Stored as a Vec of pairs rather than a [`HashMap`] because
+    /// JSON object keys must be strings and [`TabSource`] is an enum;
+    /// the Vec form round-trips through serde without bespoke
+    /// serialise / deserialise.
+    pub vfs_tree_expanded: Vec<(TabSource, Vec<String>)>,
 }
 
 impl PartialEq for PersistedState {
@@ -60,7 +70,8 @@ impl PartialEq for PersistedState {
         let base = self.window == other.window
             && self.app == other.app
             && self.open_tabs == other.open_tabs
-            && self.plugin_grants == other.plugin_grants;
+            && self.plugin_grants == other.plugin_grants
+            && self.vfs_tree_expanded == other.vfs_tree_expanded;
         #[cfg(not(target_arch = "wasm32"))]
         {
             base && self.dock_layout_json == other.dock_layout_json

@@ -16,6 +16,7 @@ const KEY_APP: &str = "app_settings";
 const KEY_OPEN_TABS: &str = "open_tabs";
 const KEY_PLUGIN_GRANTS: &str = "plugin_grants";
 const KEY_DOCK_LAYOUT: &str = "dock_layout";
+const KEY_VFS_TREE_EXPANDED: &str = "vfs_tree_expanded";
 
 async fn fetch(pool: &SqlitePool, key: &str) -> PersistResult<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
@@ -26,7 +27,7 @@ async fn fetch(pool: &SqlitePool, key: &str) -> PersistResult<Option<String>> {
     Ok(row.map(|(v,)| v))
 }
 
-async fn store<V: Serialize>(pool: &SqlitePool, key: &'static str, value: &V) -> PersistResult<()> {
+async fn store<V: Serialize + ?Sized>(pool: &SqlitePool, key: &'static str, value: &V) -> PersistResult<()> {
     let json = serde_json::to_string(value).map_err(|source| PersistError::Serialize { key, source })?;
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -100,4 +101,20 @@ pub async fn store_dock_layout(pool: &SqlitePool, json: &str) -> PersistResult<(
     .await
     .map_err(PersistError::Query)?;
     Ok(())
+}
+
+/// Per-source list of expanded directory paths in each VFS panel.
+/// The list is a `Vec<(parent, expanded_paths)>` because JSON object
+/// keys must be strings and [`hxy_vfs::TabSource`] is an enum.
+pub async fn load_vfs_tree_expanded(
+    pool: &SqlitePool,
+) -> PersistResult<Option<Vec<(hxy_vfs::TabSource, Vec<String>)>>> {
+    load(pool, KEY_VFS_TREE_EXPANDED).await
+}
+
+pub async fn store_vfs_tree_expanded(
+    pool: &SqlitePool,
+    list: &[(hxy_vfs::TabSource, Vec<String>)],
+) -> PersistResult<()> {
+    store(pool, KEY_VFS_TREE_EXPANDED, list).await
 }

@@ -7,7 +7,6 @@ fn main() -> eframe::Result<()> {
     use hxy_lib::cli::Cli;
     use hxy_lib::ipc;
     use hxy_lib::persist;
-    use hxy_lib::persist::SaveSink;
     use hxy_lib::state::PersistedState;
     use hxy_lib::state::shared;
     use tokio::runtime::Runtime;
@@ -50,63 +49,18 @@ fn main() -> eframe::Result<()> {
     };
 
     let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
-    let (sink, loaded_app, loaded_tabs, loaded_grants, loaded_dock_layout, plugin_state_store) = {
-        let _guard = runtime.enter();
-        match runtime.block_on(persist::open_db()) {
-            Ok(pool) => {
-                let app_settings = match runtime.block_on(persist::load_app_settings(&pool)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "load app settings -- using defaults");
-                        None
-                    }
-                };
-                let tabs = match runtime.block_on(persist::load_open_tabs(&pool)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "load open tabs -- starting empty");
-                        None
-                    }
-                };
-                let grants = match runtime.block_on(persist::load_plugin_grants(&pool)) {
-                    Ok(v) => v.unwrap_or_default(),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "load plugin grants -- treating all as denied");
-                        hxy_plugin_host::PluginGrants::default()
-                    }
-                };
-                let dock_layout = match runtime.block_on(persist::load_dock_layout(&pool)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "load dock layout -- starting with default");
-                        None
-                    }
-                };
-                let state_store: Arc<dyn hxy_plugin_host::StateStore> =
-                    Arc::new(persist::SqliteStateStore::new(pool.clone(), Arc::clone(&runtime)));
-                (
-                    Some(SaveSink::new(pool, Arc::clone(&runtime))),
-                    app_settings,
-                    tabs,
-                    grants,
-                    dock_layout,
-                    Some(state_store),
-                )
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "open settings database");
-                (None, None, None, hxy_plugin_host::PluginGrants::default(), None, None)
-            }
-        }
-    };
+    let startup = load_persistent_state(&runtime);
 
     let state = shared(PersistedState {
         window: loaded_window.unwrap_or_default(),
-        app: loaded_app.unwrap_or_default(),
-        open_tabs: loaded_tabs.unwrap_or_default(),
-        plugin_grants: loaded_grants,
-        dock_layout_json: loaded_dock_layout,
+        app: startup.app.unwrap_or_default(),
+        open_tabs: startup.open_tabs.unwrap_or_default(),
+        plugin_grants: startup.plugin_grants,
+        dock_layout_json: startup.dock_layout_json,
+        vfs_tree_expanded: startup.vfs_tree_expanded,
     });
+    let sink = startup.sink;
+    let plugin_state_store = startup.plugin_state_store;
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(hxy_lib::APP_NAME)
@@ -147,6 +101,91 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Everything [`main`] reads out of the SQLite-backed persistence
+/// layer at startup. The fields are individually optional because
+/// each row may be missing (first launch) or unreadable (corrupt
+/// blob, schema drift); the shape itself is fixed so call sites
+/// destructure by name rather than counting tuple positions.
+#[cfg(not(target_arch = "wasm32"))]
+struct StartupPersistence {
+    sink: Option<hxy_lib::persist::SaveSink>,
+    plugin_state_store: Option<std::sync::Arc<dyn hxy_plugin_host::StateStore>>,
+    app: Option<hxy_lib::settings::AppSettings>,
+    open_tabs: Option<Vec<hxy_lib::state::OpenTabState>>,
+    plugin_grants: hxy_plugin_host::PluginGrants,
+    dock_layout_json: Option<String>,
+    vfs_tree_expanded: Vec<(hxy_vfs::TabSource, Vec<String>)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_persistent_state(runtime: &std::sync::Arc<tokio::runtime::Runtime>) -> StartupPersistence {
+    use hxy_lib::persist;
+    use hxy_lib::persist::SaveSink;
+
+    let _guard = runtime.enter();
+    let pool = match runtime.block_on(persist::open_db()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "open settings database");
+            return StartupPersistence {
+                sink: None,
+                plugin_state_store: None,
+                app: None,
+                open_tabs: None,
+                plugin_grants: hxy_plugin_host::PluginGrants::default(),
+                dock_layout_json: None,
+                vfs_tree_expanded: Vec::new(),
+            };
+        }
+    };
+    let app = match runtime.block_on(persist::load_app_settings(&pool)) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "load app settings -- using defaults");
+            None
+        }
+    };
+    let open_tabs = match runtime.block_on(persist::load_open_tabs(&pool)) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "load open tabs -- starting empty");
+            None
+        }
+    };
+    let plugin_grants = match runtime.block_on(persist::load_plugin_grants(&pool)) {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "load plugin grants -- treating all as denied");
+            hxy_plugin_host::PluginGrants::default()
+        }
+    };
+    let dock_layout_json = match runtime.block_on(persist::load_dock_layout(&pool)) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "load dock layout -- starting with default");
+            None
+        }
+    };
+    let vfs_tree_expanded = match runtime.block_on(persist::load_vfs_tree_expanded(&pool)) {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "load vfs tree expansion -- starting empty");
+            Vec::new()
+        }
+    };
+    let state_store: std::sync::Arc<dyn hxy_plugin_host::StateStore> =
+        std::sync::Arc::new(persist::SqliteStateStore::new(pool.clone(), std::sync::Arc::clone(runtime)));
+    StartupPersistence {
+        sink: Some(SaveSink::new(pool, std::sync::Arc::clone(runtime))),
+        plugin_state_store: Some(state_store),
+        app,
+        open_tabs,
+        plugin_grants,
+        dock_layout_json,
+        vfs_tree_expanded,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

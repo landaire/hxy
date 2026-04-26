@@ -3040,6 +3040,7 @@ fn render_plugin_mount_tab(
     ui: &mut egui::Ui,
     mount_id: crate::file::MountId,
     plugin: &crate::file::MountedPlugin,
+    expanded: &mut Vec<String>,
 ) {
     let mount = match &plugin.status {
         crate::file::MountStatus::Ready(m) => m,
@@ -3049,7 +3050,7 @@ fn render_plugin_mount_tab(
         }
     };
     let scope = egui::Id::new(("hxy-plugin-mount-vfs", mount_id.get()));
-    let events = crate::vfs_panel::show(ui, scope, &*mount.fs);
+    let events = crate::vfs_panel::show(ui, scope, &*mount.fs, expanded);
     let mut to_open: Vec<String> = Vec::new();
     for e in events {
         let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
@@ -3101,6 +3102,23 @@ fn render_failed_mount_placeholder(
 /// [`drain_pending_mount_retries`].
 #[cfg(not(target_arch = "wasm32"))]
 const PENDING_MOUNT_RETRY_KEY: &str = "hxy_pending_mount_retry";
+
+/// Find-or-insert helper for the persisted VFS expansion list. The
+/// list is a [`Vec`] of `(parent_source, expanded_paths)` pairs
+/// because [`hxy_vfs::TabSource`] isn't a JSON-string-friendly key
+/// (see [`crate::state::PersistedState::vfs_tree_expanded`]); this
+/// helper hides the linear scan from call sites that just want a
+/// `&mut Vec<String>` they can hand to [`crate::vfs_panel::show`].
+fn vfs_expanded_for<'a>(
+    list: &'a mut Vec<(TabSource, Vec<String>)>,
+    key: &TabSource,
+) -> &'a mut Vec<String> {
+    if let Some(idx) = list.iter().position(|(k, _)| k == key) {
+        return &mut list[idx].1;
+    }
+    list.push((key.clone(), Vec::new()));
+    &mut list.last_mut().expect("just pushed").1
+}
 
 /// Drain any pending retry-mount clicks captured by failed-mount
 /// placeholders during the dock pass. Each entry calls
@@ -6728,7 +6746,15 @@ impl TabViewer for HxyTabViewer<'_> {
             },
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
-                Some(m) => render_plugin_mount_tab(ui, *mount_id, m),
+                Some(m) => {
+                    let key = TabSource::PluginMount {
+                        plugin_name: m.plugin_name.clone(),
+                        token: m.token.clone(),
+                        title: m.display_name.clone(),
+                    };
+                    let expanded = vfs_expanded_for(&mut self.state.vfs_tree_expanded, &key);
+                    render_plugin_mount_tab(ui, *mount_id, m, expanded);
+                }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
                 }
@@ -6994,7 +7020,20 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
             },
             crate::file::WorkspaceTab::VfsTree => {
                 let scope = egui::Id::new(("hxy-workspace-vfs", self.workspace_id.get()));
-                let events = crate::vfs_panel::show(ui, scope, &*self.mount.fs);
+                // Key the persisted expansion list by the parent
+                // file's source so it survives across restarts and
+                // even across closing / reopening the workspace.
+                let parent_source = self.files.get(&self.editor_id).and_then(|f| f.source_kind.clone());
+                let events = match parent_source {
+                    Some(key) => {
+                        let expanded = vfs_expanded_for(&mut self.state.vfs_tree_expanded, &key);
+                        crate::vfs_panel::show(ui, scope, &*self.mount.fs, expanded)
+                    }
+                    None => {
+                        let mut scratch = Vec::new();
+                        crate::vfs_panel::show(ui, scope, &*self.mount.fs, &mut scratch)
+                    }
+                };
                 let mut to_open: Vec<String> = Vec::new();
                 for e in events {
                     let crate::vfs_panel::VfsPanelEvent::OpenEntry(path) = e;
