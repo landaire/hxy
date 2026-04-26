@@ -977,17 +977,37 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: attrs.to_vec(),
         });
+        // `self.current_parent` tracks the *enclosing* struct so the
+        // magic `parent` identifier resolves through one hop. Inside
+        // this struct's body the enclosing struct is whatever was
+        // passed in as `parent` (the struct that contained this
+        // field decl); it's NOT this struct itself -- that's `this`.
         let prev_parent = self.current_parent;
-        self.current_parent = Some(idx);
+        self.current_parent = parent;
         self.scopes.push(Scope::default());
 
         // Bind template args to template params first, so the body
         // (and any inherited parent body) can see them. Pairs by
         // position; missing args resolve to `Void` / 0.
+        //
+        // Args that look type-shaped (`Ident`, `Path`, `TypeRefExpr`)
+        // also register as a temporary alias under the param's name
+        // so the body can use the param in *type* position
+        // (`SizeType size;`). The aliases are removed when the body
+        // finishes so they don't leak to surrounding reads.
+        let mut template_type_aliases: Vec<String> = Vec::new();
         if !decl.template_params.is_empty() {
             for (i, param_name) in decl.template_params.iter().enumerate() {
-                let value = match ty.template_args.get(i) {
-                    Some(arg_expr) => self.eval(arg_expr)?,
+                let arg_expr = ty.template_args.get(i);
+                if let Some(arg) = arg_expr
+                    && let Some(arg_ty) = expr_as_typeref(arg)
+                {
+                    self.types
+                        .insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: arg_ty });
+                    template_type_aliases.push(param_name.clone());
+                }
+                let value = match arg_expr {
+                    Some(e) => self.eval(e)?,
                     None => Value::Void,
                 };
                 self.current_scope_mut().vars.insert(param_name.clone(), value);
@@ -1027,6 +1047,11 @@ impl<S: HexSource> Interpreter<S> {
         }
         self.scopes.pop();
         self.current_parent = prev_parent;
+        // Drop the temporary template-param aliases we registered on
+        // entry so they don't shadow types in surrounding scopes.
+        for alias in template_type_aliases {
+            self.types.remove(&alias);
+        }
         Ok(Value::Void)
     }
 
@@ -1581,21 +1606,16 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(self.find_first_child_idx(parent_idx, field))
             }
             Expr::Index { target, index, .. } => {
-                // For `name[i]`, find the i-th occurrence of the
-                // array's name under its parent. For nested cases
-                // (`outer.lumps[i]`), the parent comes from the
-                // recursive resolution.
+                // `arr[i]` -- the array node has the name `arr` and
+                // emits N children named `[0]`, `[1]`, ... so we
+                // first resolve the array node itself, then look up
+                // its i-th child.
                 let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
-                match target.as_ref() {
-                    Expr::Ident { name, .. } => Ok(self.find_nth_node_idx(name, i, None)),
-                    Expr::Member { target: outer, field, .. } => {
-                        let Some(outer_idx) = self.resolve_node_chain(outer)? else {
-                            return Ok(None);
-                        };
-                        Ok(self.find_nth_node_idx(field, i, Some(outer_idx)))
-                    }
-                    _ => Ok(None),
-                }
+                let Some(arr_idx) = self.resolve_node_chain(target)? else {
+                    return Ok(None);
+                };
+                let element_name = format!("[{i}]");
+                Ok(self.find_first_child_idx(arr_idx, &element_name))
             }
             _ => Ok(None),
         }
@@ -1625,26 +1645,6 @@ impl<S: HexSource> Interpreter<S> {
             if n.parent == Some(parent_idx) && n.name == name {
                 return Some(NodeIdx::new(i as u32));
             }
-        }
-        None
-    }
-
-    /// Find the `index`-th node named `name`. With `parent`, only
-    /// considers direct children of that parent; without, considers
-    /// every emitted node.
-    fn find_nth_node_idx(&self, name: &str, index: usize, parent: Option<NodeIdx>) -> Option<NodeIdx> {
-        let mut seen = 0usize;
-        for (i, n) in self.nodes.iter().enumerate() {
-            if n.name != name {
-                continue;
-            }
-            if parent.is_some() && n.parent != parent {
-                continue;
-            }
-            if seen == index {
-                return Some(NodeIdx::new(i as u32));
-            }
-            seen += 1;
         }
         None
     }

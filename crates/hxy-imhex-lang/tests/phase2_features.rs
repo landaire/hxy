@@ -71,15 +71,21 @@ auto later = $;
 
 #[test]
 fn parent_member_access_resolves_enclosing_struct_field() {
-    // `parent.size` resolves to the field on the surrounding
-    // struct. The classic corpus shape is "size-prefixed array
-    // sized via `parent.size`".
+    // `parent.x` resolves to a field on the *enclosing* struct --
+    // one hop up from the struct currently being read. Sibling
+    // fields on the same struct are reached via `this.x`. This
+    // mirrors what corpus templates rely on when inner structs
+    // reach back into their containing record (e.g. `[N]`-sized
+    // arrays declared off a counter on the parent).
     let src = "\
-struct Header {
-    u32 size;
+struct Inner {
     u8 payload[parent.size];
 };
-Header h;
+struct Outer {
+    u32 size;
+    Inner inner;
+};
+Outer o;
 ";
     let mut bytes = 4u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
