@@ -135,6 +135,13 @@ pub struct CompareSession {
     /// on the session because it's per-tab UX, not a global app
     /// setting.
     pub sync_scroll_enabled: bool,
+    /// Per-tab override for the Myers diff deadline. When `Some`,
+    /// the worker spawned by [`Self::request_recompute`] runs with
+    /// this budget instead of the global
+    /// [`crate::settings::AppSettings::compare_recompute_deadline`].
+    /// `None` (default) tracks the global setting so changes there
+    /// affect every session that hasn't opted out.
+    pub recompute_deadline_override: Option<crate::settings::RecomputeDeadline>,
 }
 
 /// Cheap "did this side change?" snapshot pulled from the public
@@ -178,13 +185,6 @@ pub enum DebouncedDecision {
 /// churning the diff on every keystroke for a multi-MiB file.
 pub const RECOMPUTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
-/// Maximum wall-clock time the worker thread is allowed to spend
-/// on a single Myers diff. Past this, [`similar`] falls back to
-/// an approximation -- the result is still a valid diff, just less
-/// granular. Bounds the worst case for completely-unrelated
-/// inputs where Myers degenerates to O(N*D) with D ~= N.
-pub const RECOMPUTE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(2000);
-
 /// In-flight worker thread state. The session keeps one of these
 /// while a background diff is running; each frame the host calls
 /// [`CompareSession::poll_recompute`] which `try_recv`s the
@@ -213,6 +213,22 @@ impl CompareSession {
             pending_recompute: None,
             hovered_hunk: None,
             sync_scroll_enabled: true,
+            recompute_deadline_override: None,
+        }
+    }
+
+    /// The deadline this session would use right now: its override
+    /// when set, otherwise the supplied global default. Hosts
+    /// resolve this once per recompute so toggling the override
+    /// or editing the global setting and pressing the Recompute
+    /// button immediately picks up the new value.
+    pub fn effective_deadline(
+        &self,
+        global: crate::settings::RecomputeDeadline,
+    ) -> crate::settings::RecomputeDeadline {
+        match self.recompute_deadline_override {
+            Some(d) => d,
+            None => global,
         }
     }
 
@@ -223,14 +239,21 @@ impl CompareSession {
         self.pending_recompute.is_some()
     }
 
-    /// Spawn a worker thread that computes the diff with a
-    /// [`RECOMPUTE_DEADLINE`] safety net. The thread reads from
-    /// owned `Vec<u8>` snapshots (taken synchronously here) so it
-    /// can outlive the editor without aliasing patched-source
-    /// state. `ctx` is cloned into the worker so completing the
-    /// diff requests an immediate UI repaint instead of waiting on
-    /// the next ambient repaint.
-    pub fn request_recompute(&mut self, ctx: &egui::Context) {
+    /// Spawn a worker thread that computes the diff with the given
+    /// deadline as a safety net. The thread reads from owned
+    /// `Vec<u8>` snapshots (taken synchronously here) so it can
+    /// outlive the editor without aliasing patched-source state.
+    /// `ctx` is cloned into the worker so completing the diff
+    /// requests an immediate UI repaint instead of waiting on the
+    /// next ambient repaint. `deadline` is resolved by the caller
+    /// (typically via [`Self::effective_deadline`]) so changes to
+    /// the global setting or per-tab override are picked up at
+    /// every recompute.
+    pub fn request_recompute(
+        &mut self,
+        ctx: &egui::Context,
+        deadline: crate::settings::RecomputeDeadline,
+    ) {
         if self.pending_recompute.is_some() {
             return;
         }
@@ -251,9 +274,11 @@ impl CompareSession {
         let fingerprint = (PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b));
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx_clone = ctx.clone();
+        let deadline_dur = deadline.as_duration();
         std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + RECOMPUTE_DEADLINE;
-            let ops = capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline));
+            let deadline_at = std::time::Instant::now() + deadline_dur;
+            let ops =
+                capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at));
             let hunks: Vec<DiffHunk> = ops.into_iter().map(diff_op_to_hunk).collect();
             let result = DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 };
             let _ = tx.send(result);

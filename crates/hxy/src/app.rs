@@ -6539,10 +6539,12 @@ fn spawn_compare_from_palette(
     a: TabSource,
     b: TabSource,
 ) {
+    let global_deadline = app.state.read().app.compare_recompute_deadline;
     match app.spawn_compare_from_sources(a, b) {
         Ok(id) => {
             if let Some(session) = app.compares.get_mut(&id) {
-                session.request_recompute(ctx);
+                let deadline = session.effective_deadline(global_deadline);
+                session.request_recompute(ctx, deadline);
             }
             app.dock.push_to_focused_leaf(Tab::Compare(id));
             if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
@@ -7770,8 +7772,11 @@ fn spawn_compare_from_picker(
     // Run the initial diff on a worker thread so confirming the
     // picker for two large files doesn't freeze the UI -- the
     // tab opens immediately, the diff fills in once the worker
-    // returns.
-    session.request_recompute(ctx);
+    // returns. New sessions track the global setting (no override
+    // yet), so we read it straight off `app.state`.
+    let deadline =
+        session.effective_deadline(app.state.read().app.compare_recompute_deadline);
+    session.request_recompute(ctx, deadline);
     app.compares.insert(id, session);
     app.dock.push_to_focused_leaf(Tab::Compare(id));
     if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
@@ -7843,6 +7848,40 @@ fn read_picker_source(app: &HxyApp, side: &ComparePickerSource) -> Result<Picked
     }
 }
 
+/// Render the per-tab Myers diff deadline widget on the compare
+/// toolbar. Editing the value sets the per-session override; the
+/// reset button (only shown when an override is active) clears it
+/// so the session falls back to the global setting again.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_compare_deadline_widget(
+    ui: &mut egui::Ui,
+    session: &mut crate::compare::CompareSession,
+    global: crate::settings::RecomputeDeadline,
+) {
+    use crate::settings::RecomputeDeadline;
+    ui.label(hxy_i18n::t("compare-deadline-label"));
+    let effective = session.effective_deadline(global);
+    let mut ms = effective.as_ms();
+    let response = ui.add(
+        egui::DragValue::new(&mut ms)
+            .range(RecomputeDeadline::MIN_MS..=RecomputeDeadline::MAX_MS)
+            .speed(50.0)
+            .suffix(" ms"),
+    );
+    response.on_hover_text(hxy_i18n::t("compare-deadline-tooltip"));
+    if ms != effective.as_ms() {
+        session.recompute_deadline_override = Some(RecomputeDeadline::from_ms(ms));
+    }
+    if session.recompute_deadline_override.is_some()
+        && ui
+            .small_button(hxy_i18n::t("compare-deadline-reset"))
+            .on_hover_text(hxy_i18n::t("compare-deadline-reset-tooltip"))
+            .clicked()
+    {
+        session.recompute_deadline_override = None;
+    }
+}
+
 /// Render the body of a `Tab::Compare`. Top toolbar, two hex panes
 /// side-by-side, diff table at the bottom. Synchronized scroll with
 /// gap rows / minimap leader lines are deferred to a follow-up; this
@@ -7862,15 +7901,18 @@ fn render_compare_tab(
     // Pull any worker result in first so the rest of the frame
     // sees up-to-date diff state.
     session.poll_recompute();
+    let global_deadline = state.app.compare_recompute_deadline;
     // Debounced live recompute: if either side mutated since the last
     // diff, wait `RECOMPUTE_DEBOUNCE` of edit-quiet time before
     // spawning a worker. The diff itself runs on a thread so the
     // UI never freezes -- even a multi-MiB completely-unrelated
-    // diff degenerates gracefully via `RECOMPUTE_DEADLINE`.
+    // diff degenerates gracefully past the configured deadline.
     match session.needs_recompute_debounced(std::time::Instant::now()) {
         DebouncedDecision::Idle => {}
         DebouncedDecision::WaitFor(d) => ui.ctx().request_repaint_after(d),
-        DebouncedDecision::Recompute => session.request_recompute(ui.ctx()),
+        DebouncedDecision::Recompute => {
+            session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
+        }
     }
 
     egui::Panel::top(tab_id.with("toolbar"))
@@ -7882,10 +7924,11 @@ fn render_compare_tab(
                     .add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute")))
                     .clicked()
                 {
-                    session.request_recompute(ui.ctx());
+                    session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
                 }
                 ui.checkbox(&mut session.sync_scroll_enabled, hxy_i18n::t("compare-sync-scroll"))
                     .on_hover_text(hxy_i18n::t("compare-sync-scroll-tooltip"));
+                render_compare_deadline_widget(ui, session, global_deadline);
                 if recomputing {
                     ui.spinner();
                     ui.weak(hxy_i18n::t("compare-status-recomputing"));
@@ -8964,6 +9007,20 @@ fn settings_ui(
                 settings.address_separator_char = ch;
             }
         });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-compare-deadline"));
+        let mut ms = settings.compare_recompute_deadline.as_ms();
+        let response = ui.add(
+            egui::DragValue::new(&mut ms)
+                .range(crate::settings::RecomputeDeadline::MIN_MS..=crate::settings::RecomputeDeadline::MAX_MS)
+                .speed(50.0)
+                .suffix(" ms"),
+        );
+        response.on_hover_text(hxy_i18n::t("settings-compare-deadline-tooltip"));
+        if ms != settings.compare_recompute_deadline.as_ms() {
+            settings.compare_recompute_deadline = crate::settings::RecomputeDeadline::from_ms(ms);
+        }
         ui.end_row();
     });
 }

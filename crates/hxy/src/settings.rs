@@ -67,6 +67,39 @@ pub enum ByteHighlightScheme {
     Value,
 }
 
+/// Wall-clock budget the compare worker is allowed to spend on a
+/// single Myers diff. Past this, [`similar`] falls back to an
+/// approximation -- still a valid diff, just less granular. Stored
+/// as milliseconds so the persisted form is human-readable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecomputeDeadline {
+    ms: u32,
+}
+
+impl RecomputeDeadline {
+    pub const MIN_MS: u32 = 100;
+    pub const MAX_MS: u32 = 60_000;
+    pub const DEFAULT: Self = Self { ms: 2000 };
+
+    pub fn from_ms(ms: u32) -> Self {
+        Self { ms: ms.clamp(Self::MIN_MS, Self::MAX_MS) }
+    }
+
+    pub fn as_ms(self) -> u32 {
+        self.ms
+    }
+
+    pub fn as_duration(self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.ms as u64)
+    }
+}
+
+impl Default for RecomputeDeadline {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// General application preferences that are safe to persist across sessions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -144,6 +177,14 @@ pub struct AppSettings {
     /// updated when the user toggles via the palette.
     #[serde(default)]
     pub input_mode: hxy_view::InputMode,
+
+    /// Default upper bound on how long a compare-tab Myers diff may
+    /// run before [`similar`] falls back to its approximation.
+    /// Per-tab overrides on
+    /// [`crate::compare::CompareSession::recompute_deadline_override`]
+    /// take precedence when set.
+    #[serde(default)]
+    pub compare_recompute_deadline: RecomputeDeadline,
 }
 
 fn default_palette_escape_pops_to_parent() -> bool {
@@ -172,6 +213,7 @@ impl Default for AppSettings {
             address_separator_enabled: false,
             address_separator_char: default_address_separator_char(),
             input_mode: hxy_view::InputMode::default(),
+            compare_recompute_deadline: RecomputeDeadline::default(),
         }
     }
 }

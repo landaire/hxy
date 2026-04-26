@@ -165,6 +165,12 @@ palette-hint-compare-side-a = Pick the A side to compare…
 palette-hint-compare-side-b = Pick the B side to compare against A…
 compare-sync-scroll = Sync scroll
 compare-sync-scroll-tooltip = Keep both panes scrolled to the same offset
+compare-deadline-label = Diff budget
+compare-deadline-tooltip = Maximum time the Myers diff may run before falling back to an approximation. Edit to override the global default for this comparison.
+compare-deadline-reset = Reset
+compare-deadline-reset-tooltip = Drop the per-comparison override and follow the global default
+settings-compare-deadline = Compare diff budget
+settings-compare-deadline-tooltip = Default time budget for compare-tab Myers diffs. Individual comparisons can override this on their toolbar.
 
 # Search bar
 search-find-label = Find:
