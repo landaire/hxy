@@ -137,10 +137,11 @@ pub enum RuntimeError {
 #[derive(Clone, Debug)]
 enum TypeDef {
     Primitive(PrimKind),
-    /// Type alias: another name in the type table. Resolved by walking
-    /// until a non-alias is hit (with a depth cap so circular aliases
-    /// fail loudly).
-    Alias(TypeRef),
+    /// Type alias: another name in the type table. `params` carries
+    /// the template parameter names from `using Foo<T> = T;`; when
+    /// non-empty, the lookup site substitutes the use-site template
+    /// args before continuing resolution.
+    Alias { params: Vec<String>, target: TypeRef },
     Struct(StructDecl),
     Enum(EnumDecl),
     Bitfield(BitfieldDecl),
@@ -292,8 +293,11 @@ impl<S: HexSource> Interpreter<S> {
             Stmt::FnDecl(f) => {
                 self.register_function(&f.name, f.clone());
             }
-            Stmt::UsingAlias { new_name, source, .. } => {
-                self.register_type(new_name, TypeDef::Alias(source.clone()));
+            Stmt::UsingAlias { new_name, template_params, source, .. } => {
+                self.register_type(
+                    new_name,
+                    TypeDef::Alias { params: template_params.clone(), target: source.clone() },
+                );
             }
             Stmt::Namespace { path, body, .. } => {
                 // Push the namespace prefix while collecting the
@@ -436,10 +440,35 @@ impl<S: HexSource> Interpreter<S> {
         // collector registers both spellings, but typedef'd
         // aliases land on the bare-leaf side so we fall through.
         let qualified = ty.path.join("::");
-        let mut name = if self.types.contains_key(&qualified) { qualified } else { ty.leaf().to_owned() };
+        let mut current: TypeRef = if self.types.contains_key(&qualified) {
+            TypeRef { path: vec![qualified], template_args: ty.template_args.clone(), span: ty.span }
+        } else {
+            TypeRef { path: vec![ty.leaf().to_owned()], template_args: ty.template_args.clone(), span: ty.span }
+        };
         for _ in 0..32 {
+            let name = current.leaf().to_owned();
             match self.types.get(&name) {
-                Some(TypeDef::Alias(target)) => name = target.leaf().to_owned(),
+                Some(TypeDef::Alias { params, target }) => {
+                    // Templated alias: substitute use-site args
+                    // (`Size<u32>` -> `T` becomes `u32` inside the
+                    // alias body) and continue resolving. A bare
+                    // alias with no params is a simple rename.
+                    if !params.is_empty() {
+                        let mut subs: HashMap<String, TypeRef> = HashMap::with_capacity(params.len());
+                        for (param, arg) in params.iter().zip(current.template_args.iter()) {
+                            if let Some(arg_ty) = expr_as_typeref(arg) {
+                                subs.insert(param.clone(), arg_ty);
+                            }
+                        }
+                        current = substitute_typeref(target, &subs);
+                    } else {
+                        current = TypeRef {
+                            path: target.path.clone(),
+                            template_args: target.template_args.clone(),
+                            span: target.span,
+                        };
+                    }
+                }
                 Some(def) => return Ok(def.clone()),
                 None => {
                     if let Some(prim) = generic_int_primitive(&name) {
@@ -470,6 +499,64 @@ fn generic_int_primitive(name: &str) -> Option<PrimKind> {
         return None;
     }
     Some(PrimKind { class: PrimClass::Int, width: (bits / 8) as u8, signed })
+}
+
+/// Best-effort coercion of a template-arg expression into a
+/// [`TypeRef`] for use in alias substitution. `Foo<u32>` parses the
+/// arg as `Expr::Ident("u32")`, `Foo<Bar<X>>` parses as
+/// `Expr::TypeRefExpr`, and namespaced names land as `Expr::Path`.
+/// Other expression kinds (literals, member access, ...) don't make
+/// sense as a type substitution and return `None`.
+fn expr_as_typeref(expr: &Expr) -> Option<TypeRef> {
+    match expr {
+        Expr::TypeRefExpr { ty, .. } => Some((**ty).clone()),
+        Expr::Ident { name, span } => {
+            Some(TypeRef { path: vec![name.clone()], template_args: Vec::new(), span: *span })
+        }
+        Expr::Path { segments, span } => {
+            Some(TypeRef { path: segments.clone(), template_args: Vec::new(), span: *span })
+        }
+        _ => None,
+    }
+}
+
+/// Walk a [`TypeRef`] and replace any single-segment path that
+/// matches a key in `subs` with the corresponding type. Nested
+/// template args are walked recursively. Used by [`Interpreter::lookup_type`]
+/// when resolving a templated `using` alias.
+fn substitute_typeref(ty: &TypeRef, subs: &HashMap<String, TypeRef>) -> TypeRef {
+    if ty.path.len() == 1
+        && let Some(replacement) = subs.get(&ty.path[0])
+    {
+        // Carry the substituted target's path and template args; if
+        // the original referenced T<args>, fold our use-site args
+        // through into the substituted path (rare in the corpus but
+        // legal: `using Foo<T> = T<u32>;`).
+        let mut out = replacement.clone();
+        if !ty.template_args.is_empty() {
+            out.template_args =
+                ty.template_args.iter().map(|a| substitute_expr(a, subs)).collect();
+        }
+        return out;
+    }
+    TypeRef {
+        path: ty.path.clone(),
+        template_args: ty.template_args.iter().map(|a| substitute_expr(a, subs)).collect(),
+        span: ty.span,
+    }
+}
+
+fn substitute_expr(expr: &Expr, subs: &HashMap<String, TypeRef>) -> Expr {
+    match expr {
+        Expr::Ident { name, span } if subs.contains_key(name) => {
+            let ty = subs.get(name).cloned().unwrap();
+            Expr::TypeRefExpr { ty: Box::new(ty), span: *span }
+        }
+        Expr::TypeRefExpr { ty, span } => {
+            Expr::TypeRefExpr { ty: Box::new(substitute_typeref(ty, subs)), span: *span }
+        }
+        other => other.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -830,7 +917,7 @@ impl<S: HexSource> Interpreter<S> {
             TypeDef::Enum(e) => self.read_enum(name, &e, parent, attrs),
             TypeDef::Struct(s) => self.read_struct(name, &s, ty, parent, attrs),
             TypeDef::Bitfield(b) => self.read_bitfield(name, &b, parent, attrs),
-            TypeDef::Alias(_) => unreachable!("lookup_type follows aliases"),
+            TypeDef::Alias { .. } => unreachable!("lookup_type follows aliases"),
         }
     }
 
@@ -1191,9 +1278,30 @@ impl<S: HexSource> Interpreter<S> {
                 _ => self.lookup_ident(name),
             },
             Expr::Path { segments, .. } => {
-                // Phase 1: namespace-qualified idents resolve to the
-                // bare leaf. Good enough for `std::print` calls that
-                // the next phase will route through namespace lookup.
+                // `EnumType::Variant` -- if the head segment names a
+                // known enum and the tail names one of its variants,
+                // evaluate to the variant's integer value. This is
+                // common in placement reads like `@ Type::Header`.
+                if segments.len() == 2
+                    && let Some(TypeDef::Enum(decl)) = self.types.get(&segments[0]).cloned()
+                {
+                    let variant_name = &segments[1];
+                    let mut running: i128 = 0;
+                    for variant in &decl.variants {
+                        if let Some(value_expr) = variant.value.as_ref() {
+                            running = self.eval(value_expr)?.to_i128().unwrap_or(running);
+                        }
+                        if &variant.name == variant_name {
+                            return Ok(Value::UInt {
+                                value: running as u128,
+                                kind: PrimKind::u64(),
+                            });
+                        }
+                        running = running.saturating_add(1);
+                    }
+                }
+                // Fall back to the bare leaf for `std::print` and
+                // similar where the namespace prefix is decorative.
                 let leaf = segments.last().cloned().unwrap_or_default();
                 self.lookup_ident(&leaf)
             }
@@ -1264,6 +1372,27 @@ impl<S: HexSource> Interpreter<S> {
                             if let Some(v) = self.lookup_member_in_struct(name, field) {
                                 return Ok(v);
                             }
+                        }
+                    }
+                }
+                // `arr[i].field` -- find the i-th node named `arr` in
+                // emission order and look up `field` under it.
+                // Array elements share their name with the array
+                // itself; the i-th occurrence is element `i`.
+                if let Expr::Index { target: arr, index, .. } = target.as_ref()
+                    && let Expr::Ident { name, .. } = arr.as_ref()
+                {
+                    let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
+                    let mut seen = 0usize;
+                    for (idx, n) in self.nodes.iter().enumerate() {
+                        if n.name == *name {
+                            if seen == i {
+                                if let Some(v) = self.lookup_member_under(NodeIdx::new(idx as u32), field) {
+                                    return Ok(v);
+                                }
+                                break;
+                            }
+                            seen += 1;
                         }
                     }
                 }
@@ -1368,7 +1497,7 @@ impl<S: HexSource> Interpreter<S> {
         for _ in 0..32 {
             match self.types.get(&cur) {
                 Some(TypeDef::Primitive(p)) => return Ok(p.width as u64),
-                Some(TypeDef::Alias(t)) => cur = t.leaf().to_owned(),
+                Some(TypeDef::Alias { target, .. }) => cur = target.leaf().to_owned(),
                 Some(TypeDef::Enum(e)) => return self.sizeof_type_name(e.backing.leaf()),
                 Some(TypeDef::Bitfield(_)) => return Ok(0), // dynamic; renderer-only
                 Some(TypeDef::Struct(s)) => {

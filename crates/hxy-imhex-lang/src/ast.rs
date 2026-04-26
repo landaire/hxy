@@ -134,10 +134,16 @@ pub struct BitfieldDecl {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stmt {
-    /// `using Alias = T;`
+    /// `using Alias = T [[attrs]];` and `using Alias<T, ...> = T;`.
+    /// Templated aliases carry their parameter names so the
+    /// interpreter can substitute the use-site template args at
+    /// resolve time. Trailing attributes propagate to the alias's
+    /// concrete instantiations.
     UsingAlias {
         new_name: String,
+        template_params: Vec<String>,
         source: TypeRef,
+        attrs: Attrs,
         span: Span,
     },
     StructDecl(StructDecl),

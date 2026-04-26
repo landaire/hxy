@@ -370,6 +370,48 @@ fn anonymous_typed_field_with_attrs() {
 }
 
 #[test]
+fn templated_using_alias_substitution() {
+    // `using Size<T> = T;` -- the alias accepts a template arg and
+    // substitutes it for `T` at the use site. Size<u32> reads four
+    // bytes; without param substitution the resolver would look up
+    // a literal type named "T" and fail.
+    use hxy_imhex_lang::Interpreter;
+    use hxy_imhex_lang::MemorySource;
+    let src = "using Size<T> = T; Size<u32> v;";
+    let tokens = hxy_imhex_lang::tokenize(src).unwrap();
+    let prog = hxy_imhex_lang::parse(tokens).unwrap();
+    let result = Interpreter::new(MemorySource::new(vec![0xDE, 0xAD, 0xBE, 0xEF])).run(&prog);
+    assert!(result.terminal_error.is_none(), "{:?}", result.terminal_error);
+    let v = result.nodes.iter().find(|n| n.name == "v").expect("Size<u32> read");
+    assert_eq!(v.length, 4);
+}
+
+#[test]
+fn enum_variant_qualified_name_in_expression() {
+    // `Type::Variant` evaluates to the variant's integer value when
+    // used as an expression. Common in placement reads:
+    // `Foo header @ Type::Header;`.
+    use hxy_imhex_lang::Interpreter;
+    use hxy_imhex_lang::MemorySource;
+    let src = "\
+enum Tag : u8 {
+    First = 0,
+    Second = 7,
+    Third = 9
+};
+u8 v @ Tag::Second;
+";
+    let tokens = hxy_imhex_lang::tokenize(src).unwrap();
+    let prog = hxy_imhex_lang::parse(tokens).unwrap();
+    let mut bytes = vec![0u8; 16];
+    bytes[7] = 0xAB;
+    let result = Interpreter::new(MemorySource::new(bytes)).run(&prog);
+    assert!(result.terminal_error.is_none(), "{:?}", result.terminal_error);
+    let v = result.nodes.iter().find(|n| n.name == "v").unwrap();
+    assert_eq!(v.offset, 7);
+}
+
+#[test]
 fn nested_template_args() {
     // `Foo<Bar<u32>>` -- the inner `Bar<u32>` is itself a type
     // reference. The outer parser detects `Ident<` in argument

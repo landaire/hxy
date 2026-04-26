@@ -445,27 +445,33 @@ impl Parser {
         let kw = self.bump().unwrap(); // `using`
         let (new_name, name_span) = self.expect_ident()?;
         // Parameterised alias: `using BlockArray<T> = T[count];`.
-        // Drop the template parameter list and treat the alias as
-        // a regular non-parametric alias for now.
-        let _ = self.parse_optional_template_params()?;
-        // `using Foo;` is the corpus's "forward-declare" shape --
-        // valid syntax with no aliased target. We model it as an
-        // alias to itself so the rest of the pipeline doesn't have
-        // to special-case the missing source.
+        // We capture the parameter names so the interpreter can
+        // substitute the use-site template args when the alias is
+        // referenced as `BlockArray<u32>`.
+        let template_params = self.parse_optional_template_params()?;
         if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
+            // `using Foo;` is the corpus's "forward-declare" shape.
+            // Model it as an alias to itself so downstream lookups
+            // don't have to special-case the missing source.
             let end = self.bump().unwrap().span.end;
             let self_ref = TypeRef { path: vec![new_name.clone()], template_args: Vec::new(), span: name_span };
-            return Ok(Stmt::UsingAlias { new_name, source: self_ref, span: Span::new(kw.span.start, end) });
+            return Ok(Stmt::UsingAlias {
+                new_name,
+                template_params,
+                source: self_ref,
+                attrs: Attrs::default(),
+                span: Span::new(kw.span.start, end),
+            });
         }
         self.expect_kind(&TokenKind::Eq, "=")?;
         let source = self.parse_type_ref()?;
-        // `using Alias = T [[attrs]];` is common in `std/` patterns
-        // -- the alias gets a default `[[format]]` or similar.
-        // Accept and discard for now; renderer integration lands
-        // when attributes are wired through.
-        let _ = self.parse_optional_attrs()?;
+        // `using Alias = T [[attrs]];` -- the alias inherits these
+        // attributes; the interpreter forwards them to every
+        // instantiation so renderer hints (`[[format(...)]]`,
+        // `[[name(...)]]`) survive the alias.
+        let attrs = self.parse_optional_attrs()?;
         let end = self.expect_kind(&TokenKind::Semi, ";")?.span.end;
-        Ok(Stmt::UsingAlias { new_name, source, span: Span::new(kw.span.start, end) })
+        Ok(Stmt::UsingAlias { new_name, template_params, source, attrs, span: Span::new(kw.span.start, end) })
     }
 
     fn parse_struct_decl(&mut self, is_union: bool) -> Result<Stmt, ParseError> {
