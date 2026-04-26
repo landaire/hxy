@@ -131,6 +131,44 @@ palette-toggle-vim = Toggle Vim mode
 palette-toggle-vim-subtitle-on = Currently ON -- switch back to standard input
 palette-toggle-vim-subtitle-off = Currently OFF -- switch to modal editing
 
+# Search bar
+search-find-label = Find:
+search-replace-label = Replace:
+search-kind-text = Text
+search-kind-hex-bytes = Hex Bytes
+search-kind-number = Number
+search-number-width = { $bits }-bit
+search-signed = signed
+search-endian-little = LE
+search-endian-big = BE
+search-next-tooltip = Next match (Enter)
+search-prev-tooltip = Previous match (Shift+Enter)
+search-all-results = All
+search-scope-in-selection = in selection
+search-scope-in-selection-tooltip = Search restricted to the current selection -- click to clear
+search-replace-toggle-show = + Replace
+search-replace-toggle-hide = - Replace
+search-replace-toggle-tooltip = Show / hide the replace input
+search-close-tooltip = Close (Esc)
+search-status-active-of-total = { $index }/{ $total }
+search-status-match-count = { $count } matches
+search-status-press-enter = Enter to find
+search-replace-once = Replace
+search-replace-once-tooltip = Replace the current match and advance to the next
+search-replace-all = Replace All
+search-replace-all-tooltip = Replace every match in the current scope
+search-wrapped-forward = Search wrapped to top
+search-wrapped-backward = Search wrapped to bottom
+search-replace-prompt-title = Replacement changes file size
+search-replace-prompt-body = The replacement is { $repl-len } byte(s); the find pattern is { $find-len } byte(s). Continuing will splice every match, changing the file's length.
+search-replace-prompt-confirm = Continue
+search-replace-prompt-cancel = Cancel
+search-replace-all-confirm-title = Replace all matches
+search-replace-all-confirm-body = Replace { $count } occurrence(s) of the find pattern with the replacement?
+search-replace-all-confirm-yes = Replace All
+search-replace-all-confirm-no = Cancel
+search-replaced-toast = Replaced { $count } match(es)
+
 # Errors
 error-open-failed = Failed to open file
 error-read-failed = Failed to read file

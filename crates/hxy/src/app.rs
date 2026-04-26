@@ -100,6 +100,20 @@ pub struct HxyApp {
     /// existing tab or open a second copy. `None` outside that window.
     pending_duplicate: Option<PendingDuplicate>,
 
+    /// Toasts driven by `egui-notify`. Currently used for "search
+    /// wrapped" / "replaced N matches" notifications; render once per
+    /// frame at the top of the central panel.
+    #[cfg(not(target_arch = "wasm32"))]
+    toasts: egui_notify::Toasts,
+
+    /// Pending search-modal request stashed by [`drain_search_effects`]
+    /// and rendered next frame as either a length-mismatch
+    /// confirmation or a Replace-All count confirmation. Carries the
+    /// originating `FileId` so the resume path can re-issue the
+    /// operation against the right buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_search_modal: Option<PendingSearchModal>,
+
     /// Set when an open hit a sidecar from a previous session that
     /// still matches the file on disk. The modal asks the user
     /// whether to restore the saved patch or discard it; rendering
@@ -334,6 +348,10 @@ impl HxyApp {
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
             pending_duplicate: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            toasts: egui_notify::Toasts::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_search_modal: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_patch_restore: None,
             console: std::collections::VecDeque::new(),
@@ -1469,6 +1487,12 @@ impl eframe::App for HxyApp {
         render_patch_restore_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         render_close_tab_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            drain_search_effects(self);
+            render_search_modal(ui.ctx(), self);
+            self.toasts.show(ui.ctx());
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
         self.snapshot_dock_layout();
@@ -2787,6 +2811,7 @@ fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
 /// `matches` recomputation happen here.
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search_bar::SearchEvent>) {
+    use crate::search::SearchSideEffect;
     use crate::search::find_all;
     use crate::search::find_next;
     use crate::search::find_prev;
@@ -2794,11 +2819,12 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search_bar::Searc
 
     let mut want_all = file.search.all_results;
     for ev in events {
+        let bounds = file.search.scope.bounds(file.editor.source().len().get());
         match ev {
             SearchEvent::Refresh => {
                 file.search.refresh_pattern();
                 if want_all && let Some(p) = file.search.pattern.clone() {
-                    let m = find_all(file.editor.source().as_ref(), &p);
+                    let m = find_all(file.editor.source().as_ref(), &p, bounds);
                     file.search.matches = m;
                     file.search.active_idx = nearest_match_idx(&file.search.matches, current_caret(file));
                 }
@@ -2806,22 +2832,28 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search_bar::Searc
             SearchEvent::Next => {
                 let Some(pattern) = file.search.pattern.clone() else { continue };
                 let from = current_caret(file).saturating_add(1);
-                if let Some(off) = find_next(file.editor.source().as_ref(), &pattern, from, true) {
-                    apply_match_jump(file, off, &pattern);
+                if let Some(hit) = find_next(file.editor.source().as_ref(), &pattern, from, true, bounds) {
+                    apply_match_jump(file, hit.offset, &pattern);
+                    if hit.wrapped {
+                        file.search.pending_effects.push(SearchSideEffect::WrappedForward);
+                    }
                 }
             }
             SearchEvent::Prev => {
                 let Some(pattern) = file.search.pattern.clone() else { continue };
                 let from = current_caret(file);
-                if let Some(off) = find_prev(file.editor.source().as_ref(), &pattern, from, true) {
-                    apply_match_jump(file, off, &pattern);
+                if let Some(hit) = find_prev(file.editor.source().as_ref(), &pattern, from, true, bounds) {
+                    apply_match_jump(file, hit.offset, &pattern);
+                    if hit.wrapped {
+                        file.search.pending_effects.push(SearchSideEffect::WrappedBackward);
+                    }
                 }
             }
             SearchEvent::FindAll => {
                 want_all = true;
                 file.search.all_results = true;
                 if let Some(p) = file.search.pattern.clone() {
-                    let m = find_all(file.editor.source().as_ref(), &p);
+                    let m = find_all(file.editor.source().as_ref(), &p, bounds);
                     file.search.matches = m;
                     file.search.active_idx = nearest_match_idx(&file.search.matches, current_caret(file));
                     if let Some(idx) = file.search.active_idx {
@@ -2844,6 +2876,23 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search_bar::Searc
                 let Some(off) = file.search.matches.get(idx).copied() else { continue };
                 file.search.active_idx = Some(idx);
                 apply_match_jump(file, off, &pattern);
+            }
+            SearchEvent::ToggleReplace => {
+                file.search.replace_open = !file.search.replace_open;
+            }
+            SearchEvent::RefreshReplace => {
+                file.search.refresh_replace_pattern();
+            }
+            SearchEvent::SetScope(scope) => {
+                file.search.scope = scope;
+                file.search.matches.clear();
+                file.search.active_idx = None;
+            }
+            SearchEvent::ReplaceCurrent => {
+                queue_replace_current(file);
+            }
+            SearchEvent::ReplaceAll => {
+                queue_replace_all(file, bounds);
             }
         }
     }
@@ -2879,6 +2928,295 @@ fn nearest_match_idx(matches: &[u64], caret: u64) -> Option<usize> {
     Some(matches.partition_point(|&m| m < caret).min(matches.len() - 1))
 }
 
+/// Stage a Replace-Current. The active match offset comes from the
+/// editor's current selection (set when the user last hit Find Next /
+/// Prev / clicked an All-Results entry). Defers via
+/// [`SearchSideEffect::NeedsLengthMismatchAck`] when the find/replace
+/// pair would resize the file and the user hasn't acked the splice
+/// prompt yet; otherwise performs the replace inline and re-runs Next.
+#[cfg(not(target_arch = "wasm32"))]
+fn queue_replace_current(file: &mut OpenFile) {
+    use crate::search::DeferredReplace;
+    use crate::search::SearchSideEffect;
+
+    let (Some(find), Some(repl)) =
+        (file.search.pattern.clone(), file.search.replace_pattern.clone())
+    else {
+        return;
+    };
+    let Some(sel) = file.editor.selection() else { return };
+    let offset = sel.anchor.get().min(sel.cursor.get());
+    let length = sel.range().len().get();
+    if length != find.len() as u64 {
+        return;
+    }
+    if find.len() != repl.len() && !file.search.splice_prompt_acked {
+        file.search.pending_effects.push(SearchSideEffect::NeedsLengthMismatchAck(DeferredReplace {
+            offset,
+            find_len: find.len() as u64,
+            replace_len: repl.len() as u64,
+        }));
+        return;
+    }
+    perform_replace_current(file, offset, &find, &repl);
+}
+
+/// Stage a Replace-All. Reads every match in `bounds`, then either
+/// queues the count-confirm modal (first time) or performs the
+/// splices (after both modals have been acked).
+#[cfg(not(target_arch = "wasm32"))]
+fn queue_replace_all(file: &mut OpenFile, bounds: (u64, u64)) {
+    use crate::search::DeferredReplaceAll;
+    use crate::search::SearchSideEffect;
+    use crate::search::find_all;
+
+    let (Some(find), Some(repl)) =
+        (file.search.pattern.clone(), file.search.replace_pattern.clone())
+    else {
+        return;
+    };
+    let matches = find_all(file.editor.source().as_ref(), &find, bounds);
+    if matches.is_empty() {
+        return;
+    }
+    file.search.pending_effects.push(SearchSideEffect::NeedsReplaceAllConfirm(DeferredReplaceAll {
+        matches,
+        find_len: find.len() as u64,
+        replace_len: repl.len() as u64,
+    }));
+}
+
+/// Splice / overwrite a single match at `offset`. Caller is
+/// responsible for the splice-prompt acknowledgement when sizes
+/// differ. Bumps the search refresh after so the All-Results list
+/// reflects the new layout.
+#[cfg(not(target_arch = "wasm32"))]
+fn perform_replace_current(file: &mut OpenFile, offset: u64, find: &[u8], repl: &[u8]) {
+    use crate::search::SearchSideEffect;
+
+    let result = if find.len() == repl.len() {
+        file.editor.request_write(offset, repl.to_vec()).map(|_| ())
+    } else {
+        file.editor.splice(offset, find.len() as u64, repl.to_vec()).map(|_| ())
+    };
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "replace");
+        return;
+    }
+    file.search.pending_effects.push(SearchSideEffect::Replaced { count: 1 });
+    let next_offset = offset + repl.len() as u64;
+    file.editor.set_selection(Some(hxy_core::Selection {
+        anchor: hxy_core::ByteOffset::new(next_offset),
+        cursor: hxy_core::ByteOffset::new(next_offset),
+    }));
+    file.search.refresh_pattern();
+    file.search.splice_prompt_acked = true;
+}
+
+/// Modal request raised by the search handler that the app renders
+/// next frame. Distinguishes between the length-mismatch splice
+/// prompt (single replace or replace-all) and the Replace-All count
+/// confirmation.
+#[cfg(not(target_arch = "wasm32"))]
+pub enum PendingSearchModal {
+    /// "This will resize the file" prompt for a single Replace, with
+    /// the offset / pattern lengths the user is acknowledging.
+    LengthMismatchOnce { file_id: FileId, deferred: crate::search::DeferredReplace },
+    /// "This will resize the file" prompt for Replace All; carries
+    /// the full match list so confirm can splice without re-scanning.
+    LengthMismatchAll { file_id: FileId, deferred: crate::search::DeferredReplaceAll },
+    /// "Replace N occurrences?" confirmation modal for Replace All.
+    ConfirmReplaceAll { file_id: FileId, deferred: crate::search::DeferredReplaceAll },
+}
+
+/// Drain every open file's [`crate::search::SearchState::pending_effects`]
+/// queue and turn the entries into toasts / modals.
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_search_effects(app: &mut HxyApp) {
+    use crate::search::SearchSideEffect;
+
+    let file_ids: Vec<FileId> = app.files.keys().copied().collect();
+    for id in file_ids {
+        let effects: Vec<SearchSideEffect> = match app.files.get_mut(&id) {
+            Some(f) => f.search.pending_effects.drain(..).collect(),
+            None => continue,
+        };
+        for e in effects {
+            match e {
+                SearchSideEffect::WrappedForward => {
+                    app.toasts.info(hxy_i18n::t("search-wrapped-forward"));
+                }
+                SearchSideEffect::WrappedBackward => {
+                    app.toasts.info(hxy_i18n::t("search-wrapped-backward"));
+                }
+                SearchSideEffect::Replaced { count } => {
+                    let text = hxy_i18n::t_args("search-replaced-toast", &[("count", &count.to_string())]);
+                    app.toasts.success(text);
+                }
+                SearchSideEffect::NeedsLengthMismatchAck(deferred) => {
+                    if app.pending_search_modal.is_none() {
+                        app.pending_search_modal = Some(PendingSearchModal::LengthMismatchOnce { file_id: id, deferred });
+                    }
+                }
+                SearchSideEffect::NeedsReplaceAllConfirm(deferred) => {
+                    if app.pending_search_modal.is_none() {
+                        app.pending_search_modal = Some(PendingSearchModal::ConfirmReplaceAll { file_id: id, deferred });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Render whichever search modal is currently pending (at most one
+/// at a time). Confirmation routes back through the replace helpers
+/// after setting `splice_prompt_acked` where appropriate.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_search_modal(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(modal) = app.pending_search_modal.take() else { return };
+
+    match modal {
+        PendingSearchModal::LengthMismatchOnce { file_id, deferred } => {
+            let outcome = render_length_mismatch_modal(ctx, deferred.find_len, deferred.replace_len);
+            match outcome {
+                ModalOutcome::Confirm => {
+                    let Some(file) = app.files.get_mut(&file_id) else { return };
+                    let (Some(find), Some(repl)) =
+                        (file.search.pattern.clone(), file.search.replace_pattern.clone())
+                    else {
+                        return;
+                    };
+                    file.search.splice_prompt_acked = true;
+                    perform_replace_current(file, deferred.offset, &find, &repl);
+                }
+                ModalOutcome::Cancel => {}
+                ModalOutcome::Pending => {
+                    app.pending_search_modal = Some(PendingSearchModal::LengthMismatchOnce { file_id, deferred });
+                }
+            }
+        }
+        PendingSearchModal::LengthMismatchAll { file_id, deferred } => {
+            let outcome = render_length_mismatch_modal(ctx, deferred.find_len, deferred.replace_len);
+            match outcome {
+                ModalOutcome::Confirm => {
+                    let Some(file) = app.files.get_mut(&file_id) else { return };
+                    let Some(repl) = file.search.replace_pattern.clone() else { return };
+                    file.search.splice_prompt_acked = true;
+                    perform_replace_all(file, &deferred.matches, deferred.find_len, &repl);
+                }
+                ModalOutcome::Cancel => {}
+                ModalOutcome::Pending => {
+                    app.pending_search_modal = Some(PendingSearchModal::LengthMismatchAll { file_id, deferred });
+                }
+            }
+        }
+        PendingSearchModal::ConfirmReplaceAll { file_id, deferred } => {
+            let outcome = render_replace_all_confirm_modal(ctx, deferred.matches.len());
+            match outcome {
+                ModalOutcome::Confirm => {
+                    let Some(file) = app.files.get_mut(&file_id) else { return };
+                    let lengths_differ = deferred.find_len != deferred.replace_len;
+                    if lengths_differ && !file.search.splice_prompt_acked {
+                        app.pending_search_modal = Some(PendingSearchModal::LengthMismatchAll { file_id, deferred });
+                        return;
+                    }
+                    let Some(repl) = file.search.replace_pattern.clone() else { return };
+                    perform_replace_all(file, &deferred.matches, deferred.find_len, &repl);
+                }
+                ModalOutcome::Cancel => {}
+                ModalOutcome::Pending => {
+                    app.pending_search_modal = Some(PendingSearchModal::ConfirmReplaceAll { file_id, deferred });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum ModalOutcome {
+    Confirm,
+    Cancel,
+    Pending,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_length_mismatch_modal(ctx: &egui::Context, find_len: u64, replace_len: u64) -> ModalOutcome {
+    let mut outcome = ModalOutcome::Pending;
+    egui::Window::new(hxy_i18n::t("search-replace-prompt-title"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(hxy_i18n::t_args(
+                "search-replace-prompt-body",
+                &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("search-replace-prompt-confirm")).clicked() {
+                    outcome = ModalOutcome::Confirm;
+                }
+                if ui.button(hxy_i18n::t("search-replace-prompt-cancel")).clicked() {
+                    outcome = ModalOutcome::Cancel;
+                }
+            });
+        });
+    outcome
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_replace_all_confirm_modal(ctx: &egui::Context, count: usize) -> ModalOutcome {
+    let mut outcome = ModalOutcome::Pending;
+    egui::Window::new(hxy_i18n::t("search-replace-all-confirm-title"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(hxy_i18n::t_args(
+                "search-replace-all-confirm-body",
+                &[("count", &count.to_string())],
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("search-replace-all-confirm-yes")).clicked() {
+                    outcome = ModalOutcome::Confirm;
+                }
+                if ui.button(hxy_i18n::t("search-replace-all-confirm-no")).clicked() {
+                    outcome = ModalOutcome::Cancel;
+                }
+            });
+        });
+    outcome
+}
+
+/// Apply every match in `matches` from highest offset to lowest so
+/// earlier offsets don't shift mid-loop. Used after both the count
+/// confirm and (when sizes differ) the splice prompt have been
+/// acknowledged.
+#[cfg(not(target_arch = "wasm32"))]
+fn perform_replace_all(file: &mut OpenFile, matches: &[u64], find_len: u64, repl: &[u8]) {
+    use crate::search::SearchSideEffect;
+
+    let in_place = find_len == repl.len() as u64;
+    let mut applied = 0usize;
+    for &offset in matches.iter().rev() {
+        let result = if in_place {
+            file.editor.request_write(offset, repl.to_vec()).map(|_| ())
+        } else {
+            file.editor.splice(offset, find_len, repl.to_vec()).map(|_| ())
+        };
+        match result {
+            Ok(()) => applied += 1,
+            Err(e) => tracing::warn!(error = %e, offset, "replace-all entry"),
+        }
+    }
+    if applied > 0 {
+        file.search.pending_effects.push(SearchSideEffect::Replaced { count: applied });
+        file.search.refresh_pattern();
+        file.search.splice_prompt_acked = true;
+    }
+}
+
 /// Apply a frame's worth of cross-file search events. `Run` rebuilds
 /// the match list from scratch by scanning every open file's source;
 /// `JumpTo` focuses the matched file's tab and selects the bytes.
@@ -2910,7 +3248,8 @@ fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::global_search
                 for id in ids {
                     let Some(file) = app.files.get(&id) else { continue };
                     let src = file.editor.source().clone();
-                    for off in find_all(src.as_ref(), &pattern) {
+                    let bounds = (0u64, src.len().get());
+                    for off in find_all(src.as_ref(), &pattern, bounds) {
                         all_matches.push(GlobalMatch { file_id: id, offset: off });
                     }
                 }
@@ -4432,7 +4771,22 @@ fn toggle_local_search(app: &mut HxyApp) {
     let Some(file) = app.files.get_mut(&id) else { return };
     file.search.open = !file.search.open;
     if file.search.open {
+        // Auto-restrict the next search to the current selection if
+        // the user has one. Caret-only selections (anchor == cursor)
+        // mean "no real selection" and fall through to whole-file.
+        if let Some(sel) = file.editor.selection()
+            && !sel.is_caret()
+        {
+            let r = sel.range();
+            file.search.scope = crate::search::SearchScope::Selection {
+                start: r.start().get(),
+                end_exclusive: r.end().get(),
+            };
+        } else {
+            file.search.scope = crate::search::SearchScope::File;
+        }
         file.search.refresh_pattern();
+        file.search.refresh_replace_pattern();
     }
 }
 

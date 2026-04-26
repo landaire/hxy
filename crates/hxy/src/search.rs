@@ -77,6 +77,25 @@ pub enum EncodeError {
     NumberOverflow { value: String, bytes: usize, sign: &'static str },
 }
 
+/// Where the search may match: the whole file, or a fixed byte range
+/// (set when the user opened the bar with a non-caret selection).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchScope {
+    File,
+    Selection { start: u64, end_exclusive: u64 },
+}
+
+impl SearchScope {
+    /// `(start, end_exclusive)` window any scan should restrict to.
+    /// `total` is the source length, used for the `File` arm.
+    pub fn bounds(self, total: u64) -> (u64, u64) {
+        match self {
+            SearchScope::File => (0, total),
+            SearchScope::Selection { start, end_exclusive } => (start.min(total), end_exclusive.min(total)),
+        }
+    }
+}
+
 /// Per-file search state. Persists between toggles of the bar so the
 /// user can hide and re-show without losing the query, but isn't
 /// persisted across restarts.
@@ -106,6 +125,70 @@ pub struct SearchState {
     /// tab know to re-run pre-computed matches without storing a copy
     /// of the pattern there.
     pub serial: u64,
+    /// Whether the Replace input row is shown.
+    pub replace_open: bool,
+    /// Replacement input. Encoded with the same `kind / width / signed
+    /// / endian` as the find query so a Number find round-trips into a
+    /// Number replace and a Hex Bytes find into Hex Bytes.
+    pub replace_query: String,
+    /// Cached encoded replacement bytes. `None` on empty / error.
+    pub replace_pattern: Option<Vec<u8>>,
+    pub replace_error: Option<String>,
+    /// Once the user has confirmed the "this will resize the file"
+    /// splice prompt for the current find / replace pair, suppress
+    /// it for subsequent replaces. Reset by [`Self::refresh_pattern`]
+    /// and [`Self::refresh_replace_pattern`] so any change to either
+    /// query reopens the prompt.
+    pub splice_prompt_acked: bool,
+    /// Restricts every scan -- find next, find previous, find all,
+    /// replace -- to this byte window. Set to `Selection { ... }` by
+    /// the host when the bar is opened with a non-caret selection;
+    /// the user can also flip back to `File`.
+    pub scope: SearchScope,
+    /// Cross-frame side-effect queue. The bar / handler can't render
+    /// toasts or modals directly (it has no `&mut HxyApp`), so it
+    /// pushes intent here and the app drains it after the dock pass.
+    pub pending_effects: Vec<SearchSideEffect>,
+}
+
+/// Effects raised by the search handler that the app must perform on
+/// its own state (toasts, modal prompts). Drained once per frame
+/// after the dock has rendered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchSideEffect {
+    /// Find Next wrapped past EOF back to the start of the scope.
+    WrappedForward,
+    /// Find Previous wrapped past offset 0 back to the end of the scope.
+    WrappedBackward,
+    /// User asked to replace, find/replace differ in length, and the
+    /// splice prompt has not yet been acknowledged for this pair.
+    /// Carries the operation that was deferred so the modal can
+    /// resume it on confirm.
+    NeedsLengthMismatchAck(DeferredReplace),
+    /// User asked to Replace All; show `count` confirmation modal.
+    /// On confirm, the app re-issues `ReplaceAll` and the handler
+    /// performs the splices.
+    NeedsReplaceAllConfirm(DeferredReplaceAll),
+    /// One replace was performed; payload reports it for status / toast.
+    Replaced { count: usize },
+}
+
+/// In-flight Replace-Current request that's waiting on user
+/// acknowledgement of the length-mismatch splice prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeferredReplace {
+    pub offset: u64,
+    pub find_len: u64,
+    pub replace_len: u64,
+}
+
+/// In-flight Replace-All request that's waiting on the count-confirm
+/// modal (and possibly the length-mismatch prompt after).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeferredReplaceAll {
+    pub matches: Vec<u64>,
+    pub find_len: u64,
+    pub replace_len: u64,
 }
 
 impl Default for SearchState {
@@ -123,6 +206,13 @@ impl Default for SearchState {
             matches: Vec::new(),
             active_idx: None,
             serial: 0,
+            replace_open: false,
+            replace_query: String::new(),
+            replace_pattern: None,
+            replace_error: None,
+            splice_prompt_acked: false,
+            scope: SearchScope::File,
+            pending_effects: Vec::new(),
         }
     }
 }
@@ -151,6 +241,35 @@ impl SearchState {
         self.matches.clear();
         self.active_idx = None;
         self.serial = self.serial.wrapping_add(1);
+        self.splice_prompt_acked = false;
+    }
+
+    /// Re-derive `replace_pattern` and `replace_error` from the current
+    /// `replace_query` and shared `kind / width / signed / endian`.
+    /// Mirrors [`Self::refresh_pattern`] for the replace input. Resets
+    /// the splice-prompt acknowledgement so any change to the replace
+    /// query reopens the resize prompt.
+    pub fn refresh_replace_pattern(&mut self) {
+        self.replace_error = None;
+        match encode_query(self.kind, &self.replace_query, self.width, self.signed, self.endian) {
+            Ok(bytes) if bytes.is_empty() => self.replace_pattern = None,
+            Ok(bytes) => self.replace_pattern = Some(bytes),
+            Err(EncodeError::Empty) => self.replace_pattern = None,
+            Err(e) => {
+                self.replace_pattern = None;
+                self.replace_error = Some(e.to_string());
+            }
+        }
+        self.splice_prompt_acked = false;
+    }
+
+    /// Whether the current find/replace pair would change the file
+    /// size. Returns `None` when either side is unset (so the caller
+    /// can skip the prompt).
+    pub fn replace_changes_length(&self) -> Option<bool> {
+        let find = self.pattern.as_ref()?;
+        let repl = self.replace_pattern.as_ref()?;
+        Some(find.len() != repl.len())
     }
 }
 
@@ -262,60 +381,96 @@ fn emit_with_endian(v: u128, bytes: usize, endian: Endian) -> Vec<u8> {
     out
 }
 
-/// Sliding-window byte search. Returns the lowest match offset >= `from`
-/// in `[from, source.len())`, or wraps to `[0, from)` if `wrap` is true.
-/// `source` is read in 64 KiB chunks plus `pattern.len() - 1` bytes of
-/// overlap so a match straddling two chunks isn't missed.
-pub fn find_next(source: &dyn HexSource, pattern: &[u8], from: u64, wrap: bool) -> Option<u64> {
+/// One result from a directional search, plus whether the caller's
+/// `wrap` request had to fire to find it. The host uses `wrapped` to
+/// decide when to surface a "search wrapped" toast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchHit {
+    pub offset: u64,
+    pub wrapped: bool,
+}
+
+/// Sliding-window byte search restricted to `[bounds.0, bounds.1)`.
+/// Returns the lowest match offset >= `from` inside the bounds, or
+/// wraps back to `bounds.0` if `wrap` is true. `source` is read in 64
+/// KiB chunks plus `pattern.len() - 1` bytes of overlap so a match
+/// straddling two chunks isn't missed.
+pub fn find_next(
+    source: &dyn HexSource,
+    pattern: &[u8],
+    from: u64,
+    wrap: bool,
+    bounds: (u64, u64),
+) -> Option<MatchHit> {
     if pattern.is_empty() {
         return None;
     }
     let total = source.len().get();
-    if total < pattern.len() as u64 {
+    let (lo, hi) = clip_bounds(bounds, total);
+    if hi.saturating_sub(lo) < pattern.len() as u64 {
         return None;
     }
-    if let Some(off) = scan_forward(source, pattern, from, total) {
-        return Some(off);
+    let from = from.clamp(lo, hi);
+    if let Some(off) = scan_forward(source, pattern, from, hi) {
+        return Some(MatchHit { offset: off, wrapped: false });
     }
-    if wrap && from > 0 {
-        let wrap_end = (from + pattern.len() as u64 - 1).min(total);
-        return scan_forward(source, pattern, 0, wrap_end);
+    if wrap && from > lo {
+        let wrap_end = (from + pattern.len() as u64 - 1).min(hi);
+        if let Some(off) = scan_forward(source, pattern, lo, wrap_end) {
+            return Some(MatchHit { offset: off, wrapped: true });
+        }
     }
     None
 }
 
 /// Reverse counterpart of [`find_next`]. Returns the largest match
-/// offset < `from`, or wraps if requested.
-pub fn find_prev(source: &dyn HexSource, pattern: &[u8], from: u64, wrap: bool) -> Option<u64> {
+/// offset < `from`, or wraps to the end of `bounds` if requested.
+pub fn find_prev(
+    source: &dyn HexSource,
+    pattern: &[u8],
+    from: u64,
+    wrap: bool,
+    bounds: (u64, u64),
+) -> Option<MatchHit> {
     if pattern.is_empty() {
         return None;
     }
     let total = source.len().get();
-    if total < pattern.len() as u64 {
+    let (lo, hi) = clip_bounds(bounds, total);
+    if hi.saturating_sub(lo) < pattern.len() as u64 {
         return None;
     }
-    if let Some(off) = scan_backward(source, pattern, 0, from) {
-        return Some(off);
+    let from = from.clamp(lo, hi);
+    if let Some(off) = scan_backward(source, pattern, lo, from) {
+        return Some(MatchHit { offset: off, wrapped: false });
     }
     if wrap {
-        let wrap_start = from.saturating_sub(pattern.len() as u64 - 1);
-        return scan_backward(source, pattern, wrap_start, total);
+        let wrap_start = from.saturating_sub(pattern.len() as u64 - 1).max(lo);
+        if let Some(off) = scan_backward(source, pattern, wrap_start, hi) {
+            return Some(MatchHit { offset: off, wrapped: true });
+        }
     }
     None
 }
 
-/// Find every match in the source, in ascending order.
-pub fn find_all(source: &dyn HexSource, pattern: &[u8]) -> Vec<u64> {
+fn clip_bounds(bounds: (u64, u64), total: u64) -> (u64, u64) {
+    let lo = bounds.0.min(total);
+    let hi = bounds.1.min(total);
+    if lo > hi { (lo, lo) } else { (lo, hi) }
+}
+
+/// Find every match inside `bounds`, in ascending order.
+pub fn find_all(source: &dyn HexSource, pattern: &[u8], bounds: (u64, u64)) -> Vec<u64> {
     if pattern.is_empty() {
         return Vec::new();
     }
-    let total = source.len().get();
-    if total < pattern.len() as u64 {
+    let (lo, hi) = clip_bounds(bounds, source.len().get());
+    if hi.saturating_sub(lo) < pattern.len() as u64 {
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut from = 0u64;
-    while let Some(off) = scan_forward(source, pattern, from, total) {
+    let mut from = lo;
+    while let Some(off) = scan_forward(source, pattern, from, hi) {
         out.push(off);
         from = off + 1;
     }
@@ -452,52 +607,73 @@ mod tests {
         assert!(matches!(r, Err(EncodeError::NumberOverflow { .. })));
     }
 
+    fn whole(s: &MemorySource) -> (u64, u64) {
+        (0, s.len().get())
+    }
+
     #[test]
     fn forward_finds_first_match() {
         let s = src(b"abcXYabcXY");
-        let p = b"XY";
-        assert_eq!(find_next(&s, p, 0, false), Some(3));
+        let hit = find_next(&s, b"XY", 0, false, whole(&s)).expect("match");
+        assert_eq!(hit, MatchHit { offset: 3, wrapped: false });
     }
 
     #[test]
     fn forward_skips_past_cursor() {
         let s = src(b"abcXYabcXY");
-        let p = b"XY";
-        assert_eq!(find_next(&s, p, 4, false), Some(8));
+        let hit = find_next(&s, b"XY", 4, false, whole(&s)).expect("match");
+        assert_eq!(hit, MatchHit { offset: 8, wrapped: false });
     }
 
     #[test]
     fn forward_wraps_when_requested() {
         let s = src(b"abcXYabc");
-        let p = b"XY";
-        assert_eq!(find_next(&s, p, 6, true), Some(3));
-        assert_eq!(find_next(&s, p, 6, false), None);
+        let hit = find_next(&s, b"XY", 6, true, whole(&s)).expect("match");
+        assert_eq!(hit, MatchHit { offset: 3, wrapped: true });
+        assert_eq!(find_next(&s, b"XY", 6, false, whole(&s)), None);
     }
 
     #[test]
     fn backward_finds_previous() {
         let s = src(b"abcXYabcXY");
-        let p = b"XY";
-        assert_eq!(find_prev(&s, p, 9, false), Some(3));
+        let hit = find_prev(&s, b"XY", 9, false, whole(&s)).expect("match");
+        assert_eq!(hit, MatchHit { offset: 3, wrapped: false });
+    }
+
+    #[test]
+    fn backward_wraps_when_requested() {
+        let s = src(b"XYabc");
+        let hit = find_prev(&s, b"XY", 0, true, whole(&s)).expect("match");
+        assert_eq!(hit, MatchHit { offset: 0, wrapped: true });
     }
 
     #[test]
     fn find_all_collects() {
         let s = src(b"abcXYabcXY");
-        let p = b"XY";
-        assert_eq!(find_all(&s, p), vec![3, 8]);
+        assert_eq!(find_all(&s, b"XY", whole(&s)), vec![3, 8]);
+    }
+
+    #[test]
+    fn find_all_respects_bounds() {
+        let s = src(b"XYabcXYdefXY");
+        assert_eq!(find_all(&s, b"XY", (3, 10)), vec![5]);
+    }
+
+    #[test]
+    fn next_inside_selection_scope() {
+        let s = src(b"XYabcXYdefXY");
+        let hit = find_next(&s, b"XY", 0, false, (3, 10)).expect("scoped match");
+        assert_eq!(hit.offset, 5);
+        assert_eq!(find_next(&s, b"XY", 7, false, (3, 10)), None);
     }
 
     #[test]
     fn match_straddles_chunk_boundary() {
-        // Construct a source larger than CHUNK so the pattern straddles
-        // a chunk boundary; the scanner's overlap window must still
-        // catch it.
         let mut bytes = vec![b'.'; (CHUNK as usize) - 1];
         bytes.extend_from_slice(b"NEEDLE");
         bytes.extend_from_slice(&vec![b'.'; 1024]);
         let s = src(&bytes);
-        let p = b"NEEDLE";
-        assert_eq!(find_next(&s, p, 0, false), Some((CHUNK as u64) - 1));
+        let hit = find_next(&s, b"NEEDLE", 0, false, whole(&s)).expect("match");
+        assert_eq!(hit.offset, CHUNK - 1);
     }
 }

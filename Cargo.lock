@@ -1552,6 +1552,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-notify"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a29b39d9d60a29c217d0e86ef8221cd2e736f841aba75b5c32a3a0cade5f802"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-palette"
 version = "0.2.0"
 dependencies = [
@@ -2786,6 +2795,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-notify",
  "egui-palette",
  "egui-phosphor",
  "egui_dock",

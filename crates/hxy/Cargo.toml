@@ -59,6 +59,7 @@ tracing = "0.1.44"
 hxy-vfs.workspace = true
 egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
+egui-notify = "0.22.0"
 egui-palette = { workspace = true }
 
 # Built-in 010 Editor Binary Template runtime -- linked as regular
