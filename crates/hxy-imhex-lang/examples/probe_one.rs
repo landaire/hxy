@@ -39,11 +39,13 @@ fn main() {
     let resolver =
         chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
     let pragmas = extract_pragmas(&src);
-    let result = Interpreter::new(MemorySource::new(bytes))
+    let mut interp = Interpreter::new(MemorySource::new(bytes))
         .with_import_resolver(resolver)
-        .with_default_endian(pragmas.endian)
-        .with_step_limit(500_000)
-        .run(&prog);
+        .with_step_limit(500_000);
+    if let Some(e) = pragmas.endian {
+        interp = interp.with_default_endian(e);
+    }
+    let result = interp.run(&prog);
     match result.terminal_error {
         None => println!("ok ({} nodes)", result.nodes.len()),
         Some(e) => println!("run: {e}"),

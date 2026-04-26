@@ -257,15 +257,11 @@ impl<S: HexSource> Interpreter<S> {
     /// Seed the interpreter's default byte order. Honours the
     /// `#pragma endian` directive that templates declare at the top
     /// of their source -- hosts call [`crate::extract_pragmas`] on
-    /// the raw source, then forward the result here. Templates can
-    /// still override per-field with `be u32` / `le u32` and at run
-    /// time via `std::core::set_endian(...)`.
-    pub fn with_default_endian(mut self, pragma: Option<&str>) -> Self {
-        match pragma {
-            Some("big") => self.endian = Endian::Big,
-            Some("little") | Some("native") | None => {}
-            _ => {}
-        }
+    /// the raw source, then forward the resulting [`Endian`] here.
+    /// Templates can still override per-field with `be u32` / `le
+    /// u32` and at run time via `std::core::set_endian(...)`.
+    pub fn with_default_endian(mut self, endian: Endian) -> Self {
+        self.endian = endian;
         self
     }
 
@@ -805,7 +801,7 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_field_decl(&mut self, stmt: &Stmt, parent: Option<NodeIdx>) -> Result<Flow, RuntimeError> {
-        let Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, pointer_width, .. } = stmt
+        let Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, is_io_var, pointer_width, .. } = stmt
         else {
             unreachable!();
         };
@@ -819,6 +815,18 @@ impl<S: HexSource> Interpreter<S> {
                 None => Value::Void,
             };
             self.current_scope_mut().vars.insert(name.clone(), value);
+            return Ok(Flow::Next);
+        }
+        // `bool x in;` / `Type x out;` -- input/output variables
+        // supplied by the host. Don't consume bytes from the source;
+        // bind a default placeholder so subsequent expressions that
+        // reference the name keep evaluating.
+        if *is_io_var {
+            let default = match init {
+                Some(e) => self.eval(e)?,
+                None => Value::Void,
+            };
+            self.current_scope_mut().vars.insert(name.clone(), default);
             return Ok(Flow::Next);
         }
         let mut all_attrs = attrs_to_pairs(attrs);
@@ -1781,14 +1789,12 @@ impl<S: HexSource> Interpreter<S> {
                 return Ok(v.clone());
             }
         }
-        // `$` -- current cursor offset. Phase 1 wires it in here so
-        // simple uses (`u8 a[16 - $]`) work; the deeper magic ident
-        // story lands in Phase 2.
+        // `$` -- current cursor offset. ImHex templates use this
+        // idiom heavily for `@ $+offset` placements and bounds-
+        // checking arithmetic; returning 0 makes those drift far
+        // off and trips read-past-end downstream.
         if name == "$" {
-            // We don't have a borrow on the cursor in `lookup_ident`,
-            // so callers that need the live cursor should plumb it
-            // through. Returning 0 is the conservative fallback.
-            return Ok(Value::UInt { value: 0, kind: PrimKind::u64() });
+            return Ok(Value::UInt { value: self.pos as u128, kind: PrimKind::u64() });
         }
         // `this` / `parent` in non-member position (e.g.
         // `set_display_name(this, label)`). The interpreter doesn't
@@ -1842,16 +1848,29 @@ impl<S: HexSource> Interpreter<S> {
         match expr {
             Expr::Ident { name, .. } => Ok(self.find_node_idx_for_ident(name)),
             Expr::Member { target, field, .. } => {
-                // `parent.foo` from a top-level struct: the inner
-                // `parent` resolves to nothing (no enclosing struct),
-                // but ImHex treats the implicit program scope as a
-                // parent for top-level fields. Fall back to the
-                // most-recent top-level node named `field`.
+                // `parent.foo` walks up through tree parents looking
+                // for the first ancestor that has `foo` as a child.
+                // ImHex treats array elements (and similar wrapper
+                // nodes) as transparent for `parent` resolution: from
+                // inside an array element, `parent.x` reaches past
+                // the array node itself to the struct that declared
+                // the array field. Falls back to the implicit top-
+                // level scope when no enclosing struct has it.
                 if let Expr::Ident { name, .. } = target.as_ref()
                     && name == "parent"
-                    && self.current_parent.is_none()
                 {
-                    return Ok(self.find_top_level_idx(field));
+                    let mut cur = self.current_parent;
+                    loop {
+                        match cur {
+                            Some(idx) => {
+                                if let Some(found) = self.find_first_child_idx(idx, field) {
+                                    return Ok(Some(found));
+                                }
+                                cur = self.nodes[idx.as_usize()].parent;
+                            }
+                            None => return Ok(self.find_top_level_idx(field)),
+                        }
+                    }
                 }
                 let Some(parent_idx) = self.resolve_node_chain(target)? else {
                     return Ok(None);

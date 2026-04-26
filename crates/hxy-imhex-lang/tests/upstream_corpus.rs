@@ -24,6 +24,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use hxy_imhex_lang::Endian;
 use hxy_imhex_lang::Interpreter;
 use hxy_imhex_lang::MemorySource;
 use hxy_imhex_lang::chained_resolver;
@@ -172,7 +173,7 @@ fn run_with_deadline(
     program: hxy_imhex_lang::ast::Program,
     bytes: Vec<u8>,
     resolver: hxy_imhex_lang::SharedResolver,
-    endian_pragma: Option<&'static str>,
+    endian_pragma: Option<Endian>,
 ) -> RunOutcome {
     let interrupt = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
@@ -183,13 +184,14 @@ fn run_with_deadline(
     // still trips the thread on its next step boundary, so it
     // self-terminates without blocking the test.
     let _ = thread::spawn(move || {
-        let result = Interpreter::new(MemorySource::new(bytes))
+        let mut interp = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver)
-            .with_default_endian(endian_pragma)
             .with_step_limit(STEP_LIMIT)
-            .with_interrupt(interrupt_for_thread)
-            .run(&program);
-        let _ = tx.send(result);
+            .with_interrupt(interrupt_for_thread);
+        if let Some(e) = endian_pragma {
+            interp = interp.with_default_endian(e);
+        }
+        let _ = tx.send(interp.run(&program));
     });
     match rx.recv_timeout(TEMPLATE_DEADLINE) {
         Ok(r) => match r.terminal_error {

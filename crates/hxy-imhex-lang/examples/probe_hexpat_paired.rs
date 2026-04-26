@@ -161,13 +161,14 @@ fn probe_template(
     // interrupt flag still trips the worker on its next exec_stmt,
     // so it self-terminates -- we just don't wait for it.
     let _ = thread::spawn(move || {
-        let result = Interpreter::new(MemorySource::new(bytes))
+        let mut interp = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver_for_thread)
-            .with_default_endian(pragmas.endian)
             .with_step_limit(200_000)
-            .with_interrupt(interrupt_for_thread)
-            .run(&prog_for_thread);
-        let _ = tx.send(result);
+            .with_interrupt(interrupt_for_thread);
+        if let Some(e) = pragmas.endian {
+            interp = interp.with_default_endian(e);
+        }
+        let _ = tx.send(interp.run(&prog_for_thread));
     });
     let start = Instant::now();
     let recv = rx.recv_timeout(TEMPLATE_DEADLINE);

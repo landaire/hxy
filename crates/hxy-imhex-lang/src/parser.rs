@@ -1079,6 +1079,7 @@ impl Parser {
             placement: None,
             init: None,
             attrs,
+            is_io_var: false,
             pointer_width: None,
             span: Span::new(start, end),
         })
@@ -1217,20 +1218,25 @@ impl Parser {
         };
         let placement = if self.eat_kind(&TokenKind::At) { Some(self.parse_expr()?) } else { None };
         // ImHex's `in` / `out` modifiers come in two flavours:
-        // (a) `bool x in;` -- declare an input/output variable.
+        // (a) `bool x in;` -- declare an input/output variable
+        //     supplied by the host. The interpreter must NOT read
+        //     bytes for these or the rest of the cursor walk
+        //     drifts off-by-one.
         // (b) `Type x[N] @ offset in section;` -- bind the
-        //     placement to a named memory section.
-        // For Phase 2 we drop both; the optional section name
-        // following `in` is consumed if present.
+        //     placement to a named memory section. We discard the
+        //     section name; the renderer doesn't model sections.
+        // We tell the two apart by whether a placement was already
+        // parsed: form (b) always has an `@` first.
+        let mut is_io_var = false;
         if let Some(TokenKind::Ident(ident)) = self.peek_kind()
             && (ident == "in" || ident == "out")
         {
+            if placement.is_none() {
+                is_io_var = true;
+            }
             self.bump();
-            // The section after `in` / `out` can be either an
-            // identifier (`in mem_section`) or an expression
-            // (`in 0`, `in std::mem::sections::main`). Parse and
-            // drop it for now; the renderer doesn't model named
-            // memory sections yet.
+            // Section identifier / expression after `in` / `out`,
+            // when present, is consumed and dropped.
             if !matches!(self.peek_kind(), Some(TokenKind::Semi | TokenKind::LBracketBracket | TokenKind::Eq)) {
                 let _ = self.parse_expr()?;
             }
@@ -1245,6 +1251,7 @@ impl Parser {
             placement,
             init,
             attrs,
+            is_io_var,
             pointer_width,
             span: Span::new(start, self.last_span().end),
         })
@@ -1819,17 +1826,20 @@ fn merge_template_params(stmt: Stmt, params: Vec<String>) -> Stmt {
 /// terminator in span output.
 fn extend_decl_span(stmt: Stmt, end: usize) -> Stmt {
     match stmt {
-        Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, pointer_width, span } => Stmt::FieldDecl {
-            is_const,
-            ty,
-            name,
-            array,
-            placement,
-            init,
-            attrs,
-            pointer_width,
-            span: Span::new(span.start, end),
-        },
+        Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, is_io_var, pointer_width, span } => {
+            Stmt::FieldDecl {
+                is_const,
+                ty,
+                name,
+                array,
+                placement,
+                init,
+                attrs,
+                is_io_var,
+                pointer_width,
+                span: Span::new(span.start, end),
+            }
+        }
         other => other,
     }
 }

@@ -176,6 +176,12 @@ pub enum Stmt {
         placement: Option<Expr>,
         init: Option<Expr>,
         attrs: Attrs,
+        /// `bool x in;` / `Type x out;` -- ImHex's input/output
+        /// variable markers. Input vars are provided externally
+        /// (host-supplied) and *don't* consume bytes from the
+        /// source; output vars expose a binding to the host. The
+        /// interpreter skips the read for either form.
+        is_io_var: bool,
         /// `Type *p : u32` -- pointer field. The type after `:` is
         /// the pointer-width (read as the address). When set, the
         /// interpreter reads `pointer_width`, seeks to that offset,

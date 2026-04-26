@@ -49,7 +49,7 @@ pub enum LexError {
 #[derive(Clone, Debug, Default)]
 pub struct Pragmas {
     /// `#pragma endian big` / `little`, or `None` when unspecified.
-    pub endian: Option<&'static str>,
+    pub endian: Option<crate::value::Endian>,
 }
 
 /// Walk the source line-by-line and extract pragma directives that
@@ -57,6 +57,7 @@ pub struct Pragmas {
 /// other pragmas (description, MIME, magic, ...) are decorative
 /// and stay as trivia.
 pub fn extract_pragmas(source: &str) -> Pragmas {
+    use crate::value::Endian;
     let mut out = Pragmas::default();
     for raw_line in source.split_inclusive('\n') {
         let trimmed = raw_line.trim_start();
@@ -69,8 +70,8 @@ pub fn extract_pragmas(source: &str) -> Pragmas {
             && let Some(value) = parts.next()
         {
             out.endian = match value.to_ascii_lowercase().as_str() {
-                "big" => Some("big"),
-                "little" | "native" => Some("little"),
+                "big" => Some(Endian::Big),
+                "little" | "native" => Some(Endian::Little),
                 _ => continue,
             };
         }

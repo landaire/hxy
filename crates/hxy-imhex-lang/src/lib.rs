@@ -47,6 +47,7 @@ pub use parser::parse;
 pub use source::HexSource;
 pub use source::MemorySource;
 pub use source::SourceError;
+pub use value::Endian;
 pub use value::NodeType;
 pub use value::PrimKind;
 pub use value::ScalarKind;
