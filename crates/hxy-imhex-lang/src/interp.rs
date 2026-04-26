@@ -205,6 +205,15 @@ pub struct Interpreter<S: HexSource> {
     /// deadline so a runaway template can't stall the renderer or
     /// the corpus probe.
     interrupt: Arc<AtomicBool>,
+    /// Stack of currently-being-read struct/bitfield/union indices.
+    /// `this` resolves to the top; `parent` resolves to the second-
+    /// from-top. Pushed on `read_struct` / `read_bitfield` entry,
+    /// popped on exit.
+    this_stack: Vec<NodeIdx>,
+    /// Set when a `break` statement fires inside a struct body so
+    /// the surrounding [`Self::read_dynamic_array`] knows to stop
+    /// emitting elements. Cleared by the array reader on consume.
+    break_pending: bool,
 }
 
 impl<S: HexSource> Interpreter<S> {
@@ -227,6 +236,8 @@ impl<S: HexSource> Interpreter<S> {
             imported: HashSet::new(),
             namespace_stack: Vec::new(),
             interrupt: Arc::new(AtomicBool::new(false)),
+            this_stack: Vec::new(),
+            break_pending: false,
         };
         me.register_primitives();
         me
@@ -844,15 +855,11 @@ impl<S: HexSource> Interpreter<S> {
                 let v = self.eval(e)?;
                 v.to_i128().ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {v}")))? as u64
             }
-            Some(ArraySize::Open) => 0,
-            Some(ArraySize::While(_)) => {
-                // Predicate-driven arrays. Phase 1 reads zero
-                // elements (we don't have the parent-span scaffold to
-                // bind the predicate's read context); a future phase
-                // wires the cursor + condition through.
-                0
-            }
-            None => 0,
+            // Open-ended (`Type x[]`) and predicate-driven (`Type
+            // x[while(cond)]`) arrays read zero elements for now;
+            // see `read_dynamic_array` for the full implementation
+            // that's currently disabled behind it.
+            _ => 0,
         };
         // Pointer field: `Type *p : u32;`. Read the pointer-width
         // type at the cursor to get an address, save the cursor
@@ -887,7 +894,22 @@ impl<S: HexSource> Interpreter<S> {
             // literally `"padding"`).
             self.cursor_seek(self.cursor_tell().saturating_add(count));
         } else if array.is_some() {
-            self.read_array(name, ty, count, parent, &all_attrs)?;
+            // Only fixed-count arrays are read at scale. Open and
+            // while-driven arrays are common in patterns whose
+            // predicates depend on side-effect state we don't yet
+            // model (cursor offsets, std::mem::find_*, ...); reading
+            // them as zero-element arrays mirrors the upstream
+            // interpreter's "skip what you can't terminate" stance
+            // and avoids consuming bytes that surrounding fixed
+            // reads still need.
+            match array.as_ref().unwrap() {
+                ArraySize::Fixed(_) => {
+                    self.read_array(name, ty, count, parent, &all_attrs)?;
+                }
+                ArraySize::Open | ArraySize::While(_) => {
+                    self.read_array(name, ty, 0, parent, &all_attrs)?;
+                }
+            }
         } else {
             self.read_scalar(name, ty, parent, &all_attrs, init.as_ref())?;
         }
@@ -1022,6 +1044,7 @@ impl<S: HexSource> Interpreter<S> {
         let prev_parent = self.current_parent;
         self.current_parent = parent;
         self.scopes.push(Scope::default());
+        self.this_stack.push(idx);
 
         // Bind template args to template params first, so the body
         // (and any inherited parent body) can see them. Pairs by
@@ -1092,9 +1115,16 @@ impl<S: HexSource> Interpreter<S> {
             }
         }
 
+        // `break` inside a struct body (typical in `Block blocks[while(true)]`
+        // patterns) bubbles up through `break_pending` so the
+        // surrounding `read_dynamic_array` knows to stop reading.
         if !decl.is_union {
             for s in parent_body.iter().chain(decl.body.iter()) {
-                self.exec_stmt(s, Some(idx))?;
+                let flow = self.exec_stmt(s, Some(idx))?;
+                if matches!(flow, Flow::Break | Flow::Continue) {
+                    self.break_pending = matches!(flow, Flow::Break);
+                    break;
+                }
             }
             self.nodes[idx.as_usize()].length = self.cursor_tell() - offset;
         } else {
@@ -1104,13 +1134,18 @@ impl<S: HexSource> Interpreter<S> {
             let mut max_end = offset;
             for s in parent_body.iter().chain(decl.body.iter()) {
                 self.cursor_seek(offset);
-                self.exec_stmt(s, Some(idx))?;
+                let flow = self.exec_stmt(s, Some(idx))?;
                 max_end = max_end.max(self.cursor_tell());
+                if matches!(flow, Flow::Break | Flow::Continue) {
+                    self.break_pending = matches!(flow, Flow::Break);
+                    break;
+                }
             }
             self.cursor_seek(max_end);
             self.nodes[idx.as_usize()].length = max_end - offset;
         }
         self.scopes.pop();
+        self.this_stack.pop();
         self.current_parent = prev_parent;
         // Drop the temporary template-param aliases we registered on
         // entry so they don't shadow types in surrounding scopes.
@@ -1222,7 +1257,10 @@ impl<S: HexSource> Interpreter<S> {
         // order -- matches the ImHex default; the `bitfield_order`
         // attribute can override at a future phase.
         let mut consumed: u32 = 0;
-        self.exec_bitfield_body(&decl.body, raw_u, offset, bf_idx, &mut consumed)?;
+        self.this_stack.push(bf_idx);
+        let result = self.exec_bitfield_body(&decl.body, raw_u, offset, bf_idx, &mut consumed);
+        self.this_stack.pop();
+        result?;
         Ok(Value::UInt { value: raw_u, kind: PrimKind::u128() })
     }
 
@@ -1377,6 +1415,95 @@ impl<S: HexSource> Interpreter<S> {
         });
         for i in 0..count {
             self.read_scalar(&format!("[{i}]"), ty, Some(parent_idx), &[], None)?;
+        }
+        self.nodes[parent_idx.as_usize()].length = self.cursor_tell() - offset;
+        Ok(Value::Void)
+    }
+
+    /// Read a predicate-driven or open-ended array (`Type x[]`,
+    /// `Type x[while(cond)]`). Currently disabled in favour of a
+    /// 0-element read; turning this on across the corpus regressed
+    /// templates whose predicates depend on side-effect state we
+    /// don't yet model. Kept as the scaffold for that work.
+    #[allow(dead_code, unused_assignments)]
+    fn read_dynamic_array(
+        &mut self,
+        name: &str,
+        ty: &TypeRef,
+        parent: Option<NodeIdx>,
+        attrs: &[(String, String)],
+        cond: Option<&Expr>,
+    ) -> Result<Value, RuntimeError> {
+        let offset = self.cursor_tell();
+        let parent_idx = self.push_node(NodeOut {
+            name: name.to_owned(),
+            ty: NodeType::Unknown(format!("{}[]", ty.leaf())),
+            offset,
+            length: 0,
+            value: None,
+            parent,
+            attrs: attrs.to_vec(),
+        });
+        let mut count = 0u64;
+        let mut last_pos = self.cursor_tell();
+        let mut stalls = 0u32;
+        loop {
+            if self.cursor_tell() >= self.source.len() {
+                break;
+            }
+            if let Some(cond_expr) = cond {
+                let v = self.eval(cond_expr)?;
+                if !v.is_truthy() {
+                    break;
+                }
+            }
+            // For `char[]` / `u8[]` open arrays, ImHex stops at the
+            // first NUL byte (C-string semantics). Other element
+            // types just read until EOF / cond / stall.
+            if cond.is_none() && (ty.leaf() == "char" || ty.leaf() == "u8") {
+                let byte = self.source.read(self.cursor_tell(), 1).ok().and_then(|b| b.first().copied());
+                if matches!(byte, Some(0)) {
+                    let _ = self.read_scalar(&format!("[{count}]"), ty, Some(parent_idx), &[], None);
+                    count += 1;
+                    break;
+                }
+            }
+            match self.read_scalar(&format!("[{count}]"), ty, Some(parent_idx), &[], None) {
+                Ok(_) => {}
+                Err(RuntimeError::Source(_)) => break,
+                Err(e) => return Err(e),
+            }
+            count += 1;
+            // `break` inside an element's body (typical in
+            // `Block blocks[while(true)] { ...; if (sentinel) break; }`)
+            // ends the array, not just the surrounding struct.
+            if self.break_pending {
+                self.break_pending = false;
+                break;
+            }
+            let now = self.cursor_tell();
+            if now == last_pos {
+                stalls += 1;
+                if stalls > 4 {
+                    self.diagnostics.push(Diagnostic {
+                        message: format!(
+                            "dynamic array `{name}` stalled at offset {now} after {count} reads"
+                        ),
+                        severity: Severity::Warning,
+                        file_offset: Some(now),
+                        template_line: None,
+                    });
+                    break;
+                }
+            } else {
+                stalls = 0;
+                last_pos = now;
+            }
+            // Cap absolute element count so a runaway predicate
+            // doesn't burn step budget on an infinite array.
+            if count >= LOOP_STALL_LIMIT as u64 {
+                break;
+            }
         }
         self.nodes[parent_idx.as_usize()].length = self.cursor_tell() - offset;
         Ok(Value::Void)
@@ -1659,6 +1786,15 @@ impl<S: HexSource> Interpreter<S> {
             // through. Returning 0 is the conservative fallback.
             return Ok(Value::UInt { value: 0, kind: PrimKind::u64() });
         }
+        // `this` / `parent` in non-member position (e.g.
+        // `set_display_name(this, label)`). The interpreter doesn't
+        // model node references as first-class values, so we emit
+        // `Void` -- callers that pass the magic ident to a builtin
+        // get a no-op handle but the run keeps progressing. Member
+        // access (`this.x`) bypasses this path via the Member arm.
+        if name == "this" || name == "parent" {
+            return Ok(Value::Void);
+        }
         // Last resort: if `name` matches an emitted struct/array
         // node, return its value (or `Void` if the node didn't bind
         // one). Templates reference field names as opaque handles
@@ -1740,18 +1876,13 @@ impl<S: HexSource> Interpreter<S> {
         candidates.iter().copied().find(|idx| self.nodes[idx.as_usize()].parent == Some(parent_idx))
     }
 
-    /// Index of the most recently emitted struct / union / bitfield
-    /// node. Used to back `this.field` lookups when no scope-stack
-    /// pointer is available (the runtime doesn't carry an explicit
-    /// "current struct" idx; the most-recent struct in the emitted
-    /// list is the one we just entered).
+    /// Index of the struct / union / bitfield currently being read.
+    /// Backs the magic `this` identifier. Tracks an explicit stack
+    /// pushed on `read_struct` / `read_bitfield` entry instead of
+    /// scanning the emitted node list (the latter pointed at the
+    /// *previously-completed* struct after a sibling read finished).
     fn most_recent_struct_idx(&self) -> Option<NodeIdx> {
-        for (i, n) in self.nodes.iter().enumerate().rev() {
-            if matches!(n.ty, NodeType::StructType(_) | NodeType::BitfieldType(_)) {
-                return Some(NodeIdx::new(i as u32));
-            }
-        }
-        None
+        self.this_stack.last().copied()
     }
 
     fn store_ident(&mut self, name: &str, value: Value) {

@@ -132,7 +132,12 @@ impl Value {
     }
 
     /// Best-effort numeric coercion to an `i128`. Returns `None` for
-    /// strings, byte runs, and `Void`.
+    /// strings and byte runs. `Void` coerces to 0 -- the interpreter
+    /// hands out `Void` as a placeholder when an expression refers
+    /// to a struct or array node (no first-class node-ref value
+    /// yet), and many corpus templates plug that result into a
+    /// numeric expression. Returning 0 lets the run progress with a
+    /// best-effort answer instead of halting.
     pub fn to_i128(&self) -> Option<i128> {
         Some(match self {
             Value::UInt { value, .. } => *value as i128,
@@ -140,6 +145,7 @@ impl Value {
             Value::Float { value, .. } => *value as i128,
             Value::Bool(b) => i128::from(*b),
             Value::Char { value, .. } => i128::from(*value),
+            Value::Void => 0,
             _ => return None,
         })
     }
