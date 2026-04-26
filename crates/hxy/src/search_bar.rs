@@ -47,29 +47,26 @@ pub enum SearchEvent {
 pub fn show(ui: &mut egui::Ui, state: &mut SearchState) -> Vec<SearchEvent> {
     let mut events = Vec::new();
 
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(6, 4))
-        .fill(ui.visuals().extreme_bg_color)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| find_row(ui, state, &mut events));
-            if state.replace_open {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| replace_row(ui, state, &mut events));
-            }
-            if state.all_results && !state.matches.is_empty() {
-                ui.add_space(4.0);
-                let avail = ui.available_height().clamp(80.0, 140.0);
-                egui::ScrollArea::vertical().max_height(avail).id_salt("hxy_search_results").show(ui, |ui| {
-                    for (i, off) in state.matches.iter().enumerate() {
-                        let label = format!("0x{off:08X}    {off}");
-                        let active = state.active_idx == Some(i);
-                        if ui.selectable_label(active, label).clicked() {
-                            events.push(SearchEvent::JumpTo(i));
-                        }
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).fill(ui.visuals().extreme_bg_color).show(ui, |ui| {
+        ui.horizontal(|ui| find_row(ui, state, &mut events));
+        if state.replace_open {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| replace_row(ui, state, &mut events));
+        }
+        if state.all_results && !state.matches.is_empty() {
+            ui.add_space(4.0);
+            let avail = ui.available_height().clamp(80.0, 140.0);
+            egui::ScrollArea::vertical().max_height(avail).id_salt("hxy_search_results").show(ui, |ui| {
+                for (i, off) in state.matches.iter().enumerate() {
+                    let label = format!("0x{off:08X}    {off}");
+                    let active = state.active_idx == Some(i);
+                    if ui.selectable_label(active, label).clicked() {
+                        events.push(SearchEvent::JumpTo(i));
                     }
-                });
-            }
-        });
+                }
+            });
+        }
+    });
 
     events
 }
@@ -77,36 +74,29 @@ pub fn show(ui: &mut egui::Ui, state: &mut SearchState) -> Vec<SearchEvent> {
 fn find_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<SearchEvent>) {
     ui.label(hxy_i18n::t("search-find-label"));
 
-    egui::ComboBox::from_id_salt("hxy_search_kind")
-        .selected_text(kind_label(state.kind))
-        .show_ui(ui, |ui| {
-            for k in [SearchKind::Text, SearchKind::HexBytes, SearchKind::Number] {
-                if ui.selectable_value(&mut state.kind, k, kind_label(k)).changed() {
+    egui::ComboBox::from_id_salt("hxy_search_kind").selected_text(kind_label(state.kind)).show_ui(ui, |ui| {
+        for k in [SearchKind::Text, SearchKind::HexBytes, SearchKind::Number] {
+            if ui.selectable_value(&mut state.kind, k, kind_label(k)).changed() {
+                events.push(SearchEvent::Refresh);
+                events.push(SearchEvent::RefreshReplace);
+            }
+        }
+    });
+
+    if matches!(state.kind, SearchKind::Number) {
+        egui::ComboBox::from_id_salt("hxy_search_width").selected_text(width_label(state.width)).show_ui(ui, |ui| {
+            for w in NumberWidth::ALL {
+                if ui.selectable_value(&mut state.width, w, width_label(w)).changed() {
                     events.push(SearchEvent::Refresh);
                     events.push(SearchEvent::RefreshReplace);
                 }
             }
         });
-
-    if matches!(state.kind, SearchKind::Number) {
-        egui::ComboBox::from_id_salt("hxy_search_width")
-            .selected_text(width_label(state.width))
-            .show_ui(ui, |ui| {
-                for w in NumberWidth::ALL {
-                    if ui.selectable_value(&mut state.width, w, width_label(w)).changed() {
-                        events.push(SearchEvent::Refresh);
-                        events.push(SearchEvent::RefreshReplace);
-                    }
-                }
-            });
         if ui.checkbox(&mut state.signed, hxy_i18n::t("search-signed")).changed() {
             events.push(SearchEvent::Refresh);
             events.push(SearchEvent::RefreshReplace);
         }
-        if ui
-            .selectable_label(matches!(state.endian, Endian::Little), hxy_i18n::t("search-endian-little"))
-            .clicked()
-        {
+        if ui.selectable_label(matches!(state.endian, Endian::Little), hxy_i18n::t("search-endian-little")).clicked() {
             state.endian = Endian::Little;
             events.push(SearchEvent::Refresh);
             events.push(SearchEvent::RefreshReplace);
@@ -118,9 +108,7 @@ fn find_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<SearchE
         }
     }
 
-    let resp = ui.add(
-        egui::TextEdit::singleline(&mut state.query).id_salt("hxy_search_query").desired_width(220.0),
-    );
+    let resp = ui.add(egui::TextEdit::singleline(&mut state.query).id_salt("hxy_search_query").desired_width(220.0));
     if resp.changed() {
         events.push(SearchEvent::Refresh);
     }
@@ -137,26 +125,14 @@ fn find_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<SearchE
     if resp.has_focus() && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         events.push(SearchEvent::Close);
     }
-    if state.open
-        && state.query.is_empty()
-        && !resp.has_focus()
-        && ui.ctx().memory(|m| m.focused().is_none())
-    {
+    if state.open && state.query.is_empty() && !resp.has_focus() && ui.ctx().memory(|m| m.focused().is_none()) {
         resp.request_focus();
     }
 
-    if ui
-        .button(egui_phosphor::regular::CARET_DOWN)
-        .on_hover_text(hxy_i18n::t("search-next-tooltip"))
-        .clicked()
-    {
+    if ui.button(egui_phosphor::regular::CARET_DOWN).on_hover_text(hxy_i18n::t("search-next-tooltip")).clicked() {
         events.push(SearchEvent::Next);
     }
-    if ui
-        .button(egui_phosphor::regular::CARET_UP)
-        .on_hover_text(hxy_i18n::t("search-prev-tooltip"))
-        .clicked()
-    {
+    if ui.button(egui_phosphor::regular::CARET_UP).on_hover_text(hxy_i18n::t("search-prev-tooltip")).clicked() {
         events.push(SearchEvent::Prev);
     }
 
@@ -214,9 +190,7 @@ fn replace_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<Sear
     ui.label(hxy_i18n::t("search-replace-label"));
 
     let resp = ui.add(
-        egui::TextEdit::singleline(&mut state.replace_query)
-            .id_salt("hxy_search_replace_query")
-            .desired_width(220.0),
+        egui::TextEdit::singleline(&mut state.replace_query).id_salt("hxy_search_replace_query").desired_width(220.0),
     );
     if resp.changed() {
         events.push(SearchEvent::RefreshReplace);

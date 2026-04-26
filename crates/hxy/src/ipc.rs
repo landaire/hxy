@@ -77,10 +77,10 @@ pub fn try_send_to_running_instance(paths: &[PathBuf]) -> io::Result<()> {
         // to defend against that here.
         paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
     };
-    let bytes = rkyv::to_bytes::<rancor::Error>(&msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ipc message too large"))?;
+    let bytes =
+        rkyv::to_bytes::<rancor::Error>(&msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let len =
+        u32::try_from(bytes.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ipc message too large"))?;
 
     let mut stream = interprocess::local_socket::Stream::connect(socket_name()?)?;
     stream.write_all(&len.to_le_bytes())?;
@@ -113,8 +113,7 @@ pub fn start_server(ctx: &egui::Context) -> Option<egui_inbox::UiInbox<Vec<PathB
     // same name would have already answered our
     // `try_send_to_running_instance` probe before we got here, so
     // displacing whatever's at the path now is safe.
-    let listener =
-        match ListenerOptions::new().name(name).reclaim_name(true).try_overwrite(true).create_sync() {
+    let listener = match ListenerOptions::new().name(name).reclaim_name(true).try_overwrite(true).create_sync() {
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(error = %e, "ipc: bind socket; CLI forwarding disabled");
@@ -163,10 +162,7 @@ fn read_message<S: Read>(stream: &mut S) -> io::Result<IpcMessage> {
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("ipc message too large: {len} bytes"),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("ipc message too large: {len} bytes")));
     }
     // Aligned buffer so rkyv's checked access doesn't reject the
     // payload for being misaligned; a plain `Vec<u8>` is only
@@ -196,9 +192,7 @@ mod tests {
 
     #[test]
     fn roundtrips_open_message() {
-        let original = IpcMessage::Open {
-            paths: vec!["/tmp/a.bin".to_owned(), "/tmp/b.bin".to_owned()],
-        };
+        let original = IpcMessage::Open { paths: vec!["/tmp/a.bin".to_owned(), "/tmp/b.bin".to_owned()] };
         let wire = frame(&original);
         let mut cur = Cursor::new(wire);
         let decoded = read_message(&mut cur).expect("decode");

@@ -27,13 +27,7 @@ pub struct PluginCommand {
 
 impl PluginCommand {
     pub(crate) fn from_wit(c: wit::Command) -> Self {
-        Self {
-            id: c.id,
-            label: c.label,
-            subtitle: c.subtitle,
-            icon: c.icon,
-            has_children: c.has_children,
-        }
+        Self { id: c.id, label: c.label, subtitle: c.subtitle, icon: c.icon, has_children: c.has_children }
     }
 }
 

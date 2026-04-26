@@ -83,14 +83,7 @@ impl HexSource for PatchedSource {
             // Pre-splice base segment: source[source_cursor..op.offset]
             let pre_len = op.offset.saturating_sub(source_cursor);
             if pre_len > 0 {
-                self.copy_segment_from_base(
-                    source_cursor,
-                    pre_len,
-                    output_cursor,
-                    want_start,
-                    want_end,
-                    &mut out,
-                )?;
+                self.copy_segment_from_base(source_cursor, pre_len, output_cursor, want_start, want_end, &mut out)?;
                 output_cursor += pre_len;
             }
             // New bytes from the splice

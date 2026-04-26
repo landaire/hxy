@@ -532,9 +532,9 @@ pub fn show_with_style<A: Clone>(
                     .stroke(stroke)
                     .inner_margin(style.inner_margin)
                     .corner_radius(style.corner_radius),
-                (None, None) => egui::Frame::popup(ui.style())
-                    .inner_margin(style.inner_margin)
-                    .corner_radius(style.corner_radius),
+                (None, None) => {
+                    egui::Frame::popup(ui.style()).inner_margin(style.inner_margin).corner_radius(style.corner_radius)
+                }
             };
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_width);
@@ -674,15 +674,8 @@ fn render_row<A>(
     };
 
     let title_width_budget = content_right - title_x;
-    let title_galley = layout_highlighted(
-        ui,
-        &entry.title,
-        body.clone(),
-        text_color,
-        match_color,
-        &title_indices,
-        title_width_budget,
-    );
+    let title_galley =
+        layout_highlighted(ui, &entry.title, body.clone(), text_color, match_color, &title_indices, title_width_budget);
     let title_pos = egui::pos2(title_x, inner.center().y - title_galley.size().y * 0.5);
     let title_size = title_galley.size();
     ui.painter().galley(title_pos, title_galley, text_color);
@@ -757,11 +750,7 @@ fn layout_highlighted(
     // Trailing run.
     if run_start_byte < text.len() {
         let color = if in_match { match_color } else { base_color };
-        job.append(
-            &text[run_start_byte..],
-            0.0,
-            egui::text::TextFormat { font_id: font, color, ..Default::default() },
-        );
+        job.append(&text[run_start_byte..], 0.0, egui::text::TextFormat { font_id: font, color, ..Default::default() });
     }
     job.wrap = egui::epaint::text::TextWrapping::truncate_at_width(max_width.max(0.0));
     ui.painter().layout_job(job)

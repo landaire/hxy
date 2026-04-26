@@ -65,12 +65,19 @@ pub enum PersistedTab {
     /// Plugin VFS mount tab. Carries the plugin name + token used to
     /// remount, plus a display title for the placeholder if the
     /// remount fails on restart.
-    PluginMount { plugin_name: String, token: String, title: String },
+    PluginMount {
+        plugin_name: String,
+        token: String,
+        title: String,
+    },
     /// Side-by-side byte-diff tab. Both sides are keyed by their
     /// originating [`TabSource`] so the host can re-read fresh
     /// bytes from each on restart and spawn a new
     /// [`crate::compare::CompareSession`].
-    Compare { a: TabSource, b: TabSource },
+    Compare {
+        a: TabSource,
+        b: TabSource,
+    },
 }
 
 /// Stable counterpart to [`WorkspaceTab`]. Same idea: keep the
@@ -122,8 +129,7 @@ pub fn live_to_persisted(
     mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
     compares: &std::collections::BTreeMap<CompareId, crate::compare::CompareSession>,
 ) -> PersistedDock {
-    let outer_persisted =
-        outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts, compares));
+    let outer_persisted = outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts, compares));
     let mut workspace_layouts: Vec<(TabSource, DockState<PersistedWorkspaceTab>)> = Vec::new();
     for ws in workspaces.values() {
         let Some(parent_source) = files.get(&ws.editor_id).and_then(|f| f.source_kind.clone()) else {
@@ -233,10 +239,7 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
     })
 }
 
-fn persisted_to_live_workspace_tab(
-    tab: &PersistedWorkspaceTab,
-    maps: &RestoreMaps<'_>,
-) -> Option<WorkspaceTab> {
+fn persisted_to_live_workspace_tab(tab: &PersistedWorkspaceTab, maps: &RestoreMaps<'_>) -> Option<WorkspaceTab> {
     Some(match tab {
         PersistedWorkspaceTab::Editor => WorkspaceTab::Editor,
         PersistedWorkspaceTab::VfsTree => WorkspaceTab::VfsTree,

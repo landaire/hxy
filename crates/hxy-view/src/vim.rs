@@ -183,9 +183,7 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         i.events.retain(|event| {
             let want_char = matches!(
                 local_pending,
-                Some(
-                    Pending::FindChar { .. } | Pending::TextObjectInner | Pending::TextObjectAround,
-                )
+                Some(Pending::FindChar { .. } | Pending::TextObjectInner | Pending::TextObjectAround,)
             );
             match event {
                 egui::Event::Key { key, pressed: true, modifiers, repeat: _, .. } => {
@@ -537,11 +535,7 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
                 }
             }
             VimPress::StartTextObject(around) => {
-                editor.vim.pending = Some(if around {
-                    Pending::TextObjectAround
-                } else {
-                    Pending::TextObjectInner
-                });
+                editor.vim.pending = Some(if around { Pending::TextObjectAround } else { Pending::TextObjectInner });
             }
             VimPress::TextObjectChar { c, around } => {
                 editor.vim.clear_pending();
@@ -594,14 +588,24 @@ enum VimPress {
     Motion(Motion),
     /// `f`/`F`/`t`/`T` pressed; arms `Pending::FindChar` so the
     /// retain pass can capture the next typed character.
-    StartFindChar { dir: FindDir, before: bool },
+    StartFindChar {
+        dir: FindDir,
+        before: bool,
+    },
     /// The character that resolves a pending find-char.
-    FindCharResolved { c: char, dir: FindDir, before: bool },
+    FindCharResolved {
+        c: char,
+        dir: FindDir,
+        before: bool,
+    },
     /// `i` / `a` pressed in Visual; arms `Pending::TextObject*`.
     StartTextObject(bool),
     /// The delimiter / object char that resolves a pending text
     /// object (`)`, `]`, `"`, `w`, ...).
-    TextObjectChar { c: char, around: bool },
+    TextObjectChar {
+        c: char,
+        around: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -691,6 +695,11 @@ fn apply_motion(editor: &mut HexEditor, motion: Motion, count: usize, columns: u
     }
 }
 
+/// Cursor offset for vim motions/operators. `None` when no selection
+/// exists yet; motion callers fall back to `0` (the implicit "cursor
+/// at start of buffer" vim assumes for a freshly-loaded file before
+/// the user has clicked) -- but operators that genuinely require an
+/// explicit selection (yank, delete) keep the `Option` to bail early.
 fn current_cursor(editor: &HexEditor) -> Option<u64> {
     editor.selection.as_ref().map(|s| s.cursor.get())
 }
@@ -884,8 +893,7 @@ fn read_range_bytes(editor: &HexEditor, start: u64, end_exclusive: u64) -> Vec<u
     if end_exclusive <= start {
         return Vec::new();
     }
-    let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(start), ByteOffset::new(end_exclusive))
-    else {
+    let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(start), ByteOffset::new(end_exclusive)) else {
         return Vec::new();
     };
     editor.source.read(range).unwrap_or_default()
@@ -1140,10 +1148,7 @@ fn apply_text_object(editor: &mut HexEditor, c: char, around: bool, source_len: 
         sel.anchor = ByteOffset::new(start);
         sel.cursor = ByteOffset::new(end_inclusive);
     } else {
-        editor.selection = Some(Selection {
-            anchor: ByteOffset::new(start),
-            cursor: ByteOffset::new(end_inclusive),
-        });
+        editor.selection = Some(Selection { anchor: ByteOffset::new(start), cursor: ByteOffset::new(end_inclusive) });
     }
 }
 
@@ -1151,13 +1156,7 @@ fn apply_text_object(editor: &mut HexEditor, c: char, around: bool, source_len: 
 /// inclusive byte range. Brackets share a single nesting-aware
 /// helper; quotes are line-scoped without nesting; `w` / `W` reuse
 /// the word-classification machinery.
-fn text_object_range(
-    editor: &HexEditor,
-    cur: u64,
-    source_len: u64,
-    c: char,
-    around: bool,
-) -> Option<(u64, u64)> {
+fn text_object_range(editor: &HexEditor, cur: u64, source_len: u64, c: char, around: bool) -> Option<(u64, u64)> {
     match c {
         '(' | ')' | 'b' => bracket_range(editor, cur, source_len, b'(', b')', around),
         '[' | ']' => bracket_range(editor, cur, source_len, b'[', b']', around),
@@ -1268,13 +1267,7 @@ fn quote_range(editor: &HexEditor, cur: u64, source_len: u64, q: u8, around: boo
     }
 }
 
-fn word_object_range(
-    editor: &HexEditor,
-    cur: u64,
-    source_len: u64,
-    big: bool,
-    around: bool,
-) -> Option<(u64, u64)> {
+fn word_object_range(editor: &HexEditor, cur: u64, source_len: u64, big: bool, around: bool) -> Option<(u64, u64)> {
     if matches!(editor.active_pane, Pane::Hex) {
         // Hex pane: each byte is its own word; iw selects the byte
         // at the cursor, aw extends across run-of-same-byte.

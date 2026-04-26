@@ -44,13 +44,7 @@ pub fn show(
 
     render_consent_section(ui, plugin_handlers, &mut events);
     ui.add_space(12.0);
-    render_section(
-        ui,
-        "VFS handlers",
-        "Mount byte sources as a browseable VFS tree.",
-        handlers_dir,
-        &mut events,
-    );
+    render_section(ui, "VFS handlers", "Mount byte sources as a browseable VFS tree.", handlers_dir, &mut events);
     ui.add_space(12.0);
     render_section(
         ui,
@@ -62,11 +56,7 @@ pub fn show(
     events
 }
 
-fn render_consent_section(
-    ui: &mut egui::Ui,
-    plugin_handlers: &[Arc<PluginHandler>],
-    events: &mut Vec<PluginsEvent>,
-) {
+fn render_consent_section(ui: &mut egui::Ui, plugin_handlers: &[Arc<PluginHandler>], events: &mut Vec<PluginsEvent>) {
     // Only surface plugins that ship a manifest with at least one
     // declared permission. Manifest-less plugins, and plugins that
     // request nothing, have nothing to grant.
@@ -85,11 +75,7 @@ fn render_consent_section(
     }
 }
 
-fn render_consent_card(
-    ui: &mut egui::Ui,
-    plugin: &Arc<PluginHandler>,
-    events: &mut Vec<PluginsEvent>,
-) {
+fn render_consent_card(ui: &mut egui::Ui, plugin: &Arc<PluginHandler>, events: &mut Vec<PluginsEvent>) {
     // Manifest is guaranteed by the filter in render_consent_section;
     // unwrap-via-let-else here keeps the flow linear.
     let Some(manifest) = plugin.manifest() else { return };
@@ -110,11 +96,8 @@ fn render_consent_card(
         // against the original. We emit an event only if something
         // actually changed -- avoids saving + reloading the world
         // on every frame.
-        let mut next = PermissionGrants {
-            persist: granted.persist,
-            commands: granted.commands,
-            network: granted.network.clone(),
-        };
+        let mut next =
+            PermissionGrants { persist: granted.persist, commands: granted.commands, network: granted.network.clone() };
         let mut changed = false;
         if requested.persist
             && ui.checkbox(&mut next.persist, "Persist (remember per-plugin state across sessions)").changed()
@@ -122,9 +105,7 @@ fn render_consent_card(
             changed = true;
         }
         if requested.commands
-            && ui
-                .checkbox(&mut next.commands, "Commands (contribute entries to the command palette)")
-                .changed()
+            && ui.checkbox(&mut next.commands, "Commands (contribute entries to the command palette)").changed()
         {
             changed = true;
         }
@@ -149,9 +130,7 @@ fn render_consent_card(
             events.push(PluginsEvent::SetGrant { key: key.clone(), grants: next });
         }
 
-        if granted.persist
-            && ui.button("Wipe stored state").clicked()
-        {
+        if granted.persist && ui.button("Wipe stored state").clicked() {
             events.push(PluginsEvent::WipeState { plugin_name: manifest.plugin.name.clone() });
         }
     });

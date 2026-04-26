@@ -249,12 +249,7 @@ impl EditState {
     /// `remove == insert.len()`) and [`Self::insert_at`]
     /// (`remove == 0`); also covers pure delete (`insert.is_empty()`)
     /// and arbitrary splices (vim's `p` / `d` over a visual range).
-    pub(crate) fn splice(
-        &mut self,
-        offset: u64,
-        remove: u64,
-        insert: Vec<u8>,
-    ) -> Result<(), WriteError> {
+    pub(crate) fn splice(&mut self, offset: u64, remove: u64, insert: Vec<u8>) -> Result<(), WriteError> {
         if self.mode != EditMode::Mutable {
             return Err(WriteError::Readonly);
         }
@@ -327,10 +322,7 @@ impl EditState {
             // new_bytes. In-place overwrite; does not change the
             // previous entry's patched-coord footprint or old_bytes.
             let last_new_end = last.offset + last.new_bytes.len() as u64;
-            if entry_lp
-                && entry.offset >= last.offset
-                && entry.offset + entry.new_bytes.len() as u64 <= last_new_end
-            {
+            if entry_lp && entry.offset >= last.offset && entry.offset + entry.new_bytes.len() as u64 <= last_new_end {
                 let rel = (entry.offset - last.offset) as usize;
                 last.new_bytes[rel..rel + entry.new_bytes.len()].copy_from_slice(&entry.new_bytes);
                 self.history_break = false;
@@ -339,10 +331,7 @@ impl EditState {
             }
 
             // Case 3: adjacent pure inserts -- concatenate.
-            if last.old_bytes.is_empty()
-                && entry.old_bytes.is_empty()
-                && entry.offset == last_new_end
-            {
+            if last.old_bytes.is_empty() && entry.old_bytes.is_empty() && entry.offset == last_new_end {
                 last.new_bytes.extend_from_slice(&entry.new_bytes);
                 self.history_break = false;
                 self.last_edit_at = Some(now);
@@ -485,10 +474,7 @@ impl EditState {
     pub(crate) fn read_byte_at(&self, offset: u64) -> Result<u8, WriteError> {
         let range = ByteRange::new(ByteOffset::new(offset), ByteOffset::new(offset + 1))
             .map_err(|e| WriteError::Rejected(format!("invalid range: {e}")))?;
-        self.patched_source
-            .read(range)
-            .map(|b| b[0])
-            .map_err(|e| WriteError::Rejected(format!("read: {e}")))
+        self.patched_source.read(range).map(|b| b[0]).map_err(|e| WriteError::Rejected(format!("read: {e}")))
     }
 }
 

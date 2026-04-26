@@ -76,12 +76,7 @@ impl HostState {
     /// Pair with [`Self::new`] when constructing the state for a
     /// long-lived mount: the plugin's name keys the store, the grant
     /// flag gates calls, and the store handles the actual I/O.
-    pub fn with_persist(
-        mut self,
-        plugin_name: impl Into<String>,
-        granted: bool,
-        store: Arc<dyn StateStore>,
-    ) -> Self {
+    pub fn with_persist(mut self, plugin_name: impl Into<String>, granted: bool, store: Arc<dyn StateStore>) -> Self {
         self.plugin_name = plugin_name.into();
         self.persist_granted = granted;
         self.state_store = Some(store);
@@ -141,9 +136,7 @@ fn build_wasi_ctx_with_allowlist(patterns: Vec<String>) -> WasiCtx {
         Box::pin(async move {
             match use_kind {
                 SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => true,
-                SocketAddrUse::TcpConnect
-                | SocketAddrUse::UdpConnect
-                | SocketAddrUse::UdpOutgoingDatagram => {
+                SocketAddrUse::TcpConnect | SocketAddrUse::UdpConnect | SocketAddrUse::UdpOutgoingDatagram => {
                     let host = addr.ip().to_string();
                     let port = addr.port();
                     allowlist_matches(&patterns, &host, port)
@@ -178,10 +171,7 @@ fn pattern_matches(pattern: &str, host: &str, port: u16) -> bool {
 
 impl WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.resources,
-        }
+        WasiCtxView { ctx: &mut self.wasi, table: &mut self.resources }
     }
 }
 

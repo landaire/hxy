@@ -296,14 +296,7 @@ mod tests {
         let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
         let k2 = PluginKey::from_bytes("p", "1.1.0", b"first");
         let mut g = PluginGrants::default();
-        g.set(
-            k1,
-            PermissionGrants {
-                persist: true,
-                commands: true,
-                network: vec!["xbox.local:730".to_string()],
-            },
-        );
+        g.set(k1, PermissionGrants { persist: true, commands: true, network: vec!["xbox.local:730".to_string()] });
         let resolved = g.get(&k2);
         assert!(resolved.persist, "persist should carry across version bump");
         assert!(resolved.commands, "commands should carry across version bump");
@@ -321,14 +314,7 @@ mod tests {
         let k1 = PluginKey::from_bytes("p", "1.0.0", b"first");
         let k2 = PluginKey::from_bytes("p", "2.0.0", b"second");
         let mut g = PluginGrants::default();
-        g.set(
-            k1,
-            PermissionGrants {
-                persist: false,
-                commands: true,
-                network: vec!["*:730".to_string()],
-            },
-        );
+        g.set(k1, PermissionGrants { persist: false, commands: true, network: vec!["*:730".to_string()] });
         let resolved = g.get(&k2);
         assert!(!resolved.persist, "persist was never granted -- stays denied");
         assert!(resolved.commands, "commands carries forward");
@@ -346,18 +332,8 @@ mod tests {
         let k2 = PluginKey::from_bytes("p", "2.0.0", b"b");
         let k3 = PluginKey::from_bytes("p", "3.0.0", b"c");
         let mut g = PluginGrants::default();
-        g.set(
-            k1,
-            PermissionGrants { persist: false, commands: true, network: vec![] },
-        );
-        g.set(
-            k2,
-            PermissionGrants {
-                persist: false,
-                commands: false,
-                network: vec!["xbox.local:730".to_string()],
-            },
-        );
+        g.set(k1, PermissionGrants { persist: false, commands: true, network: vec![] });
+        g.set(k2, PermissionGrants { persist: false, commands: false, network: vec!["xbox.local:730".to_string()] });
         let resolved = g.get(&k3);
         assert!(resolved.commands);
         assert_eq!(resolved.network, vec!["xbox.local:730".to_string()]);

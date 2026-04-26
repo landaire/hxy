@@ -434,8 +434,8 @@ impl HexEditor {
         // low-nibble press fills its low half via the in-place
         // rewrite branch below (the just-created byte is now
         // in-bounds).
-        let creating_new_byte = self.edit.edit_high_nibble
-            && (self.edit.typing_mode == TypingMode::Insert || offset >= source_len);
+        let creating_new_byte =
+            self.edit.edit_high_nibble && (self.edit.typing_mode == TypingMode::Insert || offset >= source_len);
         if creating_new_byte {
             self.pin_scroll_for_next_frame();
             self.edit.insert_at(offset, vec![nibble << 4])?;
@@ -449,11 +449,8 @@ impl HexEditor {
             return Ok(false);
         }
         let current = self.edit.read_byte_at(offset)?;
-        let new_byte = if self.edit.edit_high_nibble {
-            (nibble << 4) | (current & 0x0F)
-        } else {
-            (current & 0xF0) | nibble
-        };
+        let new_byte =
+            if self.edit.edit_high_nibble { (nibble << 4) | (current & 0x0F) } else { (current & 0xF0) | nibble };
         self.pin_scroll_for_next_frame();
         self.edit.request_write(offset, vec![new_byte])?;
         let advanced = !self.edit.edit_high_nibble;
@@ -566,8 +563,11 @@ impl HexEditor {
     pub fn view(&mut self) -> HexView<'_, dyn HexSource> {
         let pane = Some(self.active_pane);
         #[cfg(feature = "editor")]
-        let nibble = (self.edit.mode == EditMode::Mutable)
-            .then_some(if self.edit.edit_high_nibble { NibbleSide::High } else { NibbleSide::Low });
+        let nibble = (self.edit.mode == EditMode::Mutable).then_some(if self.edit.edit_high_nibble {
+            NibbleSide::High
+        } else {
+            NibbleSide::Low
+        });
         #[cfg(not(feature = "editor"))]
         let nibble: Option<NibbleSide> = None;
         let pending_scroll = self.pending_scroll.take();
@@ -1008,14 +1008,10 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 Pos2::new(avail.left() + layout.address_w, avail.top() + header_height),
                 Vec2::new(scroll_w, content_h),
             );
-            let header_rect = Rect::from_min_size(
-                Pos2::new(scroll_rect.left(), avail.top()),
-                Vec2::new(scroll_w, header_height),
-            );
-            let h_bar_rect = Rect::from_min_size(
-                Pos2::new(scroll_rect.left(), scroll_rect.bottom()),
-                Vec2::new(scroll_w, h_bar_h),
-            );
+            let header_rect =
+                Rect::from_min_size(Pos2::new(scroll_rect.left(), avail.top()), Vec2::new(scroll_w, header_height));
+            let h_bar_rect =
+                Rect::from_min_size(Pos2::new(scroll_rect.left(), scroll_rect.bottom()), Vec2::new(scroll_w, h_bar_h));
             let minimap_rect = Rect::from_min_size(
                 Pos2::new(scroll_rect.right(), avail.top() + header_height),
                 Vec2::new(minimap_width, content_h),
@@ -1288,11 +1284,7 @@ pub fn format_address_grouped(offset: ByteOffset, chars: usize, separator: char,
 /// grouping size. Hosts pair this with [`HexView::address_chars`] to
 /// reserve room for the inserted separators.
 pub fn address_chars_with_separator(base_chars: usize, group: usize) -> usize {
-    if group == 0 || base_chars <= group {
-        base_chars
-    } else {
-        base_chars + (base_chars - 1) / group
-    }
+    if group == 0 || base_chars <= group { base_chars } else { base_chars + (base_chars - 1) / group }
 }
 
 fn measure_char_width(ui: &Ui, font_id: &FontId) -> f32 {
@@ -1865,20 +1857,8 @@ fn paint_row_marks(
             let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, col.min(cols - 1), ctx.row_height);
             if col < cols && ctx.nibble_cursor.is_some() {
                 let ghost_fg = ctx.colors.weak.gamma_multiply(0.6);
-                painter.text(
-                    hex_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "--",
-                    ctx.font_id.clone(),
-                    ghost_fg,
-                );
-                painter.text(
-                    ascii_rect.center(),
-                    Align2::CENTER_CENTER,
-                    ".",
-                    ctx.font_id.clone(),
-                    ghost_fg,
-                );
+                painter.text(hex_rect.center(), Align2::CENTER_CENTER, "--", ctx.font_id.clone(), ghost_fg);
+                painter.text(ascii_rect.center(), Align2::CENTER_CENTER, ".", ctx.font_id.clone(), ghost_fg);
             }
             let hex_x = if col < cols { hex_rect.left() } else { hex_rect.right() };
             let ascii_x = if col < cols { ascii_rect.left() } else { ascii_rect.right() };
@@ -2113,7 +2093,6 @@ fn hit_to_offset(hit: &HitCtx<'_>, rc: HitRowCol) -> Option<ByteOffset> {
     Some(ByteOffset::new(hit.source_len.get() - 1))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn hovered_byte(ui: &Ui, response: &egui::Response, hit: &HitCtx<'_>) -> Option<ByteOffset> {
     let pos = response.hover_pos().or_else(|| {
         response.is_pointer_button_down_on().then(|| ui.ctx().input(|i| i.pointer.latest_pos())).flatten()
@@ -2312,7 +2291,6 @@ impl ByteClass {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn draw_minimap<S: HexSource + ?Sized>(
     ui: &mut Ui,
@@ -2717,7 +2695,6 @@ fn paint_column_header(
 /// at scroll boundaries get cut at the edges instead of leaking into
 /// the header band or the H scrollbar gutter.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn paint_address_column(
     ui: &mut Ui,
     rect: Rect,
@@ -2778,13 +2755,7 @@ fn paint_address_column(
             Some(f) => f(row_first_offset, layout.address_chars),
             None => format_address(row_first_offset, layout.address_chars),
         };
-        painter.text(
-            Pos2::new(rect.left(), y + row_height * 0.5),
-            Align2::LEFT_CENTER,
-            label,
-            font_id.clone(),
-            color,
-        );
+        painter.text(Pos2::new(rect.left(), y + row_height * 0.5), Align2::LEFT_CENTER, label, font_id.clone(), color);
     }
 }
 

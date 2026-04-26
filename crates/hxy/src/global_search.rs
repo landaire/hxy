@@ -118,8 +118,8 @@ pub fn show(
             if resp.changed() {
                 events.push(GlobalSearchEvent::Refresh);
             }
-            let enter = resp.lost_focus()
-                && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            let enter =
+                resp.lost_focus() && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             if enter || ui.button(egui_phosphor::regular::MAGNIFYING_GLASS).on_hover_text("Run").clicked() {
                 events.push(GlobalSearchEvent::Run);
             }

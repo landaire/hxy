@@ -46,9 +46,19 @@ pub mod template {
         export_macro_name: "export_template_runtime",
     });
 
-    pub use self::exports::hxy::vfs::template::{
-        Arg, ArgValue, DeferredArray, Diagnostic, DisplayHint, Guest, GuestParsedTemplate, Node,
-        NodeType, ResultTree, ScalarKind, Severity, Span, Value,
-    };
+    pub use self::exports::hxy::vfs::template::Arg;
+    pub use self::exports::hxy::vfs::template::ArgValue;
+    pub use self::exports::hxy::vfs::template::DeferredArray;
+    pub use self::exports::hxy::vfs::template::Diagnostic;
+    pub use self::exports::hxy::vfs::template::DisplayHint;
+    pub use self::exports::hxy::vfs::template::Guest;
+    pub use self::exports::hxy::vfs::template::GuestParsedTemplate;
+    pub use self::exports::hxy::vfs::template::Node;
+    pub use self::exports::hxy::vfs::template::NodeType;
+    pub use self::exports::hxy::vfs::template::ResultTree;
+    pub use self::exports::hxy::vfs::template::ScalarKind;
+    pub use self::exports::hxy::vfs::template::Severity;
+    pub use self::exports::hxy::vfs::template::Span;
+    pub use self::exports::hxy::vfs::template::Value;
     pub use self::hxy::vfs::source;
 }

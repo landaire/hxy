@@ -157,9 +157,7 @@ where
     // Find the source leaf's rect for the "FROM" badge. iter_leaves
     // is the source of truth for layout this frame. Sourceless ops
     // (Focus) skip the badge entirely.
-    let source_rect = pending
-        .source
-        .and_then(|src| dock.iter_leaves().find(|(p, _)| *p == src).map(|(_, l)| l.rect));
+    let source_rect = pending.source.and_then(|src| dock.iter_leaves().find(|(p, _)| *p == src).map(|(_, l)| l.rect));
 
     // Look up which letter (if any) was pressed this frame. Match
     // against the labelled set so we honour the assigned letter
@@ -229,11 +227,31 @@ fn leaf_identity<Tab: Hash>(leaf: &egui_dock::LeafNode<Tab>) -> u64 {
 fn key_for_letter(letter: char) -> Key {
     use Key::*;
     match letter {
-        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E,
-        'F' => F, 'G' => G, 'H' => H, 'I' => I, 'J' => J,
-        'K' => K, 'L' => L, 'M' => M, 'N' => N, 'O' => O,
-        'P' => P, 'Q' => Q, 'R' => R, 'S' => S, 'T' => T,
-        'U' => U, 'V' => V, 'W' => W, 'X' => X, 'Y' => Y,
+        'A' => A,
+        'B' => B,
+        'C' => C,
+        'D' => D,
+        'E' => E,
+        'F' => F,
+        'G' => G,
+        'H' => H,
+        'I' => I,
+        'J' => J,
+        'K' => K,
+        'L' => L,
+        'M' => M,
+        'N' => N,
+        'O' => O,
+        'P' => P,
+        'Q' => Q,
+        'R' => R,
+        'S' => S,
+        'T' => T,
+        'U' => U,
+        'V' => V,
+        'W' => W,
+        'X' => X,
+        'Y' => Y,
         'Z' => Z,
         // Anything outside A-Z is a programming error; map to A as
         // a safe fallback so no input event fires.
@@ -245,24 +263,20 @@ fn paint_target_label(ctx: &egui::Context, leaf_rect: Rect, letter: char, visual
     let centre = leaf_rect.center();
     let backdrop = Rect::from_center_size(centre, Vec2::splat(LABEL_BACKDROP_DIAMETER));
     let id = Id::new(("hxy-pane-pick-target", letter));
-    egui::Area::new(id)
-        .order(Order::Foreground)
-        .fixed_pos(backdrop.min)
-        .interactable(false)
-        .show(ctx, |ui| {
-            let painter = ui.painter();
-            let fill = visuals.selection.bg_fill;
-            let stroke = Stroke::new(2.0, visuals.strong_text_color());
-            painter.rect_filled(backdrop, 16.0, fill);
-            painter.rect_stroke(backdrop, 16.0, stroke, StrokeKind::Inside);
-            painter.text(
-                backdrop.center(),
-                Align2::CENTER_CENTER,
-                letter,
-                FontId::monospace(LABEL_FONT_SIZE),
-                visuals.strong_text_color(),
-            );
-        });
+    egui::Area::new(id).order(Order::Foreground).fixed_pos(backdrop.min).interactable(false).show(ctx, |ui| {
+        let painter = ui.painter();
+        let fill = visuals.selection.bg_fill;
+        let stroke = Stroke::new(2.0, visuals.strong_text_color());
+        painter.rect_filled(backdrop, 16.0, fill);
+        painter.rect_stroke(backdrop, 16.0, stroke, StrokeKind::Inside);
+        painter.text(
+            backdrop.center(),
+            Align2::CENTER_CENTER,
+            letter,
+            FontId::monospace(LABEL_FONT_SIZE),
+            visuals.strong_text_color(),
+        );
+    });
 }
 
 fn paint_source_badge(ctx: &egui::Context, leaf_rect: Rect, op: PaneOp, visuals: &egui::Visuals) {
@@ -275,31 +289,14 @@ fn paint_source_badge(ctx: &egui::Context, leaf_rect: Rect, op: PaneOp, visuals:
     };
     let centre = leaf_rect.center();
     let id = Id::new("hxy-pane-pick-source");
-    egui::Area::new(id)
-        .order(Order::Foreground)
-        .fixed_pos(centre)
-        .interactable(false)
-        .show(ctx, |ui| {
-            let painter = ui.painter();
-            let font = FontId::monospace(SOURCE_FONT_SIZE);
-            let galley = ui.fonts_mut(|f| {
-                f.layout_no_wrap(label.to_owned(), font.clone(), visuals.weak_text_color())
-            });
-            let pad = Vec2::new(20.0, 12.0);
-            let backdrop = Rect::from_center_size(centre, galley.size() + pad * 2.0);
-            painter.rect_filled(backdrop, 12.0, visuals.extreme_bg_color);
-            painter.rect_stroke(
-                backdrop,
-                12.0,
-                Stroke::new(1.5, visuals.weak_text_color()),
-                StrokeKind::Inside,
-            );
-            painter.text(
-                backdrop.center(),
-                Align2::CENTER_CENTER,
-                label,
-                font,
-                visuals.text_color(),
-            );
-        });
+    egui::Area::new(id).order(Order::Foreground).fixed_pos(centre).interactable(false).show(ctx, |ui| {
+        let painter = ui.painter();
+        let font = FontId::monospace(SOURCE_FONT_SIZE);
+        let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), visuals.weak_text_color()));
+        let pad = Vec2::new(20.0, 12.0);
+        let backdrop = Rect::from_center_size(centre, galley.size() + pad * 2.0);
+        painter.rect_filled(backdrop, 12.0, visuals.extreme_bg_color);
+        painter.rect_stroke(backdrop, 12.0, Stroke::new(1.5, visuals.weak_text_color()), StrokeKind::Inside);
+        painter.text(backdrop.center(), Align2::CENTER_CENTER, label, font, visuals.text_color());
+    });
 }

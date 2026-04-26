@@ -20,9 +20,9 @@ use wasmtime::component::ResourceAny;
 
 use hxy_vfs::VfsWriter;
 
+use crate::Permissions;
 use crate::PluginKey;
 use crate::PluginManifest;
-use crate::Permissions;
 use crate::StateStore;
 use crate::bindings::handler_world::Plugin;
 use crate::commands::InvokeOutcome;
@@ -252,9 +252,8 @@ impl VfsHandler for PluginHandler {
             .map_err(|e| HandlerError::Internal(format!("call mount-source: {e}")))?
             .map_err(HandlerError::Malformed)?;
         let inner = Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }));
-        let block_cache = Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
-            crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
-        )));
+        let block_cache =
+            Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES)));
         let writer: Arc<dyn VfsWriter> = Arc::new(crate::fs_impl::PluginWriter {
             inner: Arc::clone(&inner),
             block_cache: Arc::clone(&block_cache),
@@ -300,8 +299,9 @@ impl PluginHandler {
     pub fn mount_by_token(&self, token: &str) -> Result<MountedVfs, MountByTokenError> {
         let placeholder: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
         let mut store = Store::new(&self.engine, self.build_host_state(placeholder));
-        let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker).map_err(|e| {
-            MountByTokenError { message: format!("instantiate for mount-by-token: {e}"), retry_label: None }
+        let plugin = Plugin::instantiate(&mut store, &self.component, &self.linker).map_err(|e| MountByTokenError {
+            message: format!("instantiate for mount-by-token: {e}"),
+            retry_label: None,
         })?;
         let mount_resource = plugin
             .hxy_vfs_handler()
@@ -309,9 +309,8 @@ impl PluginHandler {
             .map_err(|e| MountByTokenError { message: format!("call mount-by-token: {e}"), retry_label: None })?
             .map_err(|e| MountByTokenError { message: e.message, retry_label: e.retry_label })?;
         let inner = Arc::new(Mutex::new(PluginFsInner { store, plugin, mount: mount_resource }));
-        let block_cache = Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(
-            crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES,
-        )));
+        let block_cache =
+            Arc::new(Mutex::new(crate::fs_impl::FileBlockCache::new(crate::fs_impl::FILE_BLOCK_CACHE_BUDGET_BYTES)));
         let writer: Arc<dyn VfsWriter> = Arc::new(crate::fs_impl::PluginWriter {
             inner: Arc::clone(&inner),
             block_cache: Arc::clone(&block_cache),

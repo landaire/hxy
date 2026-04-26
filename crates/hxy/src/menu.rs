@@ -133,11 +133,8 @@ impl MenuState {
         menu.append(&edit_menu).expect("append edit menu");
 
         let undo = MenuItem::new("Undo", false, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyZ)));
-        let redo = MenuItem::new(
-            "Redo",
-            false,
-            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ)),
-        );
+        let redo =
+            MenuItem::new("Redo", false, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyZ)));
         edit_menu.append(&undo).expect("append undo");
         edit_menu.append(&redo).expect("append redo");
         actions.insert(undo.id().0.clone(), MenuAction::Undo);

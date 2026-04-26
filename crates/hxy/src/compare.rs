@@ -82,12 +82,7 @@ impl ComparePane {
         let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
         let mut editor = hxy_view::HexEditor::new(base);
         editor.set_edit_mode(EditMode::Mutable);
-        Self {
-            source,
-            display_name: display_name.into(),
-            editor,
-            diff_colors: true,
-        }
+        Self { source, display_name: display_name.into(), editor, diff_colors: true }
     }
 }
 
@@ -155,10 +150,7 @@ struct PaneFingerprint {
 
 impl PaneFingerprint {
     fn for_pane(pane: &ComparePane) -> Self {
-        Self {
-            undo_len: pane.editor.undo_stack().len(),
-            source_len: pane.editor.source().len().get(),
-        }
+        Self { undo_len: pane.editor.undo_stack().len(), source_len: pane.editor.source().len().get() }
     }
 }
 
@@ -222,10 +214,7 @@ impl CompareSession {
     /// resolve this once per recompute so toggling the override
     /// or editing the global setting and pressing the Recompute
     /// button immediately picks up the new value.
-    pub fn effective_deadline(
-        &self,
-        global: crate::settings::RecomputeDeadline,
-    ) -> crate::settings::RecomputeDeadline {
+    pub fn effective_deadline(&self, global: crate::settings::RecomputeDeadline) -> crate::settings::RecomputeDeadline {
         match self.recompute_deadline_override {
             Some(d) => d,
             None => global,
@@ -249,11 +238,7 @@ impl CompareSession {
     /// (typically via [`Self::effective_deadline`]) so changes to
     /// the global setting or per-tab override are picked up at
     /// every recompute.
-    pub fn request_recompute(
-        &mut self,
-        ctx: &egui::Context,
-        deadline: crate::settings::RecomputeDeadline,
-    ) {
+    pub fn request_recompute(&mut self, ctx: &egui::Context, deadline: crate::settings::RecomputeDeadline) {
         if self.pending_recompute.is_some() {
             return;
         }
@@ -277,8 +262,7 @@ impl CompareSession {
         let deadline_dur = deadline.as_duration();
         std::thread::spawn(move || {
             let deadline_at = std::time::Instant::now() + deadline_dur;
-            let ops =
-                capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at));
+            let ops = capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at));
             let hunks: Vec<DiffHunk> = ops.into_iter().map(diff_op_to_hunk).collect();
             let result = DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 };
             let _ = tx.send(result);
@@ -370,8 +354,7 @@ impl CompareSession {
         let hunks = ops.into_iter().map(diff_op_to_hunk).collect();
         self.diff = Some(DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 });
         self.diff_serial = self.diff_serial.wrapping_add(1);
-        self.last_diff_fingerprint =
-            Some((PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b)));
+        self.last_diff_fingerprint = Some((PaneFingerprint::for_pane(&self.a), PaneFingerprint::for_pane(&self.b)));
         self.edit_at = None;
         Ok(())
     }

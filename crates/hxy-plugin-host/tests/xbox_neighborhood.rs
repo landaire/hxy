@@ -48,36 +48,25 @@ version = "0.1.0"
 commands = true
 network = ["*:730"]
 "#;
-    std::fs::write(dir.path().join("xbox-neighborhood.hxy.toml"), manifest)
-        .expect("write manifest");
+    std::fs::write(dir.path().join("xbox-neighborhood.hxy.toml"), manifest).expect("write manifest");
 
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("xbox-neighborhood", "0.1.0", &bytes);
-    grants.set(
-        key,
-        PermissionGrants {
-            persist: false,
-            commands: true,
-            network: vec!["*:730".to_string()],
-        },
-    );
+    grants.set(key, PermissionGrants { persist: false, commands: true, network: vec!["*:730".to_string()] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     // tempdir must outlive the load; leak the path lifetime by
     // pulling the bytes back into a fresh load using std::mem::forget
     // would be ugly. Instead, copy the manifest+wasm into a longer-
     // lived dir under the host tempdir lifetime here:
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store))
-        .expect("load plugins");
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store)).expect("load plugins");
     // Move the dir guard into the returned handler's closure so the
     // tempdir survives until the test's plugin handle drops. The
     // handler doesn't actually need the on-disk files after load
     // (the bytes are in-memory in the wasmtime Component) so we can
     // safely let `dir` drop here.
     drop(dir);
-    handlers
-        .into_iter()
-        .find(|p| p.name() == "xbox-neighborhood")
+    handlers.into_iter().find(|p| p.name() == "xbox-neighborhood")
 }
 
 #[test]
@@ -113,9 +102,7 @@ fn respond_to_unreachable_address_yields_error_cascade() {
     // unroutable, so the unicast probe times out without an
     // answer and we should see a "no response" cascade entry
     // rather than a panic, a hang, or a permission failure.
-    let outcome = plugin
-        .respond_to_prompt("connect", "198.51.100.42:730")
-        .expect("respond connect");
+    let outcome = plugin.respond_to_prompt("connect", "198.51.100.42:730").expect("respond connect");
     match outcome {
         InvokeOutcome::Cascade(entries) => {
             assert_eq!(entries.len(), 1, "got {entries:#?}");

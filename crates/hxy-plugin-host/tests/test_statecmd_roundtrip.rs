@@ -77,12 +77,9 @@ commands = true
     grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
-        .expect("load plugins");
-    let plugin = handlers
-        .into_iter()
-        .find(|p| p.name() == "test-statecmd")
-        .expect("test-statecmd handler present");
+    let handlers =
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+    let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // 1. Plugin's declared commands surface verbatim.
     let cmds = plugin.list_commands();
@@ -91,11 +88,8 @@ commands = true
 
     // The plugin's `Done outcome` subtitle reads the persisted
     // counter; with a fresh InMemoryStateStore it should start at 0.
-    let done_subtitle = cmds
-        .iter()
-        .find(|c| c.id == "done")
-        .and_then(|c| c.subtitle.as_deref())
-        .expect("done subtitle present");
+    let done_subtitle =
+        cmds.iter().find(|c| c.id == "done").and_then(|c| c.subtitle.as_deref()).expect("done subtitle present");
     assert_eq!(done_subtitle, "counter = 0");
 
     // 2. invoke returns the variant matching the command id and
@@ -123,11 +117,8 @@ commands = true
 
     // 3. The persisted counter is now visible to subsequent calls.
     let cmds2 = plugin.list_commands();
-    let after_subtitle = cmds2
-        .iter()
-        .find(|c| c.id == "done")
-        .and_then(|c| c.subtitle.as_deref())
-        .expect("done subtitle present");
+    let after_subtitle =
+        cmds2.iter().find(|c| c.id == "done").and_then(|c| c.subtitle.as_deref()).expect("done subtitle present");
     assert_eq!(after_subtitle, "counter = 3");
 
     // 4. mount-by-token returns a VFS that exposes the token-named
@@ -214,22 +205,12 @@ network = ["127.0.0.1:{port}", "*:443"]
     // the user didn't approve, so connecting to a port other
     // than `port` will be denied even though the manifest asked
     // for `*:443`.
-    grants.set(
-        key,
-        PermissionGrants {
-            persist: true,
-            commands: true,
-            network: vec![format!("127.0.0.1:{port}")],
-        },
-    );
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![format!("127.0.0.1:{port}")] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
-        .expect("load plugins");
-    let plugin = handlers
-        .into_iter()
-        .find(|p| p.name() == "test-statecmd")
-        .expect("test-statecmd handler present");
+    let handlers =
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+    let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // The "network" command emits a Prompt that asks for the
     // host:port. respond drives the connect / write / read on
@@ -282,22 +263,12 @@ network = ["*:443"]
 
     let mut grants = PluginGrants::default();
     let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
-    grants.set(
-        key,
-        PermissionGrants {
-            persist: true,
-            commands: true,
-            network: vec!["*:443".to_string()],
-        },
-    );
+    grants.set(key, PermissionGrants { persist: true, commands: true, network: vec!["*:443".to_string()] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
-        .expect("load plugins");
-    let plugin = handlers
-        .into_iter()
-        .find(|p| p.name() == "test-statecmd")
-        .expect("test-statecmd handler present");
+    let handlers =
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+    let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     let _ = plugin.invoke_command("network").expect("invoke");
     let outcome = plugin.respond_to_prompt("network", "127.0.0.1:9999").expect("respond");
@@ -310,11 +281,7 @@ network = ["*:443"]
     // maps that to `NetError::Denied` via `ErrorKind::PermissionDenied`,
     // and saves a single `0x01` byte. No string parsing involved.
     const STATE_TAG_DENIED: u8 = 0x01;
-    assert_eq!(
-        saved,
-        vec![STATE_TAG_DENIED],
-        "expected denial tag for out-of-allowlist port, got {saved:?}"
-    );
+    assert_eq!(saved, vec![STATE_TAG_DENIED], "expected denial tag for out-of-allowlist port, got {saved:?}");
 }
 
 #[test]
@@ -352,12 +319,9 @@ network = ["*:*"]
     grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
-        .expect("load plugins");
-    let plugin = handlers
-        .into_iter()
-        .find(|p| p.name() == "test-statecmd")
-        .expect("test-statecmd handler present");
+    let handlers =
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+    let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // Drive the same prompt -> respond cycle. With network denied,
     // the plugin's `std::net::TcpStream::connect` hits a wasi-sockets
@@ -370,11 +334,7 @@ network = ["*:*"]
 
     let saved = store.load("test-statecmd").unwrap().expect("plugin saved its error");
     const STATE_TAG_DENIED: u8 = 0x01;
-    assert_eq!(
-        saved,
-        vec![STATE_TAG_DENIED],
-        "expected denial tag, got {saved:?}"
-    );
+    assert_eq!(saved, vec![STATE_TAG_DENIED], "expected denial tag, got {saved:?}");
 }
 
 #[test]
@@ -403,12 +363,9 @@ commands = true
     // Empty grants -- nothing requested by the manifest gets through.
     let grants = PluginGrants::default();
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone()))
-        .expect("load plugins");
-    let plugin = handlers
-        .into_iter()
-        .find(|p| p.name() == "test-statecmd")
-        .expect("test-statecmd handler present");
+    let handlers =
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+    let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // commands grant denied -> host short-circuits before calling
     // into the plugin at all.

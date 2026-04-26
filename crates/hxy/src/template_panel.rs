@@ -202,15 +202,11 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             // "pointer in rect + pointer pressed this frame" check
             // so the whole row behaves like one click target.
             let over_row = ui.rect_contains_pointer(row_rect);
-            if over_row
-                && let Some(idx) = node_idx
-            {
+            if over_row && let Some(idx) = node_idx {
                 *self.any_hover = Some(idx);
             }
             let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
-            if clicked_row
-                && let Some(idx) = node_idx
-            {
+            if clicked_row && let Some(idx) = node_idx {
                 self.events.push(TemplateEvent::Select(idx));
             }
             if let Some(idx) = node_idx {
@@ -263,8 +259,7 @@ impl TemplateTableDelegate<'_> {
         });
         let is_struct = matches!(
             node.type_name,
-            hxy_plugin_host::template::NodeType::StructType(_)
-                | hxy_plugin_host::template::NodeType::StructArray(_)
+            hxy_plugin_host::template::NodeType::StructType(_) | hxy_plugin_host::template::NodeType::StructArray(_)
         );
 
         ui.label(egui::RichText::new(format!("{}  ({} bytes)", node.name, node.span.length)).strong());

@@ -72,10 +72,7 @@ impl PaletteState {
         self.plugin_prompt = None;
         if !matches!(
             mode,
-            Mode::CompareSideA
-                | Mode::CompareSideARecent
-                | Mode::CompareSideB
-                | Mode::CompareSideBRecent
+            Mode::CompareSideA | Mode::CompareSideARecent | Mode::CompareSideB | Mode::CompareSideBRecent
         ) {
             self.compare_pick = None;
         }
@@ -356,12 +353,18 @@ pub enum Action {
     GoToOffset(u64),
     /// Replace the active tab's selection with `[start, end_exclusive)`.
     /// Covers both "Select N bytes from cursor" and "Select range".
-    SetSelection { start: u64, end_exclusive: u64 },
+    SetSelection {
+        start: u64,
+        end_exclusive: u64,
+    },
     /// Set the hex view's column count, either for the active tab
     /// (`Local`) or the global default (`Global`). Validated to a
     /// non-zero `u16` before the action is emitted, so the dispatch
     /// can take the value verbatim.
-    SetColumns { scope: ColumnScope, count: hxy_core::ColumnCount },
+    SetColumns {
+        scope: ColumnScope,
+        count: hxy_core::ColumnCount,
+    },
     /// Activate a plugin-contributed palette command. The dispatcher
     /// looks the plugin up by `plugin_name` (matched against
     /// `PluginHandler::name()`), forwards `command_id` through
@@ -369,13 +372,20 @@ pub enum Action {
     /// outcome. `plugin_name` is captured at entry-build time so
     /// the action stays self-contained even if the plugin list
     /// reshuffles before activation.
-    InvokePluginCommand { plugin_name: String, command_id: String },
+    InvokePluginCommand {
+        plugin_name: String,
+        command_id: String,
+    },
     /// Submit the user's typed answer to a previously-emitted
     /// plugin prompt. Routed through
     /// `PluginHandler::respond_to_prompt`; the resulting
     /// [`hxy_plugin_host::InvokeOutcome`] decides what happens
     /// next (close / cascade / mount / chain another prompt).
-    RespondToPlugin { plugin_name: String, command_id: String, answer: String },
+    RespondToPlugin {
+        plugin_name: String,
+        command_id: String,
+        answer: String,
+    },
     /// Intentionally does nothing. Used for non-actionable
     /// placeholder rows (e.g. "Invalid: ..." in the Go-To cascade
     /// when the query doesn't parse).
@@ -384,7 +394,10 @@ pub enum Action {
     /// dispatcher captures A and switches into B-mode; on B it
     /// finalises by spawning a [`crate::compare::CompareSession`]
     /// and closes the palette.
-    CompareSelectSource { side: CompareSide, source: hxy_vfs::TabSource },
+    CompareSelectSource {
+        side: CompareSide,
+        source: hxy_vfs::TabSource,
+    },
     /// Open the OS file dialog for the indicated side; whatever
     /// the user picks routes back through
     /// `Action::CompareSelectSource`.
@@ -425,11 +438,9 @@ pub fn show(
         // through verbatim. Falls back to a generic hint if the
         // mode was reached without setting up the prompt buffer
         // (shouldn't happen in practice; keeps the match total).
-        Mode::PluginPrompt => state
-            .plugin_prompt
-            .as_ref()
-            .map(|p| p.title.clone())
-            .unwrap_or_else(|| hxy_i18n::t("palette-hint-main")),
+        Mode::PluginPrompt => {
+            state.plugin_prompt.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| hxy_i18n::t("palette-hint-main"))
+        }
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw

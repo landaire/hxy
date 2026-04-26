@@ -164,11 +164,7 @@ impl Workspace {
     /// looked like; the user can re-dock as they please.
     pub fn new(id: WorkspaceId, editor_id: FileId, mount: Arc<MountedVfs>) -> Self {
         let mut dock = egui_dock::DockState::new(vec![WorkspaceTab::Editor]);
-        dock.main_surface_mut().split_left(
-            egui_dock::NodeIndex::root(),
-            0.3,
-            vec![WorkspaceTab::VfsTree],
-        );
+        dock.main_surface_mut().split_left(egui_dock::NodeIndex::root(), 0.3, vec![WorkspaceTab::VfsTree]);
         Self { id, editor_id, mount, dock }
     }
 }
@@ -399,9 +395,5 @@ pub enum FileOpenError {
     /// plugin's own state). The tab is dropped from `open_tabs`
     /// rather than left orphaned.
     #[error("restore plugin mount for {plugin_name:?} (token {token:?}): {reason}")]
-    PluginMount {
-        plugin_name: String,
-        token: String,
-        reason: String,
-    },
+    PluginMount { plugin_name: String, token: String, reason: String },
 }

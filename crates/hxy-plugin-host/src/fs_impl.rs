@@ -107,9 +107,7 @@ impl FileSystem for PluginFileSystem {
         // VFS panel just listed the parent.
         let meta = self.metadata(path)?;
         if meta.file_type != VfsFileType::File {
-            return Err(VfsError::from(VfsErrorKind::Other(format!(
-                "open_file on non-file: {path}"
-            ))));
+            return Err(VfsError::from(VfsErrorKind::Other(format!("open_file on non-file: {path}"))));
         }
         Ok(Box::new(RangedReader {
             inner: Arc::clone(&self.inner),
@@ -137,13 +135,7 @@ impl FileSystem for PluginFileSystem {
         if let Ok(cache) = self.meta_cache.lock()
             && let Some(&(file_type, len)) = cache.get(path)
         {
-            return Ok(VfsMetadata {
-                file_type,
-                len,
-                created: None,
-                modified: None,
-                accessed: None,
-            });
+            return Ok(VfsMetadata { file_type, len, created: None, modified: None, accessed: None });
         }
         let started = std::time::Instant::now();
         let mut g = self.inner.lock().map_err(poisoned)?;
@@ -179,13 +171,7 @@ impl FileSystem for PluginFileSystem {
         if let Ok(mut cache) = self.meta_cache.lock() {
             cache.insert(path.to_owned(), (file_type, len));
         }
-        Ok(VfsMetadata {
-            file_type,
-            len,
-            created: None as Option<SystemTime>,
-            modified: None,
-            accessed: None,
-        })
+        Ok(VfsMetadata { file_type, len, created: None as Option<SystemTime>, modified: None, accessed: None })
     }
 
     fn exists(&self, path: &str) -> VfsResult<bool> {
@@ -221,20 +207,13 @@ pub(crate) struct FileBlockCache {
 
 impl FileBlockCache {
     pub(crate) fn new(max_bytes: usize) -> Self {
-        Self {
-            entries: VecDeque::new(),
-            size_bytes: 0,
-            max_bytes,
-        }
+        Self { entries: VecDeque::new(), size_bytes: 0, max_bytes }
     }
 
     /// Look up a block. Hit → moves to front (marking just-used) +
     /// returns a clone of the bytes.
     fn get(&mut self, path: &str, block_offset: u64) -> Option<Vec<u8>> {
-        let pos = self
-            .entries
-            .iter()
-            .position(|((p, off), _)| p == path && *off == block_offset)?;
+        let pos = self.entries.iter().position(|((p, off), _)| p == path && *off == block_offset)?;
         let entry = self.entries.remove(pos)?;
         let bytes = entry.1.clone();
         self.entries.push_front(entry);
@@ -246,12 +225,7 @@ impl FileBlockCache {
     /// after a successful `write_range` so subsequent reads re-
     /// fetch the modified pages instead of serving stale bytes
     /// from before the write.
-    pub(crate) fn invalidate_overlapping(
-        &mut self,
-        path: &str,
-        write_offset: u64,
-        write_len: u64,
-    ) {
+    pub(crate) fn invalidate_overlapping(&mut self, path: &str, write_offset: u64, write_len: u64) {
         if write_len == 0 {
             return;
         }
@@ -276,14 +250,10 @@ impl FileBlockCache {
     /// (it'll evict on the next put); the alternative would be to
     /// silently drop, which surprises debuggers.
     fn put(&mut self, path: String, block_offset: u64, bytes: Vec<u8>) {
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|((p, off), _)| p == &path && *off == block_offset)
+        if let Some(pos) = self.entries.iter().position(|((p, off), _)| p == &path && *off == block_offset)
+            && let Some(old) = self.entries.remove(pos)
         {
-            if let Some(old) = self.entries.remove(pos) {
-                self.size_bytes = self.size_bytes.saturating_sub(old.1.len());
-            }
+            self.size_bytes = self.size_bytes.saturating_sub(old.1.len());
         }
         let n = bytes.len();
         self.entries.push_front(((path, block_offset), bytes));
@@ -322,17 +292,13 @@ impl RangedReader {
         {
             return Ok(bytes);
         }
-        let block_end = block_offset
-            .saturating_add(FILE_BLOCK_SIZE)
-            .min(self.total_size);
+        let block_end = block_offset.saturating_add(FILE_BLOCK_SIZE).min(self.total_size);
         let length = block_end.saturating_sub(block_offset);
         if length == 0 {
             return Ok(Vec::new());
         }
         let started = std::time::Instant::now();
-        let mut g = self.inner.lock().map_err(|_| {
-            io::Error::other("plugin filesystem mutex poisoned")
-        })?;
+        let mut g = self.inner.lock().map_err(|_| io::Error::other("plugin filesystem mutex poisoned"))?;
         let g = &mut *g;
         let mount_guest = g.plugin.hxy_vfs_handler().mount();
         let result = mount_guest
@@ -392,10 +358,8 @@ impl Read for RangedReader {
                 // had so far; subsequent reads return Ok(0).
                 break;
             }
-            let copy_len = (block.len() - block_inner)
-                .min((to_read as usize).saturating_sub(written));
-            buf[written..written + copy_len]
-                .copy_from_slice(&block[block_inner..block_inner + copy_len]);
+            let copy_len = (block.len() - block_inner).min((to_read as usize).saturating_sub(written));
+            buf[written..written + copy_len].copy_from_slice(&block[block_inner..block_inner + copy_len]);
             written += copy_len;
         }
         self.pos += written as u64;
@@ -411,10 +375,7 @@ impl Seek for RangedReader {
             SeekFrom::End(n) => (self.total_size as i128).wrapping_add(n as i128),
         };
         if new_pos < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek before start",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start"));
         }
         self.pos = new_pos as u64;
         Ok(self.pos)
@@ -448,10 +409,7 @@ pub(crate) struct PluginWriter {
 impl VfsWriter for PluginWriter {
     fn write_range(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, String> {
         let started = std::time::Instant::now();
-        let mut g = self
-            .inner
-            .lock()
-            .map_err(|_| "plugin filesystem mutex poisoned".to_owned())?;
+        let mut g = self.inner.lock().map_err(|_| "plugin filesystem mutex poisoned".to_owned())?;
         let g = &mut *g;
         let mount_guest = g.plugin.hxy_vfs_handler().mount();
         let result = mount_guest

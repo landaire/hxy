@@ -148,10 +148,7 @@ network = ["xbox.local:730", "*:443"]
         assert_eq!(m.plugin.authors, vec!["lander".to_string()]);
         assert!(m.permissions.persist);
         assert!(m.permissions.commands);
-        assert_eq!(
-            m.permissions.network,
-            vec!["xbox.local:730".to_string(), "*:443".to_string()]
-        );
+        assert_eq!(m.permissions.network, vec!["xbox.local:730".to_string(), "*:443".to_string()]);
     }
 
     #[test]

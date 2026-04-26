@@ -86,13 +86,17 @@ pub enum SearchScope {
 }
 
 impl SearchScope {
-    /// `(start, end_exclusive)` window any scan should restrict to.
-    /// `total` is the source length, used for the `File` arm.
-    pub fn bounds(self, total: u64) -> (u64, u64) {
-        match self {
+    /// Half-open `[start, end_exclusive)` window any scan should restrict
+    /// to. `total` is the source length, used for the `File` arm and to
+    /// clamp `Selection` so a stale selection past the current EOF can't
+    /// produce an out-of-source range.
+    pub fn bounds(self, total: u64) -> ByteRange {
+        let (lo, hi) = match self {
             SearchScope::File => (0, total),
             SearchScope::Selection { start, end_exclusive } => (start.min(total), end_exclusive.min(total)),
-        }
+        };
+        let lo = lo.min(hi);
+        ByteRange::new(ByteOffset::new(lo), ByteOffset::new(hi)).expect("lo <= hi by construction")
     }
 }
 
@@ -344,19 +348,13 @@ fn parse_signed(s: &str) -> Result<i128, EncodeError> {
         None => (false, s),
     };
     let (radix, body) = strip_radix(rest);
-    let mag = i128::from_str_radix(body, radix).map_err(|_| EncodeError::BadNumber {
-        input: s.to_owned(),
-        radix,
-    })?;
+    let mag = i128::from_str_radix(body, radix).map_err(|_| EncodeError::BadNumber { input: s.to_owned(), radix })?;
     Ok(if negative { -mag } else { mag })
 }
 
 fn parse_unsigned(s: &str) -> Result<u128, EncodeError> {
     let (radix, body) = strip_radix(s);
-    u128::from_str_radix(body, radix).map_err(|_| EncodeError::BadNumber {
-        input: s.to_owned(),
-        radix,
-    })
+    u128::from_str_radix(body, radix).map_err(|_| EncodeError::BadNumber { input: s.to_owned(), radix })
 }
 
 fn strip_radix(s: &str) -> (u32, &str) {
@@ -390,23 +388,18 @@ pub struct MatchHit {
     pub wrapped: bool,
 }
 
-/// Sliding-window byte search restricted to `[bounds.0, bounds.1)`.
+/// Sliding-window byte search restricted to `bounds`.
 /// Returns the lowest match offset >= `from` inside the bounds, or
-/// wraps back to `bounds.0` if `wrap` is true. `source` is read in 64
-/// KiB chunks plus `pattern.len() - 1` bytes of overlap so a match
-/// straddling two chunks isn't missed.
-pub fn find_next(
-    source: &dyn HexSource,
-    pattern: &[u8],
-    from: u64,
-    wrap: bool,
-    bounds: (u64, u64),
-) -> Option<MatchHit> {
+/// wraps back to `bounds.start()` if `wrap` is true. `source` is read
+/// in 64 KiB chunks plus `pattern.len() - 1` bytes of overlap so a
+/// match straddling two chunks isn't missed.
+pub fn find_next(source: &dyn HexSource, pattern: &[u8], from: u64, wrap: bool, bounds: ByteRange) -> Option<MatchHit> {
     if pattern.is_empty() {
         return None;
     }
-    let total = source.len().get();
-    let (lo, hi) = clip_bounds(bounds, total);
+    let bounds = clip_bounds(bounds, source.len().get());
+    let lo = bounds.start().get();
+    let hi = bounds.end().get();
     if hi.saturating_sub(lo) < pattern.len() as u64 {
         return None;
     }
@@ -425,18 +418,13 @@ pub fn find_next(
 
 /// Reverse counterpart of [`find_next`]. Returns the largest match
 /// offset < `from`, or wraps to the end of `bounds` if requested.
-pub fn find_prev(
-    source: &dyn HexSource,
-    pattern: &[u8],
-    from: u64,
-    wrap: bool,
-    bounds: (u64, u64),
-) -> Option<MatchHit> {
+pub fn find_prev(source: &dyn HexSource, pattern: &[u8], from: u64, wrap: bool, bounds: ByteRange) -> Option<MatchHit> {
     if pattern.is_empty() {
         return None;
     }
-    let total = source.len().get();
-    let (lo, hi) = clip_bounds(bounds, total);
+    let bounds = clip_bounds(bounds, source.len().get());
+    let lo = bounds.start().get();
+    let hi = bounds.end().get();
     if hi.saturating_sub(lo) < pattern.len() as u64 {
         return None;
     }
@@ -453,18 +441,23 @@ pub fn find_prev(
     None
 }
 
-fn clip_bounds(bounds: (u64, u64), total: u64) -> (u64, u64) {
-    let lo = bounds.0.min(total);
-    let hi = bounds.1.min(total);
-    if lo > hi { (lo, lo) } else { (lo, hi) }
+/// Clamp `bounds` to the live source length so a scope captured before
+/// a truncating edit can't reference offsets past the current EOF.
+fn clip_bounds(bounds: ByteRange, total: u64) -> ByteRange {
+    let lo = bounds.start().get().min(total);
+    let hi = bounds.end().get().min(total);
+    let lo = lo.min(hi);
+    ByteRange::new(ByteOffset::new(lo), ByteOffset::new(hi)).expect("lo <= hi by construction")
 }
 
 /// Find every match inside `bounds`, in ascending order.
-pub fn find_all(source: &dyn HexSource, pattern: &[u8], bounds: (u64, u64)) -> Vec<u64> {
+pub fn find_all(source: &dyn HexSource, pattern: &[u8], bounds: ByteRange) -> Vec<u64> {
     if pattern.is_empty() {
         return Vec::new();
     }
-    let (lo, hi) = clip_bounds(bounds, source.len().get());
+    let bounds = clip_bounds(bounds, source.len().get());
+    let lo = bounds.start().get();
+    let hi = bounds.end().get();
     if hi.saturating_sub(lo) < pattern.len() as u64 {
         return Vec::new();
     }
@@ -607,8 +600,12 @@ mod tests {
         assert!(matches!(r, Err(EncodeError::NumberOverflow { .. })));
     }
 
-    fn whole(s: &MemorySource) -> (u64, u64) {
-        (0, s.len().get())
+    fn whole(s: &MemorySource) -> ByteRange {
+        ByteRange::new(ByteOffset::new(0), ByteOffset::new(s.len().get())).unwrap()
+    }
+
+    fn br(start: u64, end_exclusive: u64) -> ByteRange {
+        ByteRange::new(ByteOffset::new(start), ByteOffset::new(end_exclusive)).unwrap()
     }
 
     #[test]
@@ -656,15 +653,15 @@ mod tests {
     #[test]
     fn find_all_respects_bounds() {
         let s = src(b"XYabcXYdefXY");
-        assert_eq!(find_all(&s, b"XY", (3, 10)), vec![5]);
+        assert_eq!(find_all(&s, b"XY", br(3, 10)), vec![5]);
     }
 
     #[test]
     fn next_inside_selection_scope() {
         let s = src(b"XYabcXYdefXY");
-        let hit = find_next(&s, b"XY", 0, false, (3, 10)).expect("scoped match");
+        let hit = find_next(&s, b"XY", 0, false, br(3, 10)).expect("scoped match");
         assert_eq!(hit.offset, 5);
-        assert_eq!(find_next(&s, b"XY", 7, false, (3, 10)), None);
+        assert_eq!(find_next(&s, b"XY", 7, false, br(3, 10)), None);
     }
 
     #[test]

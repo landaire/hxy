@@ -5,9 +5,14 @@ use std::cell::Cell;
 use std::env;
 use std::fs;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
-use hxy_010_lang::{HexSource, Interpreter, SourceError, parse, tokenize};
+use hxy_010_lang::HexSource;
+use hxy_010_lang::Interpreter;
+use hxy_010_lang::SourceError;
+use hxy_010_lang::parse;
+use hxy_010_lang::tokenize;
 
 #[derive(Default)]
 struct Stats {

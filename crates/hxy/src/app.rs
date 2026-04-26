@@ -332,8 +332,7 @@ impl HxyApp {
         // state store are available; without that call (e.g. db open
         // failed at startup) every requested permission stays denied.
         #[cfg(not(target_arch = "wasm32"))]
-        let plugin_handlers =
-            register_user_plugins(&mut registry, &hxy_plugin_host::PluginGrants::default(), None);
+        let plugin_handlers = register_user_plugins(&mut registry, &hxy_plugin_host::PluginGrants::default(), None);
         #[cfg(not(target_arch = "wasm32"))]
         let template_plugins = load_user_template_plugins();
         Self {
@@ -422,8 +421,7 @@ impl HxyApp {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
         let grants = self.state.read().plugin_grants.clone();
-        self.plugin_handlers =
-            register_user_plugins(&mut registry, &grants, self.plugin_state_store.clone());
+        self.plugin_handlers = register_user_plugins(&mut registry, &grants, self.plugin_state_store.clone());
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
         self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
@@ -574,28 +572,15 @@ impl HxyApp {
             match op.try_take() {
                 Err(unfinished) => still_pending.push(unfinished),
                 Ok(crate::plugin_runner::DrainResult::Pending) => {}
-                Ok(crate::plugin_runner::DrainResult::InvokeReady {
-                    plugin,
-                    command_id,
-                    outcome,
-                }) => {
+                Ok(crate::plugin_runner::DrainResult::InvokeReady { plugin, command_id, outcome }) => {
                     self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
                     dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
                 }
-                Ok(crate::plugin_runner::DrainResult::RespondReady {
-                    plugin,
-                    command_id,
-                    outcome,
-                }) => {
+                Ok(crate::plugin_runner::DrainResult::RespondReady { plugin, command_id, outcome }) => {
                     self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
                     dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
                 }
-                Ok(crate::plugin_runner::DrainResult::MountReady {
-                    plugin,
-                    token,
-                    title,
-                    result,
-                }) => match result {
+                Ok(crate::plugin_runner::DrainResult::MountReady { plugin, token, title, result }) => match result {
                     Ok(mount) => {
                         self.log_plugin_completion(&plugin_name, &label, started, true);
                         install_mount_tab(self, plugin, mount, token, title);
@@ -621,14 +606,10 @@ impl HxyApp {
         }
     }
 
-    fn log_plugin_completion(
-        &mut self,
-        plugin_name: &str,
-        label: &str,
-        started: std::time::Instant,
-        ok: bool,
-    ) {
-        let (sev, detail) = if ok { (ConsoleSeverity::Info, "ok") } else {
+    fn log_plugin_completion(&mut self, plugin_name: &str, label: &str, started: std::time::Instant, ok: bool) {
+        let (sev, detail) = if ok {
+            (ConsoleSeverity::Info, "ok")
+        } else {
             (ConsoleSeverity::Warning, "no outcome (call trapped or grant denied)")
         };
         crate::plugin_runner::log_completion(self, plugin_name, label, started, sev, detail);
@@ -771,10 +752,8 @@ impl HxyApp {
         // The file might live inside a workspace either as the
         // editor or as an opened entry. Focus the workspace tab in
         // the outer dock and the matching sub-tab in the inner dock.
-        let workspace_target: Option<(crate::file::WorkspaceId, crate::file::WorkspaceTab)> = self
-            .workspaces
-            .values()
-            .find_map(|w| {
+        let workspace_target: Option<(crate::file::WorkspaceId, crate::file::WorkspaceTab)> =
+            self.workspaces.values().find_map(|w| {
                 if w.editor_id == file_id {
                     Some((w.id, crate::file::WorkspaceTab::Editor))
                 } else if w.dock.find_tab(&crate::file::WorkspaceTab::Entry(file_id)).is_some() {
@@ -835,8 +814,7 @@ impl HxyApp {
             match crate::patch_persist::load(&dir, path) {
                 Ok(Some(sidecar)) => {
                     let integrity = sidecar.integrity();
-                    self.pending_patch_restore =
-                        Some(PendingPatchRestore { file_id: id, sidecar, integrity });
+                    self.pending_patch_restore = Some(PendingPatchRestore { file_id: id, sidecar, integrity });
                 }
                 Ok(None) => {}
                 Err(e) => tracing::warn!(error = %e, path = %path.display(), "load patch sidecar"),
@@ -1056,19 +1034,24 @@ impl HxyApp {
                         return Err(crate::file::FileOpenError::Read { path, source: e });
                     }
                 };
-                self.open(title.clone(), Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), false);
+                self.open(
+                    title.clone(),
+                    Some(tab.source.clone()),
+                    bytes,
+                    tab.selection,
+                    Some(tab.scroll_offset),
+                    false,
+                );
                 Ok(())
             }
             TabSource::PluginMount { plugin_name, token, title } => {
-                let plugin = self
-                    .plugin_handlers
-                    .iter()
-                    .find(|p| p.name() == plugin_name)
-                    .cloned()
-                    .ok_or_else(|| crate::file::FileOpenError::PluginMount {
-                        plugin_name: plugin_name.clone(),
-                        token: token.clone(),
-                        reason: "plugin no longer installed".to_owned(),
+                let plugin =
+                    self.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned().ok_or_else(|| {
+                        crate::file::FileOpenError::PluginMount {
+                            plugin_name: plugin_name.clone(),
+                            token: token.clone(),
+                            reason: "plugin no longer installed".to_owned(),
+                        }
                     })?;
                 // Failures here are expected at restore (xbox offline,
                 // network blocked, ...) -- preserve the tab as a
@@ -1108,9 +1091,7 @@ impl HxyApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn parent_mount_pending(&self, source: &TabSource) -> bool {
         let TabSource::PluginMount { plugin_name, token, .. } = source else { return false };
-        self.mounts
-            .values()
-            .any(|m| m.plugin_name == *plugin_name && m.token == *token && m.status.live().is_none())
+        self.mounts.values().any(|m| m.plugin_name == *plugin_name && m.token == *token && m.status.live().is_none())
     }
 
     /// If `id`'s source is a `TabSource::VfsEntry` whose mount has
@@ -1158,14 +1139,9 @@ impl HxyApp {
             #[cfg(target_arch = "wasm32")]
             TabSource::PluginMount { .. } => None,
             other => {
-                let editor_id = self
-                    .files
-                    .iter()
-                    .find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))?;
-                self.workspaces
-                    .values()
-                    .find(|w| w.editor_id == editor_id)
-                    .map(|w| w.mount.clone())
+                let editor_id =
+                    self.files.iter().find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))?;
+                self.workspaces.values().find(|w| w.editor_id == editor_id).map(|w| w.mount.clone())
             }
         }
     }
@@ -1175,14 +1151,9 @@ impl HxyApp {
     /// parent's workspace's inner dock instead of opening it as a
     /// top-level tab.
     fn workspace_for_source(&self, source: &TabSource) -> Option<crate::file::WorkspaceId> {
-        let editor_id = self
-            .files
-            .iter()
-            .find_map(|(id, f)| (f.source_kind.as_ref() == Some(source)).then_some(*id))?;
-        self.workspaces
-            .values()
-            .find(|w| w.editor_id == editor_id)
-            .map(|w| w.id)
+        let editor_id =
+            self.files.iter().find_map(|(id, f)| (f.source_kind.as_ref() == Some(source)).then_some(*id))?;
+        self.workspaces.values().find(|w| w.editor_id == editor_id).map(|w| w.id)
     }
 
     /// `app.open` plus an explicit target: top-level dock leaf or a
@@ -1203,13 +1174,8 @@ impl HxyApp {
                 self.open(display_name, source_kind, bytes, restore_selection, restore_scroll, false)
             }
             OpenTarget::Workspace(workspace_id) => {
-                let id = self.create_open_file(
-                    display_name,
-                    source_kind.clone(),
-                    bytes,
-                    restore_selection,
-                    restore_scroll,
-                );
+                let id =
+                    self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
                 self.apply_readonly_for_source(id);
                 if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
                     push_workspace_entry(workspace, id);
@@ -1317,11 +1283,8 @@ impl HxyApp {
                 Some((parent, *id))
             })
             .collect();
-        let mounts_by_token: HashMap<(String, String), crate::file::MountId> = self
-            .mounts
-            .iter()
-            .map(|(id, m)| ((m.plugin_name.clone(), m.token.clone()), *id))
-            .collect();
+        let mounts_by_token: HashMap<(String, String), crate::file::MountId> =
+            self.mounts.iter().map(|(id, m)| ((m.plugin_name.clone(), m.token.clone()), *id)).collect();
         // Re-spawn every compare session referenced by the saved
         // dock before translating the layout, so the translation
         // can resolve `PersistedTab::Compare` to a live id. Compare
@@ -1408,8 +1371,8 @@ impl HxyApp {
     fn read_tab_source_bytes(&self, source: &TabSource) -> Result<RestoredCompareSide, CompareSpawnError> {
         match source {
             TabSource::Filesystem(path) => {
-                let bytes = std::fs::read(path)
-                    .map_err(|e| CompareSpawnError::ReadFile { path: path.clone(), source: e })?;
+                let bytes =
+                    std::fs::read(path).map_err(|e| CompareSpawnError::ReadFile { path: path.clone(), source: e })?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -1422,11 +1385,7 @@ impl HxyApp {
                     .ok_or_else(|| CompareSpawnError::ReadOpenFile("parent VFS mount missing".to_owned()))?;
                 let bytes = read_vfs_entry(&*mount.fs, entry_path)
                     .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
-                let name = entry_path
-                    .rsplit('/')
-                    .find(|s| !s.is_empty())
-                    .unwrap_or(entry_path)
-                    .to_owned();
+                let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 Ok(RestoredCompareSide { name, bytes })
             }
             TabSource::Anonymous { .. } | TabSource::PluginMount { .. } => {
@@ -1511,10 +1470,7 @@ impl eframe::App for HxyApp {
                 pending_collapse_workspace: &mut self.pending_collapse_workspace,
             };
             let style = Style::from_egui(ui.style());
-            DockArea::new(&mut self.dock)
-                .style(style)
-                .show_leaf_collapse_buttons(false)
-                .show_inside(ui, &mut viewer);
+            DockArea::new(&mut self.dock).style(style).show_leaf_collapse_buttons(false).show_inside(ui, &mut viewer);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1669,10 +1625,8 @@ impl eframe::App for HxyApp {
             let bytes = if len == 0 {
                 Vec::new()
             } else {
-                let range = match hxy_core::ByteRange::new(
-                    hxy_core::ByteOffset::new(0),
-                    hxy_core::ByteOffset::new(len),
-                ) {
+                let range = match hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+                {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(error = %e, "anonymous tab range invalid");
@@ -1880,7 +1834,11 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
                 if verified {
                     *file.editor.patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
-                    file.editor.set_undo_stack(pending.sidecar.undo_stack);                    file.editor.set_redo_stack(pending.sidecar.redo_stack);                    file.editor.push_history_boundary();                    file.editor.set_edit_mode(crate::file::EditMode::Mutable);                    if integrity_clean {
+                    file.editor.set_undo_stack(pending.sidecar.undo_stack);
+                    file.editor.set_redo_stack(pending.sidecar.redo_stack);
+                    file.editor.push_history_boundary();
+                    file.editor.set_edit_mode(crate::file::EditMode::Mutable);
+                    if integrity_clean {
                         log_lines.push((ConsoleSeverity::Info, "restored unsaved edits".to_owned()));
                     } else {
                         log_lines.push((
@@ -2057,7 +2015,8 @@ fn paste_bytes_at_cursor(file: &mut crate::file::OpenFile, bytes: Vec<u8>) {
         return;
     }
     let new_cursor = (start + n as u64).min(source_len.saturating_sub(1));
-    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor))));    file.editor.reset_edit_nibble();
+    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor))));
+    file.editor.reset_edit_nibble();
     file.editor.push_history_boundary();
 }
 
@@ -2280,16 +2239,21 @@ const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
 /// not in any file).
 #[derive(Clone, Debug)]
 pub enum PendingVfsOpen {
-    Workspace { workspace_id: crate::file::WorkspaceId, entry_path: String },
+    Workspace {
+        workspace_id: crate::file::WorkspaceId,
+        entry_path: String,
+    },
     #[cfg(not(target_arch = "wasm32"))]
-    PluginMount { mount_id: crate::file::MountId, entry_path: String },
+    PluginMount {
+        mount_id: crate::file::MountId,
+        entry_path: String,
+    },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
-    let pending: Vec<PendingVfsOpen> = ctx
-        .data_mut(|d| d.remove_temp::<Vec<PendingVfsOpen>>(egui::Id::new(PENDING_VFS_OPEN_KEY)))
-        .unwrap_or_default();
+    let pending: Vec<PendingVfsOpen> =
+        ctx.data_mut(|d| d.remove_temp::<Vec<PendingVfsOpen>>(egui::Id::new(PENDING_VFS_OPEN_KEY))).unwrap_or_default();
     for req in pending {
         match req {
             PendingVfsOpen::Workspace { workspace_id, entry_path } => {
@@ -2719,11 +2683,7 @@ fn remove_welcome_from_leaf(
         _ => None,
     };
     if let Some(idx) = welcome_idx {
-        let _ = dock.remove_tab(egui_dock::TabPath {
-            surface,
-            node,
-            tab: egui_dock::TabIndex(idx),
-        });
+        let _ = dock.remove_tab(egui_dock::TabPath { surface, node, tab: egui_dock::TabIndex(idx) });
     }
 }
 
@@ -3067,9 +3027,7 @@ fn queue_replace_current(file: &mut OpenFile) {
     use crate::search::DeferredReplace;
     use crate::search::SearchSideEffect;
 
-    let (Some(find), Some(repl)) =
-        (file.search.pattern.clone(), file.search.replace_pattern.clone())
-    else {
+    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone()) else {
         return;
     };
     let Some(sel) = file.editor.selection() else { return };
@@ -3093,14 +3051,12 @@ fn queue_replace_current(file: &mut OpenFile) {
 /// queues the count-confirm modal (first time) or performs the
 /// splices (after both modals have been acked).
 #[cfg(not(target_arch = "wasm32"))]
-fn queue_replace_all(file: &mut OpenFile, bounds: (u64, u64)) {
+fn queue_replace_all(file: &mut OpenFile, bounds: hxy_core::ByteRange) {
     use crate::search::DeferredReplaceAll;
     use crate::search::SearchSideEffect;
     use crate::search::find_all;
 
-    let (Some(find), Some(repl)) =
-        (file.search.pattern.clone(), file.search.replace_pattern.clone())
-    else {
+    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone()) else {
         return;
     };
     let matches = find_all(file.editor.source().as_ref(), &find, bounds);
@@ -3183,12 +3139,14 @@ fn drain_search_effects(app: &mut HxyApp) {
                 }
                 SearchSideEffect::NeedsLengthMismatchAck(deferred) => {
                     if app.pending_search_modal.is_none() {
-                        app.pending_search_modal = Some(PendingSearchModal::LengthMismatchOnce { file_id: id, deferred });
+                        app.pending_search_modal =
+                            Some(PendingSearchModal::LengthMismatchOnce { file_id: id, deferred });
                     }
                 }
                 SearchSideEffect::NeedsReplaceAllConfirm(deferred) => {
                     if app.pending_search_modal.is_none() {
-                        app.pending_search_modal = Some(PendingSearchModal::ConfirmReplaceAll { file_id: id, deferred });
+                        app.pending_search_modal =
+                            Some(PendingSearchModal::ConfirmReplaceAll { file_id: id, deferred });
                     }
                 }
             }
@@ -3209,8 +3167,7 @@ fn render_search_modal(ctx: &egui::Context, app: &mut HxyApp) {
             match outcome {
                 ModalOutcome::Confirm => {
                     let Some(file) = app.files.get_mut(&file_id) else { return };
-                    let (Some(find), Some(repl)) =
-                        (file.search.pattern.clone(), file.search.replace_pattern.clone())
+                    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone())
                     else {
                         return;
                     };
@@ -3300,10 +3257,7 @@ fn render_replace_all_confirm_modal(ctx: &egui::Context, count: usize) -> ModalO
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(hxy_i18n::t_args(
-                "search-replace-all-confirm-body",
-                &[("count", &count.to_string())],
-            ));
+            ui.label(hxy_i18n::t_args("search-replace-all-confirm-body", &[("count", &count.to_string())]));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(hxy_i18n::t("search-replace-all-confirm-yes")).clicked() {
@@ -3330,8 +3284,7 @@ fn perform_replace_all(file: &mut OpenFile, matches: &[u64], find_len: u64, repl
     if matches.is_empty() {
         return;
     }
-    let ops: Vec<(u64, u64, Vec<u8>)> =
-        matches.iter().map(|off| (*off, find_len, repl.to_vec())).collect();
+    let ops: Vec<(u64, u64, Vec<u8>)> = matches.iter().map(|off| (*off, find_len, repl.to_vec())).collect();
     if let Err(e) = file.editor.splice_many(&ops) {
         tracing::warn!(error = %e, "replace-all batch");
         return;
@@ -3372,7 +3325,11 @@ fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::global_search
                 for id in ids {
                     let Some(file) = app.files.get(&id) else { continue };
                     let src = file.editor.source().clone();
-                    let bounds = (0u64, src.len().get());
+                    let bounds = hxy_core::ByteRange::new(
+                        hxy_core::ByteOffset::new(0),
+                        hxy_core::ByteOffset::new(src.len().get()),
+                    )
+                    .expect("0 <= len");
                     for off in find_all(src.as_ref(), &pattern, bounds) {
                         all_matches.push(GlobalMatch { file_id: id, offset: off });
                     }
@@ -3480,8 +3437,7 @@ fn active_workspace_id(app: &mut HxyApp) -> Option<crate::file::WorkspaceId> {
 /// user previously closed it. No-op when the tree is already present.
 fn ensure_vfs_tree_visible(app: &mut HxyApp, workspace_id: crate::file::WorkspaceId) {
     let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
-    let already_present =
-        workspace.dock.iter_all_tabs().any(|(_, t)| matches!(t, crate::file::WorkspaceTab::VfsTree));
+    let already_present = workspace.dock.iter_all_tabs().any(|(_, t)| matches!(t, crate::file::WorkspaceTab::VfsTree));
     if already_present {
         return;
     }
@@ -3572,10 +3528,7 @@ const PENDING_MOUNT_RETRY_KEY: &str = "hxy_pending_mount_retry";
 /// (see [`crate::state::PersistedState::vfs_tree_expanded`]); this
 /// helper hides the linear scan from call sites that just want a
 /// `&mut Vec<String>` they can hand to [`crate::vfs_panel::show`].
-fn vfs_expanded_for<'a>(
-    list: &'a mut Vec<(TabSource, Vec<String>)>,
-    key: &TabSource,
-) -> &'a mut Vec<String> {
+fn vfs_expanded_for<'a>(list: &'a mut Vec<(TabSource, Vec<String>)>, key: &TabSource) -> &'a mut Vec<String> {
     if let Some(idx) = list.iter().position(|(k, _)| k == key) {
         return &mut list[idx].1;
     }
@@ -3611,11 +3564,7 @@ fn retry_failed_mount(app: &mut HxyApp, mount_id: crate::file::MountId) {
     let plugin = match app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() {
         Some(p) => p,
         None => {
-            app.console_log(
-                ConsoleSeverity::Error,
-                format!("Mount {display}"),
-                "plugin no longer installed",
-            );
+            app.console_log(ConsoleSeverity::Error, format!("Mount {display}"), "plugin no longer installed");
             return;
         }
     };
@@ -3644,11 +3593,8 @@ fn retry_failed_mount(app: &mut HxyApp, mount_id: crate::file::MountId) {
     // `parent_mount_pending`; now the live FileId can finally be
     // allocated. Tabs that fail to read this time around drop out
     // silently (they were missing already from the user's POV).
-    let parent_source = TabSource::PluginMount {
-        plugin_name: plugin_name.clone(),
-        token: token.clone(),
-        title: display.clone(),
-    };
+    let parent_source =
+        TabSource::PluginMount { plugin_name: plugin_name.clone(), token: token.clone(), title: display.clone() };
     let to_open: Vec<crate::state::OpenTabState> = app
         .state
         .read()
@@ -3698,12 +3644,10 @@ fn render_file_tab(
 
     #[cfg(not(target_arch = "wasm32"))]
     if file.search.open {
-        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get())))
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                let events = crate::search_bar::show(ui, &mut file.search);
-                apply_search_events(file, events);
-            });
+        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get()))).resizable(false).show_inside(ui, |ui| {
+            let events = crate::search_bar::show(ui, &mut file.search);
+            apply_search_events(file, events);
+        });
     }
 
     let body_rect = ui.available_rect_before_wrap();
@@ -4112,7 +4056,8 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
     // taking the mutable borrow HexView needs; the `ui.selection`
     // can't be read inside the context menu closure once HexView
     // holds it.
-    let show_scalar_submenu = file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
+    let show_scalar_submenu =
+        file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
 
     let mut copy_request: Option<CopyKind> = None;
     let hover_span = file
@@ -4150,10 +4095,10 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         None
     };
 
-    let address_separator =
-        state.app.address_separator_enabled.then(|| {
-            (hxy_view::address_hex_width(file.editor.source().len()), state.app.address_separator_char)
-        });
+    let address_separator = state
+        .app
+        .address_separator_enabled
+        .then(|| (hxy_view::address_hex_width(file.editor.source().len()), state.app.address_separator_char));
     let mut view = file
         .editor
         .view()
@@ -4416,7 +4361,8 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         .and_then(|f| f.editor.selection())
         .map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8))
         .unwrap_or(false);
-    let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
+    let can_save =
+        active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
     let (can_undo, can_redo) = active
         .and_then(|id| app.files.get(&id))
         .map(|f| (f.editor.can_undo(), f.editor.can_redo()))
@@ -4515,7 +4461,8 @@ fn redo_active_file(app: &mut HxyApp) {
 fn jump_cursor_to(file: &mut crate::file::OpenFile, offset: u64) {
     let len = file.editor.source().len().get();
     let clamped = offset.min(len.saturating_sub(1));
-    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));    file.editor.reset_edit_nibble();
+    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));
+    file.editor.reset_edit_nibble();
 }
 
 #[cfg(target_os = "macos")]
@@ -4540,7 +4487,9 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     handle_open_file(app);
                 }
                 let active = active_file_id(app);
-                let can_save = active.and_then(|id| app.files.get(&id)).is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
+                let can_save = active
+                    .and_then(|id| app.files.get(&id))
+                    .is_some_and(|f| f.editor.is_dirty() || f.root_path().is_some());
                 let save_text = ui.ctx().format_shortcut(&SAVE_FILE);
                 let save_as_text = ui.ctx().format_shortcut(&SAVE_FILE_AS);
                 ui.add_enabled_ui(can_save, |ui| {
@@ -4550,9 +4499,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     }
                 });
                 ui.add_enabled_ui(active.is_some(), |ui| {
-                    if ui
-                        .add(egui::Button::new(hxy_i18n::t("menu-file-save-as")).shortcut_text(save_as_text))
-                        .clicked()
+                    if ui.add(egui::Button::new(hxy_i18n::t("menu-file-save-as")).shortcut_text(save_as_text)).clicked()
                     {
                         ui.close();
                         save_active_file(app, true);
@@ -4739,8 +4686,7 @@ fn request_close_active_tab(app: &mut HxyApp) {
             if let Some(file) = app.files.get(&id)
                 && file.editor.is_dirty()
             {
-                app.pending_close_tab =
-                    Some(PendingCloseTab { file_id: id, display_name: file.display_name.clone() });
+                app.pending_close_tab = Some(PendingCloseTab { file_id: id, display_name: file.display_name.clone() });
                 return;
             }
             close_file_tab_by_id(app, id);
@@ -4908,10 +4854,8 @@ fn toggle_local_search(app: &mut HxyApp) {
             && !sel.is_caret()
         {
             let r = sel.range();
-            file.search.scope = crate::search::SearchScope::Selection {
-                start: r.start().get(),
-                end_exclusive: r.end().get(),
-            };
+            file.search.scope =
+                crate::search::SearchScope::Selection { start: r.start().get(), end_exclusive: r.end().get() };
         } else {
             file.search.scope = crate::search::SearchScope::File;
         }
@@ -4977,10 +4921,10 @@ fn cycle_workspace_focused_leaf(app: &mut HxyApp, workspace_id: crate::file::Wor
     // The workspace's inner dock has its own focused-leaf concept;
     // when nothing is focused (e.g. immediately after restore) we
     // default to the main surface root so cycling still works.
-    let node_path = workspace
-        .dock
-        .focused_leaf()
-        .unwrap_or(egui_dock::NodePath { surface: egui_dock::SurfaceIndex::main(), node: egui_dock::NodeIndex::root() });
+    let node_path = workspace.dock.focused_leaf().unwrap_or(egui_dock::NodePath {
+        surface: egui_dock::SurfaceIndex::main(),
+        node: egui_dock::NodeIndex::root(),
+    });
     let Ok(leaf) = workspace.dock.leaf(node_path) else { return };
     let count = leaf.tabs().len();
     if count < 2 {
@@ -5106,10 +5050,8 @@ fn toggle_vim_mode(app: &mut HxyApp) {
 #[cfg(not(target_arch = "wasm32"))]
 fn start_pane_focus(app: &mut HxyApp) {
     app.palette.close();
-    app.pending_pane_pick = Some(crate::pane_pick::PendingPanePick {
-        op: crate::pane_pick::PaneOp::Focus,
-        source: None,
-    });
+    app.pending_pane_pick =
+        Some(crate::pane_pick::PendingPanePick { op: crate::pane_pick::PaneOp::Focus, source: None });
 }
 
 /// Drive one frame of the visual pane picker. Reads layout from the
@@ -5356,16 +5298,14 @@ fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
 fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
     let Some(id) = active_file_id(app) else { return TemplatePaletteContext::default() };
     let Some(file) = app.files.get(&id) else { return TemplatePaletteContext::default() };
-    let extension = file
-        .root_path()
-        .and_then(|p| p.extension())
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_ascii_lowercase());
+    let extension =
+        file.root_path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
     let source_len = file.editor.source().len().get();
     let window = source_len.min(crate::template_library::DETECTION_WINDOW as u64);
     let head_bytes = if window == 0 {
         Vec::new()
-    } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window)) {
+    } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window))
+    {
         file.editor.source().read(range).unwrap_or_default()
     } else {
         Vec::new()
@@ -5391,13 +5331,19 @@ fn build_palette_entries(
     match app.palette.mode {
         Mode::Main => {
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(crate::command_palette::PaletteCommand::NewFile))
-                    .with_icon(icon::FILE_PLUS)
-                    .with_shortcut(fmt(&NEW_FILE)),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("menu-file-new"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::NewFile),
+                )
+                .with_icon(icon::FILE_PLUS)
+                .with_shortcut(fmt(&NEW_FILE)),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(crate::command_palette::PaletteCommand::OpenFile))
-                    .with_icon(icon::FOLDER_OPEN),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("toolbar-open-file"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::OpenFile),
+                )
+                .with_icon(icon::FOLDER_OPEN),
             );
             // "Open recent" cascades into a filtered list of recently
             // used files, omitting paths that are already open in the
@@ -5482,8 +5428,8 @@ fn build_palette_entries(
             // Toggle the right-hand tool panel as a unit (Plugins
             // manager + every plugin mount tab). Distinct from the
             // single-panel Plugins toggle above.
-            let tool_panel_visible = app.hidden_tool_tabs.is_empty()
-                && app.dock.iter_all_tabs().any(|(_, t)| is_tool_tab(t));
+            let tool_panel_visible =
+                app.hidden_tool_tabs.is_empty() && app.dock.iter_all_tabs().any(|(_, t)| is_tool_tab(t));
             out.push(
                 egui_palette::Entry::new(
                     "Toggle tool panel",
@@ -5553,16 +5499,22 @@ fn build_palette_entries(
             );
             if history_ctx.can_undo {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-undo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Undo))
-                        .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
-                        .with_shortcut(fmt(&UNDO)),
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("menu-edit-undo"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::Undo),
+                    )
+                    .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
+                    .with_shortcut(fmt(&UNDO)),
                 );
             }
             if history_ctx.can_redo {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-redo"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Redo))
-                        .with_icon(icon::ARROW_CLOCKWISE)
-                        .with_shortcut(fmt(&REDO)),
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("menu-edit-redo"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::Redo),
+                    )
+                    .with_icon(icon::ARROW_CLOCKWISE)
+                    .with_shortcut(fmt(&REDO)),
                 );
             }
             if history_ctx.has_active_file {
@@ -5588,9 +5540,12 @@ fn build_palette_entries(
             }
             if history_ctx.can_paste {
                 out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("menu-edit-paste"), Action::InvokeCommand(crate::command_palette::PaletteCommand::Paste))
-                        .with_icon(icon::CLIPBOARD_TEXT)
-                        .with_shortcut(fmt(&PASTE)),
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("menu-edit-paste"),
+                        Action::InvokeCommand(crate::command_palette::PaletteCommand::Paste),
+                    )
+                    .with_icon(icon::CLIPBOARD_TEXT)
+                    .with_shortcut(fmt(&PASTE)),
                 );
                 out.push(
                     egui_palette::Entry::new(
@@ -5670,52 +5625,88 @@ fn build_palette_entries(
                 .with_subtitle(hxy_i18n::t("palette-compare-files-dialog-subtitle")),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitRight))
-                    .with_icon(icon::ARROW_SQUARE_RIGHT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-split-right"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitRight),
+                )
+                .with_icon(icon::ARROW_SQUARE_RIGHT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitLeft))
-                    .with_icon(icon::ARROW_SQUARE_LEFT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-split-left"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitLeft),
+                )
+                .with_icon(icon::ARROW_SQUARE_LEFT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitDown))
-                    .with_icon(icon::ARROW_SQUARE_DOWN),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-split-down"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitDown),
+                )
+                .with_icon(icon::ARROW_SQUARE_DOWN),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitUp))
-                    .with_icon(icon::ARROW_SQUARE_UP),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-split-up"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::SplitUp),
+                )
+                .with_icon(icon::ARROW_SQUARE_UP),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeRight))
-                    .with_icon(icon::ARROW_LINE_RIGHT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-merge-right"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeRight),
+                )
+                .with_icon(icon::ARROW_LINE_RIGHT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeLeft))
-                    .with_icon(icon::ARROW_LINE_LEFT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-merge-left"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeLeft),
+                )
+                .with_icon(icon::ARROW_LINE_LEFT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeDown))
-                    .with_icon(icon::ARROW_LINE_DOWN),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-merge-down"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeDown),
+                )
+                .with_icon(icon::ARROW_LINE_DOWN),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeUp))
-                    .with_icon(icon::ARROW_LINE_UP),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-merge-up"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MergeUp),
+                )
+                .with_icon(icon::ARROW_LINE_UP),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-right"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabRight))
-                    .with_icon(icon::ARROW_FAT_RIGHT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-move-tab-right"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabRight),
+                )
+                .with_icon(icon::ARROW_FAT_RIGHT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-left"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabLeft))
-                    .with_icon(icon::ARROW_FAT_LEFT),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-move-tab-left"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabLeft),
+                )
+                .with_icon(icon::ARROW_FAT_LEFT),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-down"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabDown))
-                    .with_icon(icon::ARROW_FAT_DOWN),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-move-tab-down"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabDown),
+                )
+                .with_icon(icon::ARROW_FAT_DOWN),
             );
             out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-up"), Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabUp))
-                    .with_icon(icon::ARROW_FAT_UP),
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-move-tab-up"),
+                    Action::InvokeCommand(crate::command_palette::PaletteCommand::MoveTabUp),
+                )
+                .with_icon(icon::ARROW_FAT_UP),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -5791,10 +5782,7 @@ fn build_palette_entries(
                 for cmd in plugin.list_commands() {
                     let mut entry = egui_palette::Entry::new(
                         format!("{plugin_name}: {}", cmd.label),
-                        Action::InvokePluginCommand {
-                            plugin_name: plugin_name.clone(),
-                            command_id: cmd.id,
-                        },
+                        Action::InvokePluginCommand { plugin_name: plugin_name.clone(), command_id: cmd.id },
                     );
                     if let Some(s) = cmd.subtitle {
                         entry = entry.with_subtitle(s);
@@ -5811,8 +5799,7 @@ fn build_palette_entries(
             // is the "I just want to switch tabs" path.
             for (id, file) in &app.files {
                 let mut entry =
-                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
-                        .with_icon(icon::FILE);
+                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon(icon::FILE);
                 if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -5841,8 +5828,7 @@ fn build_palette_entries(
             }
         }
         Mode::Templates => {
-            let ranked =
-                app.templates.rank_entries(template_ctx.extension.as_deref(), &template_ctx.head_bytes);
+            let ranked = app.templates.rank_entries(template_ctx.extension.as_deref(), &template_ctx.head_bytes);
             for entry in ranked {
                 out.push(
                     egui_palette::Entry::new(
@@ -5944,11 +5930,7 @@ fn build_palette_entries(
             } else {
                 crate::command_palette::CompareSide::B
             };
-            let picked_a = app
-                .palette
-                .compare_pick
-                .as_ref()
-                .and_then(|p| p.picked_a.clone());
+            let picked_a = app.palette.compare_pick.as_ref().and_then(|p| p.picked_a.clone());
             for file in app.files.values() {
                 // Anonymous buffers can't be compared (no stable
                 // identity to read fresh bytes from), so they don't
@@ -5963,11 +5945,9 @@ fn build_palette_entries(
                 {
                     continue;
                 }
-                let mut entry = egui_palette::Entry::new(
-                    file.display_name.clone(),
-                    Action::CompareSelectSource { side, source },
-                )
-                .with_icon(icon::FILE);
+                let mut entry =
+                    egui_palette::Entry::new(file.display_name.clone(), Action::CompareSelectSource { side, source })
+                        .with_icon(icon::FILE);
                 if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -5979,19 +5959,13 @@ fn build_palette_entries(
             };
             if !app.state.read().app.recent_files.is_empty() {
                 out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-open-recent-entry"),
-                        Action::SwitchMode(recent_mode),
-                    )
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                    egui_palette::Entry::new(hxy_i18n::t("palette-open-recent-entry"), Action::SwitchMode(recent_mode))
+                        .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
                 );
             }
             out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("compare-picker-browse"),
-                    Action::CompareBrowse(side),
-                )
-                .with_icon(icon::FOLDER_OPEN),
+                egui_palette::Entry::new(hxy_i18n::t("compare-picker-browse"), Action::CompareBrowse(side))
+                    .with_icon(icon::FOLDER_OPEN),
             );
         }
         Mode::CompareSideARecent | Mode::CompareSideBRecent => {
@@ -6000,12 +5974,8 @@ fn build_palette_entries(
             } else {
                 crate::command_palette::CompareSide::B
             };
-            let picked_a_path = app
-                .palette
-                .compare_pick
-                .as_ref()
-                .and_then(|p| p.picked_a.as_ref())
-                .and_then(|s| match s {
+            let picked_a_path =
+                app.palette.compare_pick.as_ref().and_then(|p| p.picked_a.as_ref()).and_then(|s| match s {
                     TabSource::Filesystem(p) => Some(p.clone()),
                     _ => None,
                 });
@@ -6027,10 +5997,7 @@ fn build_palette_entries(
                     .unwrap_or_else(|| recent.path.display().to_string());
                 let mut entry = egui_palette::Entry::new(
                     name,
-                    Action::CompareSelectSource {
-                        side,
-                        source: TabSource::Filesystem(recent.path.clone()),
-                    },
+                    Action::CompareSelectSource { side, source: TabSource::Filesystem(recent.path.clone()) },
                 )
                 .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
                 if let Some(parent) = recent.path.parent() {
@@ -6077,10 +6044,7 @@ fn build_palette_entries(
                 for cmd in &cascade.commands {
                     let mut entry = egui_palette::Entry::new(
                         cmd.label.clone(),
-                        Action::InvokePluginCommand {
-                            plugin_name: plugin_name.clone(),
-                            command_id: cmd.id.clone(),
-                        },
+                        Action::InvokePluginCommand { plugin_name: plugin_name.clone(), command_id: cmd.id.clone() },
                     );
                     if let Some(s) = cmd.subtitle.clone() {
                         entry = entry.with_subtitle(s);
@@ -6098,11 +6062,7 @@ fn build_palette_entries(
             // the entry isn't fuzzy-filtered out as the user types.
             if let Some(prompt) = app.palette.plugin_prompt.as_ref() {
                 let answer = app.palette.inner.query.clone();
-                let label = if answer.is_empty() {
-                    hxy_i18n::t("palette-plugin-prompt-empty")
-                } else {
-                    answer.clone()
-                };
+                let label = if answer.is_empty() { hxy_i18n::t("palette-plugin-prompt-empty") } else { answer.clone() };
                 let mut entry = egui_palette::Entry::new(
                     label,
                     Action::RespondToPlugin {
@@ -6135,9 +6095,9 @@ fn build_offset_entries(
         return;
     }
     match mode {
-        Mode::GoToOffset => match crate::goto::parse_number(query)
-            .and_then(|n| n.resolve(offset_ctx.cursor, offset_ctx.source_len).ok_or(crate::goto::ParseError::OutOfRange))
-        {
+        Mode::GoToOffset => match crate::goto::parse_number(query).and_then(|n| {
+            n.resolve(offset_ctx.cursor, offset_ctx.source_len).ok_or(crate::goto::ParseError::OutOfRange)
+        }) {
             Ok(target) => {
                 out.push(
                     egui_palette::Entry::new(
@@ -6279,11 +6239,7 @@ fn build_columns_entries(
 /// that the query isn't parseable without silently showing an
 /// empty list.
 #[cfg(not(target_arch = "wasm32"))]
-fn invalid_entry(
-    out: &mut Vec<egui_palette::Entry<crate::command_palette::Action>>,
-    query: &str,
-    reason: &str,
-) {
+fn invalid_entry(out: &mut Vec<egui_palette::Entry<crate::command_palette::Action>>, query: &str, reason: &str) {
     use crate::command_palette::Action;
     use egui_phosphor::regular as icon;
 
@@ -6316,18 +6272,38 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::Redo => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
                     PaletteCommand::Paste => paste_active_file(app, false),
                     PaletteCommand::PasteAsHex => paste_active_file(app, true),
-                    PaletteCommand::SplitRight => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Right)),
-                    PaletteCommand::SplitLeft => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Left)),
+                    PaletteCommand::SplitRight => {
+                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Right))
+                    }
+                    PaletteCommand::SplitLeft => {
+                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Left))
+                    }
                     PaletteCommand::SplitUp => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Up)),
-                    PaletteCommand::SplitDown => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Down)),
-                    PaletteCommand::MergeRight => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Right)),
-                    PaletteCommand::MergeLeft => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Left)),
+                    PaletteCommand::SplitDown => {
+                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Down))
+                    }
+                    PaletteCommand::MergeRight => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Right))
+                    }
+                    PaletteCommand::MergeLeft => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Left))
+                    }
                     PaletteCommand::MergeUp => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Up)),
-                    PaletteCommand::MergeDown => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down)),
-                    PaletteCommand::MoveTabRight => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Right)),
-                    PaletteCommand::MoveTabLeft => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Left)),
-                    PaletteCommand::MoveTabUp => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Up)),
-                    PaletteCommand::MoveTabDown => apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down)),
+                    PaletteCommand::MergeDown => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down))
+                    }
+                    PaletteCommand::MoveTabRight => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Right))
+                    }
+                    PaletteCommand::MoveTabLeft => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Left))
+                    }
+                    PaletteCommand::MoveTabUp => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Up))
+                    }
+                    PaletteCommand::MoveTabDown => {
+                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down))
+                    }
                     PaletteCommand::MoveTabVisual => start_pane_pick(app, crate::pane_pick::PaneOp::MoveTab),
                     PaletteCommand::MergeVisual => start_pane_pick(app, crate::pane_pick::PaneOp::Merge),
                     PaletteCommand::FocusPane => start_pane_focus(app),
@@ -6406,7 +6382,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                 }
                 let last = end_exclusive.saturating_sub(1).min(source_len.saturating_sub(1));
                 let anchor = hxy_core::ByteOffset::new(start.min(source_len.saturating_sub(1)));
-                file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor: hxy_core::ByteOffset::new(last) }));
+                file.editor
+                    .set_selection(Some(hxy_core::Selection { anchor, cursor: hxy_core::ByteOffset::new(last) }));
                 if !file.editor.is_offset_visible(anchor) {
                     file.editor.set_scroll_to_byte(anchor);
                 }
@@ -6457,15 +6434,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             app.palette.close();
             let repaint = ctx.clone();
             let mut ops = std::mem::take(&mut app.pending_plugin_ops);
-            crate::plugin_runner::spawn_respond(
-                &mut ops,
-                app,
-                repaint,
-                plugin,
-                plugin_name,
-                command_id,
-                answer,
-            );
+            crate::plugin_runner::spawn_respond(&mut ops, app, repaint, plugin, plugin_name, command_id, answer);
             app.pending_plugin_ops = ops;
         }
         crate::command_palette::Action::NoOp => {
@@ -6476,8 +6445,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             app.palette.close();
         }
         crate::command_palette::Action::CompareSelectSource { side, source } => {
-            use crate::command_palette::CompareSide;
             use crate::command_palette::ComparePickState;
+            use crate::command_palette::CompareSide;
             use crate::command_palette::Mode;
             match side {
                 CompareSide::A => {
@@ -6499,8 +6468,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
             }
         }
         crate::command_palette::Action::CompareBrowse(side) => {
-            use crate::command_palette::CompareSide;
             use crate::command_palette::ComparePickState;
+            use crate::command_palette::CompareSide;
             use crate::command_palette::Mode;
             let Some(path) = rfd::FileDialog::new().pick_file() else {
                 return;
@@ -6533,12 +6502,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
 /// kick the initial diff worker. Failures only log -- the palette
 /// already closed so we don't strand the user in a half-state.
 #[cfg(not(target_arch = "wasm32"))]
-fn spawn_compare_from_palette(
-    app: &mut HxyApp,
-    ctx: &egui::Context,
-    a: TabSource,
-    b: TabSource,
-) {
+fn spawn_compare_from_palette(app: &mut HxyApp, ctx: &egui::Context, a: TabSource, b: TabSource) {
     let global_deadline = app.state.read().app.compare_recompute_deadline;
     match app.spawn_compare_from_sources(a, b) {
         Ok(id) => {
@@ -6625,30 +6589,18 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
     let plugin_name = manifest
         .as_ref()
         .map(|m| m.plugin.name.clone())
-        .unwrap_or_else(|| {
-            wasm_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
+        .unwrap_or_else(|| wasm_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
 
     // Hash the on-disk bytes so we can drop the matching grant
     // entry. Failure to read just means the grant cleanup is
     // skipped -- the file deletion below still proceeds.
     let key = match std::fs::read(wasm_path) {
         Ok(bytes) => {
-            let version = manifest
-                .as_ref()
-                .map(|m| m.plugin.version.clone())
-                .unwrap_or_else(|| "0.0.0".to_string());
+            let version = manifest.as_ref().map(|m| m.plugin.version.clone()).unwrap_or_else(|| "0.0.0".to_string());
             Some(hxy_plugin_host::PluginKey::from_bytes(plugin_name.clone(), version, &bytes))
         }
         Err(e) => {
-            app.console_log(
-                ConsoleSeverity::Warning,
-                &ctx,
-                format!("read for grant cleanup: {e}"),
-            );
+            app.console_log(ConsoleSeverity::Warning, &ctx, format!("read for grant cleanup: {e}"));
             None
         }
     };
@@ -6663,11 +6615,9 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
     if sidecar.exists() {
         match std::fs::remove_file(&sidecar) {
             Ok(_) => app.console_log(ConsoleSeverity::Info, &ctx, "removed manifest"),
-            Err(e) => app.console_log(
-                ConsoleSeverity::Warning,
-                &ctx,
-                format!("remove manifest {}: {e}", sidecar.display()),
-            ),
+            Err(e) => {
+                app.console_log(ConsoleSeverity::Warning, &ctx, format!("remove manifest {}: {e}", sidecar.display()))
+            }
         }
     }
 
@@ -6682,11 +6632,7 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
         if grants_changed && let Some(sink) = app.sink.as_ref() {
             let snapshot = app.state.read().clone();
             if let Err(e) = sink.save(&snapshot) {
-                app.console_log(
-                    ConsoleSeverity::Warning,
-                    &ctx,
-                    format!("persist grants after uninstall: {e}"),
-                );
+                app.console_log(ConsoleSeverity::Warning, &ctx, format!("persist grants after uninstall: {e}"));
             }
         }
     }
@@ -6696,11 +6642,7 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
     {
         match store.clear(&plugin_name) {
             Ok(_) => app.console_log(ConsoleSeverity::Info, &ctx, "cleared persisted state"),
-            Err(e) => app.console_log(
-                ConsoleSeverity::Warning,
-                &ctx,
-                format!("clear persisted state: {e}"),
-            ),
+            Err(e) => app.console_log(ConsoleSeverity::Warning, &ctx, format!("clear persisted state: {e}")),
         }
     }
 
@@ -6884,11 +6826,7 @@ fn install_mount_tab(
     };
     app.mounts.insert(mount_id, entry);
 
-    let source = TabSource::PluginMount {
-        plugin_name: plugin_name.clone(),
-        token,
-        title: title.clone(),
-    };
+    let source = TabSource::PluginMount { plugin_name: plugin_name.clone(), token, title: title.clone() };
     {
         let mut g = app.state.write();
         if !g.open_tabs.iter().any(|t| t.source == source) {
@@ -6999,33 +6937,21 @@ fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
     let mount = match app.find_mount_for_source(&parent_source) {
         Some(m) => m,
         None => {
-            app.console_log(
-                ConsoleSeverity::Error,
-                &ctx,
-                "parent VFS tab is gone -- close + reopen this tab",
-            );
+            app.console_log(ConsoleSeverity::Error, &ctx, "parent VFS tab is gone -- close + reopen this tab");
             return false;
         }
     };
     let writer = match mount.writer.clone() {
         Some(w) => w,
         None => {
-            app.console_log(
-                ConsoleSeverity::Error,
-                &ctx,
-                "this VFS handler doesn't support writeback",
-            );
+            app.console_log(ConsoleSeverity::Error, &ctx, "this VFS handler doesn't support writeback");
             return false;
         }
     };
 
     // Snapshot the patch ops + total byte length so we can rebuild
     // the post-write source after dispatching.
-    let (patch_ops, total_len, post_write_bytes): (
-        Vec<(u64, Vec<u8>)>,
-        u64,
-        Result<Vec<u8>, String>,
-    ) = {
+    let (patch_ops, total_len, post_write_bytes) = {
         let file = app.files.get(&id).expect("just looked up");
         let editor = &file.editor;
         let total_len = editor.source().len().get();
@@ -7053,11 +6979,8 @@ fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
         // Read the patched view (base + patch) so we can swap the
         // editor's source afterwards.
         let bytes = editor.source().read(
-            hxy_core::ByteRange::new(
-                hxy_core::ByteOffset::new(0),
-                hxy_core::ByteOffset::new(total_len),
-            )
-            .expect("valid range"),
+            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(total_len))
+                .expect("valid range"),
         );
         let bytes_result = bytes.map_err(|e| e.to_string());
         (ops, total_len, bytes_result)
@@ -7080,18 +7003,12 @@ fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
                     app.console_log(
                         ConsoleSeverity::Warning,
                         &ctx,
-                        format!(
-                            "partial write at offset {offset}: requested {n}, wrote {written}"
-                        ),
+                        format!("partial write at offset {offset}: requested {n}, wrote {written}"),
                     );
                 }
             }
             Err(e) => {
-                app.console_log(
-                    ConsoleSeverity::Error,
-                    &ctx,
-                    format!("write @ offset {offset}: {e}"),
-                );
+                app.console_log(ConsoleSeverity::Error, &ctx, format!("write @ offset {offset}: {e}"));
                 return false;
             }
         }
@@ -7135,9 +7052,7 @@ fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool {
     // op back through the parent mount's `VfsWriter` instead.
     // `force_dialog` (Save As) still falls through to the
     // filesystem path so the user can spill VFS bytes to disk.
-    if !force_dialog
-        && let Some(TabSource::VfsEntry { .. }) = file.source_kind.as_ref()
-    {
+    if !force_dialog && let Some(TabSource::VfsEntry { .. }) = file.source_kind.as_ref() {
         return save_vfs_entry_in_place(app, id);
     }
     let display = file.display_name.clone();
@@ -7362,9 +7277,7 @@ impl TabViewer for HxyTabViewer<'_> {
                 None => format!("mount-{}", mount_id.get()).into(),
             },
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::SearchResults => {
-                format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS).into()
-            }
+            Tab::SearchResults => format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS).into(),
             Tab::Workspace(workspace_id) => match self.workspaces.get(workspace_id) {
                 Some(w) => match self.files.get(&w.editor_id) {
                     Some(f) => {
@@ -7388,11 +7301,9 @@ impl TabViewer for HxyTabViewer<'_> {
             },
             #[cfg(not(target_arch = "wasm32"))]
             Tab::Compare(compare_id) => match self.compares.get(compare_id) {
-                Some(s) => hxy_i18n::t_args(
-                    "tab-compare-title",
-                    &[("a", &s.a.display_name), ("b", &s.b.display_name)],
-                )
-                .into(),
+                Some(s) => {
+                    hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]).into()
+                }
                 None => format!("compare-{}", compare_id.get()).into(),
             },
         }
@@ -7413,12 +7324,8 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
                 let templates_dir = user_template_plugins_dir();
-                let events = crate::plugins_tab::show(
-                    ui,
-                    handlers_dir.as_ref(),
-                    templates_dir.as_ref(),
-                    self.plugin_handlers,
-                );
+                let events =
+                    crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref(), self.plugin_handlers);
                 for e in events {
                     match e {
                         crate::plugins_tab::PluginsEvent::Rescan => *self.plugin_rescan = true,
@@ -7618,9 +7525,7 @@ fn start_compare_picker(app: &mut HxyApp) {
     // of the user. Anonymous buffers fall through to Unset
     // because they can't be compared (no stable identity to
     // re-read bytes from).
-    let auto_a = match active_file_id(app)
-        .and_then(|id| app.files.get(&id).map(|f| (id, f)))
-    {
+    let auto_a = match active_file_id(app).and_then(|id| app.files.get(&id).map(|f| (id, f))) {
         Some((id, f)) if f.source_kind.is_some() => ComparePickerSource::OpenFile(id),
         _ => ComparePickerSource::Unset,
     };
@@ -7635,9 +7540,7 @@ fn start_compare_picker(app: &mut HxyApp) {
 fn start_compare_palette_flow(app: &mut HxyApp) {
     use crate::command_palette::ComparePickState;
     use crate::command_palette::Mode;
-    let auto_a = active_file_id(app)
-        .and_then(|id| app.files.get(&id))
-        .and_then(|f| f.source_kind.clone());
+    let auto_a = active_file_id(app).and_then(|id| app.files.get(&id)).and_then(|f| f.source_kind.clone());
     match auto_a {
         Some(source) => {
             app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
@@ -7671,12 +7574,9 @@ fn render_compare_picker(ctx: &egui::Context, app: &mut HxyApp) {
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let ready = !matches!(state.a, ComparePickerSource::Unset)
-                    && !matches!(state.b, ComparePickerSource::Unset);
-                if ui
-                    .add_enabled(ready, egui::Button::new(hxy_i18n::t("compare-picker-confirm")))
-                    .clicked()
-                {
+                let ready =
+                    !matches!(state.a, ComparePickerSource::Unset) && !matches!(state.b, ComparePickerSource::Unset);
+                if ui.add_enabled(ready, egui::Button::new(hxy_i18n::t("compare-picker-confirm"))).clicked() {
                     confirm = true;
                     keep_open = false;
                 }
@@ -7685,10 +7585,8 @@ fn render_compare_picker(ctx: &egui::Context, app: &mut HxyApp) {
                 }
             });
         });
-    if confirm {
-        if let Err(e) = spawn_compare_from_picker(app, ctx, &state) {
-            tracing::warn!(error = %e, "spawn compare");
-        }
+    if confirm && let Err(e) = spawn_compare_from_picker(app, ctx, &state) {
+        tracing::warn!(error = %e, "spawn compare");
     }
     if keep_open {
         app.compare_picker = Some(state);
@@ -7704,51 +7602,42 @@ fn render_compare_picker_combo(
 ) {
     let label = match selection {
         ComparePickerSource::Unset => hxy_i18n::t("compare-picker-unset"),
-        ComparePickerSource::OpenFile(id) => app
-            .files
-            .get(id)
-            .map(|f| f.display_name.clone())
-            .unwrap_or_else(|| format!("file-{}", id.get())),
-        ComparePickerSource::Filesystem(p) => p
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.display().to_string()),
+        ComparePickerSource::OpenFile(id) => {
+            app.files.get(id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()))
+        }
+        ComparePickerSource::Filesystem(p) => {
+            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+        }
     };
-    egui::ComboBox::from_id_salt(("hxy-compare-picker", salt))
-        .selected_text(label)
-        .show_ui(ui, |ui| {
-            if !app.files.is_empty() {
-                ui.weak(hxy_i18n::t("compare-picker-section-open"));
-                for (id, f) in &app.files {
-                    ui.selectable_value(selection, ComparePickerSource::OpenFile(*id), &f.display_name);
-                }
+    egui::ComboBox::from_id_salt(("hxy-compare-picker", salt)).selected_text(label).show_ui(ui, |ui| {
+        if !app.files.is_empty() {
+            ui.weak(hxy_i18n::t("compare-picker-section-open"));
+            for (id, f) in &app.files {
+                ui.selectable_value(selection, ComparePickerSource::OpenFile(*id), &f.display_name);
             }
-            let recent = app.state.read().app.recent_files.clone();
-            if !recent.is_empty() {
-                ui.separator();
-                ui.weak(hxy_i18n::t("compare-picker-section-recent"));
-                for entry in recent.iter().take(8) {
-                    let name = entry
-                        .path
-                        .file_name()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| entry.path.display().to_string());
-                    if ui
-                        .selectable_label(false, &name)
-                        .on_hover_text(entry.path.display().to_string())
-                        .clicked()
-                    {
-                        *selection = ComparePickerSource::Filesystem(entry.path.clone());
-                    }
-                }
-            }
+        }
+        let recent = app.state.read().app.recent_files.clone();
+        if !recent.is_empty() {
             ui.separator();
-            if ui.button(hxy_i18n::t("compare-picker-browse")).clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_file()
-            {
-                *selection = ComparePickerSource::Filesystem(path);
+            ui.weak(hxy_i18n::t("compare-picker-section-recent"));
+            for entry in recent.iter().take(8) {
+                let name = entry
+                    .path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.path.display().to_string());
+                if ui.selectable_label(false, &name).on_hover_text(entry.path.display().to_string()).clicked() {
+                    *selection = ComparePickerSource::Filesystem(entry.path.clone());
+                }
             }
-        });
+        }
+        ui.separator();
+        if ui.button(hxy_i18n::t("compare-picker-browse")).clicked()
+            && let Some(path) = rfd::FileDialog::new().pick_file()
+        {
+            *selection = ComparePickerSource::Filesystem(path);
+        }
+    });
 }
 
 /// Resolve `picker` into bytes for both sides and push a fresh
@@ -7774,8 +7663,7 @@ fn spawn_compare_from_picker(
     // tab opens immediately, the diff fills in once the worker
     // returns. New sessions track the global setting (no override
     // yet), so we read it straight off `app.state`.
-    let deadline =
-        session.effective_deadline(app.state.read().app.compare_recompute_deadline);
+    let deadline = session.effective_deadline(app.state.read().app.compare_recompute_deadline);
     session.request_recompute(ctx, deadline);
     app.compares.insert(id, session);
     app.dock.push_to_focused_leaf(Tab::Compare(id));
@@ -7799,7 +7687,11 @@ pub enum CompareSpawnError {
     #[error("source not selected")]
     Unset,
     #[error("read filesystem source {path}")]
-    ReadFile { path: std::path::PathBuf, #[source] source: std::io::Error },
+    ReadFile {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("read open file bytes: {0}")]
     ReadOpenFile(String),
     #[error("open file {0} no longer exists")]
@@ -7816,34 +7708,20 @@ fn read_picker_source(app: &HxyApp, side: &ComparePickerSource) -> Result<Picked
             let bytes = if len == 0 {
                 Vec::new()
             } else {
-                let range = hxy_core::ByteRange::new(
-                    hxy_core::ByteOffset::new(0),
-                    hxy_core::ByteOffset::new(len),
-                )
-                .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
-                file.editor
-                    .source()
-                    .read(range)
-                    .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?
+                let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+                    .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
+                file.editor.source().read(range).map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?
             };
-            Ok(PickedSide {
-                name: file.display_name.clone(),
-                source: file.source_kind.clone(),
-                bytes,
-            })
+            Ok(PickedSide { name: file.display_name.clone(), source: file.source_kind.clone(), bytes })
         }
         ComparePickerSource::Filesystem(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|source| CompareSpawnError::ReadFile { path: path.clone(), source })?;
+            let bytes =
+                std::fs::read(path).map_err(|source| CompareSpawnError::ReadFile { path: path.clone(), source })?;
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
-            Ok(PickedSide {
-                name,
-                source: Some(TabSource::Filesystem(path.clone())),
-                bytes,
-            })
+            Ok(PickedSide { name, source: Some(TabSource::Filesystem(path.clone())), bytes })
         }
     }
 }
@@ -7888,11 +7766,7 @@ fn render_compare_deadline_widget(
 /// commit lands the wire, the table, the diff color overlay, and a
 /// debounced live recompute.
 #[cfg(not(target_arch = "wasm32"))]
-fn render_compare_tab(
-    ui: &mut egui::Ui,
-    session: &mut crate::compare::CompareSession,
-    state: &mut PersistedState,
-) {
+fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::CompareSession, state: &mut PersistedState) {
     use crate::compare::DebouncedDecision;
 
     let id = session.id;
@@ -7915,45 +7789,39 @@ fn render_compare_tab(
         }
     }
 
-    egui::Panel::top(tab_id.with("toolbar"))
-        .resizable(false)
-        .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                let recomputing = session.is_recomputing();
-                if ui
-                    .add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute")))
-                    .clicked()
-                {
-                    session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
-                }
-                ui.checkbox(&mut session.sync_scroll_enabled, hxy_i18n::t("compare-sync-scroll"))
-                    .on_hover_text(hxy_i18n::t("compare-sync-scroll-tooltip"));
-                render_compare_deadline_widget(ui, session, global_deadline);
-                if recomputing {
-                    ui.spinner();
-                    ui.weak(hxy_i18n::t("compare-status-recomputing"));
-                } else if let Some(diff) = &session.diff {
-                    ui.weak(hxy_i18n::t_args(
-                        "compare-status",
-                        &[
-                            ("a", &session.a.display_name),
-                            ("b", &session.b.display_name),
-                            ("changes", &diff.change_count().to_string()),
-                        ],
-                    ));
-                } else {
-                    ui.weak(hxy_i18n::t("compare-status-pending"));
-                }
-            });
+    egui::Panel::top(tab_id.with("toolbar")).resizable(false).show_inside(ui, |ui| {
+        ui.horizontal(|ui| {
+            let recomputing = session.is_recomputing();
+            if ui.add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute"))).clicked() {
+                session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
+            }
+            ui.checkbox(&mut session.sync_scroll_enabled, hxy_i18n::t("compare-sync-scroll"))
+                .on_hover_text(hxy_i18n::t("compare-sync-scroll-tooltip"));
+            render_compare_deadline_widget(ui, session, global_deadline);
+            if recomputing {
+                ui.spinner();
+                ui.weak(hxy_i18n::t("compare-status-recomputing"));
+            } else if let Some(diff) = &session.diff {
+                ui.weak(hxy_i18n::t_args(
+                    "compare-status",
+                    &[
+                        ("a", &session.a.display_name),
+                        ("b", &session.b.display_name),
+                        ("changes", &diff.change_count().to_string()),
+                    ],
+                ));
+            } else {
+                ui.weak(hxy_i18n::t("compare-status-pending"));
+            }
         });
+    });
 
-    egui::Panel::bottom(tab_id.with("diff-table"))
-        .resizable(true)
-        .min_size(120.0)
-        .default_size(160.0)
-        .show_inside(ui, |ui| {
+    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show_inside(
+        ui,
+        |ui| {
             render_compare_diff_table(ui, session);
-        });
+        },
+    );
 
     let cols = state.app.hex_columns.as_u64();
     let (a_ranges, b_ranges, row_maps) = match session.diff.as_ref() {
@@ -8032,7 +7900,10 @@ fn render_compare_tab(
 /// side (Added on A, Removed on B) so the styler's binary search
 /// only inspects ranges with non-zero length.
 #[cfg(not(target_arch = "wasm32"))]
-fn compare_pane_ranges(diff: &crate::compare::DiffResult, side: crate::compare::CompareSide) -> Vec<(u64, u64, crate::compare::HunkKind)> {
+fn compare_pane_ranges(
+    diff: &crate::compare::DiffResult,
+    side: crate::compare::CompareSide,
+) -> Vec<(u64, u64, crate::compare::HunkKind)> {
     use crate::compare::CompareSide;
     use crate::compare::HunkKind;
 
@@ -8325,11 +8196,7 @@ fn scroll_pane_to(pane: &mut crate::compare::ComparePane, offset: u64, len: u64)
 
 #[cfg(not(target_arch = "wasm32"))]
 fn format_range(offset: u64, len: u64) -> String {
-    if len == 0 {
-        format!("0x{offset:08X} (gap)")
-    } else {
-        format!("0x{offset:08X} +{len}")
-    }
+    if len == 0 { format!("0x{offset:08X} (gap)") } else { format!("0x{offset:08X} +{len}") }
 }
 
 /// Render a `Tab::Workspace` body: spin up an inner DockArea against
@@ -8374,10 +8241,7 @@ fn render_workspace_tab(
     // Editor sub-tab (user closed the tree + every entry), schedule a
     // post-dock collapse to a plain `Tab::File`.
     let only_editor = workspace.dock.iter_all_tabs().count() == 1
-        && workspace
-            .dock
-            .iter_all_tabs()
-            .all(|(_, t)| matches!(t, crate::file::WorkspaceTab::Editor));
+        && workspace.dock.iter_all_tabs().all(|(_, t)| matches!(t, crate::file::WorkspaceTab::Editor));
     if only_editor && !pending_collapse_workspace.contains(&workspace_id) {
         pending_collapse_workspace.push(workspace_id);
     }
@@ -8436,9 +8300,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 }
                 None => format!("file-{}", self.editor_id.get()).into(),
             },
-            crate::file::WorkspaceTab::VfsTree => {
-                format!("{} VFS", egui_phosphor::regular::TREE_STRUCTURE).into()
-            }
+            crate::file::WorkspaceTab::VfsTree => format!("{} VFS", egui_phosphor::regular::TREE_STRUCTURE).into(),
             crate::file::WorkspaceTab::Entry(file_id) => match self.files.get(file_id) {
                 Some(f) => {
                     let mut prefix = String::new();
@@ -8584,12 +8446,8 @@ fn status_bar_ui(
             let (label, tooltip) = match file.editor.vim_state().mode {
                 hxy_view::VimMode::Normal => ("NORMAL", "Vim Normal mode -- motions, operators"),
                 hxy_view::VimMode::Visual => ("VISUAL", "Vim Visual mode -- motions extend selection"),
-                hxy_view::VimMode::VisualLine => {
-                    ("V-LINE", "Vim Visual-line mode -- selection snaps to whole rows")
-                }
-                hxy_view::VimMode::Insert => {
-                    ("INSERT", "Vim Insert mode -- typing splices new bytes; Esc to return")
-                }
+                hxy_view::VimMode::VisualLine => ("V-LINE", "Vim Visual-line mode -- selection snaps to whole rows"),
+                hxy_view::VimMode::Insert => ("INSERT", "Vim Insert mode -- typing splices new bytes; Esc to return"),
                 hxy_view::VimMode::Replace => {
                     ("REPLACE", "Vim Replace mode -- typing overwrites; extends past EOF; Esc to return")
                 }
@@ -8675,9 +8533,8 @@ fn status_bar_ui(
                     (egui_phosphor::regular::LOCK_OPEN, hxy_i18n::t("status-lock-mutable-tooltip"))
                 }
             };
-            let resp = ui
-                .add(egui::Button::new(icon).frame(false).min_size(egui::vec2(18.0, 18.0)))
-                .on_hover_text(tooltip);
+            let resp =
+                ui.add(egui::Button::new(icon).frame(false).min_size(egui::vec2(18.0, 18.0))).on_hover_text(tooltip);
             if resp.clicked() && hard_readonly.is_none() {
                 let next = match file.editor.edit_mode() {
                     crate::file::EditMode::Readonly => crate::file::EditMode::Mutable,
@@ -8885,11 +8742,7 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     });
 }
 
-fn settings_ui(
-    ui: &mut egui::Ui,
-    settings: &mut crate::settings::AppSettings,
-    files: &mut HashMap<FileId, OpenFile>,
-) {
+fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings, files: &mut HashMap<FileId, OpenFile>) {
     ui.heading(hxy_i18n::t("settings-general-header"));
     ui.separator();
     egui::Grid::new("hxy-general-settings").num_columns(2).striped(true).show(ui, |ui| {

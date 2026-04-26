@@ -81,32 +81,22 @@ pub enum DrainResult {
     Pending,
     /// User-driven invoke finished. The dispatcher should route
     /// the outcome through the palette.
-    InvokeReady {
-        plugin: Arc<PluginHandler>,
-        command_id: String,
-        outcome: Option<InvokeOutcome>,
-    },
+    InvokeReady { plugin: Arc<PluginHandler>, command_id: String, outcome: Option<InvokeOutcome> },
     /// User-driven respond finished. Same dispatch as `InvokeReady`.
-    RespondReady {
-        plugin: Arc<PluginHandler>,
-        command_id: String,
-        outcome: Option<InvokeOutcome>,
-    },
+    RespondReady { plugin: Arc<PluginHandler>, command_id: String, outcome: Option<InvokeOutcome> },
     /// `mount-by-token` finished. The dispatcher should open a new
     /// tab backed by `mount` (or surface the error in the console).
-    MountReady {
-        plugin: Arc<PluginHandler>,
-        token: String,
-        title: String,
-        result: Result<MountedVfs, String>,
-    },
+    MountReady { plugin: Arc<PluginHandler>, token: String, title: String, result: Result<MountedVfs, String> },
 }
 
 impl PendingOp {
     /// Try to take the result without blocking. Returns
     /// [`DrainResult::Pending`] if the worker thread hasn't
     /// completed yet -- caller leaves the op queued and tries
-    /// again next frame.
+    /// again next frame. The `Err` arm carries `Self` by value
+    /// so the dispatcher's per-frame re-queue stays allocation
+    /// free.
+    #[allow(clippy::result_large_err)]
     pub fn try_take(self) -> Result<DrainResult, Self> {
         match self.kind {
             PendingKind::Invoke { rx, plugin, command_id } => match rx.try_recv() {
@@ -167,11 +157,7 @@ pub fn spawn_invoke<L: Logger>(
     command_id: String,
 ) {
     let label = format!("invoke {command_id}");
-    logger.log(
-        ConsoleSeverity::Info,
-        format!("plugin/{plugin_name}"),
-        format!("{label} started"),
-    );
+    logger.log(ConsoleSeverity::Info, format!("plugin/{plugin_name}"), format!("{label} started"));
 
     let (tx, rx) = mpsc::sync_channel(1);
     let plugin_clone = plugin.clone();
@@ -239,19 +225,13 @@ pub fn spawn_mount_by_token<L: Logger>(
     title: String,
 ) {
     let label = format!("mount {token}");
-    logger.log(
-        ConsoleSeverity::Info,
-        format!("plugin/{plugin_name}"),
-        format!("{label} started"),
-    );
+    logger.log(ConsoleSeverity::Info, format!("plugin/{plugin_name}"), format!("{label} started"));
 
     let (tx, rx) = mpsc::sync_channel(1);
     let plugin_clone = plugin.clone();
     let token_clone = token.clone();
     thread::spawn(move || {
-        let result = plugin_clone
-            .mount_by_token(&token_clone)
-            .map_err(|e| e.to_string());
+        let result = plugin_clone.mount_by_token(&token_clone).map_err(|e| e.to_string());
         let _ = tx.send(result);
         repaint.request_repaint();
     });
@@ -275,18 +255,10 @@ pub fn log_completion<L: Logger>(
     detail: &str,
 ) {
     let elapsed = started.elapsed();
-    logger.log(
-        severity,
-        format!("plugin/{plugin_name}"),
-        format!("{label} {detail} ({})", format_elapsed(elapsed)),
-    );
+    logger.log(severity, format!("plugin/{plugin_name}"), format!("{label} {detail} ({})", format_elapsed(elapsed)));
 }
 
 fn format_elapsed(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms < 1000 {
-        format!("{ms} ms")
-    } else {
-        format!("{:.2} s", d.as_secs_f64())
-    }
+    if ms < 1000 { format!("{ms} ms") } else { format!("{:.2} s", d.as_secs_f64()) }
 }
