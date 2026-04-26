@@ -43,6 +43,7 @@ pub enum LexError {
 }
 
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
+    let defines = collect_defines(source)?;
     let mut input: &str = source;
     let mut tokens = Vec::new();
     loop {
@@ -59,7 +60,83 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
         let end = source.len() - input.len();
         tokens.push(Token { kind, span: Span::new(start, end) });
     }
+    if !defines.is_empty() {
+        tokens = expand_defines(tokens, &defines);
+    }
     Ok(tokens)
+}
+
+/// Walk the source line-by-line and pull `#define NAME body` entries
+/// into a substitution map. The `#define` lines themselves are still
+/// dropped by [`preprocessor_line`] during the main lex; this pass
+/// just remembers what each name was bound to so we can expand uses
+/// in a post-step. Lex errors inside a body silently drop the entry
+/// so an unparseable define doesn't block the whole file.
+fn collect_defines(source: &str) -> Result<std::collections::HashMap<String, Vec<Token>>, LexError> {
+    let mut map = std::collections::HashMap::new();
+    for raw_line in source.split_inclusive('\n') {
+        let trimmed = raw_line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#define") else {
+            continue;
+        };
+        let body = rest.trim_start_matches([' ', '\t']).trim_end_matches(['\r', '\n', ' ', '\t']);
+        let mut parts = body.splitn(2, |c: char| c.is_whitespace());
+        let Some(name) = parts.next() else { continue };
+        if name.is_empty() || !is_ident_start(name) {
+            continue;
+        }
+        let value_src = parts.next().unwrap_or("").trim();
+        if value_src.is_empty() {
+            map.insert(name.to_owned(), Vec::new());
+            continue;
+        }
+        if let Some(body_tokens) = lex_define_body(value_src) {
+            map.insert(name.to_owned(), body_tokens);
+        }
+    }
+    Ok(map)
+}
+
+fn is_ident_start(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+}
+
+/// Lex a `#define` body in isolation. Returns `None` if any token
+/// fails to lex -- a malformed body shouldn't block the rest of the
+/// file. Tokens carry zero-length spans because the substitution
+/// step overwrites them with the use-site span.
+fn lex_define_body(body: &str) -> Option<Vec<Token>> {
+    let mut input: &str = body;
+    let mut out = Vec::new();
+    loop {
+        skip_trivia(&mut input);
+        if input.is_empty() {
+            break;
+        }
+        let kind = lex_one(&mut input).ok()?;
+        out.push(Token { kind, span: Span::new(0, 0) });
+    }
+    Some(out)
+}
+
+/// Replace each `Ident(name)` whose name is in the define map with
+/// the define's body tokens, copying the use-site span onto every
+/// substituted token so error reporting stays anchored to where the
+/// macro was referenced.
+fn expand_defines(tokens: Vec<Token>, defines: &std::collections::HashMap<String, Vec<Token>>) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    for tok in tokens {
+        if let TokenKind::Ident(ref name) = tok.kind
+            && let Some(body) = defines.get(name)
+        {
+            for body_tok in body {
+                out.push(Token { kind: body_tok.kind.clone(), span: tok.span });
+            }
+            continue;
+        }
+        out.push(tok);
+    }
+    out
 }
 
 fn lex_one(input: &mut &str) -> ModalResult<TokenKind> {
@@ -138,14 +215,14 @@ fn lex_number(input: &mut &str) -> ModalResult<TokenKind> {
 
 fn hex_int(input: &mut &str) -> ModalResult<TokenKind> {
     let s: &str =
-        preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit() || c == '_')).parse_next(input)?;
+        preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit() || c == '_' || c == '\'')).parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 16)))
 }
 
 fn bin_int(input: &mut &str) -> ModalResult<TokenKind> {
     let s: &str =
-        preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1' || c == '_')).parse_next(input)?;
+        preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1' || c == '_' || c == '\'')).parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 2)))
 }
@@ -156,7 +233,7 @@ fn bin_int(input: &mut &str) -> ModalResult<TokenKind> {
 /// to decimal would silently miscompile a few patterns; ImHex's
 /// reference says the leading-zero form is octal so we match.
 fn oct_int(input: &mut &str) -> ModalResult<TokenKind> {
-    let s: &str = preceded(alt(("0o", "0O")), take_while(1.., |c: char| ('0'..='7').contains(&c) || c == '_'))
+    let s: &str = preceded(alt(("0o", "0O")), take_while(1.., |c: char| ('0'..='7').contains(&c) || c == '_' || c == '\''))
         .parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 8)))
@@ -167,31 +244,31 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
     // integer / fraction / exponent. We reject leading underscores
     // by requiring the first char to be a digit.
     let _first_digit: char = one_of(|c: char| c.is_ascii_digit()).parse_next(input)?;
-    let rest_int: &str = take_while(0.., |c: char| c.is_ascii_digit() || c == '_').parse_next(input)?;
+    let rest_int: &str = take_while(0.., |c: char| c.is_ascii_digit() || c == '_' || c == '\'').parse_next(input)?;
     let mut int_part = String::with_capacity(1 + rest_int.len());
     int_part.push(_first_digit);
     int_part.push_str(rest_int);
     let fraction: Option<&str> =
-        opt(preceded(".", take_while(0.., |c: char| c.is_ascii_digit() || c == '_'))).parse_next(input)?;
+        opt(preceded(".", take_while(0.., |c: char| c.is_ascii_digit() || c == '_' || c == '\''))).parse_next(input)?;
     let exponent: Option<(&str, Option<&str>, &str)> =
-        opt((alt(("e", "E")), opt(alt(("+", "-"))), take_while(1.., |c: char| c.is_ascii_digit() || c == '_')))
+        opt((alt(("e", "E")), opt(alt(("+", "-"))), take_while(1.., |c: char| c.is_ascii_digit() || c == '_' || c == '\'')))
             .parse_next(input)?;
     consume_int_suffixes(input)?;
 
     if fraction.is_none() && exponent.is_none() {
         return Ok(TokenKind::Int(parse_int(&int_part, 10)));
     }
-    let mut s = int_part.replace('_', "");
+    let mut s: String = int_part.chars().filter(|c| *c != '_' && *c != '\'').collect();
     if let Some(f) = fraction {
         s.push('.');
-        s.push_str(&f.replace('_', ""));
+        s.extend(f.chars().filter(|c| *c != '_' && *c != '\''));
     }
     if let Some((e, sign, digits)) = exponent {
         s.push_str(e);
         if let Some(sign) = sign {
             s.push_str(sign);
         }
-        s.push_str(&digits.replace('_', ""));
+        s.extend(digits.chars().filter(|c| *c != '_' && *c != '\''));
     }
     // C-style `f`/`F`/`d`/`D` suffix on float literals (`100.f`,
     // `0.5d`). The width is informational; we always store as f64.
@@ -212,7 +289,7 @@ fn consume_int_suffixes(input: &mut &str) -> ModalResult<()> {
 }
 
 fn parse_int(s: &str, radix: u32) -> u128 {
-    let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+    let cleaned: String = s.chars().filter(|c| *c != '_' && *c != '\'').collect();
     u128::from_str_radix(&cleaned, radix).unwrap_or(0)
 }
 

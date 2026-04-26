@@ -217,6 +217,22 @@ fn integer_literal_underscore_separators() {
 }
 
 #[test]
+fn integer_literal_apostrophe_separators() {
+    // C++14-style digit separators: `0xA000'0002` and `1'000'000`.
+    // Several corpus templates use this for hex grouping.
+    let ast = parse_str("u32 x = 0xA000'0002;");
+    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else {
+        panic!()
+    };
+    assert_eq!(*value, 0xA000_0002);
+    let ast = parse_str("u32 y = 1'000'000;");
+    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else {
+        panic!()
+    };
+    assert_eq!(*value, 1_000_000);
+}
+
+#[test]
 fn const_field_decl() {
     let ast = parse_str("const u32 MAGIC = 0xDEADBEEF;");
     let TopItem::Stmt(Stmt::FieldDecl { is_const, init, .. }) = &ast.items[0] else { panic!() };
@@ -368,6 +384,36 @@ fn pick(u8 a, u8 b) {
 ",
     );
     assert_eq!(ast.items.len(), 1);
+}
+
+#[test]
+fn define_macro_expands_at_use_site() {
+    // `#define NAME body` -- name is replaced by the body's tokens
+    // wherever it appears as an identifier. The use-site span is
+    // preserved so errors still point at the use, not the define.
+    let ast = parse_str(
+        "\
+#define MAGIC_LEN 4
+char magic[MAGIC_LEN];
+",
+    );
+    let TopItem::Stmt(Stmt::FieldDecl { array, .. }) = &ast.items[0] else { panic!() };
+    let Some(ArraySize::Fixed(Expr::IntLit { value, .. })) = array else { panic!() };
+    assert_eq!(*value, 4);
+}
+
+#[test]
+fn define_macro_expands_to_string_literal() {
+    let ast = parse_str(
+        "\
+#define MAGIC \"FOO\"
+char magic[std::string::length(MAGIC)];
+",
+    );
+    let TopItem::Stmt(Stmt::FieldDecl { array, .. }) = &ast.items[0] else { panic!() };
+    let Some(ArraySize::Fixed(_)) = array else { panic!() };
+    // The define body itself parsed; further evaluation happens at
+    // run time. We just need the tokens to reach the parser.
 }
 
 #[test]
