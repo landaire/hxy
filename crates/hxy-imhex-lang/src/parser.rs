@@ -129,6 +129,44 @@ impl Parser {
         }
     }
 
+    /// Consume a single `]`. The lexer eagerly merges `]]` into one
+    /// token to flag attribute closers, so when an inner `[idx]]`
+    /// would close both an index and an attribute (or two arrays in
+    /// a row), we split the merged token here so each consumer gets
+    /// its own `]`.
+    fn expect_rbracket(&mut self) -> Result<Token, ParseError> {
+        if matches!(self.peek_kind(), Some(TokenKind::RBracketBracket)) {
+            let merged = self.tokens[self.pos].clone();
+            let mid = merged.span.start + 1;
+            self.tokens[self.pos] =
+                Token { kind: TokenKind::RBracket, span: Span::new(merged.span.start, mid) };
+            self.tokens
+                .insert(self.pos + 1, Token { kind: TokenKind::RBracket, span: Span::new(mid, merged.span.end) });
+        }
+        self.expect_kind(&TokenKind::RBracket, "]")
+    }
+
+    /// Consume `]]`. Mirror of [`Self::expect_rbracket`] for the
+    /// other direction: when the source has `] ]` (whitespace-
+    /// separated), the lexer emits two `RBracket`s and we accept
+    /// the pair as an attribute closer.
+    fn expect_rbracket_bracket(&mut self) -> Result<Token, ParseError> {
+        if matches!(self.peek_kind(), Some(TokenKind::RBracketBracket)) {
+            return self.expect_kind(&TokenKind::RBracketBracket, "]]");
+        }
+        if matches!(self.peek_kind(), Some(TokenKind::RBracket))
+            && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::RBracket))
+        {
+            let first = self.bump().unwrap();
+            let second = self.bump().unwrap();
+            return Ok(Token {
+                kind: TokenKind::RBracketBracket,
+                span: Span::new(first.span.start, second.span.end),
+            });
+        }
+        self.expect_kind(&TokenKind::RBracketBracket, "]]")
+    }
+
     fn expect_ident(&mut self) -> Result<(String, Span), ParseError> {
         match self.peek() {
             Some(Token { kind: TokenKind::Ident(_), .. }) => {
@@ -490,8 +528,21 @@ impl Parser {
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, ParseError> {
         let (name, name_span) = self.expect_ident()?;
         let value = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
-        let end = value.as_ref().map(|e| e.span().end).unwrap_or(name_span.end);
-        Ok(EnumVariant { name, value, span: Span::new(name_span.start, end) })
+        // Optional `... hi` (or `.. hi`) tail for range variants:
+        // `Reserved = 0 ... 7,` matches values 0 through 7 inclusive.
+        let value_end = if value.is_some() && self.eat_kind(&TokenKind::Dot) {
+            self.expect_kind(&TokenKind::Dot, "..")?;
+            let _ = self.eat_kind(&TokenKind::Dot);
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        let end = value_end
+            .as_ref()
+            .map(|e| e.span().end)
+            .or_else(|| value.as_ref().map(|e| e.span().end))
+            .unwrap_or(name_span.end);
+        Ok(EnumVariant { name, value, value_end, span: Span::new(name_span.start, end) })
     }
 
     fn parse_bitfield_decl(&mut self) -> Result<Stmt, ParseError> {
@@ -516,15 +567,25 @@ impl Parser {
     }
 
     fn parse_bitfield_field(&mut self) -> Result<BitfieldField, ParseError> {
-        let (name, name_span) = self.expect_soft_ident()?;
+        // ImHex bitfields accept either `name : width` or
+        // `Type name : width`, the latter for projecting bits as an
+        // enum/typed value. We parse a TypeRef speculatively: if the
+        // next token is `:`, the "type" was actually the name; else
+        // it's a real prefix and we read the name after it.
+        let head = self.parse_type_ref()?;
+        let (ty, name, name_span) = if matches!(self.peek_kind(), Some(TokenKind::Colon)) {
+            let name = head.path.last().cloned().unwrap_or_default();
+            (None, name, head.span)
+        } else {
+            let (n, s) = self.expect_soft_ident()?;
+            (Some(head), n, s)
+        };
         self.expect_kind(&TokenKind::Colon, ":")?;
         let width = self.parse_expr()?;
-        // Optional `[[attrs]]` after the width: ImHex bitfields can
-        // carry rendering hints per field. Parse and drop until the
-        // attribute story lands.
         let _ = self.parse_optional_attrs()?;
         let end = self.expect_kind(&TokenKind::Semi, ";")?.span.end;
-        Ok(BitfieldField { name, width, span: Span::new(name_span.start, end) })
+        let start = ty.as_ref().map(|t| t.span.start).unwrap_or(name_span.start);
+        Ok(BitfieldField { name, width, ty, span: Span::new(start, end) })
     }
 
     fn parse_namespace(&mut self) -> Result<Stmt, ParseError> {
@@ -1050,11 +1111,11 @@ impl Parser {
             self.expect_kind(&TokenKind::LParen, "(")?;
             let cond = self.parse_expr()?;
             self.expect_kind(&TokenKind::RParen, ")")?;
-            self.expect_kind(&TokenKind::RBracket, "]")?;
+            self.expect_rbracket()?;
             return Ok(Some(ArraySize::While(cond)));
         }
         let expr = self.parse_expr()?;
-        self.expect_kind(&TokenKind::RBracket, "]")?;
+        self.expect_rbracket()?;
         Ok(Some(ArraySize::Fixed(expr)))
     }
 }
@@ -1119,7 +1180,7 @@ impl Parser {
                 }
             }
         }
-        self.expect_kind(&TokenKind::RBracketBracket, "]]")?;
+        self.expect_rbracket_bracket()?;
         Ok(Attrs(attrs))
     }
 
@@ -1261,7 +1322,7 @@ impl Parser {
                 TokenKind::LBracket => {
                     self.bump();
                     let index = self.parse_expr()?;
-                    let close = self.expect_kind(&TokenKind::RBracket, "]")?;
+                    let close = self.expect_rbracket()?;
                     lhs = Expr::Index {
                         target: Box::new(lhs.clone()),
                         index: Box::new(index),

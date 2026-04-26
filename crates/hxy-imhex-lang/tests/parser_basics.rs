@@ -223,3 +223,85 @@ fn const_field_decl() {
     assert!(*is_const);
     assert!(init.is_some());
 }
+
+#[test]
+fn bitfield_typed_field_prefix() {
+    // ImHex bitfields can prefix a field with a type that projects
+    // the bit-slice as that type (typically an enum). The parser
+    // must accept both `name : width` and `Type name : width`.
+    let ast = parse_str(
+        "\
+bitfield Flags {
+    bool A : 1;
+    plain : 3;
+    SomeEnum tagged : 4;
+};
+",
+    );
+    let TopItem::Stmt(Stmt::BitfieldDecl(decl)) = &ast.items[0] else { panic!() };
+    assert_eq!(decl.fields.len(), 3);
+    assert_eq!(decl.fields[0].name, "A");
+    assert!(decl.fields[0].ty.as_ref().is_some_and(|t| t.leaf() == "bool"));
+    assert_eq!(decl.fields[1].name, "plain");
+    assert!(decl.fields[1].ty.is_none());
+    assert_eq!(decl.fields[2].name, "tagged");
+    assert!(decl.fields[2].ty.as_ref().is_some_and(|t| t.leaf() == "SomeEnum"));
+}
+
+#[test]
+fn enum_range_variant() {
+    // `Reserved = 0 ... 7` -- the variant covers an inclusive range
+    // of integer values. We accept `..` and `...` interchangeably.
+    let ast = parse_str(
+        "\
+enum E : u8 {
+    Solo = 1,
+    Reserved = 0 ... 7,
+    Tail = 8 .. 15
+};
+",
+    );
+    let TopItem::Stmt(Stmt::EnumDecl(decl)) = &ast.items[0] else { panic!() };
+    assert_eq!(decl.variants.len(), 3);
+    assert!(decl.variants[0].value_end.is_none());
+    let r = &decl.variants[1];
+    assert_eq!(r.name, "Reserved");
+    assert!(r.value.is_some() && r.value_end.is_some());
+    assert!(decl.variants[2].value_end.is_some());
+}
+
+#[test]
+fn float_literal_with_c_style_suffix() {
+    // `100.f` and `0.5d` are C-style float suffixes used by patterns
+    // imported from BT/C sources. The suffix is informational; the
+    // parsed value is a regular f64.
+    let ast = parse_str("u32 x = 0; auto f = 100.f; auto d = 0.5d;");
+    // Three statements; the lexer must not have rejected the suffixes.
+    assert_eq!(ast.items.len(), 3);
+}
+
+#[test]
+fn rbracketbracket_splits_for_inner_index() {
+    // `arr[expr]]` -- `]]` is lexed as the attribute closer but here
+    // it really is two `]`s (closing the index, then closing the
+    // outer array). The parser must split the merged token.
+    let ast = parse_str(
+        "\
+struct S {
+    u8 outer[parent.refs[0]];
+};
+",
+    );
+    let TopItem::Stmt(Stmt::StructDecl(decl)) = &ast.items[0] else { panic!() };
+    let Stmt::FieldDecl { array, .. } = &decl.body[0] else { panic!() };
+    matches!(array, Some(ArraySize::Fixed(_)));
+}
+
+#[test]
+fn whitespace_separated_attribute_close_accepted() {
+    // `[[name("x")] ]` -- some hand-edited templates put a stray
+    // space inside the closer, which the lexer emits as two `]`s.
+    // The parser should accept the pair as `]]`.
+    let ast = parse_str("u8 b [[name(\"x\")] ];");
+    assert_eq!(ast.items.len(), 1);
+}

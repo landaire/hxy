@@ -193,6 +193,11 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
         }
         s.push_str(&digits.replace('_', ""));
     }
+    // C-style `f`/`F`/`d`/`D` suffix on float literals (`100.f`,
+    // `0.5d`). The width is informational; we always store as f64.
+    if input.chars().next().is_some_and(|c| matches!(c, 'f' | 'F' | 'd' | 'D')) {
+        any.parse_next(input)?;
+    }
     Ok(TokenKind::Float(s.parse::<f64>().unwrap_or(0.0)))
 }
 

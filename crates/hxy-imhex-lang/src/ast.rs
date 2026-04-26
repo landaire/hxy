@@ -108,6 +108,11 @@ pub struct EnumDecl {
 pub struct EnumVariant {
     pub name: String,
     pub value: Option<Expr>,
+    /// Optional upper bound for variants spelled as a range:
+    /// `Reserved = 0 ... 7,`. When set, the variant matches every
+    /// integer in `[value, value_end]`. The interpreter currently
+    /// uses only `value` for naming; range matching is best-effort.
+    pub value_end: Option<Expr>,
     pub span: Span,
 }
 
@@ -125,6 +130,11 @@ pub struct BitfieldDecl {
 pub struct BitfieldField {
     pub name: String,
     pub width: Expr,
+    /// Optional type prefix: `Type name : width;`. ImHex uses this
+    /// to project a bit-slice as an enum or other typed value.
+    /// Currently captured for round-tripping; the interpreter still
+    /// reads raw integer bits.
+    pub ty: Option<TypeRef>,
     pub span: Span,
 }
 
