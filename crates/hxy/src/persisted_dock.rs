@@ -28,6 +28,7 @@ use hxy_vfs::TabSource;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::compare::CompareId;
 use crate::file::FileId;
 use crate::file::MountId;
 use crate::file::WorkspaceId;
@@ -65,6 +66,11 @@ pub enum PersistedTab {
     /// remount, plus a display title for the placeholder if the
     /// remount fails on restart.
     PluginMount { plugin_name: String, token: String, title: String },
+    /// Side-by-side byte-diff tab. Both sides are keyed by their
+    /// originating [`TabSource`] so the host can re-read fresh
+    /// bytes from each on restart and spawn a new
+    /// [`crate::compare::CompareSession`].
+    Compare { a: TabSource, b: TabSource },
 }
 
 /// Stable counterpart to [`WorkspaceTab`]. Same idea: keep the
@@ -101,6 +107,7 @@ pub struct RestoreMaps<'a> {
     pub files_by_source: &'a HashMap<TabSource, FileId>,
     pub workspaces_by_parent: &'a HashMap<TabSource, WorkspaceId>,
     pub mounts_by_token: &'a HashMap<(String, String), MountId>,
+    pub compares_by_sources: &'a HashMap<(TabSource, TabSource), CompareId>,
 }
 
 /// Snapshot the live outer dock plus every workspace's inner dock
@@ -113,8 +120,10 @@ pub fn live_to_persisted(
     workspaces: &std::collections::BTreeMap<WorkspaceId, crate::file::Workspace>,
     files: &HashMap<FileId, crate::file::OpenFile>,
     mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
+    compares: &std::collections::BTreeMap<CompareId, crate::compare::CompareSession>,
 ) -> PersistedDock {
-    let outer_persisted = outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts));
+    let outer_persisted =
+        outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts, compares));
     let mut workspace_layouts: Vec<(TabSource, DockState<PersistedWorkspaceTab>)> = Vec::new();
     for ws in workspaces.values() {
         let Some(parent_source) = files.get(&ws.editor_id).and_then(|f| f.source_kind.clone()) else {
@@ -136,6 +145,7 @@ fn live_to_persisted_tab(
     workspaces: &std::collections::BTreeMap<WorkspaceId, crate::file::Workspace>,
     files: &HashMap<FileId, crate::file::OpenFile>,
     mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
+    compares: &std::collections::BTreeMap<CompareId, crate::compare::CompareSession>,
 ) -> Option<PersistedTab> {
     Some(match tab {
         Tab::Welcome => PersistedTab::Welcome,
@@ -158,13 +168,16 @@ fn live_to_persisted_tab(
                 title: m.display_name.clone(),
             }
         }
-        // Compare tabs aren't persisted across restarts: the diff is
-        // recomputed on demand and pinning a CompareId would require
-        // serialising both panes' editor state, which is more work
-        // than the feature warrants today. Returning `None` filters
-        // the leaf out of the saved layout while letting the
-        // surrounding splits / sizes survive.
-        Tab::Compare(_) => return None,
+        Tab::Compare(id) => {
+            // Pin the compare to its two source identities so the
+            // host can reread bytes from disk / VFS on restart and
+            // respawn a fresh session. Anonymous-buffer panes
+            // (no TabSource) drop the whole tab from the layout.
+            let session = compares.get(id)?;
+            let a = session.a.source.clone()?;
+            let b = session.b.source.clone()?;
+            PersistedTab::Compare { a, b }
+        }
     })
 }
 
@@ -212,6 +225,10 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
         PersistedTab::PluginMount { plugin_name, token, .. } => {
             let key = (plugin_name.clone(), token.clone());
             Tab::PluginMount(*maps.mounts_by_token.get(&key)?)
+        }
+        PersistedTab::Compare { a, b } => {
+            let key = (a.clone(), b.clone());
+            Tab::Compare(*maps.compares_by_sources.get(&key)?)
         }
     })
 }

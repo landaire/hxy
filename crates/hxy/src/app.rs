@@ -1264,6 +1264,7 @@ impl HxyApp {
             &self.workspaces,
             &self.files,
             &self.mounts,
+            &self.compares,
         );
         let json = match serde_json::to_string(&snapshot) {
             Ok(j) => j,
@@ -1321,10 +1322,18 @@ impl HxyApp {
             .iter()
             .map(|(id, m)| ((m.plugin_name.clone(), m.token.clone()), *id))
             .collect();
+        // Re-spawn every compare session referenced by the saved
+        // dock before translating the layout, so the translation
+        // can resolve `PersistedTab::Compare` to a live id. Compare
+        // tabs whose source bytes can't be read this launch (file
+        // deleted, parent VFS gone) drop out -- the layout's
+        // surrounding splits / sizes survive without them.
+        let compares_by_sources = self.respawn_persisted_compares(&snapshot);
         let maps = crate::persisted_dock::RestoreMaps {
             files_by_source: &files_by_source,
             workspaces_by_parent: &workspaces_by_parent,
             mounts_by_token: &mounts_by_token,
+            compares_by_sources: &compares_by_sources,
         };
         let (outer, inner_by_id) = crate::persisted_dock::persisted_to_live(&snapshot, &maps);
         self.dock = outer;
@@ -1334,6 +1343,104 @@ impl HxyApp {
             }
         }
     }
+
+    /// Walk `snapshot` for [`PersistedTab::Compare`] entries, read
+    /// fresh bytes for each side, and register a live
+    /// [`crate::compare::CompareSession`]. Returns a lookup map
+    /// keyed by the `(a, b)` source pair so the dock translation
+    /// can resolve persisted compare tabs to live ids.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn respawn_persisted_compares(
+        &mut self,
+        snapshot: &crate::persisted_dock::PersistedDock,
+    ) -> HashMap<(TabSource, TabSource), crate::compare::CompareId> {
+        let mut out = HashMap::new();
+        for (_, tab) in snapshot.outer.iter_all_tabs() {
+            let crate::persisted_dock::PersistedTab::Compare { a, b } = tab else { continue };
+            let key = (a.clone(), b.clone());
+            if out.contains_key(&key) {
+                continue;
+            }
+            match self.spawn_compare_from_sources(a.clone(), b.clone()) {
+                Ok(id) => {
+                    out.insert(key, id);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "restore compare tab -- dropping from layout");
+                }
+            }
+        }
+        out
+    }
+
+    /// Read bytes for both sides of a persisted compare and spawn
+    /// a fresh [`crate::compare::CompareSession`]. Filesystem
+    /// sources are read directly; VFS-entry sources read through
+    /// the parent mount (which `restore_open_tabs` has already
+    /// remounted).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_compare_from_sources(
+        &mut self,
+        a: TabSource,
+        b: TabSource,
+    ) -> Result<crate::compare::CompareId, CompareSpawnError> {
+        let a_picked = self.read_tab_source_bytes(&a)?;
+        let b_picked = self.read_tab_source_bytes(&b)?;
+        let id = crate::compare::CompareId::new(self.next_compare_id);
+        self.next_compare_id += 1;
+        let session = crate::compare::CompareSession::new(
+            id,
+            crate::compare::ComparePane::from_bytes(a_picked.name, Some(a), a_picked.bytes),
+            crate::compare::ComparePane::from_bytes(b_picked.name, Some(b), b_picked.bytes),
+        );
+        // Initial diff fires async via the per-frame debounce path
+        // when the tab next renders -- no ctx is available here
+        // (we're inside the restore pass that runs before the
+        // first frame).
+        self.compares.insert(id, session);
+        Ok(id)
+    }
+
+    /// Read whatever a [`TabSource`] resolves to as a byte buffer
+    /// for compare's purposes. Filesystem reads from disk, VFS
+    /// entries route through the parent mount.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_tab_source_bytes(&self, source: &TabSource) -> Result<RestoredCompareSide, CompareSpawnError> {
+        match source {
+            TabSource::Filesystem(path) => {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| CompareSpawnError::ReadFile { path: path.clone(), source: e })?;
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                Ok(RestoredCompareSide { name, bytes })
+            }
+            TabSource::VfsEntry { parent, entry_path } => {
+                let mount = self
+                    .find_mount_for_source(parent.as_ref())
+                    .ok_or_else(|| CompareSpawnError::ReadOpenFile("parent VFS mount missing".to_owned()))?;
+                let bytes = read_vfs_entry(&*mount.fs, entry_path)
+                    .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
+                let name = entry_path
+                    .rsplit('/')
+                    .find(|s| !s.is_empty())
+                    .unwrap_or(entry_path)
+                    .to_owned();
+                Ok(RestoredCompareSide { name, bytes })
+            }
+            TabSource::Anonymous { .. } | TabSource::PluginMount { .. } => {
+                Err(CompareSpawnError::ReadOpenFile(format!("unsupported compare source: {source:?}")))
+            }
+        }
+    }
+}
+
+/// Bytes + display name produced by [`HxyApp::read_tab_source_bytes`].
+#[cfg(not(target_arch = "wasm32"))]
+struct RestoredCompareSide {
+    name: String,
+    bytes: Vec<u8>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7715,7 +7822,11 @@ fn render_compare_pane(
             compare_kind_style(kind, text_mode)
         });
     }
-    let _ = view.show(ui);
+    let response = view.show(ui);
+    // Latch the just-rendered scroll offset back onto the editor so
+    // `CompareSession::sync_scroll` sees the user's drag this frame
+    // and can mirror it to the other pane next frame.
+    pane.editor.on_response(&response, columns);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
