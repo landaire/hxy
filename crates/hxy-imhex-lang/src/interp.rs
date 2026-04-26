@@ -1059,31 +1059,30 @@ impl<S: HexSource> Interpreter<S> {
             for (i, param_name) in decl.template_params.iter().enumerate() {
                 let arg_expr = ty.template_args.get(i);
                 let arg_ty = arg_expr.and_then(expr_as_typeref);
-                let bound_as_type = arg_ty.is_some();
                 if let Some(t) = arg_ty {
                     self.types.insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: t });
                     template_type_aliases.push(param_name.clone());
                 }
-                // Eval the arg as a value too -- some templates use
-                // the param both as a type (`SizeType size;`) and as
-                // a value (`if (Magic == bytes) ...`). When the arg
-                // is type-shaped (`u8`, `Bar<X>`, ...) eval would
-                // fail with undefined-name, so we substitute a
-                // placeholder string instead.
-                let value = if bound_as_type {
-                    arg_expr
+                // Bind the arg's *value* in scope so the body can
+                // use it for arithmetic / comparisons too. Some
+                // templates pass a name that resolves both as a
+                // type (`SizedString<u8>`) and as a value
+                // (`Array<T, no_of_runs>` -- `no_of_runs` is a
+                // sibling field). We try eval first; if it produces
+                // anything but `Void` we use that, otherwise fall
+                // back to a string placeholder so type-shaped args
+                // (`u8`, `Bar<X>`, ...) keep the run going.
+                let evaluated = arg_expr.map(|e| self.eval(e).unwrap_or(Value::Void));
+                let value = match evaluated {
+                    Some(v) if !matches!(v, Value::Void) => v,
+                    _ => arg_expr
                         .map(|e| match e {
                             Expr::Ident { name, .. } => Value::Str(name.clone()),
                             Expr::Path { segments, .. } => Value::Str(segments.join("::")),
                             Expr::TypeRefExpr { ty, .. } => Value::Str(ty.path.join("::")),
                             other => self.eval(other).unwrap_or(Value::Void),
                         })
-                        .unwrap_or(Value::Void)
-                } else {
-                    match arg_expr {
-                        Some(e) => self.eval(e)?,
-                        None => Value::Void,
-                    }
+                        .unwrap_or(Value::Void),
                 };
                 self.current_scope_mut().vars.insert(param_name.clone(), value);
             }
