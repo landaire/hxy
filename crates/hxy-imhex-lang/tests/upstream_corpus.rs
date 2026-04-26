@@ -27,6 +27,7 @@ use std::time::Duration;
 use hxy_imhex_lang::Interpreter;
 use hxy_imhex_lang::MemorySource;
 use hxy_imhex_lang::chained_resolver;
+use hxy_imhex_lang::extract_pragmas;
 use hxy_imhex_lang::parse;
 use hxy_imhex_lang::tokenize;
 
@@ -88,7 +89,8 @@ fn paired_fixture_run_passes_baseline() {
         };
         let Ok(bytes) = fs::read(&fixture) else { continue };
         let bytes = if bytes.len() > MAX_FIXTURE_BYTES { bytes[..MAX_FIXTURE_BYTES].to_vec() } else { bytes };
-        let outcome = run_with_deadline(program, bytes, resolver.clone());
+        let pragmas = extract_pragmas(&src);
+        let outcome = run_with_deadline(program, bytes, resolver.clone(), pragmas.endian);
         match outcome {
             RunOutcome::Ok => run_ok += 1,
             RunOutcome::Err(msg) => {
@@ -170,6 +172,7 @@ fn run_with_deadline(
     program: hxy_imhex_lang::ast::Program,
     bytes: Vec<u8>,
     resolver: hxy_imhex_lang::SharedResolver,
+    endian_pragma: Option<&'static str>,
 ) -> RunOutcome {
     let interrupt = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
@@ -182,6 +185,7 @@ fn run_with_deadline(
     let _ = thread::spawn(move || {
         let result = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver)
+            .with_default_endian(endian_pragma)
             .with_step_limit(STEP_LIMIT)
             .with_interrupt(interrupt_for_thread)
             .run(&program);

@@ -36,6 +36,7 @@ use std::time::Instant;
 use hxy_imhex_lang::Interpreter;
 use hxy_imhex_lang::MemorySource;
 use hxy_imhex_lang::chained_resolver;
+use hxy_imhex_lang::extract_pragmas;
 use hxy_imhex_lang::parse;
 use hxy_imhex_lang::tokenize;
 
@@ -152,6 +153,7 @@ fn probe_template(
     let program = Arc::new(program);
     let prog_for_thread = program.clone();
     let interrupt_for_thread = interrupt.clone();
+    let pragmas = extract_pragmas(&src);
     // Detach the worker rather than joining: in pathological cases
     // a single statement can dominate runtime (deep recursion in a
     // big node tree), and joining would block the probe waiting
@@ -161,6 +163,7 @@ fn probe_template(
     let _ = thread::spawn(move || {
         let result = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver_for_thread)
+            .with_default_endian(pragmas.endian)
             .with_step_limit(200_000)
             .with_interrupt(interrupt_for_thread)
             .run(&prog_for_thread);

@@ -42,6 +42,42 @@ pub enum LexError {
     Unterminated { what: &'static str, offset: usize },
 }
 
+/// Pragma directives extracted from the source ahead of the main
+/// lex pass. Surfaced separately because the lexer treats `#pragma`
+/// lines as trivia, but the host needs `#pragma endian` to seed the
+/// interpreter's default byte order.
+#[derive(Clone, Debug, Default)]
+pub struct Pragmas {
+    /// `#pragma endian big` / `little`, or `None` when unspecified.
+    pub endian: Option<&'static str>,
+}
+
+/// Walk the source line-by-line and extract pragma directives that
+/// influence runtime behavior. Currently handles `#pragma endian`;
+/// other pragmas (description, MIME, magic, ...) are decorative
+/// and stay as trivia.
+pub fn extract_pragmas(source: &str) -> Pragmas {
+    let mut out = Pragmas::default();
+    for raw_line in source.split_inclusive('\n') {
+        let trimmed = raw_line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#pragma") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        if name == "endian"
+            && let Some(value) = parts.next()
+        {
+            out.endian = match value.to_ascii_lowercase().as_str() {
+                "big" => Some("big"),
+                "little" | "native" => Some("little"),
+                _ => continue,
+            };
+        }
+    }
+    out
+}
+
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
     let defines = collect_defines(source)?;
     let mut input: &str = source;

@@ -39,6 +39,8 @@ pub use interp::RunResult;
 pub use interp::RuntimeError;
 pub use interp::Severity;
 pub use lexer::LexError;
+pub use lexer::Pragmas;
+pub use lexer::extract_pragmas;
 pub use lexer::tokenize;
 pub use parser::ParseError;
 pub use parser::parse;

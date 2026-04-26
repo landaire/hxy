@@ -243,6 +243,21 @@ impl<S: HexSource> Interpreter<S> {
         self
     }
 
+    /// Seed the interpreter's default byte order. Honours the
+    /// `#pragma endian` directive that templates declare at the top
+    /// of their source -- hosts call [`crate::extract_pragmas`] on
+    /// the raw source, then forward the result here. Templates can
+    /// still override per-field with `be u32` / `le u32` and at run
+    /// time via `std::core::set_endian(...)`.
+    pub fn with_default_endian(mut self, pragma: Option<&str>) -> Self {
+        match pragma {
+            Some("big") => self.endian = Endian::Big,
+            Some("little") | Some("native") | None => {}
+            _ => {}
+        }
+        self
+    }
+
     /// Plug an import resolver so the interpreter can pull in
     /// `import std.io;` and friends. Without this, imports are
     /// parsed but produce no decls.
@@ -462,9 +477,18 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn lookup_type(&self, ty: &TypeRef) -> Result<TypeDef, RuntimeError> {
-        // Try fully-qualified first, then the bare leaf. The decl
-        // collector registers both spellings, but typedef'd
-        // aliases land on the bare-leaf side so we fall through.
+        Ok(self.resolve_type_ref(ty)?.0)
+    }
+
+    /// Resolve a [`TypeRef`] through any alias chain and return the
+    /// concrete [`TypeDef`] plus the *fully-substituted* [`TypeRef`]
+    /// at the resolution point. The latter matters for callers that
+    /// then read a struct/enum/bitfield body: they need the
+    /// substituted template_args (`SizedString<u16>` -> the struct
+    /// receives `[TypeRefExpr(u16), Ident("char")]`, not the
+    /// alias's `[Ident("u16")]`) so the body's template-param
+    /// bindings are complete.
+    fn resolve_type_ref(&self, ty: &TypeRef) -> Result<(TypeDef, TypeRef), RuntimeError> {
         let qualified = ty.path.join("::");
         let mut current: TypeRef = if self.types.contains_key(&qualified) {
             TypeRef { path: vec![qualified], template_args: ty.template_args.clone(), span: ty.span }
@@ -475,10 +499,6 @@ impl<S: HexSource> Interpreter<S> {
             let name = current.leaf().to_owned();
             match self.types.get(&name) {
                 Some(TypeDef::Alias { params, target }) => {
-                    // Templated alias: substitute use-site args
-                    // (`Size<u32>` -> `T` becomes `u32` inside the
-                    // alias body) and continue resolving. A bare
-                    // alias with no params is a simple rename.
                     if !params.is_empty() {
                         let mut subs: HashMap<String, TypeRef> = HashMap::with_capacity(params.len());
                         for (param, arg) in params.iter().zip(current.template_args.iter()) {
@@ -495,10 +515,10 @@ impl<S: HexSource> Interpreter<S> {
                         };
                     }
                 }
-                Some(def) => return Ok(def.clone()),
+                Some(def) => return Ok((def.clone(), current)),
                 None => {
                     if let Some(prim) = generic_int_primitive(&name) {
-                        return Ok(TypeDef::Primitive(prim));
+                        return Ok((TypeDef::Primitive(prim), current));
                     }
                     return Err(RuntimeError::UnknownType { name: ty.leaf().to_owned() });
                 }
@@ -948,7 +968,7 @@ impl<S: HexSource> Interpreter<S> {
             });
             return Ok(Value::Bytes(bytes));
         }
-        let def = self.lookup_type(ty)?;
+        let (def, resolved_ty) = self.resolve_type_ref(ty)?;
         match def {
             TypeDef::Primitive(p) => {
                 let offset = self.cursor_tell();
@@ -969,9 +989,9 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(value)
             }
             TypeDef::Enum(e) => self.read_enum(name, &e, parent, attrs),
-            TypeDef::Struct(s) => self.read_struct(name, &s, ty, parent, attrs),
+            TypeDef::Struct(s) => self.read_struct(name, &s, &resolved_ty, parent, attrs),
             TypeDef::Bitfield(b) => self.read_bitfield(name, &b, parent, attrs),
-            TypeDef::Alias { .. } => unreachable!("lookup_type follows aliases"),
+            TypeDef::Alias { .. } => unreachable!("resolve_type_ref follows aliases"),
         }
     }
 
@@ -1016,33 +1036,61 @@ impl<S: HexSource> Interpreter<S> {
         if !decl.template_params.is_empty() {
             for (i, param_name) in decl.template_params.iter().enumerate() {
                 let arg_expr = ty.template_args.get(i);
-                if let Some(arg) = arg_expr
-                    && let Some(arg_ty) = expr_as_typeref(arg)
-                {
-                    self.types
-                        .insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: arg_ty });
+                let arg_ty = arg_expr.and_then(expr_as_typeref);
+                let bound_as_type = arg_ty.is_some();
+                if let Some(t) = arg_ty {
+                    self.types.insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: t });
                     template_type_aliases.push(param_name.clone());
                 }
-                let value = match arg_expr {
-                    Some(e) => self.eval(e)?,
-                    None => Value::Void,
+                // Eval the arg as a value too -- some templates use
+                // the param both as a type (`SizeType size;`) and as
+                // a value (`if (Magic == bytes) ...`). When the arg
+                // is type-shaped (`u8`, `Bar<X>`, ...) eval would
+                // fail with undefined-name, so we substitute a
+                // placeholder string instead.
+                let value = if bound_as_type {
+                    arg_expr
+                        .map(|e| match e {
+                            Expr::Ident { name, .. } => Value::Str(name.clone()),
+                            Expr::Path { segments, .. } => Value::Str(segments.join("::")),
+                            Expr::TypeRefExpr { ty, .. } => Value::Str(ty.path.join("::")),
+                            other => self.eval(other).unwrap_or(Value::Void),
+                        })
+                        .unwrap_or(Value::Void)
+                } else {
+                    match arg_expr {
+                        Some(e) => self.eval(e)?,
+                        None => Value::Void,
+                    }
                 };
                 self.current_scope_mut().vars.insert(param_name.clone(), value);
             }
         }
 
-        // Compose any parent struct's body before this one's. ImHex
-        // inheritance reads the parent fields first, then the child;
-        // we look the parent type up in the same registry and inline
-        // its statements. Multi-inheritance is not modelled.
-        let parent_body: Vec<Stmt> = if let Some(parent_ty) = decl.parent.as_ref() {
-            match self.lookup_type(parent_ty) {
-                Ok(TypeDef::Struct(p)) => p.body.clone(),
-                _ => Vec::new(),
+        // Compose every ancestor struct's body before this one's.
+        // ImHex inheritance reads parent fields first, then child;
+        // chains like `V5 : V4 : V3 : V2 : V1` (BMP's DIB header
+        // versions) need every level inlined, so we walk back from
+        // the innermost parent up to the eldest. We bound the walk
+        // at 32 hops to flag accidental cycles.
+        let mut parent_body: Vec<Stmt> = Vec::new();
+        if decl.parent.is_some() {
+            let mut chain: Vec<Vec<Stmt>> = Vec::new();
+            let mut current_parent = decl.parent.clone();
+            for _ in 0..32 {
+                let Some(parent_ty) = current_parent.as_ref() else { break };
+                let Ok(TypeDef::Struct(p)) = self.lookup_type(parent_ty) else { break };
+                let next_parent = p.parent.clone();
+                chain.push(p.body.clone());
+                current_parent = next_parent;
             }
-        } else {
-            Vec::new()
-        };
+            // Eldest first so the resulting `parent_body` reads the
+            // ancestors in the same source order they'd appear if
+            // hand-rolled (oldest fields at the start).
+            for body in chain.into_iter().rev() {
+                parent_body.extend(body);
+            }
+        }
 
         if !decl.is_union {
             for s in parent_body.iter().chain(decl.body.iter()) {
@@ -1611,6 +1659,17 @@ impl<S: HexSource> Interpreter<S> {
             // through. Returning 0 is the conservative fallback.
             return Ok(Value::UInt { value: 0, kind: PrimKind::u64() });
         }
+        // Last resort: if `name` matches an emitted struct/array
+        // node, return its value (or `Void` if the node didn't bind
+        // one). Templates reference field names as opaque handles
+        // when passing them to builtins (`add_virtual_file(name, file)`)
+        // -- without this fallback the eval errors with
+        // `undefined name`.
+        if let Some(indices) = self.nodes_by_name.get(name)
+            && let Some(idx) = indices.last()
+        {
+            return Ok(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
+        }
         Err(RuntimeError::UndefinedName { name: name.to_owned() })
     }
 
@@ -1746,12 +1805,22 @@ impl<S: HexSource> Interpreter<S> {
     /// land here.
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         Ok(Some(match name {
-            "set_endian" | "std::core::set_endian" | "std::mem::set_endian" => {
-                if matches!(args.first(), Some(Value::Bool(true))) {
-                    self.endian = Endian::Big;
-                } else if matches!(args.first(), Some(Value::Bool(false))) {
-                    self.endian = Endian::Little;
-                }
+            "set_endian"
+            | "std::core::set_endian"
+            | "std::mem::set_endian"
+            | "builtin::std::core::set_endian"
+            | "builtin::std::mem::set_endian" => {
+                // ImHex's `std::mem::Endian` enum: Native=0, Big=1,
+                // Little=2. The user-level shim coerces the enum to
+                // a u32 before calling the builtin, so we expect an
+                // integer here. `Bool(true)` is also accepted for
+                // legacy callers.
+                let kind = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                self.endian = match kind {
+                    1 => Endian::Big,
+                    2 => Endian::Little,
+                    _ => self.endian,
+                };
                 Value::Void
             }
             // Logging / diagnostics.
