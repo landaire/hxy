@@ -7626,7 +7626,17 @@ fn render_compare_pane(
     });
     let columns = state.app.hex_columns;
     let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
-    let mut view = pane.editor.view().id_salt(salt).columns(columns).value_highlight(highlight);
+    // Compare panes always show a colored minimap -- the per-pane
+    // visual is the whole point of the feature, so we don't gate it
+    // behind the user's global Show-Minimap toggle.
+    let mut view = pane
+        .editor
+        .view()
+        .id_salt(salt)
+        .columns(columns)
+        .value_highlight(highlight)
+        .minimap(true)
+        .minimap_colored(true);
     if pane.diff_colors && !diff_ranges.is_empty() {
         let ranges = diff_ranges.to_vec();
         let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
