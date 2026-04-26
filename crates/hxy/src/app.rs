@@ -5753,17 +5753,17 @@ fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
 }
 
 /// Pick the FileId that should drive commands gated on the active
-/// file when the user is focused on a `Tab::Workspace`. Prefers the
-/// inner-dock active tab (Editor or Entry); falls back to the
-/// workspace's editor when the focused inner tab is the VfsTree (no
-/// file backs the tree itself).
-fn inner_active_file(workspace: &crate::file::Workspace) -> FileId {
-    if let Some((_rect, tab)) = workspace.dock.iter_all_tabs().find_map(|(path, tab)| {
-        let leaf = workspace.dock.leaf(path.node_path()).ok()?;
-        (leaf.active.0 == path.tab.0).then_some(((), tab))
-    }) {
-        match tab {
-            crate::file::WorkspaceTab::Entry(file_id) => return *file_id,
+/// file when the user is focused on a `Tab::Workspace`. Uses the
+/// inner dock's *focused* leaf -- not just any leaf with an active
+/// tab -- so when the workspace is split (Editor in one leaf, an
+/// Entry in another) keystrokes route to whichever the user
+/// actually clicked into. Falls back to the workspace's editor when
+/// the focused inner tab is the VfsTree (no file backs the tree
+/// itself) or when nothing has focus yet.
+fn inner_active_file(workspace: &mut crate::file::Workspace) -> FileId {
+    if let Some((_, tab)) = workspace.dock.find_active_focused() {
+        match *tab {
+            crate::file::WorkspaceTab::Entry(file_id) => return file_id,
             crate::file::WorkspaceTab::Editor => return workspace.editor_id,
             crate::file::WorkspaceTab::VfsTree => {}
         }
@@ -5789,7 +5789,7 @@ fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
                 // tab is currently active in its inner dock: the
                 // editor, an opened entry, or (when the user has
                 // focused the tree) the editor as a fallback.
-                if let Some(workspace) = app.workspaces.get(&workspace_id) {
+                if let Some(workspace) = app.workspaces.get_mut(&workspace_id) {
                     let id = inner_active_file(workspace);
                     app.last_active_file = Some(id);
                     app.last_active_workspace = Some(workspace_id);
