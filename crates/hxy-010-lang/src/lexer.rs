@@ -64,6 +64,7 @@ fn skip_trivia(input: &mut &str) {
         let _ = opt(multispace1::<_, winnow::error::ContextError>).parse_next(input);
         let _ = opt(line_comment).parse_next(input);
         let _ = opt(block_comment).parse_next(input);
+        let _ = opt(preprocessor_line).parse_next(input);
         if input.len() == before_len {
             break;
         }
@@ -72,6 +73,38 @@ fn skip_trivia(input: &mut &str) {
 
 fn line_comment(input: &mut &str) -> ModalResult<()> {
     ("//", take_till(0.., |c| c == '\n')).void().parse_next(input)
+}
+
+/// Skip `#include`, `#define`, `#ifdef`, `#error`, `#pragma`, etc. as
+/// trivia. The host's `expand_includes` resolves `#include` before we
+/// lex when running templates from a sandboxed directory; everything
+/// else (`#define` macros, conditional blocks, error directives) is
+/// out of scope -- 010's preprocessor is rarely load-bearing in
+/// practice and dropping the directive lines lets the rest of the
+/// template parse. The trailing `\` line continuation common in
+/// `#define` macros is handled by consuming up to the next *non-
+/// continued* newline.
+fn preprocessor_line(input: &mut &str) -> ModalResult<()> {
+    if !input.starts_with('#') {
+        return Err(winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()));
+    }
+    *input = &input[1..];
+    loop {
+        match input.find('\n') {
+            None => {
+                *input = "";
+                return Ok(());
+            }
+            Some(idx) => {
+                let line = &input[..idx];
+                let continued = line.trim_end_matches(['\r']).ends_with('\\');
+                *input = &input[idx + 1..];
+                if !continued {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 fn block_comment(input: &mut &str) -> ModalResult<()> {
@@ -97,16 +130,32 @@ fn lex_number(input: &mut &str) -> ModalResult<TokenKind> {
     alt((hex_int, bin_int, float_or_int)).parse_next(input)
 }
 
+// Integer literals exceeding `u64::MAX` saturate to `0` rather than
+// failing the lex. Templates that genuinely encode values >2^64 are
+// out of scope for 010 -- its widest scalar is `uint64` -- so the
+// pragmatic floor avoids threading a dedicated `IntegerOverflow`
+// variant through the winnow combinator chain.
 fn hex_int(input: &mut &str) -> ModalResult<TokenKind> {
-    preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit()))
-        .map(|s: &str| TokenKind::Int(u64::from_str_radix(s, 16).unwrap_or(0)))
-        .parse_next(input)
+    let s: &str = preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit())).parse_next(input)?;
+    consume_int_suffixes(input)?;
+    Ok(TokenKind::Int(u64::from_str_radix(s, 16).unwrap_or(0)))
 }
 
 fn bin_int(input: &mut &str) -> ModalResult<TokenKind> {
-    preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1'))
-        .map(|s: &str| TokenKind::Int(u64::from_str_radix(s, 2).unwrap_or(0)))
-        .parse_next(input)
+    let s: &str = preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1')).parse_next(input)?;
+    consume_int_suffixes(input)?;
+    Ok(TokenKind::Int(u64::from_str_radix(s, 2).unwrap_or(0)))
+}
+
+/// Consume any run of `u`/`U`/`l`/`L` after an integer literal. C-
+/// style suffixes like `UL`, `LL`, `ULL` are common in templates;
+/// the actual width is the same `u64` we already parsed, so the
+/// suffix is purely lexical noise.
+fn consume_int_suffixes(input: &mut &str) -> ModalResult<()> {
+    while input.chars().next().is_some_and(|c| matches!(c, 'u' | 'U' | 'l' | 'L')) {
+        any.parse_next(input)?;
+    }
+    Ok(())
 }
 
 fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
@@ -117,7 +166,12 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
         opt((alt(("e", "E")), opt(alt(("+", "-"))), take_while(1.., |c: char| c.is_ascii_digit())))
             .parse_next(input)?;
     // Type suffixes are consumed but don't change the parsed value.
-    let _ = opt(one_of(('f', 'F', 'l', 'L', 'u', 'U'))).parse_next(input)?;
+    // 010 / C templates can stack multiple (`UL`, `LL`, `ull`, etc.)
+    // -- consume any run of recognised letters so a literal like
+    // `0xFFFFFFFFUL` lexes cleanly.
+    while input.chars().next().is_some_and(|c| matches!(c, 'f' | 'F' | 'l' | 'L' | 'u' | 'U')) {
+        any.parse_next(input)?;
+    }
 
     if fraction.is_none() && exponent.is_none() {
         let v = int_part.parse::<u64>().unwrap_or(0);
@@ -140,6 +194,13 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
 }
 
 fn lex_string(input: &mut &str) -> ModalResult<TokenKind> {
+    // C-style wide-string prefix: `L"..."` becomes the same token as
+    // `"..."` (we don't model wide strings as a distinct value type).
+    // Skip the `L` only when we can see the opening quote right after,
+    // so a bare identifier `L` stays an identifier.
+    if input.starts_with("L\"") {
+        *input = &input[1..];
+    }
     delimited("\"", string_inner, "\"").map(TokenKind::String).parse_next(input)
 }
 

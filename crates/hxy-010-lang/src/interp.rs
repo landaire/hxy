@@ -531,6 +531,16 @@ impl<S: HexSource> Interpreter<S> {
             ("OLETIME", P::f64()),
             ("hfloat", P::u16()), // half-float -- read as raw u16 for now
             ("HFLOAT", P::u16()),
+            // 010's NUL-terminated string types. Modelling them as a
+            // single byte read is a degraded behaviour -- a real
+            // string read would consume bytes up to the NUL -- but
+            // it lets templates that declare `string` typed fields
+            // and function return types parse and dispatch without
+            // erroring on `unknown type`.
+            ("string", P::char()),
+            ("STRING", P::char()),
+            ("wstring", P::u16()),
+            ("WSTRING", P::u16()),
         ];
         for (name, kind) in table {
             self.types.insert((*name).to_owned(), TypeDef::Primitive(*kind));
@@ -728,7 +738,9 @@ impl<S: HexSource> Interpreter<S> {
         // Bitfield read: peel bits off a shared underlying integer
         // instead of advancing the cursor once per field.
         if let Some(bw_expr) = bit_width {
-            let bw = self.eval(bw_expr)?.to_i128().unwrap_or(0) as u32;
+            let v = self.eval(bw_expr)?;
+            let bw =
+                v.to_i128().ok_or_else(|| RuntimeError::Type(format!("bitfield width is not numeric: {v:?}")))? as u32;
             self.read_bitfield(name, ty, bw, parent, attrs)?;
             return Ok(());
         }
@@ -789,6 +801,9 @@ impl<S: HexSource> Interpreter<S> {
             let offset = self.cursor.tell();
             let bytes = self.cursor.read_advance(prim.width as u64)?;
             let decoded = decode_prim(&bytes, prim, self.endian)?;
+            // `decode_prim` was just dispatched on an Int/Char `prim`, so
+            // the result is always numeric -- the fallback is only a
+            // floor against future drift in `decode_prim`'s output.
             let raw = decoded.to_i128().unwrap_or(0) as u64;
             self.bitfield_slot = Some(BitfieldSlot { prim, raw, offset, consumed: 0 });
         }
@@ -879,6 +894,9 @@ impl<S: HexSource> Interpreter<S> {
                 let offset = self.cursor.tell();
                 let bytes = self.cursor.read_advance(pk.width as u64)?;
                 let raw = decode_prim(&bytes, pk, self.endian)?;
+                // Enum backing is constrained to a `Primitive` integer
+                // above, so `to_i128` always succeeds; the fallback is a
+                // belt-and-braces floor.
                 let raw_u = raw.to_i128().unwrap_or(0) as u64;
                 // Find matching variant -- but don't require one; 010
                 // templates can read arbitrary values into an enum
@@ -1185,8 +1203,27 @@ impl<S: HexSource> Interpreter<S> {
                 if name == "sizeof"
                     && let [Expr::Ident { name: arg_name, .. }] = args.as_slice()
                 {
-                    let bytes = self.sizeof_type(arg_name)?;
-                    return Ok(Value::UInt { value: bytes as u128, kind: PrimKind::u64() });
+                    // First try as a type name (`sizeof(MyStruct)`).
+                    // If it's not a registered type, fall through and
+                    // treat the arg as a variable / field reference --
+                    // 010 lets `sizeof(foo)` return the byte size of a
+                    // previously-read field.
+                    if self.types.contains_key(arg_name) {
+                        let bytes = self.sizeof_type(arg_name)?;
+                        return Ok(Value::UInt { value: bytes as u128, kind: PrimKind::u64() });
+                    }
+                    if let Some(bytes) = self.field_byte_length(arg_name) {
+                        return Ok(Value::UInt { value: bytes as u128, kind: PrimKind::u64() });
+                    }
+                }
+                // `startof(field)` returns the byte offset where a
+                // previously-read field landed in the source. Same
+                // ident-vs-expr dance as `sizeof`.
+                if name == "startof"
+                    && let [Expr::Ident { name: arg_name, .. }] = args.as_slice()
+                    && let Some(off) = self.field_byte_offset(arg_name)
+                {
+                    return Ok(Value::UInt { value: off as u128, kind: PrimKind::u64() });
                 }
                 let evaluated: Vec<Value> = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?;
                 self.call_named(name, &evaluated)
@@ -1448,10 +1485,6 @@ impl<S: HexSource> Interpreter<S> {
             "DisplayFormatHex" | "DisplayFormatDecimal" | "DisplayFormatBinary" | "SetForeColor" | "SetBackColor" => {
                 Ok(Some(Value::Void))
             }
-            "Strlen" => {
-                let s = args.first().map(value_to_display).unwrap_or_default();
-                Ok(Some(Value::UInt { value: s.len() as u128, kind: PrimKind::u64() }))
-            }
             "SPrintf" => {
                 // 010's signature: `SPrintf(out, fmt, args...) -> length`.
                 // We don't have lvalue semantics for `out`, so we at
@@ -1491,7 +1524,373 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(Some(Value::Str(display.unwrap_or_else(|| raw.to_string()))))
             }
             "Checksum" => Ok(Some(self.checksum_builtin(args)?)),
+            // 010 has both `Printf` and `Warning`. Templates in the
+            // wild occasionally typo `printf` (lowercase) and `Waring`
+            // -- accept both as aliases so a typo doesn't stop the
+            // template from running.
+            "printf" => self.call_builtin("Printf", args),
+            "Waring" => self.call_builtin("Warning", args),
+            "FSkip" => {
+                let n = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                let target = self.cursor.tell() as i128 + n;
+                self.cursor.seek(target.max(0) as u64);
+                Ok(Some(Value::Void))
+            }
+            "Assert" => {
+                // `Assert(cond)` / `Assert(cond, msg)`. Surface a
+                // diagnostic and halt the run on failure -- 010
+                // itself raises a hard error here, so doing the same
+                // catches buggy templates rather than producing a
+                // partial tree the user has to second-guess.
+                let cond_truthy = args.first().is_some_and(Value::is_truthy);
+                if cond_truthy {
+                    return Ok(Some(Value::Void));
+                }
+                let msg = args.get(1).map(value_to_display).unwrap_or_else(|| "assertion failed".to_owned());
+                self.diagnostics.push(Diagnostic {
+                    message: format!("Assert: {msg}"),
+                    severity: Severity::Error,
+                    file_offset: Some(self.cursor.tell()),
+                    template_line: None,
+                });
+                Err(RuntimeError::Type(format!("Assert failed: {msg}")))
+            }
+            // Bitfield padding pragmas are presentational. The
+            // interpreter packs bits the way 010 does by default;
+            // padding is a renderer concern we don't model.
+            "BitfieldDisablePadding" | "BitfieldEnablePadding" => Ok(Some(Value::Void)),
+            "ReadBytes" => Ok(Some(self.read_bytes_builtin(args)?)),
+            "ReadFloat" => Ok(Some(self.read_float_builtin(args, false)?)),
+            "ReadDouble" => Ok(Some(self.read_float_builtin(args, true)?)),
+            "ReadString" => Ok(Some(self.read_string_builtin(args, false)?)),
+            "ReadStringLength" => Ok(Some(self.read_string_length_builtin(args, false)?)),
+            "ReadWString" => Ok(Some(self.read_string_builtin(args, true)?)),
+            "ReadWStringLength" => Ok(Some(self.read_string_length_builtin(args, true)?)),
+            // String / number conversion helpers. We don't model
+            // wide strings as a distinct type -- everything is utf-8
+            // -- so the W* variants degrade to their narrow
+            // counterparts.
+            "Atoi" | "BinaryStrToInt" => {
+                let s = args.first().map(value_to_display).unwrap_or_default();
+                let radix = if matches!(name, "BinaryStrToInt") { 2 } else { 10 };
+                let v = i64::from_str_radix(s.trim(), radix).unwrap_or(0);
+                Ok(Some(Value::SInt { value: v as i128, kind: PrimKind::i64() }))
+            }
+            "Atof" => {
+                let s = args.first().map(value_to_display).unwrap_or_default();
+                let v = s.trim().parse::<f64>().unwrap_or(0.0);
+                Ok(Some(Value::Float { value: v, kind: PrimKind::f64() }))
+            }
+            "IntToBinaryStr" => {
+                let v = args.first().and_then(|v| v.to_i128()).unwrap_or(0) as u64;
+                let bits = args.get(1).and_then(|v| v.to_i128()).unwrap_or(64).clamp(1, 64) as u32;
+                let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+                let masked = v & mask;
+                Ok(Some(Value::Str(format!("{masked:0bits$b}", bits = bits as usize))))
+            }
+            "Str" | "str" | "WStringToString" | "StringToWString" => {
+                Ok(Some(Value::Str(args.first().map(value_to_display).unwrap_or_default())))
+            }
+            // `Strcmp(a, b)` -> negative / 0 / positive, matching
+            // libc. `Stricmp` is the case-insensitive version. The
+            // counted variants (`Strncmp`, `Strnicmp`) clamp to `n`
+            // chars before comparing.
+            "Strcmp" | "Stricmp" | "Strncmp" | "Strnicmp" | "WStrcmp" | "WStricmp" | "WStrncmp" | "WStrnicmp"
+            | "Memcmp" => {
+                Ok(Some(Value::SInt { value: self.strcmp_builtin(name, args) as i128, kind: PrimKind::i32() }))
+            }
+            "Strlen" | "WStrlen" => {
+                let s = args.first().map(value_to_display).unwrap_or_default();
+                Ok(Some(Value::UInt { value: s.chars().count() as u128, kind: PrimKind::u64() }))
+            }
+            "SubStr" => {
+                let s = args.first().map(value_to_display).unwrap_or_default();
+                let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let len = args.get(2).and_then(|v| v.to_i128()).unwrap_or(-1);
+                let chars: Vec<char> = s.chars().collect();
+                let start = start.min(chars.len());
+                let end = if len < 0 { chars.len() } else { start.saturating_add(len as usize).min(chars.len()) };
+                Ok(Some(Value::Str(chars[start..end].iter().collect())))
+            }
+            "StrDel" => {
+                let s = args.first().map(value_to_display).unwrap_or_default();
+                let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let len = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let chars: Vec<char> = s.chars().collect();
+                let start = start.min(chars.len());
+                let end = start.saturating_add(len).min(chars.len());
+                let mut out: String = chars[..start].iter().collect();
+                out.extend(chars[end..].iter());
+                Ok(Some(Value::Str(out)))
+            }
+            "Strncpy" | "Strcpy" | "WStrcpy" | "WStrncpy" | "Memcpy" => {
+                // 010's signature mutates the first arg, which we
+                // don't have lvalue support for. Best effort: echo
+                // the source string back so chained calls keep
+                // running.
+                Ok(Some(Value::Str(args.get(1).map(value_to_display).unwrap_or_default())))
+            }
+            "IsCharAlpha" => Ok(Some(Value::Bool(char_predicate(args, char::is_alphabetic)))),
+            "IsCharAlphaNumeric" => Ok(Some(Value::Bool(char_predicate(args, char::is_alphanumeric)))),
+            "IsCharNum" | "IsCharDigit" => Ok(Some(Value::Bool(char_predicate(args, |c| c.is_ascii_digit())))),
+            "IsCharWhitespace" => Ok(Some(Value::Bool(char_predicate(args, char::is_whitespace)))),
+            "ToUpper" => Ok(Some(Value::Str(args.first().map(value_to_display).unwrap_or_default().to_uppercase()))),
+            "ToLower" => Ok(Some(Value::Str(args.first().map(value_to_display).unwrap_or_default().to_lowercase()))),
+            // Math helpers. Only the simple ones templates actually
+            // call -- full libm is out of scope.
+            "Min" => Ok(Some(min_max_builtin(args, true))),
+            "Max" => Ok(Some(min_max_builtin(args, false))),
+            "Abs" => {
+                let v = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Ok(Some(Value::SInt { value: v.abs(), kind: PrimKind::i64() }))
+            }
+            "Pow" => {
+                let base = args.first().and_then(|v| v.to_f64()).unwrap_or(0.0);
+                let exp = args.get(1).and_then(|v| v.to_f64()).unwrap_or(0.0);
+                Ok(Some(Value::Float { value: base.powf(exp), kind: PrimKind::f64() }))
+            }
+            "Sqrt" => {
+                let v = args.first().and_then(|v| v.to_f64()).unwrap_or(0.0);
+                Ok(Some(Value::Float { value: v.sqrt(), kind: PrimKind::f64() }))
+            }
+            "Ceil" => {
+                let v = args.first().and_then(|v| v.to_f64()).unwrap_or(0.0);
+                Ok(Some(Value::Float { value: v.ceil(), kind: PrimKind::f64() }))
+            }
+            "Floor" => {
+                let v = args.first().and_then(|v| v.to_f64()).unwrap_or(0.0);
+                Ok(Some(Value::Float { value: v.floor(), kind: PrimKind::f64() }))
+            }
+            "Round" => {
+                let v = args.first().and_then(|v| v.to_f64()).unwrap_or(0.0);
+                Ok(Some(Value::Float { value: v.round(), kind: PrimKind::f64() }))
+            }
+            // UI / editor state queries. Headless interpretation has
+            // no editor state, so each of these returns a benign
+            // sentinel: zeros for offsets / sizes, an empty string
+            // for the file name. Templates that branch on these
+            // typically have a fallback path.
+            "GetCursorPos" | "GetSelStart" => Ok(Some(Value::UInt { value: 0, kind: PrimKind::u64() })),
+            "GetSelSize" => Ok(Some(Value::UInt { value: 0, kind: PrimKind::u64() })),
+            "GetFileName" | "GetFileNameW" | "GetFilePath" => Ok(Some(Value::Str(String::new()))),
+            // UI side-effect builtins -- output panes, status bars,
+            // input dialogs. Templates that call these expect the
+            // user to react; in headless mode they're no-ops.
+            "OutputPaneClear" | "StatusMessage" | "ClearOutput" | "FPrintf" | "RunTemplate" => Ok(Some(Value::Void)),
+            "InputRadioButtonBox"
+            | "InputDirectory"
+            | "InputDouble"
+            | "InputFloat"
+            | "InputNumber"
+            | "InputOpenFileName"
+            | "InputSaveFileName"
+            | "InputString"
+            | "MessageBox" => {
+                // Return a "user cancelled" sentinel for input dialogs:
+                // empty string / zero. Templates that gate on input
+                // tend to early-exit when they see the sentinel.
+                Ok(Some(Value::Str(String::new())))
+            }
+            "TimeTToString" | "FileTimeToString" | "OleTimeToString" | "DOSTimeToString" | "DOSDateToString"
+            | "GUIDToString" => {
+                // Stringification of various date/time and GUID
+                // primitives. Templates use these for display only;
+                // a hex-style round-trip of the underlying integer
+                // is good enough for headless runs.
+                let v = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Ok(Some(Value::Str(format!("0x{:X}", v as u128))))
+            }
+            "ChecksumAlgArrayStr" | "ChecksumAlgStr" => {
+                // Return the algorithm tag literally so templates
+                // that round-trip it through `Printf` still produce
+                // recognizable diagnostics.
+                Ok(Some(Value::Str(args.first().map(value_to_display).unwrap_or_default())))
+            }
+            "SScanf" | "SScan" => {
+                // Best-effort SScanf: reports zero matches. Real
+                // SScanf requires lvalue out-params we don't model.
+                Ok(Some(Value::SInt { value: 0, kind: PrimKind::i32() }))
+            }
+            // Endian-state queries. Track the current setting so
+            // `if (IsBigEndian()) ...` flows the right branch even
+            // for templates that toggle between sections.
+            "IsLittleEndian" => Ok(Some(Value::Bool(matches!(self.endian, Endian::Little)))),
+            "IsBigEndian" => Ok(Some(Value::Bool(matches!(self.endian, Endian::Big)))),
+            // Buffer mutation builtins. We're a read-only interpreter
+            // -- there's no editable backing for `InsertBytes` etc.
+            // -- so each one returns a benign zero so calls don't
+            // trap. Templates that depend on the side-effect won't
+            // produce correct trees, but they won't error out either.
+            "InsertBytes" | "DeleteBytes" | "OverwriteBytes" | "WriteString" | "Memset" => Ok(Some(Value::Void)),
+            // Bookmark / file-table introspection. Headless = none of
+            // these have anything to report.
+            "AddBookmark"
+            | "GetBookmarkArraySize"
+            | "GetBookmarkName"
+            | "GetBookmarkPos"
+            | "GetBookmarkType"
+            | "GetNumBookmarks" => Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() })),
+            "GetArg" | "GetNumArgs" | "GetFileNum" => Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() })),
+            "FileExists" | "FindOpenFile" | "FileSelect" | "FileOpen" | "FileClose" => {
+                Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() }))
+            }
+            "FileNameGetBase" | "FileNameSetExtension" => {
+                Ok(Some(Value::Str(args.first().map(value_to_display).unwrap_or_default())))
+            }
+            // Style / color queries -- presentational, no headless
+            // equivalent. Return 0 so arithmetic on the result keeps
+            // working.
+            "GetBackColor"
+            | "GetForeColor"
+            | "SetColor"
+            | "SetStyle"
+            | "DisasmSetMode"
+            | "ThemeAutoScaleColors"
+            | "OutputPaneSave" => Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() })),
+            // String search / split. We model strings opaquely, so
+            // these answer the most common questions lossily.
+            "Strstr" | "WStrstr" => {
+                let hay = args.first().map(value_to_display).unwrap_or_default();
+                let needle = args.get(1).map(value_to_display).unwrap_or_default();
+                let pos = hay.find(&needle).map(|p| p as i64).unwrap_or(-1);
+                Ok(Some(Value::SInt { value: pos as i128, kind: PrimKind::i64() }))
+            }
+            "Strchr" | "WStrchr" => {
+                let hay = args.first().map(value_to_display).unwrap_or_default();
+                let ch = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0) as u32;
+                let pos = match char::from_u32(ch) {
+                    Some(c) => hay.find(c).map(|p| p as i64).unwrap_or(-1),
+                    None => -1,
+                };
+                Ok(Some(Value::SInt { value: pos as i128, kind: PrimKind::i64() }))
+            }
+            "Strcat" => {
+                // 010's `Strcat` mutates the first arg; we can't, so
+                // return the concatenation as a value. Templates that
+                // immediately Print the result behave correctly.
+                let a = args.first().map(value_to_display).unwrap_or_default();
+                let b = args.get(1).map(value_to_display).unwrap_or_default();
+                Ok(Some(Value::Str(format!("{a}{b}"))))
+            }
+            "WSubStr" => self.call_builtin("SubStr", args),
+            "FindAll" => {
+                // Returns the count of matches. Without a backing
+                // buffer to scan, we report 0 -- callers that branch
+                // on the count typically take the empty-result path.
+                Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() }))
+            }
+            "function_exists" | "exists_function" => {
+                let name = args.first().map(value_to_display).unwrap_or_default();
+                Ok(Some(Value::Bool(self.functions.contains_key(&name))))
+            }
+            // Wide / line text helpers from the editor's text-mode
+            // file API. Headless reads don't have a line index, so
+            // each one is a benign zero.
+            "TextGetNumLines" | "TextGetLineSize" | "TextAddressToLine" | "TextLineToAddress" | "ReadLine" => {
+                Ok(Some(Value::SInt { value: 0, kind: PrimKind::i64() }))
+            }
+            "Time64TToString" => self.call_builtin("TimeTToString", args),
+            "ToColonHexString" => {
+                let v = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Ok(Some(Value::Str(format!("{:x}", v as u128))))
+            }
+            "RegExMatch" => Ok(Some(Value::Bool(false))),
+            "SwapBytes" => Ok(Some(args.first().cloned().unwrap_or(Value::Void))),
             _ => Ok(None),
+        }
+    }
+
+    /// Look up the byte length of a previously-emitted node by name.
+    /// Used by `sizeof(field)` -- distinct from `sizeof(TypeName)`,
+    /// which routes through [`Self::sizeof_type`].
+    fn field_byte_length(&self, name: &str) -> Option<u64> {
+        for n in self.nodes.iter().rev() {
+            if n.name == name {
+                return Some(n.length);
+            }
+        }
+        None
+    }
+
+    /// Look up the source byte offset of a previously-emitted node by
+    /// name. Used by `startof(field)`.
+    fn field_byte_offset(&self, name: &str) -> Option<u64> {
+        for n in self.nodes.iter().rev() {
+            if n.name == name {
+                return Some(n.offset);
+            }
+        }
+        None
+    }
+
+    /// `ReadBytes(out, offset, count)` -- 010 writes into `out`; we
+    /// can't, so return a `Str` containing the raw bytes (lossy utf-8)
+    /// for callers that just want the buffer for `Printf`-style
+    /// inspection. Templates that read into a typed buffer for
+    /// downstream use will see degraded behaviour but won't trap.
+    fn read_bytes_builtin(&self, args: &[Value]) -> Result<Value, RuntimeError> {
+        let offset = args.get(1).and_then(|v| v.to_i128()).unwrap_or_else(|| self.cursor.tell() as i128);
+        let count = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0);
+        let offset = offset.max(0) as u64;
+        let count = count.max(0) as u64;
+        let bytes = self.cursor.read_at(offset, count)?;
+        Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// `ReadFloat(offset?)` / `ReadDouble(offset?)`.
+    fn read_float_builtin(&self, args: &[Value], double: bool) -> Result<Value, RuntimeError> {
+        let offset = match args.first() {
+            Some(v) => v.to_i128().unwrap_or(0) as u64,
+            None => self.cursor.tell(),
+        };
+        let width: u8 = if double { 8 } else { 4 };
+        let bytes = self.cursor.read_at(offset, width as u64)?;
+        decode_prim(&bytes, PrimKind { class: PrimClass::Float, width, signed: true }, self.endian)
+    }
+
+    /// `ReadString(offset?, maxLen?)` / `ReadWString(...)`. Reads
+    /// until NUL or `maxLen`, defaulting to a generous cap so
+    /// pathological templates don't read forever.
+    fn read_string_builtin(&self, args: &[Value], wide: bool) -> Result<Value, RuntimeError> {
+        let offset = args.first().and_then(|v| v.to_i128()).unwrap_or_else(|| self.cursor.tell() as i128).max(0) as u64;
+        let max_len = args.get(1).and_then(|v| v.to_i128()).unwrap_or(READ_STRING_DEFAULT_CAP).max(0) as u64;
+        let stride: u64 = if wide { 2 } else { 1 };
+        let max_bytes = max_len.saturating_mul(stride);
+        let cap = max_bytes.min(self.cursor.len().saturating_sub(offset));
+        let raw = self.cursor.read_at(offset, cap)?;
+        let s = decode_string(&raw, wide, self.endian);
+        Ok(Value::Str(s))
+    }
+
+    /// `ReadStringLength(offset, length)` -- read exactly `length`
+    /// bytes (or chars, for wide).
+    fn read_string_length_builtin(&self, args: &[Value], wide: bool) -> Result<Value, RuntimeError> {
+        let offset = args.first().and_then(|v| v.to_i128()).unwrap_or(0).max(0) as u64;
+        let length = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as u64;
+        let stride: u64 = if wide { 2 } else { 1 };
+        let bytes = self.cursor.read_at(offset, length.saturating_mul(stride))?;
+        Ok(Value::Str(decode_string(&bytes, wide, self.endian)))
+    }
+
+    /// libc-style `strcmp` family. Negative if `a < b`, zero on
+    /// equal, positive otherwise. Counted variants honour their
+    /// length cap; case-insensitive variants ASCII-fold first.
+    fn strcmp_builtin(&self, name: &str, args: &[Value]) -> i32 {
+        let a = args.first().map(value_to_display).unwrap_or_default();
+        let b = args.get(1).map(value_to_display).unwrap_or_default();
+        let case_insensitive = matches!(name, "Stricmp" | "Strnicmp" | "WStricmp" | "WStrnicmp");
+        let counted = matches!(name, "Strncmp" | "Strnicmp" | "WStrncmp" | "WStrnicmp" | "Memcmp");
+        let (lhs, rhs) = if case_insensitive { (a.to_ascii_lowercase(), b.to_ascii_lowercase()) } else { (a, b) };
+        let (lhs_b, rhs_b) = if counted {
+            let n = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+            (&lhs.as_bytes()[..lhs.len().min(n)], &rhs.as_bytes()[..rhs.len().min(n)])
+        } else {
+            (lhs.as_bytes(), rhs.as_bytes())
+        };
+        match lhs_b.cmp(rhs_b) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
         }
     }
 
@@ -1736,8 +2135,14 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
         BinOp::Add => Value::SInt { value: li.wrapping_add(ri), kind: PrimKind::i64() },
         BinOp::Sub => Value::SInt { value: li.wrapping_sub(ri), kind: PrimKind::i64() },
         BinOp::Mul => Value::SInt { value: li.wrapping_mul(ri), kind: PrimKind::i64() },
-        BinOp::Div => Value::SInt { value: li.checked_div(ri).unwrap_or(0), kind: PrimKind::i64() },
-        BinOp::Rem => Value::SInt { value: li.checked_rem(ri).unwrap_or(0), kind: PrimKind::i64() },
+        BinOp::Div => Value::SInt {
+            value: li.checked_div(ri).ok_or_else(|| RuntimeError::Type("integer divide by zero".into()))?,
+            kind: PrimKind::i64(),
+        },
+        BinOp::Rem => Value::SInt {
+            value: li.checked_rem(ri).ok_or_else(|| RuntimeError::Type("integer remainder by zero".into()))?,
+            kind: PrimKind::i64(),
+        },
         BinOp::BitAnd => Value::SInt { value: li & ri, kind: PrimKind::i64() },
         BinOp::BitOr => Value::SInt { value: li | ri, kind: PrimKind::i64() },
         BinOp::BitXor => Value::SInt { value: li ^ ri, kind: PrimKind::i64() },
@@ -1833,6 +2238,66 @@ fn value_to_display(v: &Value) -> String {
 /// that same number so round-tripping through the source produces a
 /// consistent match.
 const CHECKSUM_CRC32_ID: u64 = 5;
+
+/// Cap for `ReadString` / `ReadWString` calls that don't pass an
+/// explicit length. Templates that read NUL-terminated strings
+/// usually live well under this; the cap exists so a malformed
+/// source (no NUL anywhere) doesn't read the full file.
+const READ_STRING_DEFAULT_CAP: i128 = 4096;
+
+/// Apply `pred` to the first character of the first argument, if any.
+/// Used by the `IsCharAlpha` / `IsCharDigit` / etc. builtins.
+fn char_predicate(args: &[Value], pred: fn(char) -> bool) -> bool {
+    let s = args.first().map(value_to_display).unwrap_or_default();
+    s.chars().next().map(pred).unwrap_or(false)
+}
+
+/// Return whichever of the two operands is smaller / larger. Falls
+/// back to the first arg when typed comparison isn't possible (mixed
+/// or non-numeric values); 010 itself is forgiving here.
+fn min_max_builtin(args: &[Value], pick_min: bool) -> Value {
+    let Some(a) = args.first() else {
+        return Value::SInt { value: 0, kind: PrimKind::i64() };
+    };
+    let Some(b) = args.get(1) else { return a.clone() };
+    let cmp = match (a.to_f64(), b.to_f64()) {
+        (Some(x), Some(y)) => x.partial_cmp(&y),
+        _ => match (a.to_i128(), b.to_i128()) {
+            (Some(x), Some(y)) => Some(x.cmp(&y)),
+            _ => None,
+        },
+    };
+    match (cmp, pick_min) {
+        (Some(std::cmp::Ordering::Less), true) | (Some(std::cmp::Ordering::Greater), false) => a.clone(),
+        (Some(_), _) => b.clone(),
+        (None, _) => a.clone(),
+    }
+}
+
+/// Decode a NUL-terminated byte slice as a (lossy) Rust `String`.
+/// `wide` interprets the input as 16-bit code units in `endian` byte
+/// order; otherwise each byte is a code point (utf-8 lossy).
+fn decode_string(bytes: &[u8], wide: bool, endian: Endian) -> String {
+    if !wide {
+        let trimmed: &[u8] = match bytes.iter().position(|&b| b == 0) {
+            Some(idx) => &bytes[..idx],
+            None => bytes,
+        };
+        return String::from_utf8_lossy(trimmed).into_owned();
+    }
+    let mut units: Vec<u16> = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        let pair = match endian {
+            Endian::Little => u16::from_le_bytes([chunk[0], chunk[1]]),
+            Endian::Big => u16::from_be_bytes([chunk[0], chunk[1]]),
+        };
+        if pair == 0 {
+            break;
+        }
+        units.push(pair);
+    }
+    String::from_utf16_lossy(&units)
+}
 
 /// Ordered list of `field_storage` keys to try for a
 /// `Member`/`Index` lookup. Starts with the most specific match

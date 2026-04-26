@@ -116,6 +116,65 @@ impl Parser {
         }
     }
 
+    /// Detect a C-style cast `(typename) ...` starting at the position
+    /// just after a `(`. Returns the number of tokens to skip (1 for
+    /// `(IDENT)`, 2 for `(IDENT IDENT)` like `unsigned long`) before
+    /// the closing `)`. Returns `None` when the parens look like a
+    /// regular grouping expression.
+    ///
+    /// The next token after the `)` must look like an expression
+    /// starter (identifier, literal, `(`, prefix operator). That keeps
+    /// `(x) + y` parsing as `(x) + y` rather than getting reinterpreted
+    /// as a cast.
+    fn detect_cast_type(&self) -> Option<usize> {
+        let t0 = self.peek_at(0)?;
+        // Single `(IDENT)` cast.
+        let single = matches!(&t0.kind, TokenKind::Ident(_));
+        // Compound `(unsigned long)` style: first ident is signed/
+        // unsigned, second is the actual type. We check spelling
+        // because `unsigned`/`signed` aren't keywords.
+        let compound = match &t0.kind {
+            TokenKind::Ident(name) if name == "unsigned" || name == "signed" => {
+                matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            }
+            _ => false,
+        };
+        let skip = if compound {
+            2
+        } else if single {
+            1
+        } else {
+            return None;
+        };
+        // After the type tokens: must be `)` followed by an
+        // expression-starter.
+        let close = self.peek_at(skip)?;
+        if !matches!(close.kind, TokenKind::RParen) {
+            return None;
+        }
+        let next = self.peek_at(skip + 1)?;
+        let starts_expr = matches!(
+            &next.kind,
+            TokenKind::Ident(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Char(_)
+                | TokenKind::LParen
+                | TokenKind::Minus
+                | TokenKind::Plus
+                | TokenKind::Bang
+                | TokenKind::Tilde
+                | TokenKind::PlusPlus
+                | TokenKind::MinusMinus
+                | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Sizeof)
+        );
+        if !starts_expr {
+            return None;
+        }
+        Some(skip)
+    }
+
     fn eat_keyword(&mut self, kw: Keyword) -> bool {
         if self.peek_kind() == Some(&TokenKind::Keyword(kw)) {
             self.bump();
@@ -150,7 +209,95 @@ impl Parser {
         if !is_ident {
             return false;
         }
-        matches!(self.peek_at(2).map(|t| &t.kind), Some(TokenKind::LParen))
+        if !matches!(self.peek_at(2).map(|t| &t.kind), Some(TokenKind::LParen)) {
+            return false;
+        }
+        // Discriminate function def / prototype from a field decl
+        // that uses parameterised-struct args: `Type name(args) { ... }`
+        // is a function definition, `Type name(args);` is a function
+        // *prototype* (we treat it as a no-op decl), and
+        // `Type name(args)[count];` is a parameterised-struct field.
+        // Walk to the matching `)` and inspect the next token.
+        let mut depth = 1usize;
+        let mut idx = 3usize;
+        while let Some(tok) = self.peek_at(idx) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        idx += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+        if depth != 0 {
+            return false;
+        }
+        let after = self.peek_at(idx).map(|t| &t.kind);
+        let is_def_body = matches!(after, Some(TokenKind::LBrace));
+        // `void` return + `;` is unambiguously a function prototype
+        // (a field decl can't have type `void`). Non-void prototypes
+        // collide with parameterised-struct field decls (`Record
+        // items(head.fileLen);`); for those we only commit to the
+        // function path when the args look like a typed parameter
+        // list -- the heuristic is "first arg is two adjacent
+        // identifiers, optionally separated by `&`", matching
+        // `Type name` and `Type &name`.
+        let is_void_return = matches!(&self.peek_at(0).map(|t| &t.kind), Some(TokenKind::Keyword(Keyword::Void)));
+        let is_proto = matches!(after, Some(TokenKind::Semi)) && (is_void_return || self.first_arg_looks_like_param());
+        is_def_body || is_proto
+    }
+
+    /// Tail of the function-def heuristic: starting just inside the
+    /// parameter list `(`, does the first argument shape look like a
+    /// typed parameter (`Type name`, `Type &name`, `const Type &name`)
+    /// rather than an expression? Used to distinguish
+    /// `int SeekBlock(uint64 block_id);` (prototype) from
+    /// `Record items(head.fileLen);` (parameterised-struct field decl).
+    fn first_arg_looks_like_param(&self) -> bool {
+        let mut i = 3; // tokens after `Type name (`
+        // Optional `local` / `const` qualifier on the first param.
+        if matches!(
+            self.peek_at(i).map(|t| &t.kind),
+            Some(TokenKind::Keyword(Keyword::Local)) | Some(TokenKind::Keyword(Keyword::Const))
+        ) {
+            i += 1;
+        }
+        // Optional `struct` / `union` / `enum` tag on the type.
+        if matches!(
+            self.peek_at(i).map(|t| &t.kind),
+            Some(TokenKind::Keyword(Keyword::Struct))
+                | Some(TokenKind::Keyword(Keyword::Union))
+                | Some(TokenKind::Keyword(Keyword::Enum))
+        ) {
+            i += 1;
+        }
+        // The type identifier itself, with the same `unsigned T` /
+        // `signed T` slack we accept in the field-decl path.
+        if let Some(TokenKind::Ident(name)) = self.peek_at(i).map(|t| &t.kind)
+            && (name == "unsigned" || name == "signed")
+        {
+            i += 1;
+        }
+        if !matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        i += 1;
+        // Optional reference marker.
+        if matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Amp)) {
+            i += 1;
+        }
+        // Param name.
+        if !matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        i += 1;
+        // After the param: comma (more params) or `)` (end of list).
+        matches!(self.peek_at(i).map(|t| &t.kind), Some(TokenKind::Comma) | Some(TokenKind::RParen))
     }
 
     fn parse_function_def(&mut self) -> Result<FunctionDef, ParseError> {
@@ -159,7 +306,10 @@ impl Parser {
         let (name, _) = self.expect_ident()?;
         self.expect_kind(&TokenKind::LParen, "(")?;
         let mut params = Vec::new();
-        if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+        // C convention: `f(void)` declares no params.
+        let void_only = matches!(self.peek_kind(), Some(TokenKind::Keyword(Keyword::Void)))
+            && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::RParen));
+        if !void_only && !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
             loop {
                 params.push(self.parse_param()?);
                 if !self.eat_kind(&TokenKind::Comma) {
@@ -167,7 +317,25 @@ impl Parser {
                 }
             }
         }
+        if void_only {
+            self.bump(); // skip the `void`
+        }
         self.expect_kind(&TokenKind::RParen, ")")?;
+        // Function prototype: `void f(int x);`. Consume the trailing
+        // `;` and emit an empty body. The interpreter will resolve
+        // calls against whichever prototype OR definition shows up
+        // last in the source -- a bare prototype just means the
+        // identifier is registered but never executes anything.
+        if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
+            let end_tok = self.bump().unwrap();
+            return Ok(FunctionDef {
+                return_type,
+                name,
+                params,
+                body: Vec::new(),
+                span: Span::new(start, end_tok.span.end),
+            });
+        }
         let body_block = self.parse_block()?;
         let end = self.last_span().end;
         let Stmt::Block { stmts, .. } = body_block else { unreachable!() };
@@ -180,9 +348,26 @@ impl Parser {
         // The qualifier is semantic sugar for us; accept and discard
         // either one.
         let _ = self.eat_keyword(Keyword::Local) || self.eat_keyword(Keyword::Const);
+        // `struct ar_file &f` / `enum KIND k` -- skip the leading
+        // tag keyword; the identifier that follows is the actual
+        // type name. (010 templates inherit the C convention.)
+        let _ =
+            self.eat_keyword(Keyword::Struct) || self.eat_keyword(Keyword::Union) || self.eat_keyword(Keyword::Enum);
         let ty = self.parse_type_ref()?;
         let is_ref = self.eat_kind(&TokenKind::Amp);
         let (name, name_span) = self.expect_ident()?;
+        // Trailing `[]` on a param: C array-decay. Templates write
+        // `void f(char buf[])` to mean "buf is a pointer/array";
+        // there's nothing for the interpreter to do with it.
+        if self.eat_kind(&TokenKind::LBracket) {
+            // Optional length expression -- `char buf[N]` is the
+            // same shape as a regular array param. Drop whatever
+            // dimension specifier the template gave.
+            if !matches!(self.peek_kind(), Some(TokenKind::RBracket)) {
+                let _ = self.parse_expr()?;
+            }
+            self.expect_kind(&TokenKind::RBracket, "]")?;
+        }
         let span = Span::new(ty.span.start, name_span.end);
         Ok(Param { ty, is_ref, name, span })
     }
@@ -490,6 +675,23 @@ impl Parser {
         Ok(Stmt::TypedefAlias { new_name, source, span: Span::new(start, end_tok.span.end.max(name_span.end)) })
     }
 
+    /// Parse `[N]` if the next token is `[`. Returns `None` when no
+    /// bracket follows; returns `Some(IntLit 0)` for the empty `[]`
+    /// idiom (open-ended array). Otherwise the bracket holds an
+    /// arbitrary expression.
+    fn parse_optional_array_dim(&mut self) -> Result<Option<Expr>, ParseError> {
+        if !self.eat_kind(&TokenKind::LBracket) {
+            return Ok(None);
+        }
+        if matches!(self.peek_kind(), Some(TokenKind::RBracket)) {
+            let close = self.bump().unwrap();
+            return Ok(Some(Expr::IntLit { value: 0, span: close.span }));
+        }
+        let expr = self.parse_expr()?;
+        self.expect_kind(&TokenKind::RBracket, "]")?;
+        Ok(Some(expr))
+    }
+
     /// Parse an optional parenthesised parameter list on a struct
     /// definition: `struct Name (int32 len, int32 kind) { ... }`.
     /// Returns an empty vector when no `(` follows the struct name.
@@ -556,13 +758,15 @@ impl Parser {
             attrs: Attrs::default(),
             span: Span::new(start, close.span.end),
         });
-        // `enum Name { ... };` with no following identifier is a pure
-        // type declaration. The tag is what gets registered; no field
-        // is emitted.
-        if has_tag && matches!(self.peek_kind(), Some(TokenKind::Semi)) {
+        // `enum Name { ... };` (or even `enum { ... };` with no tag,
+        // which is rare but legal) is a pure type declaration.
+        // No field is emitted in either case; the tag, if any, is
+        // what the interpreter registers.
+        if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
             let end_tok = self.bump().unwrap();
             return Ok(Stmt::Block { stmts: vec![enum_stmt], span: Span::new(start, end_tok.span.end) });
         }
+        let _ = has_tag;
         let (field_name, field_name_span) = self.expect_ident()?;
         let array_size = if self.eat_kind(&TokenKind::LBracket) {
             let expr = self.parse_expr()?;
@@ -646,6 +850,15 @@ impl Parser {
                 // definition -- field decls can't take args on a bare
                 // `struct Name x(args)` form because the struct type
                 // itself would already need to have been parsed.
+                // Forward declaration: `struct Name;` introduces the
+                // tag without a body. Templates use this as a hint to
+                // the editor; for our purposes it's a no-op (the
+                // matching `typedef struct { ... } Name` later in the
+                // file is what registers the type).
+                if matches!(self.peek_kind(), Some(TokenKind::Semi)) {
+                    let end_tok = self.bump().unwrap();
+                    return Ok(Stmt::Block { stmts: Vec::new(), span: Span::new(start, end_tok.span.end) });
+                }
                 if matches!(self.peek_kind(), Some(TokenKind::LParen)) {
                     let params = self.parse_optional_struct_params()?;
                     let body_block = self.parse_block()?;
@@ -813,13 +1026,22 @@ impl Parser {
     /// are bound to the struct's declared params at execute time.
     fn parse_field_decl(&mut self, ty_override: Option<TypeRef>) -> Result<Stmt, ParseError> {
         let start = self.peek().map(|t| t.span.start).unwrap_or(0);
-        let modifier = if self.eat_keyword(Keyword::Local) {
-            DeclModifier::Local
-        } else if self.eat_keyword(Keyword::Const) {
-            DeclModifier::Const
-        } else {
-            DeclModifier::Field
-        };
+        // `local`, `const`, or both (in either order). 010 templates
+        // routinely combine the two -- e.g. `local const double X`,
+        // `const local DWORD Y` -- so accept any prefix sequence,
+        // collapsing to the most-restrictive modifier seen.
+        let mut modifier = DeclModifier::Field;
+        loop {
+            if self.eat_keyword(Keyword::Local) {
+                if !matches!(modifier, DeclModifier::Const) {
+                    modifier = DeclModifier::Local;
+                }
+            } else if self.eat_keyword(Keyword::Const) {
+                modifier = DeclModifier::Const;
+            } else {
+                break;
+            }
+        }
         let ty = match ty_override {
             Some(t) => t,
             None => self.parse_type_ref()?,
@@ -833,13 +1055,7 @@ impl Parser {
         } else {
             self.expect_ident()?
         };
-        let array_size = if self.eat_kind(&TokenKind::LBracket) {
-            let expr = self.parse_expr()?;
-            self.expect_kind(&TokenKind::RBracket, "]")?;
-            Some(expr)
-        } else {
-            None
-        };
+        let mut array_size = self.parse_optional_array_dim()?;
         let args = if self.eat_kind(&TokenKind::LParen) {
             let mut out = Vec::new();
             if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
@@ -855,6 +1071,17 @@ impl Parser {
         } else {
             Vec::new()
         };
+        // Trailing array dim after parameterised-struct args:
+        // `EFI_PARTITION_ENTRY partitions(size)[count];`.
+        if array_size.is_none() {
+            array_size = self.parse_optional_array_dim()?;
+        }
+        // Multi-dimensional arrays: `int x[5][3];`. We only model a
+        // single dim, so the inner dim is parsed and dropped (the
+        // outer count is what the field stream reads).
+        while matches!(self.peek_kind(), Some(TokenKind::LBracket)) {
+            let _ = self.parse_optional_array_dim()?;
+        }
         // C-style bitfield: `DWORD flag : 3;` packs `flag` into the
         // low / high 3 bits of the next shared DWORD slot.
         let bit_width = if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(ATTR_VALUE_BP)?) } else { None };
@@ -888,13 +1115,11 @@ impl Parser {
             } else {
                 self.expect_ident()?
             };
-            let next_array_size = if self.eat_kind(&TokenKind::LBracket) {
-                let expr = self.parse_expr()?;
-                self.expect_kind(&TokenKind::RBracket, "]")?;
-                Some(expr)
-            } else {
-                None
-            };
+            let next_array_size = self.parse_optional_array_dim()?;
+            // Drop additional dims for multi-dim declarators here too.
+            while matches!(self.peek_kind(), Some(TokenKind::LBracket)) {
+                let _ = self.parse_optional_array_dim()?;
+            }
             let next_args = if self.eat_kind(&TokenKind::LParen) {
                 let mut out = Vec::new();
                 if !matches!(self.peek_kind(), Some(TokenKind::RParen)) {
@@ -938,6 +1163,16 @@ impl Parser {
         if self.eat_keyword(Keyword::Void) {
             let span = self.tokens[self.pos - 1].span;
             return Ok(TypeRef { name: "void".into(), span });
+        }
+        // C-style sign modifier: `unsigned T` / `signed T`. 010
+        // doesn't have a true `unsigned` keyword; templates that
+        // write it expect us to look at `T`. Drop the modifier and
+        // trust the underlying type name.
+        if let Some(TokenKind::Ident(name)) = self.peek_kind()
+            && (name == "unsigned" || name == "signed")
+            && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        {
+            self.bump();
         }
         let (name, span) = self.expect_ident()?;
         Ok(TypeRef { name, span })
@@ -1087,8 +1322,14 @@ impl Parser {
             }
             TokenKind::Keyword(Keyword::Sizeof) => {
                 self.bump();
-                // sizeof ( expr )
+                // sizeof ( expr | typename ). Templates write
+                // `sizeof(struct FIELD)` or `sizeof(union U)` with
+                // a tag keyword; skip it -- the inner ident is the
+                // type name we want.
                 self.expect_kind(&TokenKind::LParen, "(")?;
+                let _ = self.eat_keyword(Keyword::Struct)
+                    || self.eat_keyword(Keyword::Union)
+                    || self.eat_keyword(Keyword::Enum);
                 let inner = self.parse_expr()?;
                 let close = self.expect_kind(&TokenKind::RParen, ")")?;
                 // Model as a call to a magic identifier; the
@@ -1100,8 +1341,49 @@ impl Parser {
                     span: Span::new(tok.span.start, close.span.end),
                 })
             }
+            TokenKind::LBrace => {
+                // Brace-list initializer: `{1, 2, 3}` for a fixed
+                // local array. We don't have a dedicated array
+                // literal AST node, so collapse to the first element
+                // for now -- templates that branch on the array
+                // contents see only the first value. The rest of the
+                // declaration parses cleanly and the field shows up
+                // in the tree.
+                self.bump();
+                let mut first: Option<Expr> = None;
+                if !matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
+                    first = Some(self.parse_expr_bp(1)?);
+                    while self.eat_kind(&TokenKind::Comma) {
+                        if matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
+                            break;
+                        }
+                        let _ = self.parse_expr_bp(1)?;
+                    }
+                }
+                let close = self.expect_kind(&TokenKind::RBrace, "}")?;
+                let span = Span::new(tok.span.start, close.span.end);
+                Ok(first.map(|e| with_span(e, span)).unwrap_or(Expr::IntLit { value: 0, span }))
+            }
             TokenKind::LParen => {
                 self.bump();
+                // C-style cast detection: `(typename) expr`. Loose
+                // heuristic -- look for an identifier (or
+                // `unsigned`/`signed` modifier + identifier) inside
+                // the parens, followed immediately by `)` and an
+                // expression-starter token. The cast is dropped (we
+                // emit just the inner expression); 010's interpreter
+                // is loose enough about types that `(uint64)x` and
+                // `x` produce the same numeric value for the cases
+                // templates actually care about.
+                if let Some(skip) = self.detect_cast_type() {
+                    for _ in 0..skip {
+                        self.bump();
+                    }
+                    self.expect_kind(&TokenKind::RParen, ")")?;
+                    let target = self.parse_expr_bp(PREFIX_BP)?;
+                    let span = Span::new(tok.span.start, target.span().end);
+                    return Ok(with_span(target, span));
+                }
                 let inner = self.parse_expr()?;
                 let close = self.expect_kind(&TokenKind::RParen, ")")?;
                 // Discard the parens -- the AST doesn't need them,
