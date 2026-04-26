@@ -909,18 +909,28 @@ impl<S: HexSource> Interpreter<S> {
         }
         let mut all_attrs = attrs_to_pairs(attrs);
         // `[[no_unique_address]]` -- the field reads at the current
-        // cursor but doesn't advance it. Common idiom for inspecting
-        // bytes without consuming them (e.g. read the whole file as
-        // a sibling `data` field that visualisations hook off, then
-        // continue parsing from offset 0). Treated as an implicit
-        // placement at the current cursor.
+        // cursor but doesn't advance it. Save the cursor and
+        // restore it after the read; the field itself still emits a
+        // node and binds in scope as usual.
         let no_unique_address =
             attrs.0.iter().any(|a| a.name == "no_unique_address");
-        // `Type x @ offset;` -- save the running cursor, jump to
-        // the placed address, read, then restore. The save/restore
-        // is critical: ImHex placement reads don't advance the
-        // surrounding sequential cursor.
-        let saved_pos = if placement.is_some() || no_unique_address {
+        // Placement (`@ offset`) cursor semantics depend on context:
+        //   - At top level, `@` is a plain seek -- the cursor stays
+        //     wherever the placed read ended, so a following
+        //     `Type y @ $;` reads right after it. (nro.hexpat,
+        //     `Start start @ 0; Header header @ $;`.)
+        //   - Inside a struct or array element body, `@` is a side
+        //     channel: save the cursor, read at `offset`, then
+        //     restore. The enclosing struct's natural size only
+        //     reflects sequential reads. (adtfdat.hexpat's
+        //     `Extension { ...; payload[data_size] @ data_pos; }`
+        //     in an `extensions[N]` array needs each element to
+        //     advance by its sequential size only.)
+        // `[[no_unique_address]]` is always save+restore -- the
+        // explicit "read here but don't advance" form.
+        let inside_struct = !self.this_stack.is_empty();
+        let placement_saves = placement.is_some() && inside_struct;
+        let saved_pos = if placement_saves || no_unique_address {
             Some(self.cursor_tell())
         } else {
             None
@@ -998,9 +1008,10 @@ impl<S: HexSource> Interpreter<S> {
         } else {
             self.read_scalar(name, ty, parent, &all_attrs, init.as_ref())?;
         }
-        // Restore the sequential cursor after a placement read so
-        // subsequent fields keep reading from where we were before
-        // the `@`.
+        // Restore the cursor only for `[[no_unique_address]]` and
+        // for in-struct placements. Top-level `@` placement leaves
+        // the cursor at the read end (a seek, not a save+restore)
+        // so chained `Foo a @ 0; Bar b @ $;` advances naturally.
         if let Some(saved) = saved_pos {
             self.cursor_seek(saved);
         }

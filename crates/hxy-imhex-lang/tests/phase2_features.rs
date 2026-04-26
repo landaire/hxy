@@ -24,10 +24,12 @@ fn assert_no_terminal_error(result: &RunResult) {
 }
 
 #[test]
-fn placement_reads_at_absolute_offset_and_restores_cursor() {
-    // `Type x @ offset;` jumps to the absolute address, reads, then
-    // restores the sequential cursor so subsequent fields keep
-    // reading from where they would have.
+fn placement_inside_struct_saves_and_restores_cursor() {
+    // Inside a struct body, `Type x @ offset;` is a side channel:
+    // it reads at `offset` but leaves the enclosing struct's cursor
+    // alone. The enclosing struct's natural size therefore only
+    // reflects its sequential reads -- this is what makes
+    // `Extension { ...; payload[N] @ data_pos; }` in an array work.
     let src = "\
 struct S {
     u8 first;
@@ -36,10 +38,6 @@ struct S {
 };
 S s;
 ";
-    // Layout: positions 0..6
-    // [0]=0xAA (first), [1..5]=fillers, [5]=0x55 (placed read), [1]=0xBB after first read
-    // Sequential reads should be: first @0=0xAA, second @1=0xBB.
-    // Placement reads @5=0x55.
     let bytes = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x55];
     let result = run(src, bytes);
     assert_no_terminal_error(&result);
@@ -50,6 +48,30 @@ S s;
     assert_eq!(placed.offset, 5);
     assert_eq!(second.offset, 1);
     assert!(matches!(placed.value, Some(Value::UInt { value: 0x55, .. })));
+    assert!(matches!(second.value, Some(Value::UInt { value: 0xBB, .. })));
+}
+
+#[test]
+fn placement_at_top_level_advances_cursor() {
+    // At top level (outside any struct body), `@` is a plain seek:
+    // the cursor stays wherever the placed read ended, so a
+    // following `Type y @ $;` reads right after it. nro.hexpat uses
+    // `Start start @ 0x00; Header header @ $;` -- if `@` restored
+    // the cursor, `$` would be 0 and the second read would clobber
+    // the first.
+    let src = "\
+u8 first @ 0x00;
+u8 follow @ $;
+";
+    let bytes = vec![0xAA, 0xBB, 0xCC];
+    let result = run(src, bytes);
+    assert_no_terminal_error(&result);
+    let first = result.nodes.iter().find(|n| n.name == "first").unwrap();
+    let follow = result.nodes.iter().find(|n| n.name == "follow").unwrap();
+    assert_eq!(first.offset, 0);
+    assert_eq!(follow.offset, 1);
+    assert!(matches!(first.value, Some(Value::UInt { value: 0xAA, .. })));
+    assert!(matches!(follow.value, Some(Value::UInt { value: 0xBB, .. })));
 }
 
 #[test]
