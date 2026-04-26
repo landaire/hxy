@@ -378,6 +378,19 @@ impl HexEditor {
         self.edit.splice(offset, remove, insert)
     }
 
+    /// Apply a batch of non-overlapping splices as a single undo
+    /// entry. Used by find/replace's Replace All so the whole batch
+    /// undoes in one keystroke. `ops` must be sorted by offset and
+    /// non-overlapping; each op is
+    /// `(offset, remove_len, insert_bytes)`. Returns `Err` if any op
+    /// is out of bounds or if the batch fails the ordering check;
+    /// in that case the source is untouched.
+    #[cfg(feature = "editor")]
+    pub fn splice_many(&mut self, ops: &[(u64, u64, Vec<u8>)]) -> Result<(), WriteError> {
+        self.pin_scroll_for_next_frame();
+        self.edit.splice_many(ops)
+    }
+
     #[cfg(not(feature = "editor"))]
     pub(crate) fn push_history_boundary(&mut self) {}
 

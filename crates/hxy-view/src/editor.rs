@@ -187,6 +187,63 @@ impl EditState {
         Ok(())
     }
 
+    /// Apply a batch of non-overlapping splices as a single
+    /// [`EditEntry`]. Used by find/replace's Replace All so the
+    /// whole batch undoes / redoes in one keystroke instead of one
+    /// per match. Each op is `(offset, remove_len, insert_bytes)`;
+    /// ops must be sorted by offset and non-overlapping.
+    ///
+    /// The combined entry's range is `[ops[0].0, ops.last().0 +
+    /// ops.last().1)` in pre-batch coordinates; `old_bytes` is the
+    /// current bytes spanning that range and `new_bytes` is the
+    /// post-batch bytes (interleaving original spans with each op's
+    /// `insert`). On error, no entry is pushed and the source is
+    /// untouched -- the caller can fall back to per-op splices.
+    pub(crate) fn splice_many(&mut self, ops: &[(u64, u64, Vec<u8>)]) -> Result<(), WriteError> {
+        if self.mode != EditMode::Mutable {
+            return Err(WriteError::Readonly);
+        }
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let source_len = self.patched_source.len().get();
+        // Validate: sorted by offset, non-overlapping, all in bounds.
+        let mut prev_end: Option<u64> = None;
+        for (offset, remove, _) in ops {
+            if let Some(p) = prev_end
+                && *offset < p
+            {
+                return Err(WriteError::Rejected("splice_many: ops overlap or out of order".to_owned()));
+            }
+            let end = offset.saturating_add(*remove);
+            if end > source_len {
+                return Err(WriteError::OutOfBounds { offset: *offset, len: *remove, source_len });
+            }
+            prev_end = Some(end);
+        }
+        let first_offset = ops[0].0;
+        let last_end = prev_end.expect("non-empty ops");
+        let span = (last_end - first_offset) as usize;
+        let mut old_bytes = Vec::with_capacity(span);
+        for i in 0..span {
+            old_bytes.push(self.read_byte_at(first_offset + i as u64)?);
+        }
+        // Interleave pre-batch bytes with each op's `insert` to
+        // produce the post-batch slice, in one pass.
+        let mut new_bytes = Vec::with_capacity(span);
+        let mut cursor = 0usize;
+        for (offset, remove, insert) in ops {
+            let local_start = (*offset - first_offset) as usize;
+            new_bytes.extend_from_slice(&old_bytes[cursor..local_start]);
+            new_bytes.extend_from_slice(insert);
+            cursor = local_start + *remove as usize;
+        }
+        new_bytes.extend_from_slice(&old_bytes[cursor..]);
+        self.record_entry(EditEntry { offset: first_offset, old_bytes, new_bytes });
+        self.rebuild_patch_from_stack();
+        Ok(())
+    }
+
     /// Replace the byte range `[offset, offset + remove)` with
     /// `insert`. Generalises [`Self::request_write`] (in-place,
     /// `remove == insert.len()`) and [`Self::insert_at`]
@@ -544,6 +601,42 @@ mod tests {
         let mut s = state();
         s.mode = EditMode::Readonly;
         assert!(matches!(s.request_write(0, vec![0xAA]), Err(WriteError::Readonly)));
+    }
+
+    #[test]
+    fn splice_many_records_single_undo_entry_in_place() {
+        let mut s = state();
+        // Replace bytes at 1 and 4 with 0xFF (same-length).
+        s.splice_many(&[(1, 1, vec![0xFF]), (4, 1, vec![0xFF])]).unwrap();
+        assert_eq!(read_all(&s), vec![0x00, 0xFF, 0x22, 0x33, 0xFF, 0x55]);
+        assert_eq!(s.undo_stack.len(), 1, "Replace All must be one undo entry");
+    }
+
+    #[test]
+    fn splice_many_records_single_undo_entry_with_resize() {
+        let mut s = state();
+        // Replace 1 byte at offset 2 with 3 bytes; the entry should
+        // span [2..3) on the old side and grow.
+        s.splice_many(&[(2, 1, vec![0xAA, 0xBB, 0xCC])]).unwrap();
+        assert_eq!(read_all(&s), vec![0x00, 0x11, 0xAA, 0xBB, 0xCC, 0x33, 0x44, 0x55]);
+        assert_eq!(s.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn splice_many_undoes_in_one_step() {
+        let mut s = state();
+        s.splice_many(&[(1, 1, vec![0xFF]), (4, 1, vec![0xFF])]).unwrap();
+        s.undo().unwrap();
+        assert_eq!(read_all(&s), vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(s.undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn splice_many_rejects_overlapping_ops() {
+        let mut s = state();
+        let result = s.splice_many(&[(1, 3, vec![0xAA]), (2, 1, vec![0xBB])]);
+        assert!(matches!(result, Err(WriteError::Rejected(_))));
+        assert_eq!(read_all(&s), vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
     }
 
     #[test]

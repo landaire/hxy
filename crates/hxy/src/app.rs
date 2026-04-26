@@ -3210,32 +3210,28 @@ fn render_replace_all_confirm_modal(ctx: &egui::Context, count: usize) -> ModalO
     outcome
 }
 
-/// Apply every match in `matches` from highest offset to lowest so
-/// earlier offsets don't shift mid-loop. Used after both the count
-/// confirm and (when sizes differ) the splice prompt have been
-/// acknowledged.
+/// Apply every match in `matches` as a single batched splice so
+/// the whole Replace All counts as one undo entry. `matches` must
+/// be sorted ascending; the batch is non-overlapping by
+/// construction (each match consumes `find_len` bytes). Used after
+/// both the count-confirm and (when sizes differ) the splice
+/// prompt have been acknowledged.
 #[cfg(not(target_arch = "wasm32"))]
 fn perform_replace_all(file: &mut OpenFile, matches: &[u64], find_len: u64, repl: &[u8]) {
     use crate::search::SearchSideEffect;
 
-    let in_place = find_len == repl.len() as u64;
-    let mut applied = 0usize;
-    for &offset in matches.iter().rev() {
-        let result = if in_place {
-            file.editor.request_write(offset, repl.to_vec()).map(|_| ())
-        } else {
-            file.editor.splice(offset, find_len, repl.to_vec()).map(|_| ())
-        };
-        match result {
-            Ok(()) => applied += 1,
-            Err(e) => tracing::warn!(error = %e, offset, "replace-all entry"),
-        }
+    if matches.is_empty() {
+        return;
     }
-    if applied > 0 {
-        file.search.pending_effects.push(SearchSideEffect::Replaced { count: applied });
-        file.search.refresh_pattern();
-        file.search.splice_prompt_acked = true;
+    let ops: Vec<(u64, u64, Vec<u8>)> =
+        matches.iter().map(|off| (*off, find_len, repl.to_vec())).collect();
+    if let Err(e) = file.editor.splice_many(&ops) {
+        tracing::warn!(error = %e, "replace-all batch");
+        return;
     }
+    file.search.pending_effects.push(SearchSideEffect::Replaced { count: matches.len() });
+    file.search.refresh_pattern();
+    file.search.splice_prompt_acked = true;
 }
 
 /// Apply a frame's worth of cross-file search events. `Run` rebuilds
