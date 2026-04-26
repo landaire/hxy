@@ -904,7 +904,24 @@ impl<S: HexSource> Interpreter<S> {
             } else {
                 value
             };
-            self.current_scope_mut().vars.insert(name.clone(), value);
+            self.current_scope_mut().vars.insert(name.clone(), value.clone());
+            // When the computed local lives inside a struct, also
+            // emit a zero-length child node so an outside reference
+            // like `startheader.startEndHeader` (7z.hexpat) finds
+            // it via the normal `lookup_member_under` path. Without
+            // this, struct-local computed values are visible only
+            // for the duration of the struct's body.
+            if let Some(parent_idx) = parent {
+                self.push_node(NodeOut {
+                    name: name.clone(),
+                    ty: NodeType::Unknown(ty.leaf().to_owned()),
+                    offset: self.cursor_tell(),
+                    length: 0,
+                    value: Some(value),
+                    parent: Some(parent_idx),
+                    attrs: attrs_to_pairs(attrs),
+                });
+            }
             return Ok(Flow::Next);
         }
         if ty.leaf() == "auto" {
