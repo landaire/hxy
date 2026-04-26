@@ -2480,28 +2480,90 @@ fn format_args(args: &[Value]) -> String {
         Value::Str(s) => s.clone(),
         other => format!("{other}"),
     };
-    if !fmt.contains("{}") {
+    if !fmt.contains('{') {
         return args.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(" ");
     }
     let mut out = String::with_capacity(fmt.len() + 8);
     let mut chars = fmt.chars().peekable();
     let mut idx = 1usize; // first replacement arg
     while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'}') {
-            chars.next();
+        if c == '{' {
+            // Collect the spec inside the braces.
+            let mut spec = String::new();
+            let mut closed = false;
+            while let Some(&n) = chars.peek() {
+                chars.next();
+                if n == '}' {
+                    closed = true;
+                    break;
+                }
+                spec.push(n);
+            }
+            if !closed {
+                out.push('{');
+                out.push_str(&spec);
+                continue;
+            }
             if let Some(v) = args.get(idx) {
-                let pretty = match v {
-                    Value::Str(s) => s.clone(),
-                    other => format!("{other}"),
-                };
-                out.push_str(&pretty);
+                out.push_str(&format_value_with_spec(v, &spec));
             }
             idx += 1;
+        } else if c == '}' && chars.peek() == Some(&'}') {
+            chars.next();
+            out.push('}');
         } else {
             out.push(c);
         }
     }
     out
+}
+
+/// Render a [`Value`] according to a format spec. Honours the
+/// subset of Rust-style fmt specs ImHex templates use: `:X`, `:x`,
+/// `:o`, `:b`, `:d`, `:s`, plus a fill / width prefix
+/// (`{:08X}`). Anything else falls back to plain Display.
+fn format_value_with_spec(v: &Value, spec: &str) -> String {
+    let spec = spec.trim_start_matches(':');
+    if spec.is_empty() {
+        return match v {
+            Value::Str(s) => s.clone(),
+            other => format!("{other}"),
+        };
+    }
+    let (width_part, kind) = match spec.chars().last() {
+        Some(c @ ('X' | 'x' | 'o' | 'b' | 'd' | 's' | 'c')) => (&spec[..spec.len() - c.len_utf8()], c),
+        _ => (spec, 'd'),
+    };
+    // Optional `0` fill flag prefix; the width is the rest.
+    let (fill, width_str) = if let Some(rest) = width_part.strip_prefix('0') {
+        ('0', rest)
+    } else {
+        (' ', width_part)
+    };
+    let width: usize = width_str.parse().unwrap_or(0);
+    let body = match kind {
+        'X' => v.to_i128().map(|n| format!("{:X}", n as u128)).unwrap_or_else(|| format!("{v}")),
+        'x' => v.to_i128().map(|n| format!("{:x}", n as u128)).unwrap_or_else(|| format!("{v}")),
+        'o' => v.to_i128().map(|n| format!("{:o}", n as u128)).unwrap_or_else(|| format!("{v}")),
+        'b' => v.to_i128().map(|n| format!("{:b}", n as u128)).unwrap_or_else(|| format!("{v}")),
+        'c' => match v {
+            Value::Char { value, .. } => char::from_u32(*value).map(String::from).unwrap_or_default(),
+            other => format!("{other}"),
+        },
+        's' => match v {
+            Value::Str(s) => s.clone(),
+            other => format!("{other}"),
+        },
+        _ => v.to_i128().map(|n| n.to_string()).unwrap_or_else(|| format!("{v}")),
+    };
+    if body.len() >= width {
+        body
+    } else {
+        // Manual padding: built-in format! syntax can't take `fill`
+        // dynamically. Templates use `0` or space; we honour both.
+        let pad: String = std::iter::repeat_n(fill, width - body.len()).collect();
+        format!("{pad}{body}")
+    }
 }
 
 /// Pull the Nth arg as a string (for `starts_with` / `contains` /
