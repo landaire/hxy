@@ -880,6 +880,13 @@ impl<S: HexSource> Interpreter<S> {
             self.current_scope_mut().vars.insert(name.clone(), Value::Void);
             return Ok(Flow::Next);
         }
+        // `str x;` (no init) -- declare an empty string in scope.
+        // ImHex's `str` is a dynamic string type, not a fixed-width
+        // primitive; bare declarations don't consume bytes.
+        if ty.leaf() == "str" && init.is_none() && placement.is_none() && array.is_none() {
+            self.current_scope_mut().vars.insert(name.clone(), Value::Str(String::new()));
+            return Ok(Flow::Next);
+        }
         // `bool x in;` / `Type x out;` -- input/output variables
         // supplied by the host. Don't consume bytes from the source;
         // bind a default placeholder so subsequent expressions that
@@ -2341,8 +2348,18 @@ fn decode_prim(bytes: &[u8], kind: PrimKind, endian: Endian) -> Result<Value, Ru
 
 fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // String concat / equality: keep strings on the string path,
-    // everything else widens to numeric.
-    if let (Value::Str(a), Value::Str(b)) = (l, r) {
+    // everything else widens to numeric. Either operand being a
+    // string promotes the other to its `Display` form so
+    // `result += c` (where `c` is a char) and `name + ".bin"` both
+    // produce strings.
+    if matches!(l, Value::Str(_)) || matches!(r, Value::Str(_)) {
+        let render = |v: &Value| match v {
+            Value::Str(s) => s.clone(),
+            Value::Char { value, .. } => char::from_u32(*value).map(String::from).unwrap_or_default(),
+            other => format!("{other}"),
+        };
+        let a = render(l);
+        let b = render(r);
         return Ok(match op {
             BinOp::Add => Value::Str(format!("{a}{b}")),
             BinOp::Eq => Value::Bool(a == b),
