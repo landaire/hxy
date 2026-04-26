@@ -692,12 +692,30 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(Flow::Next)
             }
             Stmt::If { cond, then_branch, else_branch, .. } => {
-                if self.eval(cond)?.is_truthy() {
-                    self.exec_stmt(then_branch, parent)
-                } else if let Some(e) = else_branch.as_deref() {
-                    self.exec_stmt(e, parent)
+                let branch: Option<&Stmt> = if self.eval(cond)?.is_truthy() {
+                    Some(then_branch.as_ref())
                 } else {
-                    Ok(Flow::Next)
+                    else_branch.as_deref()
+                };
+                let Some(branch) = branch else { return Ok(Flow::Next) };
+                // ImHex treats `if`/`else` block bodies as transparent
+                // for variable scoping: a `u32 v = ...;` declared
+                // inside one branch is visible to the surrounding
+                // struct after the if/else. dos.hexpat declares
+                // `csOffsetFirst` in both arms and references it
+                // afterwards. Flatten Block bodies to avoid pushing
+                // a new scope.
+                if let Stmt::Block { stmts, .. } = branch {
+                    let mut flow = Flow::Next;
+                    for s in stmts {
+                        flow = self.exec_stmt(s, parent)?;
+                        if !matches!(flow, Flow::Next) {
+                            break;
+                        }
+                    }
+                    Ok(flow)
+                } else {
+                    self.exec_stmt(branch, parent)
                 }
             }
             Stmt::While { cond, body, .. } => {
@@ -811,7 +829,21 @@ impl<S: HexSource> Interpreter<S> {
             if self.arm_matches(&value, &arm.patterns)? {
                 let mut flow = Flow::Next;
                 for s in &arm.body {
-                    flow = self.exec_stmt(s, parent)?;
+                    // Match arms are scope-transparent (same as
+                    // `if` branches): a `Type x = expr;` inside an
+                    // arm should be visible to subsequent fields.
+                    // Flatten Block bodies to avoid pushing a scope
+                    // that would hide them.
+                    if let Stmt::Block { stmts, .. } = s {
+                        for inner in stmts {
+                            flow = self.exec_stmt(inner, parent)?;
+                            if !matches!(flow, Flow::Next) {
+                                break;
+                            }
+                        }
+                    } else {
+                        flow = self.exec_stmt(s, parent)?;
+                    }
                     if !matches!(flow, Flow::Next) {
                         break;
                     }
