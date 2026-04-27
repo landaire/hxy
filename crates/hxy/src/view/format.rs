@@ -35,7 +35,7 @@ pub fn copyable_status_label(
     let over_label = ui.ctx().input(|i| i.pointer.latest_pos()).is_some_and(|p| r.rect.contains(p));
     let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
     let _ = r;
-    if over_label && ui.ctx().input_mut(crate::app::consume_copy_event) {
+    if over_label && ui.ctx().input_mut(crate::app::shortcuts::consume_copy_event) {
         ui.ctx().copy_text(copy.to_string());
     }
 }
