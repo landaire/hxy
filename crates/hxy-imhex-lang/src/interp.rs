@@ -137,6 +137,12 @@ pub enum RuntimeError {
     /// rely on cursor-progress to terminate).
     #[error("template execution exceeded {step_limit} statements")]
     StepLimitHit { step_limit: u64 },
+
+    /// The experimental bytecode VM hit an op variant the dispatch
+    /// loop does not yet implement. Callers can use this to fall
+    /// back to the AST interpreter while op coverage is incomplete.
+    #[error("bytecode VM: op `{op}` not yet supported")]
+    BytecodeOpUnsupported { op: &'static str },
 }
 
 #[derive(Clone, Debug)]
@@ -337,6 +343,64 @@ impl<S: HexSource> Interpreter<S> {
         let result = self.exec_program(program);
         let terminal_error = result.err();
         RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: self.return_value, terminal_error }
+    }
+
+    /// Experimental bytecode VM driver. Walks a [`crate::bc::Program`]
+    /// op stream instead of recursing through AST nodes. Today it
+    /// only dispatches the small subset of ops the compile pass
+    /// emits (top-level primitive reads); anything else fails with
+    /// [`RuntimeError::Type`] so missing coverage is loud.
+    ///
+    /// Wired up as a parallel path so we can run the same fixture
+    /// through both [`Self::run`] and this method and assert
+    /// identical [`RunResult::nodes`]. Once the op set covers the
+    /// full corpus, the public `run` will switch over.
+    pub fn run_bytecode_experimental(mut self, program: &crate::bc::Program) -> RunResult {
+        let result = self.exec_bytecode(program);
+        let terminal_error = result.err();
+        RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: self.return_value, terminal_error }
+    }
+
+    fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
+        use crate::bc::Op;
+        let mut pc: usize = 0;
+        while pc < program.ops.len() {
+            if self.interrupt.load(Ordering::Relaxed) {
+                return Err(RuntimeError::TimedOut { timeout_ms: 0 });
+            }
+            self.steps = self.steps.saturating_add(1);
+            if self.steps > self.step_limit {
+                return Err(RuntimeError::StepLimitHit { step_limit: self.step_limit });
+            }
+            let op = &program.ops[pc];
+            match *op {
+                Op::ReadPrim { ty, name } => {
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    // Match the AST's top-level EOF tolerance: a
+                    // primitive read past the file end becomes a
+                    // diagnostic instead of a terminal error so the
+                    // remaining ops keep running.
+                    match self.read_scalar(name_str, ty_ref, None, &[], None) {
+                        Ok(_) => {}
+                        Err(RuntimeError::Source(e)) => {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                ref other => {
+                    return Err(RuntimeError::BytecodeOpUnsupported { op: other.variant_name() });
+                }
+            }
+            pc += 1;
+        }
+        Ok(())
     }
 
     /// Drive every top-level item in source order. Function defs go

@@ -48,7 +48,11 @@
 //! flat `Vec<ResolvedType>` populated during compile.
 
 use crate::ast::BinOp;
+use crate::ast::Program as AstProgram;
 use crate::ast::ReflectKind;
+use crate::ast::Stmt;
+use crate::ast::TopItem;
+use crate::ast::TypeRef;
 use crate::ast::UnaryOp;
 use crate::interp::Severity;
 
@@ -75,7 +79,7 @@ pub struct Pc(pub u32);
 /// Intern table for identifiers (or string literals -- two of these
 /// live on a [`Program`], one per kind). Insertion is O(1) hashed;
 /// lookup is `u32 -> &str`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct InternTable {
     storage: Vec<String>,
     index: rustc_hash::FxHashMap<String, u32>,
@@ -175,16 +179,69 @@ pub enum Op {
     Diag(Severity, StrId),
 }
 
+impl Op {
+    /// Static name for the variant. Used by the VM's "not yet
+    /// supported" diagnostic so we get a stable string without
+    /// formatting the operand payload.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Op::PushInt(_) => "PushInt",
+            Op::PushFloat(_) => "PushFloat",
+            Op::PushStr(_) => "PushStr",
+            Op::PushBool(_) => "PushBool",
+            Op::PushChar(_) => "PushChar",
+            Op::PushVoid => "PushVoid",
+            Op::Pop => "Pop",
+            Op::Dup => "Dup",
+            Op::LoadIdent(_) => "LoadIdent",
+            Op::StoreIdent(_) => "StoreIdent",
+            Op::LoadCursor => "LoadCursor",
+            Op::StoreCursor => "StoreCursor",
+            Op::BinOp(_) => "BinOp",
+            Op::UnOp(_) => "UnOp",
+            Op::Ternary => "Ternary",
+            Op::Member(_) => "Member",
+            Op::Index => "Index",
+            Op::Call { .. } => "Call",
+            Op::Reflect(_) => "Reflect",
+            Op::ReadPrim { .. } => "ReadPrim",
+            Op::ReadStruct { .. } => "ReadStruct",
+            Op::ReadArray { .. } => "ReadArray",
+            Op::ReadCharArr { .. } => "ReadCharArr",
+            Op::ReadDynArr { .. } => "ReadDynArr",
+            Op::SaveCursor => "SaveCursor",
+            Op::RestoreCursor => "RestoreCursor",
+            Op::SeekTo => "SeekTo",
+            Op::EnterStruct { .. } => "EnterStruct",
+            Op::ExitStruct => "ExitStruct",
+            Op::PushScope => "PushScope",
+            Op::PopScope => "PopScope",
+            Op::Jump(_) => "Jump",
+            Op::JumpIfFalse(_) => "JumpIfFalse",
+            Op::JumpIfTrue(_) => "JumpIfTrue",
+            Op::Break => "Break",
+            Op::Continue => "Continue",
+            Op::Return => "Return",
+            Op::EnterTry(_) => "EnterTry",
+            Op::ExitTry => "ExitTry",
+            Op::Diag(_, _) => "Diag",
+        }
+    }
+}
+
 /// A compiled template. Built once per source program; reused
 /// across runs against different fixtures.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Program {
     pub ops: Vec<Op>,
     pub idents: InternTable,
     pub strings: InternTable,
-    // ResolvedType / function tables land in follow-up commits as
-    // the compile pass needs them. Kept as fields here so the
-    // public shape settles up front.
+    /// Resolved-type table. Indexed by [`TypeId`]. Each entry is the
+    /// AST [`TypeRef`] that the corresponding op needs at runtime.
+    /// Kept as `TypeRef` (not a flattened `ResolvedType`) so the VM
+    /// can hand it straight to the existing `read_scalar` /
+    /// `lookup_type` helpers without a parallel resolution pass.
+    pub types: Vec<TypeRef>,
 }
 
 impl Program {
@@ -201,6 +258,167 @@ impl Program {
     pub fn intern_str(&mut self, s: &str) -> StrId {
         StrId(self.strings.intern(s))
     }
+
+    /// Append a type reference to the type table. No dedup yet --
+    /// the corpus templates rarely repeat the same `TypeRef` shape
+    /// verbatim (spans differ), so the table stays small.
+    pub fn push_type(&mut self, ty: TypeRef) -> TypeId {
+        let id = self.types.len() as u32;
+        self.types.push(ty);
+        TypeId(id)
+    }
+}
+
+/// Reasons the compile pass could not lower an AST [`AstProgram`] to
+/// a [`Program`]. Each variant names the specific shape we don't yet
+/// handle so the bytecode-vs-AST parity test can report exactly what
+/// is missing.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum CompileError {
+    #[error("unsupported top-level item: {0}")]
+    UnsupportedTopItem(&'static str),
+
+    #[error("unsupported statement: {0}")]
+    UnsupportedStmt(&'static str),
+
+    #[error("unsupported field decl shape: {reason}")]
+    UnsupportedFieldDecl { reason: &'static str },
+}
+
+/// Compile an AST [`AstProgram`] to a flat [`Program`]. Returns
+/// [`CompileError`] for any AST shape that does not yet have an op
+/// lowering -- the caller (parity tests, future opt-in runner) can
+/// fall back to the AST interpreter on failure.
+///
+/// This is the *staged* lowering: today only top-level
+/// `PrimitiveType name;` field decls compile. Each new op gets
+/// added with a paired test in follow-up commits.
+pub fn compile(ast: &AstProgram) -> Result<Program, CompileError> {
+    let mut p = Program::new();
+    for it in &ast.items {
+        match it {
+            TopItem::Function(_) => {
+                return Err(CompileError::UnsupportedTopItem("fn decl"));
+            }
+            TopItem::Stmt(s) => compile_top_stmt(&mut p, s)?,
+        }
+    }
+    Ok(p)
+}
+
+fn compile_top_stmt(p: &mut Program, stmt: &Stmt) -> Result<(), CompileError> {
+    match stmt {
+        Stmt::FieldDecl {
+            is_const,
+            ty,
+            name,
+            array,
+            placement,
+            init,
+            attrs,
+            is_io_var,
+            pointer_width,
+            ..
+        } => {
+            if *is_const {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "const" });
+            }
+            if *is_io_var {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "io var" });
+            }
+            if pointer_width.is_some() {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "pointer" });
+            }
+            if placement.is_some() {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "placement" });
+            }
+            if init.is_some() {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
+            }
+            if array.is_some() {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "array" });
+            }
+            if !attrs.0.is_empty() {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "attrs" });
+            }
+            if !is_known_primitive(ty) {
+                return Err(CompileError::UnsupportedFieldDecl { reason: "non-primitive type" });
+            }
+            let name_id = p.intern_ident(name);
+            let ty_id = p.push_type(ty.clone());
+            p.ops.push(Op::ReadPrim { ty: ty_id, name: name_id });
+            Ok(())
+        }
+        Stmt::StructDecl(_) => Err(CompileError::UnsupportedStmt("struct decl")),
+        Stmt::EnumDecl(_) => Err(CompileError::UnsupportedStmt("enum decl")),
+        Stmt::BitfieldDecl(_) => Err(CompileError::UnsupportedStmt("bitfield decl")),
+        Stmt::UsingAlias { .. } => Err(CompileError::UnsupportedStmt("using alias")),
+        Stmt::FnDecl(_) => Err(CompileError::UnsupportedStmt("nested fn decl")),
+        Stmt::Namespace { .. } => Err(CompileError::UnsupportedStmt("namespace")),
+        Stmt::Import { .. } => Err(CompileError::UnsupportedStmt("import")),
+        Stmt::Block { .. } => Err(CompileError::UnsupportedStmt("block")),
+        Stmt::Expr { .. } => Err(CompileError::UnsupportedStmt("expr stmt")),
+        Stmt::If { .. } => Err(CompileError::UnsupportedStmt("if")),
+        Stmt::While { .. } => Err(CompileError::UnsupportedStmt("while")),
+        Stmt::For { .. } => Err(CompileError::UnsupportedStmt("for")),
+        Stmt::Match { .. } => Err(CompileError::UnsupportedStmt("match")),
+        Stmt::TryBlock { .. } => Err(CompileError::UnsupportedStmt("try")),
+        Stmt::Return { .. } => Err(CompileError::UnsupportedStmt("return")),
+        Stmt::Break { .. } => Err(CompileError::UnsupportedStmt("break")),
+        Stmt::Continue { .. } => Err(CompileError::UnsupportedStmt("continue")),
+        Stmt::BitfieldField { .. } => {
+            Err(CompileError::UnsupportedStmt("bitfield field"))
+        }
+    }
+}
+
+/// True when `ty` names a built-in primitive that the AST interpreter
+/// registers in `register_primitives` -- i.e. something `read_scalar`
+/// can decode without consulting struct / enum / bitfield decls. Also
+/// accepts the `uN` / `sN` byte-aligned generic-int spellings.
+fn is_known_primitive(ty: &TypeRef) -> bool {
+    if !ty.template_args.is_empty() || ty.path.len() != 1 {
+        return false;
+    }
+    let name = ty.leaf();
+    matches!(
+        name,
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "s8"
+            | "s16"
+            | "s32"
+            | "s64"
+            | "s128"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "float"
+            | "double"
+            | "f32"
+            | "f64"
+            | "char"
+            | "char16"
+            | "bool"
+    ) || is_generic_int_spelling(name)
+}
+
+fn is_generic_int_spelling(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    if bytes[0] != b'u' && bytes[0] != b's' {
+        return false;
+    }
+    let Ok(bits) = name[1..].parse::<u32>() else {
+        return false;
+    };
+    bits != 0 && bits <= 128 && bits.is_multiple_of(8)
 }
 
 #[cfg(test)]
@@ -234,5 +452,37 @@ mod tests {
         // misuse at the compile-pass / VM boundary.
         assert_eq!(p.idents.get(i.0), "foo");
         assert_eq!(p.strings.get(s.0), "foo");
+    }
+
+    #[test]
+    fn compile_lowers_top_level_primitive_field_to_read_prim() {
+        let src = "u8 magic;\nu32 size;\n";
+        let tokens = crate::tokenize(src).unwrap();
+        let ast = crate::parse(tokens).unwrap();
+        let bc = compile(&ast).expect("compile of top-level primitives must succeed");
+        assert_eq!(bc.ops.len(), 2);
+        match bc.ops[0] {
+            Op::ReadPrim { ty, name } => {
+                assert_eq!(bc.idents.get(name.0), "magic");
+                assert_eq!(bc.types[ty.0 as usize].leaf(), "u8");
+            }
+            ref other => panic!("expected ReadPrim, got {other:?}"),
+        }
+        match bc.ops[1] {
+            Op::ReadPrim { ty, name } => {
+                assert_eq!(bc.idents.get(name.0), "size");
+                assert_eq!(bc.types[ty.0 as usize].leaf(), "u32");
+            }
+            ref other => panic!("expected ReadPrim, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_refuses_struct_decl_for_now() {
+        let src = "struct S { u8 a; }; S s;\n";
+        let tokens = crate::tokenize(src).unwrap();
+        let ast = crate::parse(tokens).unwrap();
+        let err = compile(&ast).unwrap_err();
+        assert!(matches!(err, CompileError::UnsupportedStmt("struct decl")), "{err:?}");
     }
 }
