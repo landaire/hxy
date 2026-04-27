@@ -378,15 +378,11 @@ impl<S: HexSource> Interpreter<S> {
         // backing type, `read_array` looping per-element through
         // `read_scalar`, ...) all resolve names exactly the way
         // the AST walker would.
-        for entry in &program.ast_decls.structs {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(entry.decl.clone()));
-        }
-        for entry in &program.ast_decls.enums {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(entry.decl.clone()));
-        }
-        for entry in &program.ast_decls.bitfields {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(entry.decl.clone()));
-        }
+        // Register aliases first so a later struct/enum/bitfield
+        // decl with the same name wins (matches the AST walker's
+        // source-order register: a real type decl that follows a
+        // `using Name = ...;` overwrites the alias). Self-forward
+        // aliases are filtered out entirely in the compile pass.
         for entry in &program.ast_decls.aliases {
             self.register_decl(
                 &entry.bare,
@@ -396,6 +392,15 @@ impl<S: HexSource> Interpreter<S> {
                     target: entry.decl.target.clone(),
                 },
             );
+        }
+        for entry in &program.ast_decls.structs {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(entry.decl.clone()));
+        }
+        for entry in &program.ast_decls.enums {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(entry.decl.clone()));
+        }
+        for entry in &program.ast_decls.bitfields {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(entry.decl.clone()));
         }
         for entry in &program.ast_decls.functions {
             let shared = Arc::new(entry.decl.clone());
@@ -517,20 +522,34 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 Op::ExecAstStmt(id) => {
                     let stmt = program.ast_stmts[id.0 as usize].clone();
-                    // Drain any pending decorative attrs into the
-                    // statement's attrs vec so `exec_stmt` sees
-                    // them on its emitted node. Most ExecAstStmt
-                    // payloads are control-flow stmts that don't
-                    // have an attrs slot, but a fallback FieldDecl
-                    // does. Easier: just clear -- the AST stmt
-                    // already carries its own attrs from the
-                    // parser. If a placement op queued
-                    // `hxy_placement`, that's also already in the
-                    // stmt's `placement` field and AST will re-add
-                    // the attr.
+                    // The AST statement carries its own attrs /
+                    // placement metadata; pending attrs from a
+                    // preceding bytecode op would double-count.
                     pending_attrs.clear();
                     let _ = stack; // silence unused-after-mem-take
-                    let _ = self.exec_stmt(&stmt, parent)?;
+                    let res = self.exec_stmt(&stmt, parent);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            // Mirror exec_program: a top-level
+                            // read past EOF is a diagnostic, not
+                            // a terminal error.
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                    // Top-level `return;` (set via exec_stmt) must
+                    // unwind the bytecode walk too. Mirror
+                    // exec_program's break-on-return_pending.
+                    if eof_tolerant_top_level && self.return_pending {
+                        self.return_pending = false;
+                        return Ok(());
+                    }
                 }
                 Op::ReadAny { ty, name } => {
                     let name_str = program.idents.get(name.0);
@@ -650,10 +669,14 @@ impl<S: HexSource> Interpreter<S> {
                     let name_str = program.idents.get(name.0).to_owned();
                     self.current_scope_mut().vars.insert(name_str, value);
                 }
-                Op::EmitComputedLocal { name, ty_label } => {
+                Op::EmitComputedLocal { name, ty_label, ty } => {
                     let value = stack
                         .pop()
                         .ok_or(RuntimeError::BytecodeStackUnderflow { op: "EmitComputedLocal" })?;
+                    // Coerce numeric initializers back to the
+                    // declared primitive width / signedness, matching
+                    // `exec_field_decl`'s `coerce_value_to_prim` step.
+                    let value = self.coerce_to_decl_type(value, &program.types[ty.0 as usize]);
                     let name_str = program.idents.get(name.0).to_owned();
                     let ty_str = program.idents.get(ty_label.0).to_owned();
                     self.current_scope_mut().vars.insert(name_str.clone(), value.clone());
@@ -669,6 +692,14 @@ impl<S: HexSource> Interpreter<S> {
                             attrs,
                         });
                     }
+                }
+                Op::StoreIdentCoerce { name, ty } => {
+                    let value = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdentCoerce" })?;
+                    let value = self.coerce_to_decl_type(value, &program.types[ty.0 as usize]);
+                    let name_str = program.idents.get(name.0).to_owned();
+                    self.current_scope_mut().vars.insert(name_str, value);
                 }
                 Op::LoadIdent(name) => {
                     let name_str = program.idents.get(name.0);
@@ -769,7 +800,14 @@ impl<S: HexSource> Interpreter<S> {
         self.scopes.pop();
         self.current_parent = prev_parent;
 
-        result?;
+        // Mirror `read_struct`: a Source error from inside the body
+        // means the struct ran past EOF on a trailing field. Stop
+        // emitting further fields but let the surrounding read
+        // continue. Anything else propagates.
+        match result {
+            Ok(()) | Err(RuntimeError::Source(_)) => {}
+            Err(e) => return Err(e),
+        }
         let end = self.cursor_tell();
         self.nodes[idx.as_usize()].length = end.saturating_sub(offset);
         Ok(())
@@ -901,6 +939,19 @@ impl<S: HexSource> Interpreter<S> {
         if !self.namespace_stack.is_empty() {
             let qualified = format!("{}::{}", self.namespace_stack.join("::"), name);
             self.types.insert(qualified, def);
+        }
+    }
+
+    /// Coerce a runtime value to the declared primitive type for
+    /// computed locals. Mirrors the
+    /// `coerce_value_to_prim`-on-primitive-decl step from
+    /// `exec_field_decl`. Non-primitive declared types pass the
+    /// value through unchanged.
+    fn coerce_to_decl_type(&mut self, value: Value, ty: &TypeRef) -> Value {
+        if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) {
+            coerce_value_to_prim(value, p)
+        } else {
+            value
         }
     }
 

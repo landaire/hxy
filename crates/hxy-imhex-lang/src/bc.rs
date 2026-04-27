@@ -216,10 +216,18 @@ pub enum Op {
     /// value, plus binds the name in the surrounding struct's
     /// scope. The AST walker emits this exact shape so member
     /// access on the parent struct (`outer.computed`) finds the
-    /// binding. At top level (no enclosing struct) the binding is
-    /// the only side effect -- `Op::StoreIdent` (already in the
-    /// scaffold) handles that case directly.
-    EmitComputedLocal { name: IdentId, ty_label: IdentId },
+    /// binding. `ty` is the *declared* type (used by the VM to
+    /// coerce numeric initializers back to the declared primitive
+    /// width / signedness, e.g. `u64 pos = -1` stores
+    /// `0xFFFF_FFFF_FFFF_FFFF`); the AST walker does the same via
+    /// `coerce_value_to_prim`. At top level (no enclosing struct)
+    /// the binding is the only side effect -- use the typed
+    /// [`Op::StoreIdentCoerce`] there.
+    EmitComputedLocal { name: IdentId, ty_label: IdentId, ty: TypeId },
+    /// Top-level computed local: pop, coerce to the declared
+    /// primitive (no-op for non-primitive types), bind in scope.
+    /// No node emission.
+    StoreIdentCoerce { name: IdentId, ty: TypeId },
 
     /// Generic fallback read: dispatches into AST `read_scalar`
     /// with whatever type the program holds at [`TypeId`]. Used
@@ -328,6 +336,7 @@ impl Op {
             Op::ReadAnyArrayDyn { .. } => "ReadAnyArrayDyn",
             Op::ReadAnyArrayFixed { .. } => "ReadAnyArrayFixed",
             Op::EmitComputedLocal { .. } => "EmitComputedLocal",
+            Op::StoreIdentCoerce { .. } => "StoreIdentCoerce",
             Op::EvalAstExpr(_) => "EvalAstExpr",
             Op::ExecAstStmt(_) => "ExecAstStmt",
             Op::ReadCharArr { .. } => "ReadCharArr",
@@ -680,6 +689,21 @@ impl<'r> Compiler<'r> {
                 Ok(())
             }
             Stmt::UsingAlias { new_name, template_params, source, .. } => {
+                // `using Document;` (the self-forward declaration
+                // shape used inside namespaces) is a no-op in the
+                // AST -- it would register `Document -> Alias{
+                // target: Document }`, then the later real
+                // `struct Document { ... }` overwrites it. We don't
+                // get the same overwrite ordering at VM entry, so
+                // skip the self-alias entirely. Without this guard
+                // the alias loops the chase up to its depth cap
+                // and hides the real struct.
+                let is_self_forward = template_params.is_empty()
+                    && source.template_args.is_empty()
+                    && source.leaf() == new_name;
+                if is_self_forward {
+                    return Ok(());
+                }
                 self.p.ast_decls.aliases.push(NamedDecl {
                     bare: new_name.clone(),
                     qualified: self.qualified_name(new_name),
@@ -962,9 +986,11 @@ fn compile_struct_body_stmt(
             if placement.is_none() && pointer_width.is_none() {
                 if let Some(e) = compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref()) {
                     compile_expr(p, out, e)?;
+                    push_attr_list_op(p, out, attrs);
                     let name_id = p.intern_ident(name);
                     let ty_label = p.intern_ident(ty.leaf());
-                    out.push(Op::EmitComputedLocal { name: name_id, ty_label });
+                    let ty_id = p.push_type(ty.clone());
+                    out.push(Op::EmitComputedLocal { name: name_id, ty_label, ty: ty_id });
                     return Ok(());
                 }
                 if compute_local_void(*is_io_var, init.as_ref(), array.as_ref()) {
@@ -982,7 +1008,13 @@ fn compile_struct_body_stmt(
             // bytecode subset, fall back to ExecAstStmt.
             let mut try_buf: Vec<Op> = Vec::new();
             let fast_ok = (|| -> Result<(), CompileError> {
-                field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
+                field_decl_must_be_plain_array_and_placement_ok(
+                    *is_const,
+                    pointer_width,
+                    init,
+                    array,
+                    attrs,
+                )?;
                 if placement.is_some() {
                     return Err(CompileError::UnsupportedFieldDecl {
                         reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
@@ -1025,6 +1057,12 @@ fn compile_struct_body_stmt(
 /// the AST walker handles by evaluating an initializer (or a
 /// value placeholder) and binding into scope without reading from
 /// the source. Returns the expression to evaluate.
+///
+/// `const T name[...] = ...` is the one shape we deliberately
+/// bail out on (return None) so the caller falls back to the
+/// AST: array initialisers parse as expressions that produce
+/// `Value::Bytes` / array shapes the bytecode evaluator does
+/// not yet construct, and compile_expr would refuse them anyway.
 fn compute_local_init<'a>(
     is_const: bool,
     is_io_var: bool,
@@ -1088,7 +1126,13 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             // wrapping the whole field decl.
             let mut try_buf: Vec<Op> = Vec::new();
             let fast_ok = (|| -> Result<(), CompileError> {
-                field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
+                field_decl_must_be_plain_array_and_placement_ok(
+                    *is_const,
+                    pointer_width,
+                    init,
+                    array,
+                    attrs,
+                )?;
                 // Computed local / const / io-var at top level:
                 // bind in scope, no source read, no node emission.
                 if let Some(e) =
@@ -1096,7 +1140,8 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
                 {
                     compile_expr(p, &mut try_buf, e)?;
                     let name_id = p.intern_ident(name);
-                    try_buf.push(Op::StoreIdent(name_id));
+                    let ty_id = p.push_type(ty.clone());
+                    try_buf.push(Op::StoreIdentCoerce { name: name_id, ty: ty_id });
                     return Ok(());
                 }
                 if compute_local_void(*is_io_var, init.as_ref(), array.as_ref()) {
@@ -1178,17 +1223,43 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
 /// Reject every `FieldDecl` modifier outside the small subset the
 /// VM currently implements. Placement (`@ offset`) and the array
 /// shape are *not* checked here -- the per-context compile callers
-/// validate them. `init` / `is_const` / `is_io_var` (computed
-/// locals, constants, host-supplied vars) are NOT rejected here
-/// either: the caller routes them into a separate lowering path
-/// that emits expression ops + a store, mirroring what the AST
-/// `exec_field_decl` does.
+/// validate them. `init` / `is_io_var` (computed locals,
+/// host-supplied vars) are also NOT rejected here: the caller
+/// routes them into a separate lowering path that emits
+/// expression ops + a store. `is_const` with an array shape
+/// (`const u8 table[N] = {...}`) is rejected because the
+/// initialiser is an array literal that the bytecode evaluator
+/// can't construct.
 fn field_decl_must_be_plain_array_and_placement_ok(
+    is_const: bool,
     pointer_width: &Option<TypeRef>,
+    init: &Option<crate::ast::Expr>,
+    array: &Option<crate::ast::ArraySize>,
     attrs: &crate::ast::Attrs,
 ) -> Result<(), CompileError> {
     if pointer_width.is_some() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "pointer" });
+    }
+    if init.is_some() && array.is_some() {
+        // `const u8 table[N] = {...}` AND non-const variants like
+        // `u16 huffdecode[2048] = {...}` -- the AST evaluates the
+        // array-literal initializer once and binds the result in
+        // scope without consuming source bytes. The bytecode
+        // expression compiler doesn't construct array values, and
+        // the regular array-read fast path would consume bytes
+        // that the AST never reads, throwing every later offset
+        // off. Fall back to ExecAstStmt.
+        return Err(CompileError::UnsupportedFieldDecl {
+            reason: "decl with init expression on an array needs the AST fallback",
+        });
+    }
+    if is_const && init.is_some() {
+        // `const T x = expr;` -- evaluated once, bound, no
+        // source read. The non-array, no-placement computed-local
+        // path in the caller already handles this correctly via
+        // StoreIdent, but if we had any other modifiers we'd
+        // need to bail to ExecAstStmt. Allow the fast path here
+        // and let the caller pick it up.
     }
     field_attrs_must_be_decorative(attrs)?;
     Ok(())
@@ -1295,53 +1366,76 @@ fn compile_field_decl(
     name: &str,
     array: Option<&crate::ast::ArraySize>,
 ) -> Result<(), CompileError> {
+    // Use a resolved alias only for the dispatch decision (which
+    // op to emit); the *original* `ty` flows into the type table
+    // so the runtime node's type label still names the alias
+    // (e.g. `Address[4]` instead of `u32[4]`). Mirrors the AST,
+    // which keeps the source-level `ty.leaf()` for the label
+    // even when `lookup_type` chases through aliases.
     let resolved = ctx.resolve_alias(ty);
-    let ty = resolved.as_ref();
+    let resolved_ty = resolved.as_ref();
+    // `padding[N];` is a builtin handled inline by the AST's
+    // `exec_field_decl` -- there is no `TypeDef` for it, so any
+    // attempt to lower through `ReadAny` (-> `read_scalar` ->
+    // `lookup_type`) would fail with "unknown type `padding`".
+    // Force the caller to fall back to ExecAstStmt by returning
+    // an error here.
+    if resolved_ty.leaf() == "padding" {
+        return Err(CompileError::UnsupportedFieldDecl {
+            reason: "`padding[N]` builtin is handled by the AST fallback",
+        });
+    }
     match array {
         None => {
-            if is_known_primitive(ty) {
+            if is_known_primitive(resolved_ty) {
                 let name_id = p.intern_ident(name);
                 let ty_id = p.push_type(ty.clone());
                 out.push(Op::ReadPrim { ty: ty_id, name: name_id });
-            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
+                Ok(())
+            } else if let Some(body_id) = ctx.struct_bodies.get(resolved_ty.leaf()) {
                 let name_id = p.intern_ident(name);
                 let display = p.struct_bodies[body_id.0 as usize].display_name;
                 out.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
-            } else if let Some(enum_id) = ctx.enums.get(ty.leaf()) {
+                Ok(())
+            } else if let Some(enum_id) = ctx.enums.get(resolved_ty.leaf()) {
                 let name_id = p.intern_ident(name);
                 out.push(Op::ReadEnum { id: *enum_id, name: name_id });
+                Ok(())
             } else {
-                // Fallback: hand the type ref straight to AST
-                // `read_scalar`. Loses the flat-op-stream perf
-                // win but keeps the surrounding template
-                // compilable. Any actual undefined-name failure
-                // surfaces at run time as `RuntimeError::UnknownType`.
-                let name_id = p.intern_ident(name);
-                let ty_id = p.push_type(ty.clone());
-                out.push(Op::ReadAny { ty: ty_id, name: name_id });
+                // No fast path matches. Returning an error lets
+                // the caller wrap the entire Stmt::FieldDecl in
+                // ExecAstStmt, which goes through exec_field_decl
+                // and picks up transform attrs, placement
+                // save+restore, etc. that ReadAny would skip.
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "field type not on the bytecode fast path; needs the AST fallback",
+                })
             }
-            Ok(())
         }
         Some(crate::ast::ArraySize::Fixed(crate::ast::Expr::IntLit { value, .. })) => {
-            let name_id = p.intern_ident(name);
-            let ty_id = p.push_type(ty.clone());
-            if array_element_type_is_lowerable(ty, ctx) {
+            if array_element_type_is_lowerable(resolved_ty, ctx) {
+                let name_id = p.intern_ident(name);
+                let ty_id = p.push_type(ty.clone());
                 out.push(Op::ReadArrayFixed { ty: ty_id, name: name_id, count: *value as u64 });
+                Ok(())
             } else {
-                out.push(Op::ReadAnyArrayFixed { ty: ty_id, name: name_id, count: *value as u64 });
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "fixed-array element type needs the AST fallback",
+                })
             }
-            Ok(())
         }
         Some(crate::ast::ArraySize::Fixed(size_expr)) => {
-            compile_expr(p, out, size_expr)?;
-            let name_id = p.intern_ident(name);
-            let ty_id = p.push_type(ty.clone());
-            if array_element_type_is_lowerable(ty, ctx) {
+            if array_element_type_is_lowerable(resolved_ty, ctx) {
+                compile_expr(p, out, size_expr)?;
+                let name_id = p.intern_ident(name);
+                let ty_id = p.push_type(ty.clone());
                 out.push(Op::ReadArrayDyn { ty: ty_id, name: name_id });
+                Ok(())
             } else {
-                out.push(Op::ReadAnyArrayDyn { ty: ty_id, name: name_id });
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "dyn-array element type needs the AST fallback",
+                })
             }
-            Ok(())
         }
         Some(crate::ast::ArraySize::Open) => Err(CompileError::UnsupportedFieldDecl {
             reason: "open `[]` arrays not yet lowered",
