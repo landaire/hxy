@@ -1272,13 +1272,22 @@ impl<S: HexSource> Interpreter<S> {
         // surrounding `read_dynamic_array` knows to stop reading.
         if !decl.is_union {
             for s in parent_body.iter().chain(decl.body.iter()) {
-                let flow = self.exec_stmt(s, Some(idx))?;
+                // Tolerate per-field EOF the same way arrays do: a
+                // struct that runs past the file end stops emitting
+                // the remaining trailing fields, but the run keeps
+                // going. ImHex surfaces the overshoot as a warning
+                // and lets the surrounding template continue.
+                let flow = match self.exec_stmt(s, Some(idx)) {
+                    Ok(f) => f,
+                    Err(RuntimeError::Source(_)) => break,
+                    Err(e) => return Err(e),
+                };
                 if matches!(flow, Flow::Break | Flow::Continue) {
                     self.break_pending = matches!(flow, Flow::Break);
                     break;
                 }
             }
-            self.nodes[idx.as_usize()].length = self.cursor_tell() - offset;
+            self.nodes[idx.as_usize()].length = self.cursor_tell().saturating_sub(offset);
         } else {
             // Union: every field starts at the same offset; the union's
             // own length is the widest child's. Cursor lands at the
