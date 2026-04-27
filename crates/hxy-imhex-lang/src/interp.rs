@@ -840,8 +840,25 @@ impl<S: HexSource> Interpreter<S> {
             | Stmt::BitfieldDecl(_)
             | Stmt::FnDecl(_)
             | Stmt::UsingAlias { .. }
-            | Stmt::Namespace { .. }
             | Stmt::Import { .. } => Ok(Flow::Next),
+            Stmt::Namespace { body, .. } => {
+                // Type / fn declarations in the body were already
+                // registered during the declaration phase; at run
+                // time we still need to execute statement-shaped
+                // contents (top-level field decls, expression
+                // statements, computed-local bindings) so a
+                // namespace-scoped `u8 op_type;` (qoi.hexpat) reads
+                // its byte and lands in the global scope. Decl-only
+                // statements (struct/enum/fn) re-enter exec_stmt as
+                // no-ops, so the walk is safe to apply uniformly.
+                for s in body {
+                    let flow = self.exec_stmt(s, parent)?;
+                    if matches!(flow, Flow::Break | Flow::Return) {
+                        return Ok(flow);
+                    }
+                }
+                Ok(Flow::Next)
+            }
         }
     }
 
@@ -1753,26 +1770,60 @@ impl<S: HexSource> Interpreter<S> {
                 // attempt per prefix length.
                 if segments.len() >= 2 {
                     let variant_name = segments.last().cloned().unwrap_or_default();
+                    // Collect every enum whose registered key matches
+                    // a prefix of the path. With two namespaces both
+                    // declaring `enum Type {...}` the bare `Type` key
+                    // is overwritten by the second registration, so
+                    // we also walk the full type table for any name
+                    // that ends with `::<prefix>` and try each
+                    // candidate -- the first one that has the variant
+                    // wins. (rgbds.hexpat needs `fstack::Type::REPT`
+                    // even though `sym::Type` is the last registered
+                    // bare `Type`.)
+                    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let mut candidates: Vec<EnumDecl> = Vec::new();
                     for prefix_len in (1..segments.len()).rev() {
                         let key: String = segments[..prefix_len].join("::");
-                        if let Some(TypeDef::Enum(decl)) = self.types.get(&key).cloned() {
-                            let mut running: i128 = 0;
-                            for variant in &decl.variants {
-                                if let Some(value_expr) = variant.value.as_ref() {
-                                    running = self.eval(value_expr)?.to_i128().unwrap_or(running);
+                        if seen_keys.insert(key.clone())
+                            && let Some(TypeDef::Enum(decl)) = self.types.get(&key)
+                        {
+                            candidates.push(decl.clone());
+                        }
+                        let suffix = format!("::{key}");
+                        let extra: Vec<(String, EnumDecl)> = self
+                            .types
+                            .iter()
+                            .filter_map(|(n, d)| {
+                                if let TypeDef::Enum(decl) = d {
+                                    if n.ends_with(&suffix) || n == &key {
+                                        Some((n.clone(), decl.clone()))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
                                 }
-                                if variant.name == variant_name {
-                                    return Ok(Value::UInt {
-                                        value: running as u128,
-                                        kind: PrimKind::u64(),
-                                    });
-                                }
-                                running = running.saturating_add(1);
+                            })
+                            .collect();
+                        for (n, decl) in extra {
+                            if seen_keys.insert(n) {
+                                candidates.push(decl);
                             }
-                            // Found the enum but not the variant --
-                            // fall through to the leaf-ident path,
-                            // which will surface a useful error.
-                            break;
+                        }
+                    }
+                    for decl in &candidates {
+                        let mut running: i128 = 0;
+                        for variant in &decl.variants {
+                            if let Some(value_expr) = variant.value.as_ref() {
+                                running = self.eval(value_expr)?.to_i128().unwrap_or(running);
+                            }
+                            if variant.name == variant_name {
+                                return Ok(Value::UInt {
+                                    value: running as u128,
+                                    kind: PrimKind::u64(),
+                                });
+                            }
+                            running = running.saturating_add(1);
                         }
                     }
                 }
@@ -2597,8 +2648,21 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
         let b = render(r);
         return Ok(match op {
             BinOp::Add => Value::Str(format!("{a}{b}")),
+            // `"-" * 50` -- string repetition (Python-/JS-style).
+            // tar.hexpat uses this to print divider lines via
+            // `std::print("-" * 50);`.
+            BinOp::Mul => {
+                let count =
+                    r.to_i128().or_else(|| l.to_i128()).unwrap_or(0).max(0) as usize;
+                let s = if matches!(r, Value::Str(_)) { &b } else { &a };
+                Value::Str(s.repeat(count))
+            }
             BinOp::Eq => Value::Bool(a == b),
             BinOp::NotEq => Value::Bool(a != b),
+            BinOp::Lt => Value::Bool(a < b),
+            BinOp::LtEq => Value::Bool(a <= b),
+            BinOp::Gt => Value::Bool(a > b),
+            BinOp::GtEq => Value::Bool(a >= b),
             _ => return Err(RuntimeError::Type(format!("string operand not supported for {op:?}"))),
         });
     }
