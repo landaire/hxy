@@ -1472,16 +1472,52 @@ impl<S: HexSource> Interpreter<S> {
         attrs: &[(String, String)],
     ) -> Result<Value, RuntimeError> {
         let backing_def = self.lookup_type(&decl.backing)?;
-        let prim = match backing_def {
-            TypeDef::Primitive(p) if matches!(p.class, PrimClass::Int | PrimClass::Char) => p,
-            _ => {
-                return Err(RuntimeError::Type(format!("enum `{}` backing must be an integer primitive", decl.name)));
-            }
-        };
         let offset = self.cursor_tell();
-        let bytes = self.cursor_advance(prim.width as u64)?;
-        let raw = decode_prim(&bytes, prim, self.endian)?;
-        let raw_u = raw.to_i128().unwrap_or(0) as u128;
+        // Struct-backed enum (rar.hexpat: `enum HeaderType : vint`).
+        // Read the struct, apply its `[[transform]]` to get a
+        // numeric value, and use that as the variant key. Width is
+        // computed from the struct's actual byte consumption.
+        let (raw_u, length, prim) = if let TypeDef::Struct(s) = &backing_def {
+            let backing_ty = TypeRef {
+                path: vec![s.name.clone()],
+                template_args: Vec::new(),
+                span: decl.backing.span,
+            };
+            let hidden_name = format!("__{}__backing", name);
+            self.read_struct(&hidden_name, s, &backing_ty, parent, &[])?;
+            let raw_value = self.lookup_ident(&hidden_name).unwrap_or(Value::Void);
+            // Apply the backing struct's transform fn (e.g.
+            // `vint::vint_value`) to convert the raw struct into a
+            // numeric variant key. ImHex's pattern attrs aren't yet
+            // surfaced through TypeDef::Struct, so look the fn up by
+            // a `<typename>_value` convention used by every corpus
+            // example we've seen so far.
+            let fn_candidates = [format!("{}_value", s.name.to_lowercase()), format!("{}_value", s.name)];
+            let mut value: u128 = raw_value.to_i128().unwrap_or(0) as u128;
+            for fn_name in &fn_candidates {
+                if let Ok(v) = self.call_named_with_aliases(fn_name, &[raw_value.clone()], &[]) {
+                    value = v.to_i128().unwrap_or(0) as u128;
+                    break;
+                }
+            }
+            let length = self.cursor_tell().saturating_sub(offset);
+            (value, length, PrimKind { class: PrimClass::Int, width: length as u8, signed: false })
+        } else {
+            let prim = match backing_def {
+                TypeDef::Primitive(p) if matches!(p.class, PrimClass::Int | PrimClass::Char) => p,
+                _ => {
+                    return Err(RuntimeError::Type(format!(
+                        "enum `{}` backing must be an integer primitive or struct",
+                        decl.name
+                    )));
+                }
+            };
+            let bytes = self.cursor_advance(prim.width as u64)?;
+            let raw = decode_prim(&bytes, prim, self.endian)?;
+            (raw.to_i128().unwrap_or(0) as u128, prim.width as u64, prim)
+        };
+        let _ = prim;
+        let _ = length;
         // Match the value against declared variants. ImHex variants
         // can have arbitrary expressions; Phase 1 evaluates them in a
         // fresh side scope and falls back to the numeric form when no
@@ -1516,7 +1552,7 @@ impl<S: HexSource> Interpreter<S> {
             name: name.to_owned(),
             ty: NodeType::EnumType(decl.name.clone()),
             offset,
-            length: prim.width as u64,
+            length,
             value: Some(raw_value.clone()),
             parent,
             attrs: node_attrs,
