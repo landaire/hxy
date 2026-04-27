@@ -763,13 +763,23 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_block(&mut self, stmts: &[Stmt], parent: Option<NodeIdx>) -> Result<Flow, RuntimeError> {
-        // Multi-decl groups -- a block of FieldDecls with no other
-        // stmts -- come from `local int a, b;` and similar. They
-        // shouldn't push a fresh scope: the locals need to land
-        // in the surrounding struct/function scope so subsequent
-        // statements can read and reassign them.
+        // Multi-decl groups -- a block of FieldDecls and the
+        // accompanying typedefs from inline-anon-enum/struct
+        // expansions, with no executable stmts -- come from
+        // `local int a, b;` and `enum <uint> { ... } Type;`. They
+        // shouldn't push a fresh scope: the locals/fields need to
+        // land in the surrounding struct/function scope so
+        // subsequent statements can read and reassign them.
         let is_decl_group = !stmts.is_empty()
-            && stmts.iter().all(|s| matches!(s, Stmt::FieldDecl { .. }));
+            && stmts.iter().all(|s| {
+                matches!(
+                    s,
+                    Stmt::FieldDecl { .. }
+                        | Stmt::TypedefAlias { .. }
+                        | Stmt::TypedefEnum(_)
+                        | Stmt::TypedefStruct(_)
+                )
+            });
         if !is_decl_group {
             self.scopes.push(Scope::default());
         }
@@ -1414,6 +1424,8 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: attrs_to_pairs(attrs),
         });
+        let mut last_cursor = self.cursor.tell();
+        let mut stalled_iters: u32 = 0;
         for i in 0..count {
             let elem_name = format!("[{i}]");
             let elem_ty = TypeRef { name: ty.name.clone(), span: ty.span };
@@ -1435,6 +1447,21 @@ impl<S: HexSource> Interpreter<S> {
                 self.scopes.pop();
             }
             r?;
+            // Bail when each iteration makes no source progress: a
+            // struct/enum array sized by a corrupt header field
+            // (xex.bt's `OptionalHeaders[OptionalHeaderCount]` after
+            // a small fixture's `OptionalHeaderCount` parses as
+            // millions) would otherwise spin against the EOF clamp.
+            let now = self.cursor.tell();
+            if now == last_cursor {
+                stalled_iters = stalled_iters.saturating_add(1);
+                if stalled_iters >= LOOP_STALL_LIMIT {
+                    return Err(RuntimeError::LoopStalled { iterations: stalled_iters });
+                }
+            } else {
+                stalled_iters = 0;
+                last_cursor = now;
+            }
         }
         let end = self.cursor.tell();
         self.nodes[idx.as_usize()].length = end - offset;
