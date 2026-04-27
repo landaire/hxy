@@ -7,7 +7,7 @@
 //! plugin wrapper (phase 2j) is a straight translation, no further
 //! restructuring.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -158,11 +158,25 @@ pub struct Interpreter<S: HexSource> {
     cursor: Cursor<S>,
     endian: Endian,
     /// Type registry: name -> concrete definition.
-    types: HashMap<String, TypeDef>,
-    /// Function registry.
-    functions: HashMap<String, FunctionDef>,
+    types: FxHashMap<String, TypeDef>,
+    /// Index of every enum variant by name -> raw integer value.
+    /// Built as enums are registered so `lookup_ident` can resolve
+    /// constants like \`M3DMAGIC\` in O(1) instead of falling
+    /// through the expensive has-children/field-storage probes
+    /// just to scan every registered enum at the very end.
+    enum_variant_index: FxHashMap<String, i128>,
+    /// Function registry. Arc-wrapped so cloning the entry on
+    /// every call doesn't duplicate the body.
+    functions: FxHashMap<String, std::sync::Arc<FunctionDef>>,
     /// Scope chain for locals / fields. Last element is innermost.
     scopes: Vec<Scope>,
+    /// Refcount of every name currently bound in any scope. Lets
+    /// `lookup_ident` skip the per-scope walk in O(1) when the
+    /// name isn't bound anywhere -- the dominant case for enum
+    /// variant labels in big switches (3DS chunks dispatch on
+    /// hundreds of \`case TAG:\` per node and the scope walk
+    /// otherwise dominates wall-clock).
+    scope_var_counts: FxHashMap<String, u32>,
     /// Emitted tree so far.
     nodes: Vec<NodeOut>,
     /// Non-fatal diagnostics emitted so far.
@@ -179,13 +193,19 @@ pub struct Interpreter<S: HexSource> {
     /// fields are read; outlives the read's own scope so cross-struct
     /// references like `chunk[0].ihdr.color_type` resolve after the
     /// struct body has popped.
-    field_storage: HashMap<String, Value>,
+    field_storage: FxHashMap<String, Value>,
+    /// All ancestor prefixes of any key in `field_storage` /
+    /// `array_storage`. Lets `has_children`-style probes return in
+    /// O(1) instead of scanning every key with a `starts_with`
+    /// pass -- the difference is millions of ops per template on
+    /// 3DS / ELF style chunk walks.
+    path_has_children: rustc_hash::FxHashSet<String>,
     /// Spans for primitive arrays, keyed by the same dotted path
     /// `field_storage` uses. Lets `arr[i]` indexing decode element
     /// `i` lazily from the source instead of pre-materialising N
     /// `Value`s into `field_storage` (which was catastrophically slow
     /// for multi-MB byte arrays).
-    array_storage: HashMap<String, ArraySpan>,
+    array_storage: FxHashMap<String, ArraySpan>,
     /// Per-typedef array suffix discovered at decl time
     /// (`typedef CHAR DIGEST[20];`). When a field decl uses one
     /// of these as its type, the field reads `[N]` items even
@@ -193,17 +213,22 @@ pub struct Interpreter<S: HexSource> {
     /// alias resolved to its scalar source and the read consumed
     /// only one element (so `header.groupID` returned just the
     /// first character of `RIFF`).
-    typedef_array_size: HashMap<String, Expr>,
+    typedef_array_size: FxHashMap<String, Expr>,
     /// In-memory byte sizes for `local`/`const` array declarations,
     /// keyed by name. Lets `sizeof(localArr)` return the declared
     /// total size (count * element width) even though the array
     /// never lands in the emitted node tree.
-    local_array_bytes: HashMap<String, u64>,
+    local_array_bytes: FxHashMap<String, u64>,
     /// Current path prefix for [`field_storage`] writes. Segments
     /// accrete as the interpreter descends into struct bodies and
     /// array elements -- e.g. while reading `DirectoryEntries[2].Key`
     /// the path is `["DirectoryEntries[2]", "Key"]`.
     path: Vec<String>,
+    /// Cached `path.join(".")` -- updated in lockstep with `path`
+    /// pushes/pops so the hot path's many `storage_key` /
+    /// `lookup_candidates` calls don't re-allocate the joined
+    /// string on every probe.
+    cached_path_prefix: String,
     /// Occurrence count of each (prefix, name) pair across the
     /// entire run -- used to index `PNG_CHUNK chunk;` declarations
     /// inside a loop as `chunk[0]`, `chunk[1]`, .... The counter lives
@@ -211,7 +236,7 @@ pub struct Interpreter<S: HexSource> {
     /// block scope is pushed and popped every iteration, but the
     /// conceptual array all the iterations build together belongs to
     /// the enclosing template, not the inner block.
-    field_counts: HashMap<FieldSlot, u32>,
+    field_counts: FxHashMap<FieldSlot, u32>,
     /// Active bitfield accumulator. A bitfield declaration populates
     /// this on first encounter, reading the underlying integer from
     /// the source once and then peeling successive fields off it.
@@ -288,20 +313,26 @@ enum TypeDef {
     Primitive(PrimKind),
     /// Aliased to another type name -- resolved on lookup.
     Alias(String),
-    Enum(EnumDecl),
-    Struct(StructDecl),
+    /// Arc-wrapped so resolve_type clones the pointer rather than
+    /// duplicating the (potentially deeply nested) variant body
+    /// every time a struct/enum field gets read. Templates that
+    /// instantiate the same struct thousands of times in a loop
+    /// (3DS chunk walks, ELF symbol tables) felt this in the
+    /// hot path before the wrap.
+    Enum(std::sync::Arc<EnumDecl>),
+    Struct(std::sync::Arc<StructDecl>),
 }
 
 #[derive(Default)]
 struct Scope {
-    vars: HashMap<String, Value>,
+    vars: FxHashMap<String, Value>,
     /// Aliases from a parameter name to the storage path of the
     /// argument it was bound to. Templates that pass a struct by
     /// reference (`string ReadFoo(Foo &x) { return x.field; }`) get
     /// the param `x` rewritten to the real path so member lookups
     /// reach the original record. Set on function-call entry; cleared
     /// when the scope pops.
-    path_aliases: HashMap<String, String>,
+    path_aliases: FxHashMap<String, String>,
 }
 
 /// Inner control-flow signal raised by `return` / `break` / `continue`
@@ -318,19 +349,23 @@ impl<S: HexSource> Interpreter<S> {
         let mut me = Self {
             cursor: Cursor::new(source),
             endian: Endian::default(),
-            types: HashMap::new(),
-            functions: HashMap::new(),
+            types: FxHashMap::default(),
+            enum_variant_index: FxHashMap::default(),
+            functions: FxHashMap::default(),
             scopes: vec![Scope::default()],
+            scope_var_counts: FxHashMap::default(),
             nodes: Vec::new(),
             diagnostics: Vec::new(),
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
-            field_storage: HashMap::new(),
-            array_storage: HashMap::new(),
-            typedef_array_size: HashMap::new(),
-            local_array_bytes: HashMap::new(),
+            field_storage: FxHashMap::default(),
+            path_has_children: rustc_hash::FxHashSet::default(),
+            array_storage: FxHashMap::default(),
+            typedef_array_size: FxHashMap::default(),
+            local_array_bytes: FxHashMap::default(),
             path: Vec::new(),
-            field_counts: HashMap::new(),
+            cached_path_prefix: String::new(),
+            field_counts: FxHashMap::default(),
             bitfield_slot: None,
             bitfield_right_to_left: false,
             bitfield_padding_disabled: false,
@@ -350,6 +385,10 @@ impl<S: HexSource> Interpreter<S> {
     /// actual number doesn't matter as long as resolution succeeds.
     fn register_constants(&mut self) {
         let scope = self.scopes.first_mut().expect("root scope");
+        // Local helper that inserts into the root scope; we update
+        // `scope_var_counts` separately afterwards because we can't
+        // borrow both `&mut scope` and `&mut self.scope_var_counts`
+        // in the same closure.
         let mut bind = |name: &str, value: u64| {
             scope.vars.insert(name.to_owned(), Value::UInt { value: value as u128, kind: PrimKind::u32() });
         };
@@ -399,6 +438,14 @@ impl<S: HexSource> Interpreter<S> {
         // Boolean aliases some templates use.
         bind("TRUE", 1);
         bind("FALSE", 0);
+        // Now seed the global presence counter with every name we
+        // just bound -- post-binding so the closure's `scope`
+        // borrow is released.
+        let names: Vec<String> =
+            self.scopes.first().expect("root scope").vars.keys().cloned().collect();
+        for name in names {
+            *self.scope_var_counts.entry(name).or_insert(0) += 1;
+        }
     }
 
     /// Full dotted path under which the next field read should be
@@ -407,11 +454,42 @@ impl<S: HexSource> Interpreter<S> {
     /// starts with `[`, matching the way array indices chain onto the
     /// array's own name (e.g. `chunks[0]` not `chunks.[0]`).
     fn storage_key(&self, name: &str) -> String {
-        join_path(&self.path_prefix(), name)
+        join_path(self.path_prefix_str(), name)
     }
 
+    /// Cached `path.join(".")`. Returned as a `String` for callers
+    /// that want to own it; cheap because the common length is
+    /// small and the hot path uses [`Self::path_prefix_str`] when
+    /// it doesn't need ownership.
     fn path_prefix(&self) -> String {
-        self.path.join(".")
+        self.cached_path_prefix.clone()
+    }
+
+    fn path_prefix_str(&self) -> &str {
+        &self.cached_path_prefix
+    }
+
+    /// Push a segment onto the path stack and update the cached
+    /// joined prefix. Use these helpers instead of poking
+    /// `self.path` directly so the cache stays in sync.
+    fn push_path_segment(&mut self, segment: String) {
+        if !self.cached_path_prefix.is_empty() {
+            self.cached_path_prefix.push('.');
+        }
+        self.cached_path_prefix.push_str(&segment);
+        self.path.push(segment);
+    }
+
+    fn pop_path_segment(&mut self) {
+        if let Some(seg) = self.path.pop() {
+            // Trim the joined cache: drop the trailing `.segment`
+            // (or the whole string when this was the only segment).
+            let new_len = self.cached_path_prefix.len().saturating_sub(seg.len());
+            self.cached_path_prefix.truncate(new_len);
+            if self.cached_path_prefix.ends_with('.') {
+                self.cached_path_prefix.pop();
+            }
+        }
     }
 
     /// Record a primitive / enum value at the current path plus `name`.
@@ -421,7 +499,7 @@ impl<S: HexSource> Interpreter<S> {
     /// fields into an array-like sequence (`uleb128` reads up to five
     /// `ubyte val` fields and accesses them as `val[0]`...`val[4]`).
     fn store_field(&mut self, name: &str, value: Value) {
-        let prefix = self.path_prefix();
+        let prefix = self.path_prefix_str().to_owned();
         let slot = FieldSlot { prefix: prefix.clone(), name: name.to_owned() };
         let count = self.field_counts.entry(slot).or_insert(0);
         let idx = *count;
@@ -436,7 +514,20 @@ impl<S: HexSource> Interpreter<S> {
     /// [`strip_zero_indices`]-normalised keys, so stores don't need
     /// to mirror -- one write, one key.
     fn store_at_path(&mut self, key: String, value: Value) {
+        self.register_ancestors(&key);
         self.field_storage.insert(key, value);
+    }
+
+    /// Insert every `.`-separated ancestor of `key` into the
+    /// has-children set. Lets lookup paths probe in O(1) whether a
+    /// given prefix has any children stored under it.
+    fn register_ancestors(&mut self, key: &str) {
+        let mut idx = 0usize;
+        while let Some(dot) = key[idx..].find('.') {
+            let cut = idx + dot;
+            self.path_has_children.insert(key[..cut].to_owned());
+            idx = cut + 1;
+        }
     }
 
     /// Read element `idx` from a registered primitive array span and
@@ -497,7 +588,7 @@ impl<S: HexSource> Interpreter<S> {
         // appear textually before the callee.
         for item in &program.items {
             if let TopItem::Function(f) = item {
-                self.functions.insert(f.name.clone(), f.clone());
+                self.functions.insert(f.name.clone(), std::sync::Arc::new(f.clone()));
             }
         }
         // Execute top-level statements in order. A `return` here is
@@ -653,11 +744,25 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(Flow::Next)
             }
             Stmt::TypedefEnum(e) => {
-                self.types.insert(e.name.clone(), TypeDef::Enum(e.clone()));
+                // Index variants for O(1) name-to-value lookup.
+                // 3DS-style switches with hundreds of `case TAG:`
+                // labels would otherwise hammer the slow generic
+                // lookup_ident path -- enum scan was the dominant
+                // hotspot at ~95% of CPU time.
+                let mut auto: i128 = 0;
+                for v in &e.variants {
+                    let val = match &v.value {
+                        Some(Expr::IntLit { value, .. }) => *value as i128,
+                        _ => auto,
+                    };
+                    self.enum_variant_index.insert(v.name.clone(), val);
+                    auto = val.wrapping_add(1);
+                }
+                self.types.insert(e.name.clone(), TypeDef::Enum(std::sync::Arc::new(e.clone())));
                 Ok(Flow::Next)
             }
             Stmt::TypedefStruct(s) => {
-                self.types.insert(s.name.clone(), TypeDef::Struct(s.clone()));
+                self.types.insert(s.name.clone(), TypeDef::Struct(std::sync::Arc::new(s.clone())));
                 Ok(Flow::Next)
             }
             Stmt::If { cond, then_branch, else_branch, .. } => {
@@ -799,7 +904,7 @@ impl<S: HexSource> Interpreter<S> {
             }
         }
         if !is_decl_group {
-            self.scopes.pop();
+            self.pop_scope();
         }
         Ok(flow)
     }
@@ -828,7 +933,7 @@ impl<S: HexSource> Interpreter<S> {
                 Some(expr) => self.eval(expr)?,
                 None => self.default_local_value(ty, array_size.as_ref())?,
             };
-            self.current_scope_mut().vars.insert(name.clone(), value.clone());
+            self.bind_var(&name.clone(), value.clone());
             self.store_field(name, value);
             return Ok(());
         }
@@ -920,8 +1025,7 @@ impl<S: HexSource> Interpreter<S> {
                     .find(|c| {
                         self.field_storage.contains_key(c)
                             || self.array_storage.contains_key(c)
-                            || self.field_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
-                            || self.array_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                            || self.path_has_children.contains(c.as_str())
                     })
                     .or(Some(p))
             })
@@ -957,7 +1061,7 @@ impl<S: HexSource> Interpreter<S> {
             Err(e) => return Err(e),
         };
 
-        self.current_scope_mut().vars.insert(name.clone(), value);
+        self.bind_var(&name.clone(), value);
         Ok(())
     }
 
@@ -1059,13 +1163,39 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: pairs,
         });
-        self.current_scope_mut().vars.insert(name.to_owned(), value.clone());
+        self.bind_var(&name.to_owned(), value.clone());
         self.store_field(name, value);
         Ok(())
     }
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope stack is never empty")
+    }
+
+    /// Bind `name` to `value` in the innermost scope and bump the
+    /// global presence counter so `lookup_ident` can short-circuit
+    /// when the name isn't bound anywhere.
+    fn bind_var(&mut self, name: &str, value: Value) {
+        let scope = self.scopes.last_mut().expect("scope stack is never empty");
+        if !scope.vars.contains_key(name) {
+            *self.scope_var_counts.entry(name.to_owned()).or_insert(0) += 1;
+        }
+        scope.vars.insert(name.to_owned(), value);
+    }
+
+    /// Pop the innermost scope and decrement the global presence
+    /// counter for every name it bound.
+    fn pop_scope(&mut self) {
+        if let Some(scope) = self.scopes.pop() {
+            for name in scope.vars.keys() {
+                if let Some(c) = self.scope_var_counts.get_mut(name) {
+                    *c -= 1;
+                    if *c == 0 {
+                        self.scope_var_counts.remove(name);
+                    }
+                }
+            }
+        }
     }
 
     /// Default value for a `local`/`const` declaration that has no
@@ -1238,7 +1368,7 @@ impl<S: HexSource> Interpreter<S> {
                 // loop -- pick up an `[i]` suffix so
                 // `chunk[CHUNK_CNT-1].type.cname` resolves.
                 let segment = self.next_struct_segment(name);
-                self.path.push(segment);
+                self.push_path_segment(segment);
                 self.scopes.push(Scope::default());
                 // `this` magic ident resolves to the current struct's
                 // own storage path. Templates use it to pass `this`
@@ -1254,7 +1384,7 @@ impl<S: HexSource> Interpreter<S> {
                 // body resolve back to the caller's record.
                 for (i, param) in s.params.iter().enumerate() {
                     if let Some(value) = args.get(i) {
-                        self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+                        self.bind_var(&param.name.clone(), value.clone());
                     }
                     let is_struct_ty = matches!(self.types.get(&param.ty.name), Some(TypeDef::Struct(_)));
                     if (param.is_ref || is_struct_ty)
@@ -1266,8 +1396,8 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 }
                 let result = self.exec_struct_body(&s, offset, idx);
-                self.scopes.pop();
-                self.path.pop();
+                self.pop_scope();
+                self.pop_path_segment();
                 result?;
                 Ok(Value::Void)
             }
@@ -1401,7 +1531,7 @@ impl<S: HexSource> Interpreter<S> {
             // element `i` from the source on demand. Storing one
             // entry per element used to be the dominant cost for
             // large `uchar data[N]` arrays -- O(N) `format!()` +
-            // HashMap inserts per array, multiplied across every
+            // FxHashMap inserts per array, multiplied across every
             // record in a multi-megabyte file.
             let storage_key = self.storage_key(name);
             let span = ArraySpan { source_offset: offset, count, prim: p, endian: self.endian };
@@ -1410,8 +1540,10 @@ impl<S: HexSource> Interpreter<S> {
             // to the explicit `arr[N].X` indexed form.
             let bare = strip_indexed_segments(&storage_key);
             if bare != storage_key {
+                self.register_ancestors(&bare);
                 self.array_storage.insert(bare, span.clone());
             }
+            self.register_ancestors(&storage_key);
             self.array_storage.insert(storage_key, span);
             return Ok(value);
         }
@@ -1441,7 +1573,7 @@ impl<S: HexSource> Interpreter<S> {
             // (`arr[3]`) so descendant fields land at
             // `arr[3].field` in storage.
             let indexed = format!("{name}[{i}]");
-            self.path.push(indexed);
+            self.push_path_segment(indexed);
             let saved_scope = self.scopes.len();
             let r = match &def {
                 TypeDef::Struct(_) => self.read_scalar_struct_elem(&elem_name, &elem_ty, Some(idx), args, arg_paths),
@@ -1450,9 +1582,9 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 _ => Ok(()),
             };
-            self.path.pop();
+            self.pop_path_segment();
             while self.scopes.len() > saved_scope {
-                self.scopes.pop();
+                self.pop_scope();
             }
             r?;
             // Bail when each iteration makes no source progress: a
@@ -1512,7 +1644,7 @@ impl<S: HexSource> Interpreter<S> {
         self.current_scope_mut().path_aliases.insert("this".to_owned(), self_path);
         for (i, param) in s.params.iter().enumerate() {
             if let Some(value) = args.get(i) {
-                self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+                self.bind_var(&param.name.clone(), value.clone());
             }
             let is_struct_ty = matches!(self.types.get(&param.ty.name), Some(TypeDef::Struct(_)));
             if (param.is_ref || is_struct_ty)
@@ -1524,7 +1656,7 @@ impl<S: HexSource> Interpreter<S> {
             }
         }
         let r = self.exec_struct_body(&s, offset, idx);
-        self.scopes.pop();
+        self.pop_scope();
         r
     }
 
@@ -1823,14 +1955,14 @@ impl<S: HexSource> Interpreter<S> {
                     if matches!(expr, Expr::Index { .. })
                         && let Some((base, idx)) = split_trailing_index(&path)
                     {
-                        for candidate in lookup_candidates(base, &self.path_prefix()) {
+                        for candidate in lookup_candidates(base, self.path_prefix_str()) {
                             if let Some(span) = self.array_storage.get(&candidate).cloned() {
                                 return self.decode_array_element(&span, idx);
                             }
                         }
                     }
                     let mut storage_void: Option<()> = None;
-                    for candidate in lookup_candidates(&path, &self.path_prefix()) {
+                    for candidate in lookup_candidates(&path, self.path_prefix_str()) {
                         if let Some(v) = self.field_storage.get(&candidate).cloned() {
                             // Local variables seed field_storage with
                             // Void at decl time; subsequent `=`
@@ -1862,7 +1994,7 @@ impl<S: HexSource> Interpreter<S> {
                     // bytes instead of falling through to the
                     // bare-name fallback.
                     if matches!(expr, Expr::Member { .. }) {
-                        for candidate in lookup_candidates(&path, &self.path_prefix()) {
+                        for candidate in lookup_candidates(&path, self.path_prefix_str()) {
                             if let Some(span) = self.array_storage.get(&candidate).cloned() {
                                 let total = span.count.saturating_mul(span.prim.width as u64);
                                 let bytes = self.cursor.read_at(span.source_offset, total)?;
@@ -1877,11 +2009,9 @@ impl<S: HexSource> Interpreter<S> {
                     // members through the alias) see a placeholder
                     // instead of a hard `UndefinedName`.
                     let prefix = self.path_prefix();
-                    let has_children = lookup_candidates(&path, &prefix).into_iter().any(|c| {
-                        let probe = format!("{c}.");
-                        self.field_storage.keys().any(|k| k.starts_with(&probe))
-                            || self.array_storage.keys().any(|k| k.starts_with(&probe))
-                    });
+                    let has_children = lookup_candidates(&path, &prefix)
+                        .into_iter()
+                        .any(|c| self.path_has_children.contains(c.as_str()));
                     if has_children {
                         return Ok(Value::Void);
                     }
@@ -1977,10 +2107,22 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn lookup_ident(&self, name: &str) -> Result<Value, RuntimeError> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.vars.get(name) {
-                return Ok(v.clone());
+        // Skip the per-scope walk when no scope holds this name --
+        // the dominant case for enum variant labels in big switches
+        // (3DS chunks dispatch on hundreds of `case TAG:` per node;
+        // each label otherwise paid for a 5-deep FxHashMap.get
+        // chain plus the lookup_candidates allocation).
+        if self.scope_var_counts.contains_key(name) {
+            for scope in self.scopes.iter().rev() {
+                if let Some(v) = scope.vars.get(name) {
+                    return Ok(v.clone());
+                }
             }
+        }
+        // Enum-variant index hit takes priority over the slower
+        // path/storage probes.
+        if let Some(&raw) = self.enum_variant_index.get(name) {
+            return Ok(Value::UInt { value: raw as u128, kind: PrimKind::u64() });
         }
         // Path aliases (`this`, ref params bound at call entry) have
         // no scalar value of their own; the path itself is what
@@ -1991,20 +2133,18 @@ impl<S: HexSource> Interpreter<S> {
             return Ok(Value::Void);
         }
         // Struct fields declared inside a void function (010's
-        // MachO.bt-style \`parse_symbol_table\` declares
+        // MachO.bt-style `parse_symbol_table` declares
         // `Symbols symbols(...)` inside the helper) leave their
         // child entries in field_storage but no scalar at the top
         // key. Return Void so a later `Imports imports(symbols, ...)`
         // arg eval doesn't trip UndefinedName -- collect_call_aliases
         // then qualifies `symbols` to the storage path so member
         // lookups inside the call find the real fields.
-        let prefix = self.path_prefix();
-        let has_children = lookup_candidates(name, &prefix).into_iter().any(|c| {
-            let probe = format!("{c}.");
-            self.field_storage.keys().any(|k| k.starts_with(&probe))
-                || self.array_storage.keys().any(|k| k.starts_with(&probe))
-        });
-        if has_children {
+        let candidates = lookup_candidates(name, self.path_prefix_str());
+        if candidates
+            .iter()
+            .any(|c| self.path_has_children.contains(c.as_str()))
+        {
             return Ok(Value::Void);
         }
         // Fall back to persistent field storage. Walk the current
@@ -2012,22 +2152,9 @@ impl<S: HexSource> Interpreter<S> {
         // like `cbCFFolder` resolves to a sibling stored under the
         // enclosing struct (`cabFile.cffolder.cbCFFolder`) without
         // the template having to spell out the chain.
-        for candidate in lookup_candidates(name, &self.path_prefix()) {
-            if let Some(v) = self.field_storage.get(&candidate) {
+        for candidate in &candidates {
+            if let Some(v) = self.field_storage.get(candidate) {
                 return Ok(v.clone());
-            }
-        }
-        // Enum-variant lookup: scan registered enums for a matching
-        // variant and return its numeric value.
-        for def in self.types.values() {
-            if let TypeDef::Enum(e) = def
-                && let Some(v) = e.variants.iter().find(|v| v.name == name)
-            {
-                let raw = match &v.value {
-                    Some(Expr::IntLit { value, .. }) => *value as i128,
-                    _ => 0,
-                };
-                return Ok(Value::UInt { value: raw as u128, kind: PrimKind::u64() });
             }
         }
         Err(RuntimeError::UndefinedName { name: name.to_owned() })
@@ -2083,7 +2210,7 @@ impl<S: HexSource> Interpreter<S> {
         }
         // Auto-declare in the current scope (C-ish behaviour for
         // 010 globals that aren't explicitly `local`).
-        self.current_scope_mut().vars.insert(name.to_owned(), value);
+        self.bind_var(&name.to_owned(), value);
         Ok(())
     }
 
@@ -2215,7 +2342,7 @@ impl<S: HexSource> Interpreter<S> {
         }
         self.scopes.push(Scope::default());
         for (p, v) in func.params.iter().zip(args.iter()) {
-            self.current_scope_mut().vars.insert(p.name.clone(), v.clone());
+            self.bind_var(&p.name.clone(), v.clone());
         }
         for (param_name, real_path) in aliases {
             self.current_scope_mut().path_aliases.insert(param_name, real_path);
@@ -2231,7 +2358,7 @@ impl<S: HexSource> Interpreter<S> {
                 Flow::Break => break,
             }
         }
-        self.scopes.pop();
+        self.pop_scope();
         Ok(ret)
     }
 
@@ -2261,13 +2388,12 @@ impl<S: HexSource> Interpreter<S> {
                 // Resolve the path against the current prefix so the
                 // alias is fully qualified -- the function body runs
                 // with no prefix of its own.
-                let qualified = lookup_candidates(&path, &self.path_prefix())
+                let qualified = lookup_candidates(&path, self.path_prefix_str())
                     .into_iter()
                     .find(|c| {
                         self.field_storage.contains_key(c)
                             || self.array_storage.contains_key(c)
-                            || self.field_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
-                            || self.array_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                            || self.path_has_children.contains(c.as_str())
                     })
                     .unwrap_or(path);
                 out.push((param.name.clone(), qualified));

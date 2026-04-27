@@ -59,7 +59,6 @@ tracing = "0.1.44"
 hxy-vfs.workspace = true
 egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
-egui-notify = "0.22.0"
 egui-palette = { workspace = true }
 similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
 
@@ -73,8 +72,16 @@ suture = { version = "0.2.0", path = "../../../suture", features = ["serde", "bl
 arboard = { version = "3.6.1", default-features = false }
 base64 = "0.22.1"
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
+egui-toast = "0.20.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Pattern-corpus download flow: blocking reqwest + rustls keeps
+# OpenSSL out of the build; called from a worker thread so the
+# blocking part is fine. zip + sha2 unpack the master tarball
+# and fingerprint it for the periodic-update check.
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.11.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
