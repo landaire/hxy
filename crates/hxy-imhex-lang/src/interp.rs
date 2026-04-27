@@ -222,6 +222,12 @@ pub struct Interpreter<S: HexSource> {
     /// the surrounding [`Self::read_dynamic_array`] knows to stop
     /// emitting elements. Cleared by the array reader on consume.
     break_pending: bool,
+    /// Per-array iteration counter, pushed on array entry and
+    /// popped on exit. Powers `std::core::array_index()`, which
+    /// templates use to peek the current element index from inside
+    /// a struct body (ogg's `SegmentData { u8 data[
+    /// parent.segmentTable[std::core::array_index()]]; }`).
+    array_index_stack: Vec<u64>,
 }
 
 impl<S: HexSource> Interpreter<S> {
@@ -246,6 +252,7 @@ impl<S: HexSource> Interpreter<S> {
             interrupt: Arc::new(AtomicBool::new(false)),
             this_stack: Vec::new(),
             break_pending: false,
+            array_index_stack: Vec::new(),
         };
         me.register_primitives();
         me
@@ -546,13 +553,36 @@ impl<S: HexSource> Interpreter<S> {
             match self.types.get(&name) {
                 Some(TypeDef::Alias { params, target }) => {
                     if !params.is_empty() {
+                        // Build *both* maps: TypeRef substitutions
+                        // (for `using Foo<T> = Bar<T>;` where T is a
+                        // type) and Expr substitutions (for
+                        // `using AssetTexture<auto size> =
+                        // AssetVisualizer<size, "image">;` where
+                        // `size` is a value forwarded by name).
                         let mut subs: HashMap<String, TypeRef> = HashMap::with_capacity(params.len());
+                        let mut expr_subs: HashMap<String, Expr> = HashMap::with_capacity(params.len());
                         for (param, arg) in params.iter().zip(current.template_args.iter()) {
                             if let Some(arg_ty) = expr_as_typeref(arg) {
                                 subs.insert(param.clone(), arg_ty);
                             }
+                            expr_subs.insert(param.clone(), arg.clone());
                         }
-                        current = substitute_typeref(target, &subs);
+                        // Apply type-level substitution first, then
+                        // expression-level for any Ident that names
+                        // an alias param. The expression-level pass
+                        // is what carries `IntLit(4)` from
+                        // `AssetTexture<4>` through to
+                        // `AssetVisualizer<4, "image">`'s `size`
+                        // arg, instead of leaving the `size` ident
+                        // for Vis to resolve in a scope where it
+                        // doesn't exist.
+                        let mut tmp = substitute_typeref(target, &subs);
+                        tmp.template_args = tmp
+                            .template_args
+                            .into_iter()
+                            .map(|e| substitute_expr_with_arg(&e, &expr_subs))
+                            .collect();
+                        current = tmp;
                     } else {
                         current = TypeRef {
                             path: target.path.clone(),
@@ -672,11 +702,37 @@ fn substitute_typeref(ty: &TypeRef, subs: &HashMap<String, TypeRef>) -> TypeRef 
     }
 }
 
+/// Replace a bare `Ident` whose name matches an alias param with
+/// the raw expression the alias was instantiated with. Carries
+/// `Foo<4>` through `using Foo<auto n> = Bar<n>;` so Bar's `n`
+/// param sees the literal `4` instead of `Ident("n")`. Other
+/// expression shapes are returned unchanged.
+fn substitute_expr_with_arg(expr: &Expr, subs: &HashMap<String, Expr>) -> Expr {
+    match expr {
+        Expr::Ident { name, .. } if subs.contains_key(name) => subs.get(name).cloned().unwrap(),
+        other => other.clone(),
+    }
+}
+
 fn substitute_expr(expr: &Expr, subs: &HashMap<String, TypeRef>) -> Expr {
     match expr {
         Expr::Ident { name, span } if subs.contains_key(name) => {
+            // Replace the ident with the substituted type's path.
+            // For a single-segment path that's just another ident
+            // (the common `using Foo<T> = Bar<T>;` shape), keep the
+            // result as an Ident so value-shaped uses (`u8 data[T]`,
+            // where `T` is bound to a runtime number in the
+            // enclosing struct's scope) still resolve through
+            // `lookup_ident`. Wrapping unconditionally as
+            // TypeRefExpr forced eval down the type-name fallback,
+            // turning `T` into `Str("T")` and breaking any array
+            // sized by a value-template arg.
             let ty = subs.get(name).cloned().unwrap();
-            Expr::TypeRefExpr { ty: Box::new(ty), span: *span }
+            if ty.path.len() == 1 && ty.template_args.is_empty() {
+                Expr::Ident { name: ty.path[0].clone(), span: *span }
+            } else {
+                Expr::TypeRefExpr { ty: Box::new(ty), span: *span }
+            }
         }
         Expr::TypeRefExpr { ty, span } => {
             Expr::TypeRefExpr { ty: Box::new(substitute_typeref(ty, subs)), span: *span }
@@ -1630,20 +1686,28 @@ impl<S: HexSource> Interpreter<S> {
         // No template legitimately holds more elements than bytes
         // in the file, so cap the iteration count at the file size.
         let count = count.min(self.source.len().saturating_add(1));
-        for i in 0..count {
-            // ImHex tolerates an array element running past EOF: the
-            // array stops reading at the file boundary, the parent
-            // struct keeps going, and the failure surfaces as a
-            // (non-fatal) diagnostic. Treat `Source` errors the same
-            // way -- the alternative aborts the whole template on a
-            // single overshoot, which fails fixtures that are merely
-            // truncated relative to the schema (id3.hexpat, etc).
-            match self.read_scalar(&format!("[{i}]"), ty, Some(parent_idx), &[], None) {
-                Ok(_) => {}
-                Err(RuntimeError::Source(_)) => break,
-                Err(e) => return Err(e),
+        self.array_index_stack.push(0);
+        let result = (|| -> Result<(), RuntimeError> {
+            for i in 0..count {
+                *self.array_index_stack.last_mut().unwrap() = i;
+                // ImHex tolerates an array element running past EOF:
+                // the array stops reading at the file boundary, the
+                // parent struct keeps going, and the failure surfaces
+                // as a (non-fatal) diagnostic. Treat `Source` errors
+                // the same way -- the alternative aborts the whole
+                // template on a single overshoot, which fails
+                // fixtures that are merely truncated relative to the
+                // schema (id3.hexpat, etc).
+                match self.read_scalar(&format!("[{i}]"), ty, Some(parent_idx), &[], None) {
+                    Ok(_) => {}
+                    Err(RuntimeError::Source(_)) => break,
+                    Err(e) => return Err(e),
+                }
             }
-        }
+            Ok(())
+        })();
+        self.array_index_stack.pop();
+        result?;
         self.nodes[parent_idx.as_usize()].length = self.cursor_tell().saturating_sub(offset);
         Ok(Value::Void)
     }
@@ -1675,12 +1739,20 @@ impl<S: HexSource> Interpreter<S> {
         let mut count = 0u64;
         let mut last_pos = self.cursor_tell();
         let mut stalls = 0u32;
+        self.array_index_stack.push(0);
         loop {
+            *self.array_index_stack.last_mut().unwrap() = count;
             if self.cursor_tell() >= self.source.len() {
                 break;
             }
             if let Some(cond_expr) = cond {
-                let v = self.eval(cond_expr)?;
+                let v = match self.eval(cond_expr) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.array_index_stack.pop();
+                        return Err(e);
+                    }
+                };
                 if !v.is_truthy() {
                     break;
                 }
@@ -1699,7 +1771,10 @@ impl<S: HexSource> Interpreter<S> {
             match self.read_scalar(&format!("[{count}]"), ty, Some(parent_idx), &[], None) {
                 Ok(_) => {}
                 Err(RuntimeError::Source(_)) => break,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.array_index_stack.pop();
+                    return Err(e);
+                }
             }
             count += 1;
             // `break` inside an element's body (typical in
@@ -1733,6 +1808,7 @@ impl<S: HexSource> Interpreter<S> {
                 break;
             }
         }
+        self.array_index_stack.pop();
         self.nodes[parent_idx.as_usize()].length = self.cursor_tell() - offset;
         Ok(Value::Void)
     }
@@ -2540,6 +2616,15 @@ impl<S: HexSource> Interpreter<S> {
             }
             "std::math::min" => min_max_value(args, true),
             "std::math::max" => min_max_value(args, false),
+            // Inside an array body, the builtin returns the current
+            // element index (0-based). Outside an array, returns 0.
+            // ogg.hexpat's per-element struct uses
+            // `parent.segmentTable[std::core::array_index()]` to size
+            // its data field.
+            "std::core::array_index" | "builtin::std::core::array_index" => {
+                let idx = self.array_index_stack.last().copied().unwrap_or(0);
+                Value::UInt { value: idx as u128, kind: PrimKind::u64() }
+            }
             // Default: no-op acknowledgement for `std::core::*`
             // pragma-style calls (set_display_name, set_pattern_color,
             // etc.) so corpus templates that decorate with these
