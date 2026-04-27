@@ -228,6 +228,14 @@ pub struct Interpreter<S: HexSource> {
     /// a struct body (ogg's `SegmentData { u8 data[
     /// parent.segmentTable[std::core::array_index()]]; }`).
     array_index_stack: Vec<u64>,
+    /// Depth of the active function-call stack. Type-prefixed local
+    /// declarations inside a function body (`Value value;`,
+    /// `le TimeConverter converter;`) save+restore the cursor so
+    /// they don't consume bytes from the surrounding template's
+    /// running cursor -- the function scratch struct gets emitted
+    /// (so `value.value = ...` and `converter.time` resolve to a
+    /// real node), but the call-site cursor is unaffected.
+    function_depth: u32,
 }
 
 impl<S: HexSource> Interpreter<S> {
@@ -253,6 +261,7 @@ impl<S: HexSource> Interpreter<S> {
             this_stack: Vec::new(),
             break_pending: false,
             array_index_stack: Vec::new(),
+            function_depth: 0,
         };
         me.register_primitives();
         me
@@ -1089,7 +1098,16 @@ impl<S: HexSource> Interpreter<S> {
         // explicit "read here but don't advance" form.
         let inside_struct = !self.this_stack.is_empty();
         let placement_saves = placement.is_some() && inside_struct;
-        let saved_pos = if placement_saves || no_unique_address {
+        // Type-prefixed declarations inside a function body
+        // (`Value value;` in lznt1's `fn appendU8`) declare a
+        // scratch local: emit the struct so member access works,
+        // but don't consume bytes from the caller's running cursor.
+        let function_local = self.function_depth > 0
+            && parent.is_none()
+            && placement.is_none()
+            && pointer_width.is_none()
+            && init.is_none();
+        let saved_pos = if placement_saves || no_unique_address || function_local {
             Some(self.cursor_tell())
         } else {
             None
@@ -2639,18 +2657,27 @@ impl<S: HexSource> Interpreter<S> {
             self.current_parent = Some(caller_this);
         }
         let saved_return = self.return_value.take();
+        self.function_depth += 1;
         let mut result = Value::Void;
         for s in &func.body {
-            match self.exec_stmt(s, None)? {
-                Flow::Return => {
+            match self.exec_stmt(s, None) {
+                Ok(Flow::Return) => {
                     if let Some(v) = self.return_value.take() {
                         result = v;
                     }
                     break;
                 }
-                Flow::Break | Flow::Continue | Flow::Next => {}
+                Ok(_) => {}
+                Err(e) => {
+                    self.function_depth -= 1;
+                    self.return_value = saved_return;
+                    self.current_parent = saved_parent;
+                    self.scopes.pop();
+                    return Err(e);
+                }
             }
         }
+        self.function_depth -= 1;
         self.return_value = saved_return;
         self.current_parent = saved_parent;
         self.scopes.pop();
