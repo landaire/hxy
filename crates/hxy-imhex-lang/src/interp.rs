@@ -404,6 +404,23 @@ impl<S: HexSource> Interpreter<S> {
                         }
                     }
                 }
+                Op::ReadArrayFixed { ty, name, count } => {
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let res = self.read_array(name_str, ty_ref, count, parent, &[]);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
                 Op::EnterStruct { body, name, display_name } => {
                     let name_str = program.idents.get(name.0).to_owned();
                     let display = program.idents.get(display_name.0).to_owned();

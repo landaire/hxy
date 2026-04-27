@@ -154,6 +154,13 @@ pub enum Op {
     // ---- reads (host-effect ops) ----
     ReadPrim { ty: TypeId, name: IdentId },
     ReadStruct { ty: TypeId, name: IdentId },
+    /// Fixed-size primitive array `Type name[N]` where `N` is a
+    /// literal integer at compile time. The VM dispatches into
+    /// `read_array`, which folds char-typed reads down to a single
+    /// `Str`-valued node and emits one parent + N children for any
+    /// other element type. A future op (`ReadArray` with the count
+    /// on the value stack) will handle non-literal sizes.
+    ReadArrayFixed { ty: TypeId, name: IdentId, count: u64 },
     ReadArray { ty: TypeId, name: IdentId }, // count on stack
     ReadCharArr { name: IdentId },           // count on stack
     ReadDynArr { ty: TypeId, name: IdentId, pred: Pc, end: Pc },
@@ -216,6 +223,7 @@ impl Op {
             Op::Reflect(_) => "Reflect",
             Op::ReadPrim { .. } => "ReadPrim",
             Op::ReadStruct { .. } => "ReadStruct",
+            Op::ReadArrayFixed { .. } => "ReadArrayFixed",
             Op::ReadArray { .. } => "ReadArray",
             Op::ReadCharArr { .. } => "ReadCharArr",
             Op::ReadDynArr { .. } => "ReadDynArr",
@@ -413,22 +421,15 @@ fn compile_struct_body_stmt(
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain(*is_const, *is_io_var, pointer_width, placement, init, array, attrs)?;
-            if is_known_primitive(ty) {
-                let name_id = p.intern_ident(name);
-                let ty_id = p.push_type(ty.clone());
-                out.push(Op::ReadPrim { ty: ty_id, name: name_id });
-                Ok(())
-            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
-                let name_id = p.intern_ident(name);
-                let display = p.struct_bodies[body_id.0 as usize].display_name;
-                out.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
-                Ok(())
-            } else {
-                Err(CompileError::UnsupportedFieldDecl {
-                    reason: "field type is neither a primitive nor a registered simple struct",
-                })
-            }
+            field_decl_must_be_plain_array_ok(
+                *is_const,
+                *is_io_var,
+                pointer_width,
+                placement,
+                init,
+                attrs,
+            )?;
+            compile_field_decl(p, ctx, out, ty, name, array.as_ref())
         }
         _ => Err(CompileError::UnsupportedStmt("non-field-decl in struct body")),
     }
@@ -448,22 +449,21 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain(*is_const, *is_io_var, pointer_width, placement, init, array, attrs)?;
-            if is_known_primitive(ty) {
-                let name_id = p.intern_ident(name);
-                let ty_id = p.push_type(ty.clone());
-                p.ops.push(Op::ReadPrim { ty: ty_id, name: name_id });
-                Ok(())
-            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
-                let name_id = p.intern_ident(name);
-                let display = p.struct_bodies[body_id.0 as usize].display_name;
-                p.ops.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
-                Ok(())
-            } else {
-                Err(CompileError::UnsupportedFieldDecl {
-                    reason: "field type is neither a primitive nor a registered simple struct",
-                })
-            }
+            field_decl_must_be_plain_array_ok(
+                *is_const,
+                *is_io_var,
+                pointer_width,
+                placement,
+                init,
+                attrs,
+            )?;
+            // Borrow the top-level op stream by moving it out, then
+            // restoring -- avoids fighting the borrow checker over
+            // an `&mut Vec<Op>` aliased with `&mut Program`.
+            let mut top_ops = std::mem::take(&mut p.ops);
+            let res = compile_field_decl(p, ctx, &mut top_ops, ty, name, array.as_ref());
+            p.ops = top_ops;
+            res
         }
         Stmt::StructDecl(_) => unreachable!("handled by compile()"),
         Stmt::EnumDecl(_) => Err(CompileError::UnsupportedStmt("enum decl")),
@@ -486,15 +486,17 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
     }
 }
 
-/// Reject every `FieldDecl` modifier the Phase B VM does not yet
-/// implement. Keeps the supported shape obvious at the call sites.
-fn field_decl_must_be_plain(
+/// Reject every `FieldDecl` modifier the Phase C VM does not yet
+/// implement. The array shape is *not* checked here -- callers may
+/// accept a fixed-size array of a primitive (see
+/// [`compile_field_decl`]) but every other modifier (const,
+/// io_var, pointer, placement, init, attrs) still bails out.
+fn field_decl_must_be_plain_array_ok(
     is_const: bool,
     is_io_var: bool,
     pointer_width: &Option<TypeRef>,
     placement: &Option<crate::ast::Expr>,
     init: &Option<crate::ast::Expr>,
-    array: &Option<crate::ast::ArraySize>,
     attrs: &crate::ast::Attrs,
 ) -> Result<(), CompileError> {
     if is_const {
@@ -512,13 +514,63 @@ fn field_decl_must_be_plain(
     if init.is_some() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
     }
-    if array.is_some() {
-        return Err(CompileError::UnsupportedFieldDecl { reason: "array" });
-    }
     if !attrs.0.is_empty() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "attrs" });
     }
     Ok(())
+}
+
+/// Lower a single `FieldDecl` (already gated by
+/// [`field_decl_must_be_plain_array_ok`]) into the right op. Shared
+/// between top-level and struct-body callers since the shape rules
+/// are identical.
+fn compile_field_decl(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    ty: &TypeRef,
+    name: &str,
+    array: Option<&crate::ast::ArraySize>,
+) -> Result<(), CompileError> {
+    match array {
+        None => {
+            if is_known_primitive(ty) {
+                let name_id = p.intern_ident(name);
+                let ty_id = p.push_type(ty.clone());
+                out.push(Op::ReadPrim { ty: ty_id, name: name_id });
+                Ok(())
+            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
+                let name_id = p.intern_ident(name);
+                let display = p.struct_bodies[body_id.0 as usize].display_name;
+                out.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
+                Ok(())
+            } else {
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "field type is neither a primitive nor a registered simple struct",
+                })
+            }
+        }
+        Some(crate::ast::ArraySize::Fixed(crate::ast::Expr::IntLit { value, .. })) => {
+            if !is_known_primitive(ty) {
+                return Err(CompileError::UnsupportedFieldDecl {
+                    reason: "fixed-size arrays of non-primitive types not yet lowered",
+                });
+            }
+            let name_id = p.intern_ident(name);
+            let ty_id = p.push_type(ty.clone());
+            out.push(Op::ReadArrayFixed { ty: ty_id, name: name_id, count: *value as u64 });
+            Ok(())
+        }
+        Some(crate::ast::ArraySize::Fixed(_)) => Err(CompileError::UnsupportedFieldDecl {
+            reason: "non-literal fixed array size needs the value-stack expression op set",
+        }),
+        Some(crate::ast::ArraySize::Open) => Err(CompileError::UnsupportedFieldDecl {
+            reason: "open `[]` arrays not yet lowered",
+        }),
+        Some(crate::ast::ArraySize::While(_)) => Err(CompileError::UnsupportedFieldDecl {
+            reason: "`[while(...)]` arrays not yet lowered",
+        }),
+    }
 }
 
 /// True when `ty` names a built-in primitive that the AST interpreter

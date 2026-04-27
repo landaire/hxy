@@ -131,3 +131,50 @@ u32 trailer;
     let (ast, bc_run) = run_both(src, bytes);
     assert_node_parity(&ast, &bc_run);
 }
+
+#[test]
+fn fixed_char_array_at_top_level_matches_ast() {
+    // `char name[5];` -> a single ScalarArray(Char, 5) node
+    // carrying the bytes as a `Str` value.
+    let src = "char message[5];\n";
+    let bytes = b"hello".to_vec();
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert_eq!(bc_run.nodes.len(), 1);
+    assert_eq!(bc_run.nodes[0].length, 5);
+}
+
+#[test]
+fn fixed_primitive_array_inside_struct_matches_ast() {
+    let src = "\
+struct Header {
+    u8 magic;
+    u16 samples[3];
+};
+Header h;
+";
+    let mut bytes = vec![0x42];
+    bytes.extend_from_slice(&100u16.to_le_bytes());
+    bytes.extend_from_slice(&200u16.to_le_bytes());
+    bytes.extend_from_slice(&300u16.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    // Header, magic, samples (parent), three u16 children.
+    assert_eq!(bc_run.nodes.len(), 6);
+    // Header consumed 1 + 6 = 7 bytes.
+    assert_eq!(bc_run.nodes[0].length, 7);
+}
+
+#[test]
+fn fixed_char_array_inside_struct_matches_ast() {
+    let src = "\
+struct Greeting {
+    char tag;
+    char body[4];
+};
+Greeting g;
+";
+    let bytes = b"!cafe".to_vec();
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}
