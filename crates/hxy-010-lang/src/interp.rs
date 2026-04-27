@@ -848,6 +848,19 @@ impl<S: HexSource> Interpreter<S> {
         let def = self.resolve_type(ty)?;
         let prim = match def {
             TypeDef::Primitive(p) if matches!(p.class, PrimClass::Int | PrimClass::Char) => p,
+            // Enums backed by an integer primitive are valid bitfield
+            // bases; 010 packs the raw integer into the slot the same
+            // way as for the underlying type.
+            TypeDef::Enum(e) => {
+                let backing = match &e.backing {
+                    Some(b) => self.resolve_type(b)?,
+                    None => TypeDef::Primitive(PrimKind::i32()),
+                };
+                match backing {
+                    TypeDef::Primitive(p) if matches!(p.class, PrimClass::Int | PrimClass::Char) => p,
+                    _ => return Err(RuntimeError::BadBitfieldType { ty: ty.name.clone() }),
+                }
+            }
             _ => {
                 return Err(RuntimeError::BadBitfieldType { ty: ty.name.clone() });
             }
@@ -958,6 +971,44 @@ impl<S: HexSource> Interpreter<S> {
         attrs: &Attrs,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        // 010's `string` / `wstring` types read a NUL-terminated
+        // sequence (not a single character). Handle them here before
+        // resolve_type kicks in: our type registry pretends `string`
+        // is `char` for sizing fallbacks, but reading a `char` only
+        // consumes one byte, which leaves the cursor mid-string and
+        // throws downstream length math off by N.
+        let ty_name = ty.name.as_str();
+        if matches!(ty_name, "string" | "STRING" | "wstring" | "WSTRING") {
+            let wide = matches!(ty_name, "wstring" | "WSTRING");
+            let offset = self.cursor.tell();
+            let stride: u64 = if wide { 2 } else { 1 };
+            let max_len = self.cursor.len().saturating_sub(offset);
+            let raw = self.cursor.read_at(offset, max_len)?;
+            let term_pos = if wide {
+                raw.chunks_exact(2)
+                    .position(|w| w == [0, 0])
+                    .map(|i| i * 2 + 2)
+                    .unwrap_or(raw.len())
+            } else {
+                raw.iter().position(|&b| b == 0).map(|i| i + 1).unwrap_or(raw.len())
+            };
+            let consumed = term_pos as u64;
+            // Advance cursor past the NUL.
+            self.cursor.read_advance(consumed)?;
+            let s = decode_string(&raw[..term_pos.saturating_sub(stride as usize)], wide, self.endian);
+            let value = Value::Str(s);
+            self.nodes.push(NodeOut {
+                name: name.to_owned(),
+                ty: NodeType::Scalar(ScalarKind::from_prim(PrimKind::char())),
+                offset,
+                length: consumed,
+                value: Some(value.clone()),
+                parent,
+                attrs: attrs_to_pairs(attrs),
+            });
+            self.store_field(name, value.clone());
+            return Ok(value);
+        }
         let def = self.resolve_type(ty)?;
         match def {
             TypeDef::Primitive(p) => {
@@ -2582,6 +2633,17 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     }
     let li = l.to_i128().ok_or_else(|| RuntimeError::Type(format!("not numeric: {l:?}")))?;
     let ri = r.to_i128().ok_or_else(|| RuntimeError::Type(format!("not numeric: {r:?}")))?;
+    // 010 templates routinely mix signed and unsigned integer reads
+    // (e.g. `local uint32 magic = ReadInt();` paired with
+    // `if (magic == MACHO_64)` against an unsigned enum constant).
+    // For equality, compare the raw bit patterns at the narrower of
+    // the two operands' widths so a sign-extended SInt and the same
+    // bytes loaded as a UInt compare equal.
+    if matches!(op, BinOp::Eq | BinOp::NotEq) && let (Some(a), Some(b)) = (int_bits(l), int_bits(r))
+    {
+        let eq = a == b;
+        return Ok(Value::Bool(if matches!(op, BinOp::Eq) { eq } else { !eq }));
+    }
     let out = match op {
         BinOp::Add => Value::SInt { value: li.wrapping_add(ri), kind: PrimKind::i64() },
         BinOp::Sub => Value::SInt { value: li.wrapping_sub(ri), kind: PrimKind::i64() },
@@ -2609,6 +2671,30 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
         BinOp::LogicalOr => Value::Bool(li != 0 || ri != 0),
     };
     Ok(out)
+}
+
+/// Extract the raw integer bits of `v`, masked down to its declared
+/// width. Used by `Eq` / `NotEq` so a 32-bit signed value sign-extended
+/// to i128 still compares equal to the same byte pattern read as
+/// uint32. Returns `None` for non-integer kinds.
+fn int_bits(v: &Value) -> Option<u128> {
+    match v {
+        Value::UInt { value, kind } => Some(mask_to_width(*value, kind.width)),
+        Value::SInt { value, kind } => Some(mask_to_width(*value as u128, kind.width)),
+        Value::Char { value, .. } => Some(*value as u128),
+        Value::Bool(b) => Some(if *b { 1 } else { 0 }),
+        _ => None,
+    }
+}
+
+fn mask_to_width(v: u128, width: u8) -> u128 {
+    if width >= 16 {
+        v
+    } else {
+        let bits = width as u32 * 8;
+        let mask = (1u128 << bits) - 1;
+        v & mask
+    }
 }
 
 fn eval_unary(op: UnaryOp, v: &Value) -> Result<Value, RuntimeError> {
