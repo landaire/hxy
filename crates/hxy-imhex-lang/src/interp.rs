@@ -617,7 +617,17 @@ impl<S: HexSource> Interpreter<S> {
 fn count_parent_hops(expr: &Expr) -> Option<usize> {
     match expr {
         Expr::Ident { name, .. } if name == "parent" => Some(1),
-        Expr::Member { target, field, .. } if field == "parent" => count_parent_hops(target).map(|n| n + 1),
+        // `this.parent` is the same as `parent` -- pcapng uses
+        // `this.parent.block_type` to reach a sibling of the
+        // enclosing struct.
+        Expr::Member { target, field, .. } if field == "parent" => {
+            if let Expr::Ident { name, .. } = target.as_ref()
+                && name == "this"
+            {
+                return Some(1);
+            }
+            count_parent_hops(target).map(|n| n + 1)
+        }
         _ => None,
     }
 }
@@ -1143,15 +1153,11 @@ impl<S: HexSource> Interpreter<S> {
                 ArraySize::Fixed(_) => {
                     self.read_array(name, ty, count, parent, &all_attrs)?;
                 }
-                ArraySize::Open | ArraySize::While(_) => {
-                    // Predicate-driven and open-ended arrays read 0
-                    // elements for now. Naive looping regresses
-                    // templates whose `[while(true)]` arrays expect
-                    // a sibling read to bound them, since we end up
-                    // consuming bytes the surrounding fixed reads
-                    // still need. Re-enabling sits behind the
-                    // `read_dynamic_array` scaffold.
-                    self.read_array(name, ty, 0, parent, &all_attrs)?;
+                ArraySize::Open => {
+                    self.read_dynamic_array(name, ty, parent, &all_attrs, None)?;
+                }
+                ArraySize::While(cond) => {
+                    self.read_dynamic_array(name, ty, parent, &all_attrs, Some(cond))?;
                 }
             }
         } else {
@@ -1163,6 +1169,34 @@ impl<S: HexSource> Interpreter<S> {
         // so chained `Foo a @ 0; Bar b @ $;` advances naturally.
         if let Some(saved) = saved_pos {
             self.cursor_seek(saved);
+        }
+        // `[[transform("fn")]]` runs `fn(value)` after the read and
+        // replaces the bound value with the result. Templates like
+        // cpio_new_ascii.hexpat use this to convert hex-string
+        // fields to integers so subsequent arithmetic
+        // (`c_namesize - 1`) works on the transformed numeric form.
+        let transform_fn = attrs.0.iter().find_map(|a| {
+            if a.name == "transform" {
+                a.args.first().and_then(|arg| match arg {
+                    Expr::StringLit { value, .. } => Some(value.clone()),
+                    _ => None,
+                })
+            } else {
+                None
+            }
+        });
+        if let Some(fn_name) = transform_fn {
+            let raw = self.lookup_ident(name).unwrap_or(Value::Void);
+            if let Ok(new_val) =
+                self.call_named_with_aliases(&fn_name, std::slice::from_ref(&raw), &[])
+            {
+                self.current_scope_mut().vars.insert(name.clone(), new_val.clone());
+                if let Some(indices) = self.nodes_by_name.get(name).cloned()
+                    && let Some(&idx) = indices.last()
+                {
+                    self.nodes[idx.as_usize()].value = Some(new_val);
+                }
+            }
         }
         Ok(Flow::Next)
     }
@@ -1300,14 +1334,22 @@ impl<S: HexSource> Interpreter<S> {
         // so the body can use the param in *type* position
         // (`SizeType size;`). The aliases are removed when the body
         // finishes so they don't leak to surrounding reads.
-        let mut template_type_aliases: Vec<String> = Vec::new();
+        // Save any prior binding under the template param name so we
+        // can restore it on exit. Without this, instantiating
+        // `BasicType<auto Tag>` overwrites the global `enum Tag`
+        // and leaves the type table broken for subsequent uses
+        // after BasicType returns (hprof.hexpat).
+        let mut template_type_aliases: Vec<(String, Option<TypeDef>)> = Vec::new();
         if !decl.template_params.is_empty() {
             for (i, param_name) in decl.template_params.iter().enumerate() {
                 let arg_expr = ty.template_args.get(i);
                 let arg_ty = arg_expr.and_then(expr_as_typeref);
                 if let Some(t) = arg_ty {
-                    self.types.insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: t });
-                    template_type_aliases.push(param_name.clone());
+                    let prev = self.types.insert(
+                        param_name.clone(),
+                        TypeDef::Alias { params: Vec::new(), target: t },
+                    );
+                    template_type_aliases.push((param_name.clone(), prev));
                 }
                 // Bind the arg's *value* in scope so the body can
                 // use it for arithmetic / comparisons too. Some
@@ -1400,10 +1442,18 @@ impl<S: HexSource> Interpreter<S> {
         self.scopes.pop();
         self.this_stack.pop();
         self.current_parent = prev_parent;
-        // Drop the temporary template-param aliases we registered on
-        // entry so they don't shadow types in surrounding scopes.
-        for alias in template_type_aliases {
-            self.types.remove(&alias);
+        // Restore any prior binding we shadowed when registering the
+        // template param as an alias. If there was no prior binding,
+        // remove the alias entirely.
+        for (alias, prev) in template_type_aliases {
+            match prev {
+                Some(def) => {
+                    self.types.insert(alias, def);
+                }
+                None => {
+                    self.types.remove(&alias);
+                }
+            }
         }
         Ok(Value::Void)
     }
