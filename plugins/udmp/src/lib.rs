@@ -218,7 +218,7 @@ impl Mount {
             }
         }
 
-        // Memory64 list: must come before threads so stack VA→RVA
+        // Memory64 list: must come before threads so stack VA->RVA
         // resolution has the region map ready.
         let mem_regions = match memory64_list {
             Some(rva) => parse_memory64_list(&mut mount, rva)?,

@@ -157,10 +157,6 @@ impl GuestCommands for Plugin {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NAP unicast probe (UDP/730)
-// ---------------------------------------------------------------------------
-
 fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {
     let target = resolve_target(host_port)?;
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind: {e}"))?;
@@ -218,10 +214,6 @@ fn resolve_target(host_port: &str) -> Result<SocketAddr, String> {
         .and_then(|mut addrs| addrs.next())
         .ok_or_else(|| format!("could not resolve {host_port:?}"))
 }
-
-// ---------------------------------------------------------------------------
-// Console mount: drives + filesystem over XBDM TCP/730
-// ---------------------------------------------------------------------------
 
 /// One open XBDM session backing a tab. Holds an async `Client`
 /// driven by `block_on` over a blocking TCP stream. The wasm host
@@ -679,10 +671,6 @@ fn path_to_xbdm(path: &str) -> String {
         xbdm
     }
 }
-
-// ---------------------------------------------------------------------------
-// Blocking-TCP -> futures_io shim
-// ---------------------------------------------------------------------------
 
 /// Blocking `std::net::TcpStream` exposed as
 /// `futures_io::AsyncRead + AsyncWrite`. Every poll just calls the

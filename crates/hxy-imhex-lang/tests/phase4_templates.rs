@@ -23,10 +23,6 @@ fn assert_no_terminal_error(result: &RunResult) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Templates.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn struct_template_binds_value_param() {
     // `struct FixedBuf<auto N> { u8 data[N]; }` reads N bytes when
@@ -111,10 +107,6 @@ Tagged<\"label\"> t;
     assert!(node.attrs.iter().any(|(k, v)| k == "hxy_enum_variant" && v == "A"));
 }
 
-// ---------------------------------------------------------------------------
-// Pointers.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn pointer_field_reads_address_and_dereferences() {
     // Layout:
@@ -163,10 +155,6 @@ File f;
     assert_eq!(next.offset, 4);
     assert!(matches!(next.value, Some(Value::UInt { value: 0xAA, .. })));
 }
-
-// ---------------------------------------------------------------------------
-// Struct inheritance.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn inheritance_composes_parent_body_before_child() {

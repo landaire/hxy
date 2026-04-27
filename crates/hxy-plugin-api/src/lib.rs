@@ -3,8 +3,8 @@
 //! Two worlds are available as sibling modules, each with its own
 //! `export_*!` macro:
 //!
-//! - [`handler`] — VFS format handlers (see [`handler::Guest`]).
-//! - [`template`] — template-language runtimes (see
+//! - [`handler`] -- VFS format handlers (see [`handler::Guest`]).
+//! - [`template`] -- template-language runtimes (see
 //!   [`template::Guest`]).
 //!
 //! A given plugin component usually implements exactly one world.

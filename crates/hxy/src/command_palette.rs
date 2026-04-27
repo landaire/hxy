@@ -66,7 +66,7 @@ impl PaletteState {
         // into populated plugin buffers are `enter_plugin_cascade`
         // / `enter_plugin_prompt`, so any other transition should
         // drop them. Compare-pick state survives only across the
-        // CompareSideA → CompareSideB sequence and is cleared by
+        // CompareSideA -> CompareSideB sequence and is cleared by
         // any transition outside that family.
         self.plugin_cascade = None;
         self.plugin_prompt = None;
@@ -183,10 +183,10 @@ pub enum Mode {
     PluginPrompt,
     /// First step of the palette-driven file comparison: pick
     /// the A side. Top-level entries are open files plus
-    /// "Recent files…" / "Browse…" cascades.
+    /// "Recent files..." / "Browse..." cascades.
     CompareSideA,
     /// Cascade reached from [`Mode::CompareSideA`]'s
-    /// "Recent files…" entry. Picking a recent path completes
+    /// "Recent files..." entry. Picking a recent path completes
     /// the A pick and advances to [`Mode::CompareSideB`].
     CompareSideARecent,
     /// Pick the B side. The chosen A is on

@@ -44,6 +44,10 @@ pub mod plugins_tab;
 pub mod template_library;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod template_panel;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod imhex_patterns_fetch;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod toasts;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod patch_persist;

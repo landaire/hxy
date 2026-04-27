@@ -106,11 +106,14 @@ pub struct HxyApp {
     /// existing tab or open a second copy. `None` outside that window.
     pending_duplicate: Option<PendingDuplicate>,
 
-    /// Toasts driven by `egui-notify`. Currently used for "search
-    /// wrapped" / "replaced N matches" notifications; render once per
-    /// frame at the top of the central panel.
+    /// Toasts driven by `egui_toast`. Used for "search wrapped" /
+    /// "replaced N matches" notifications and the open-file
+    /// "Run X template?" prompts. Rendered once per frame at the
+    /// top-right of the central panel; the wrapper exposes a
+    /// `dismiss_group` helper for the file-open prompt flow that
+    /// needs to clear sibling toasts when the user accepts one.
     #[cfg(not(target_arch = "wasm32"))]
-    toasts: egui_notify::Toasts,
+    toasts: crate::toasts::ToastCenter,
 
     /// Open compare-picker modal, if any. Holds the user's in-progress
     /// A / B selection while the dialog is up; cleared on confirm or
@@ -264,6 +267,34 @@ pub struct HxyApp {
     /// every frame.
     #[cfg(not(target_arch = "wasm32"))]
     ipc_inbox: Option<egui_inbox::UiInbox<Vec<std::path::PathBuf>>>,
+    /// Active patterns-download worker, if any. Held until the
+    /// status reaches Success / Failed; the host then writes the
+    /// resulting hash back to [`crate::settings::ImhexPatternsState`]
+    /// and reloads the template library.
+    #[cfg(not(target_arch = "wasm32"))]
+    pattern_fetch: Option<crate::imhex_patterns_fetch::FetchHandle>,
+    /// Bytes downloaded so far on the active patterns fetch (mirrored
+    /// from the worker's progress messages so the Plugins tab can
+    /// render a progress label without re-pumping the inbox).
+    #[cfg(not(target_arch = "wasm32"))]
+    pattern_in_flight_bytes: Option<u64>,
+    /// Set by the Plugins tab's "Download / update" button; drained
+    /// in `update()` to spawn the worker. The flag indirection lets
+    /// the click run inside the dock viewer where we don't have
+    /// `&mut HxyApp`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_pattern_download_request: bool,
+    /// Whether the first-launch "Download ImHex patterns?" modal
+    /// should render this frame. Set on construction when the corpus
+    /// isn't installed and the user hasn't declined; cleared once
+    /// the user picks Download or Not Now.
+    #[cfg(not(target_arch = "wasm32"))]
+    pattern_first_run_prompt: bool,
+    /// Template-prompt clicks the toast layer queued up this frame.
+    /// Drained after `update()` and routed through the same path the
+    /// command palette's `Run Template` action takes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
 }
 
 /// One tab the user has asked to close, gated on its dirty buffer.
@@ -319,9 +350,14 @@ impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
-        let (initial_zoom, initial_window) = {
+        let (initial_zoom, initial_window, show_patterns_prompt) = {
             let s = state.read();
-            (s.app.zoom_factor, s.window)
+            // First-launch download dialog when the corpus isn't on
+            // disk and the user hasn't actively declined. Snapped
+            // here so we can move `state` into the struct below.
+            let show_patterns_prompt = s.app.imhex_patterns.installed_hash.is_none()
+                && !s.app.imhex_patterns.declined_prompt;
+            (s.app.zoom_factor, s.window, show_patterns_prompt)
         };
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
@@ -364,7 +400,7 @@ impl HxyApp {
             applied_zoom: initial_zoom,
             pending_duplicate: None,
             #[cfg(not(target_arch = "wasm32"))]
-            toasts: egui_notify::Toasts::default(),
+            toasts: crate::toasts::ToastCenter::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_search_modal: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -386,7 +422,7 @@ impl HxyApp {
             pending_plugin_events: Vec::new(),
             pending_plugin_ops: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            templates: crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref()),
+            templates: load_template_library_dirs(),
             #[cfg(not(target_arch = "wasm32"))]
             palette: crate::command_palette::PaletteState::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -410,6 +446,17 @@ impl HxyApp {
             pending_cli_paths: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             ipc_inbox: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pattern_fetch: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pattern_in_flight_bytes: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_pattern_download_request: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            // Cached above before `state` was moved into the struct.
+            pattern_first_run_prompt: show_patterns_prompt,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_template_runs: Vec::new(),
         }
     }
 
@@ -424,7 +471,16 @@ impl HxyApp {
         self.plugin_handlers = register_user_plugins(&mut registry, &grants, self.plugin_state_store.clone());
         self.registry = registry;
         self.template_plugins = load_user_template_plugins();
-        self.templates = crate::template_library::TemplateLibrary::load_from(user_templates_dir().as_deref());
+        self.templates = load_template_library_dirs();
+    }
+
+    /// Refresh the user-template library after a successful
+    /// ImHex-Patterns download. Same shape as [`reload_plugins`]
+    /// but only touches the templates list -- the plugin registry
+    /// is unchanged.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn refresh_templates_after_pattern_install(&mut self) {
+        self.templates = load_template_library_dirs();
     }
 
     /// Drain a batch of grant / wipe events captured by the
@@ -450,6 +506,12 @@ impl HxyApp {
                     {
                         tracing::warn!(error = %e, plugin = %plugin_name, "wipe plugin state");
                     }
+                }
+                crate::plugins_tab::PluginsEvent::RequestPatternsDownload => {
+                    // Use the egui ctx the next frame already has; the
+                    // worker only needs it to request a repaint when
+                    // it posts a status update.
+                    self.pending_pattern_download_request = true;
                 }
             }
         }
@@ -835,7 +897,57 @@ impl HxyApp {
                 });
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.suggest_templates_for(id);
         id
+    }
+
+    /// Look at the just-opened file's extension + first bytes and
+    /// raise a template-prompt toast for every plausible match. The
+    /// toast layer collapses sibling prompts when the user accepts
+    /// one, so opening a `.zip` with both a `.bt` and a `.hexpat`
+    /// match shows both options but cleans up after the choice.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn suggest_templates_for(&mut self, id: FileId) {
+        let Some(file) = self.files.get(&id) else { return };
+        let extension = file
+            .root_path()
+            .and_then(|p| p.extension())
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        let source_len = file.editor.source().len().get();
+        let window = source_len.min(crate::template_library::DETECTION_WINDOW as u64);
+        let head_bytes: Vec<u8> = if window == 0 {
+            Vec::new()
+        } else if let Ok(range) =
+            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window))
+        {
+            file.editor.source().read(range).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        // Pull every magic / extension hit (rank_entries puts hits
+        // first, then trailing alphabetical filler -- we keep only
+        // the prefix that actually matches).
+        let candidates: Vec<crate::template_library::TemplateEntry> = self
+            .templates
+            .rank_entries(extension.as_deref(), &head_bytes)
+            .into_iter()
+            .take_while(|entry| {
+                let ext_match = extension.as_ref().is_some_and(|e| entry.extensions.iter().any(|x| x == e));
+                let magic_match = !entry.magic.is_empty() && entry.magic.iter().any(|m| head_bytes.starts_with(m));
+                ext_match || magic_match
+            })
+            .cloned()
+            .collect();
+        // Cap at three so the corner doesn't fill with toasts on a
+        // popular extension. The palette still surfaces the full
+        // list for power users.
+        let group = id.get();
+        for entry in candidates.into_iter().take(3) {
+            let label = hxy_i18n::t_args("toast-template-suggestion", &[("name", &entry.name)]);
+            self.toasts.push_template_prompt(group, id, entry.path.clone(), label);
+        }
     }
 
     /// Allocate a `FileId`, build an `OpenFile`, run handler / template
@@ -1436,6 +1548,14 @@ impl eframe::App for HxyApp {
         let inspector_data = snapshot_inspector_bytes(self);
 
         {
+            // Snapshot fields that the viewer needs but that live on
+            // `self.state` BEFORE taking the write guard -- otherwise
+            // `self.state.read()` inside the struct literal deadlocks
+            // against the outer write guard (parking_lot RwLock is not
+            // reentrant).
+            #[cfg(not(target_arch = "wasm32"))]
+            let patterns_installed_hash_snapshot =
+                self.state.read().app.imhex_patterns.installed_hash.clone();
             let mut state_guard = self.state.write();
             let mut viewer = HxyTabViewer {
                 files: &mut self.files,
@@ -1463,6 +1583,10 @@ impl eframe::App for HxyApp {
                 plugin_handlers: &self.plugin_handlers,
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_plugin_events: &mut self.pending_plugin_events,
+                #[cfg(not(target_arch = "wasm32"))]
+                patterns_installed_hash: patterns_installed_hash_snapshot,
+                #[cfg(not(target_arch = "wasm32"))]
+                patterns_in_flight_bytes: self.pattern_in_flight_bytes,
                 pending_close_tab: &mut self.pending_close_tab,
                 tab_focus: &mut self.tab_focus,
                 workspaces: &mut self.workspaces,
@@ -1575,7 +1699,10 @@ impl eframe::App for HxyApp {
             drain_search_effects(self);
             render_search_modal(ui.ctx(), self);
             render_compare_picker(ui.ctx(), self);
-            self.toasts.show(ui.ctx());
+            render_imhex_patterns_first_run(ui.ctx(), self);
+            pump_pattern_fetch(ui.ctx(), self);
+            self.toasts.show(ui.ctx(), &mut self.pending_template_runs);
+            drain_pending_template_runs(ui.ctx(), self);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1715,6 +1842,137 @@ enum DuplicateAction {
     Focus,
     OpenNewTab,
     Cancel,
+}
+
+/// First-launch prompt asking the user whether to download the
+/// upstream ImHex-Patterns corpus. Renders a modal Window once;
+/// the user picks Download (kicks off the worker), Not Now (the
+/// dialog disappears for this session, returns next launch), or
+/// Don't Ask Again (persists the decline so settings becomes the
+/// only path forward).
+#[cfg(not(target_arch = "wasm32"))]
+fn render_imhex_patterns_first_run(ctx: &egui::Context, app: &mut HxyApp) {
+    if !app.pattern_first_run_prompt {
+        return;
+    }
+    let mut close = false;
+    let mut start_download = false;
+    let mut decline_permanent = false;
+    egui::Window::new(hxy_i18n::t("patterns-prompt-title"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(hxy_i18n::t("patterns-prompt-body"));
+            ui.add_space(8.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 180, 0),
+                hxy_i18n::t("patterns-prompt-disclaimer"),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(hxy_i18n::t("patterns-prompt-download")).clicked() {
+                    start_download = true;
+                    close = true;
+                }
+                if ui.button(hxy_i18n::t("patterns-prompt-not-now")).clicked() {
+                    close = true;
+                }
+                if ui.button(hxy_i18n::t("patterns-prompt-dont-ask")).clicked() {
+                    decline_permanent = true;
+                    close = true;
+                }
+            });
+        });
+    if start_download {
+        kick_off_pattern_download(ctx, app);
+    }
+    if decline_permanent {
+        let mut g = app.state.write();
+        g.app.imhex_patterns.declined_prompt = true;
+    }
+    if close {
+        app.pattern_first_run_prompt = false;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn kick_off_pattern_download(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pattern_fetch.as_ref().is_some_and(|h| !h.is_done()) {
+        // Already in flight; second click is a no-op.
+        return;
+    }
+    let Some(handle) = crate::imhex_patterns_fetch::spawn_default_fetch(ctx) else {
+        app.toasts.error(&hxy_i18n::t("patterns-fetch-no-data-dir"));
+        return;
+    };
+    app.toasts.info(&hxy_i18n::t("patterns-fetch-started"));
+    app.pattern_fetch = Some(handle);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pump_pattern_fetch(ctx: &egui::Context, app: &mut HxyApp) {
+    // Service the Plugins-tab button: spawn a worker if one isn't
+    // already running. Done up here so the same frame that posted
+    // the request also paints the "Downloading..." status.
+    if std::mem::take(&mut app.pending_pattern_download_request) {
+        kick_off_pattern_download(ctx, app);
+    }
+    let Some(handle) = app.pattern_fetch.as_mut() else {
+        app.pattern_in_flight_bytes = None;
+        return;
+    };
+    let snapshot = handle.pump(ctx).cloned();
+    let Some(status) = snapshot else { return };
+    // Mirror the latest progress count so the Plugins tab can render
+    // it next frame without having to re-read the inbox.
+    if let crate::imhex_patterns_fetch::FetchStatus::Progress { downloaded, .. } = &status {
+        app.pattern_in_flight_bytes = Some(*downloaded);
+    }
+    if !handle.is_done() {
+        return;
+    }
+    app.pattern_in_flight_bytes = None;
+    // Take ownership so we can clear the slot before any toast / state
+    // mutation hands the closure another `&mut self.pattern_fetch`.
+    app.pattern_fetch = None;
+    match status {
+        crate::imhex_patterns_fetch::FetchStatus::Success { sha256_hex, extracted_root: _ } => {
+            {
+                let mut g = app.state.write();
+                g.app.imhex_patterns.installed_hash = Some(sha256_hex);
+                g.app.imhex_patterns.last_check = Some(jiff::Timestamp::now());
+            }
+            // Reload the user-visible template library so the freshly
+            // downloaded `.hexpat` files turn up in the palette and
+            // open-file prompts straight away.
+            app.refresh_templates_after_pattern_install();
+            app.toasts.success(&hxy_i18n::t("patterns-fetch-done"));
+        }
+        crate::imhex_patterns_fetch::FetchStatus::Failed { message } => {
+            let label = hxy_i18n::t_args("patterns-fetch-failed", &[("error", &message)]);
+            app.toasts.error(&label);
+        }
+        crate::imhex_patterns_fetch::FetchStatus::Progress { .. } => {
+            // Shouldn't reach here -- pump only matches on terminal
+            // states; keep an explicit arm so the match stays
+            // exhaustive without `_ => {}` swallowing future
+            // additions.
+        }
+    }
+}
+
+/// Drain the toast layer's accepted-prompt queue, dispatching each
+/// click through the same path the command palette's
+/// `Run Template` action takes. Done after `toasts.show()` so the
+/// prompts have a chance to write into the queue this frame.
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_pending_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
+    let runs: Vec<crate::toasts::PendingTemplateRun> = app.pending_template_runs.drain(..).collect();
+    for run in runs {
+        run_template_from_path(ctx, app, run.file_id, run.template_path);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3128,14 +3386,14 @@ fn drain_search_effects(app: &mut HxyApp) {
         for e in effects {
             match e {
                 SearchSideEffect::WrappedForward => {
-                    app.toasts.info(hxy_i18n::t("search-wrapped-forward"));
+                    app.toasts.info(&hxy_i18n::t("search-wrapped-forward"));
                 }
                 SearchSideEffect::WrappedBackward => {
-                    app.toasts.info(hxy_i18n::t("search-wrapped-backward"));
+                    app.toasts.info(&hxy_i18n::t("search-wrapped-backward"));
                 }
                 SearchSideEffect::Replaced { count } => {
                     let text = hxy_i18n::t_args("search-replaced-toast", &[("count", &count.to_string())]);
-                    app.toasts.success(text);
+                    app.toasts.success(&text);
                 }
                 SearchSideEffect::NeedsLengthMismatchAck(deferred) => {
                     if app.pending_search_modal.is_none() {
@@ -4261,6 +4519,20 @@ fn user_templates_dir() -> Option<std::path::PathBuf> {
     Some(base.join(APP_NAME).join("templates"))
 }
 
+/// Build the global template library from every relevant on-disk
+/// source: the user's hand-curated `templates/` directory plus the
+/// auto-installed ImHex-Patterns corpus. Either path may be missing
+/// (first launch, never installed, etc.); the loader skips empty
+/// dirs gracefully.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_template_library_dirs() -> crate::template_library::TemplateLibrary {
+    let user = user_templates_dir();
+    let patterns = crate::imhex_patterns_fetch::install_dir();
+    let dirs: Vec<&std::path::Path> =
+        [user.as_deref(), patterns.as_deref()].into_iter().flatten().collect();
+    crate::template_library::TemplateLibrary::load_from_dirs(dirs)
+}
+
 /// Per-tab unsaved-patch sidecars live here; one JSON file per
 /// source path, named by BLAKE3 of the canonical path. Read on
 /// open, written on quit, removed on successful save.
@@ -4673,6 +4945,9 @@ fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
     if app.last_active_file == Some(id) {
         app.last_active_file = None;
     }
+    // Drop any template-prompt toasts targeting this tab so they
+    // don't trigger a no-op run against a freed FileId.
+    app.toasts.dismiss_for_file(id);
 }
 
 /// Cmd+W entry point. Closes the currently focused tab. For File
@@ -7204,6 +7479,16 @@ struct HxyTabViewer<'a> {
     /// Plugins tab. Drained at end of frame by [`HxyApp::ui`].
     #[cfg(not(target_arch = "wasm32"))]
     pending_plugin_events: &'a mut Vec<crate::plugins_tab::PluginsEvent>,
+    /// Snapshot of the persisted ImHex-Patterns hash, captured before
+    /// the dock pass so the Plugins tab can render its status
+    /// without re-borrowing `state`.
+    #[cfg(not(target_arch = "wasm32"))]
+    patterns_installed_hash: Option<String>,
+    /// Bytes received so far on an in-flight pattern download, or
+    /// None when no fetch is running. Mirrors
+    /// [`HxyApp::pattern_in_flight_bytes`] for the dock viewer.
+    #[cfg(not(target_arch = "wasm32"))]
+    patterns_in_flight_bytes: Option<u64>,
     /// Slot the dock's `on_close` handler writes to when the user
     /// X-clicks a dirty File tab. The app drains this after the
     /// dock pass and renders the save-prompt modal next frame.
@@ -7327,8 +7612,17 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
                 let templates_dir = user_template_plugins_dir();
-                let events =
-                    crate::plugins_tab::show(ui, handlers_dir.as_ref(), templates_dir.as_ref(), self.plugin_handlers);
+                let patterns_info = crate::plugins_tab::PatternsTabInfo {
+                    installed_hash: self.patterns_installed_hash.as_deref(),
+                    in_flight_bytes: self.patterns_in_flight_bytes,
+                };
+                let events = crate::plugins_tab::show(
+                    ui,
+                    handlers_dir.as_ref(),
+                    templates_dir.as_ref(),
+                    self.plugin_handlers,
+                    patterns_info,
+                );
                 for e in events {
                     match e {
                         crate::plugins_tab::PluginsEvent::Rescan => *self.plugin_rescan = true,
@@ -8051,7 +8345,7 @@ fn render_compare_diff_table(ui: &mut egui::Ui, session: &mut crate::compare::Co
         ui.weak(hxy_i18n::t("compare-status-pending"));
         return;
     };
-    // Persist the (filtered-changes-index → original-hunk-index)
+    // Persist the (filtered-changes-index -> original-hunk-index)
     // mapping so click / hover dispatch can write back to
     // `session.hovered_hunk` (which stores indices into the full
     // hunks array, not the filtered changes list).

@@ -1656,10 +1656,6 @@ fn substitute_expr(expr: &Expr, subs: &HashMap<String, TypeRef>) -> Expr {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Statement execution.
-// ---------------------------------------------------------------------------
-
 impl<S: HexSource> Interpreter<S> {
     fn exec_stmt(&mut self, stmt: &Stmt, parent: Option<NodeIdx>) -> Result<Flow, RuntimeError> {
         self.steps = self.steps.saturating_add(1);
@@ -2180,10 +2176,6 @@ impl<S: HexSource> Interpreter<S> {
         Ok(Flow::Next)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Reads.
-// ---------------------------------------------------------------------------
 
 const LOOP_STALL_LIMIT: u32 = 100_000;
 
@@ -2788,35 +2780,51 @@ impl<S: HexSource> Interpreter<S> {
         attrs: &[(String, String)],
     ) -> Result<Value, RuntimeError> {
         let def = self.lookup_type(ty)?;
-        if let TypeDef::Primitive(p) = def
-            && matches!(p.class, PrimClass::Char)
-        {
-            // `char[N]` -> read a contiguous string. Common pattern in
-            // both 010 and ImHex. We map each byte 1:1 to its
-            // codepoint instead of running UTF-8 validation: magic-
-            // byte comparisons (`type::Magic<"...\xBC\xAF...">`) need
-            // round-trip fidelity for high bytes, which UTF-8-lossy
-            // would replace with `U+FFFD`.
-            let total = (p.width as u64).saturating_mul(count);
+        if let TypeDef::Primitive(p) = def {
+            // Primitive arrays collapse to a single ScalarArray node
+            // spanning the whole byte range, matching 010-lang. The
+            // hex view paints one contiguous colored region instead
+            // of N tiny ones, which keeps rendering fast on multi-MB
+            // files where a `u8 extra[N]` would otherwise emit
+            // thousands of per-byte nodes.
             let offset = self.cursor_tell();
-            // Tolerate a string overshooting EOF (e.g. mo.hexpat's
-            // `char string[length] @ offset` when length+offset
-            // crosses the file boundary): clamp to whatever bytes
-            // remain instead of aborting the run.
+            let total = (p.width as u64).saturating_mul(count);
+            // Tolerate an array overshooting EOF: clamp to whatever
+            // bytes remain rather than aborting the run. Mirrors
+            // ImHex itself, which keeps reading past truncations
+            // until a structural assertion fails.
             let available = self.source.len().saturating_sub(offset);
             let total = total.min(available);
             let bytes = self.cursor_advance(total)?;
-            let s: String = bytes.iter().map(|&b| char::from(b)).collect();
+            let actual_count = if p.width == 0 { 0 } else { total / p.width as u64 };
+            let kind = ScalarKind::from_prim(p);
+            // `char[N]` decodes to a String so subsequent string
+            // operations (`==`, `[i]` for chars, magic comparisons)
+            // see typed text. We map each byte 1:1 to its codepoint
+            // rather than running UTF-8 validation -- magic-byte
+            // comparisons (`type::Magic<"...\xBC\xAF...">`) need
+            // round-trip fidelity for high bytes that UTF-8-lossy
+            // would replace with U+FFFD.
+            let value = if matches!(p.class, PrimClass::Char) && p.width == 1 {
+                Value::Str(bytes.iter().map(|&b| char::from(b)).collect())
+            } else {
+                // Non-char primitives: keep the raw bytes available
+                // so byte-array indexing (`arr[i]` on `u8 arr[N]`)
+                // still resolves through the Value::Bytes fallback.
+                // Wider primitives go through the ScalarArray decode
+                // path added in Expr::Index.
+                Value::Bytes(bytes)
+            };
             self.push_node(NodeOut {
                 name: name.to_owned(),
-                ty: NodeType::ScalarArray(ScalarKind::Char, count),
+                ty: NodeType::ScalarArray(kind, actual_count),
                 offset,
                 length: total,
-                value: Some(Value::Str(s.clone())),
+                value: Some(value.clone()),
                 parent,
                 attrs: attrs.to_vec(),
             });
-            self.bind_var(name, Value::Str(s));
+            self.bind_var(name, value);
             return Ok(Value::Void);
         }
         // Generic array: emit one parent node, then `count` children.
@@ -2977,10 +2985,6 @@ impl<S: HexSource> Interpreter<S> {
         Ok(Value::Void)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Expression evaluation.
-// ---------------------------------------------------------------------------
 
 impl<S: HexSource> Interpreter<S> {
     fn eval(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
@@ -3235,10 +3239,22 @@ impl<S: HexSource> Interpreter<S> {
                 let i = self.eval(index)?.to_i128().unwrap_or(0).max(0) as usize;
                 // Try the node-tree path first so eval'd struct
                 // arrays return their actual element value.
-                if let Some(arr_idx) = self.resolve_node_chain(target)?
-                    && let Some(elem) = self.find_first_child_idx(arr_idx, &format!("[{i}]"))
-                {
-                    return Ok(self.nodes[elem.as_usize()].value.clone().unwrap_or(Value::Void));
+                if let Some(arr_idx) = self.resolve_node_chain(target)? {
+                    if let Some(elem) = self.find_first_child_idx(arr_idx, &format!("[{i}]")) {
+                        return Ok(self.nodes[elem.as_usize()].value.clone().unwrap_or(Value::Void));
+                    }
+                    // Primitive arrays are emitted as one ScalarArray
+                    // node with no per-element children -- decode the
+                    // i-th element from the source bytes on demand.
+                    let arr_node = &self.nodes[arr_idx.as_usize()];
+                    if let NodeType::ScalarArray(kind, count) = arr_node.ty.clone()
+                        && (i as u64) < count
+                        && let Some(prim) = scalar_kind_to_prim(kind)
+                    {
+                        let elem_off = arr_node.offset.saturating_add((i as u64) * prim.width as u64);
+                        let bytes = self.source.read(elem_off, prim.width as u64).map_err(RuntimeError::from)?;
+                        return decode_prim(&bytes, prim, self.endian);
+                    }
                 }
                 let target_val = self.eval(target)?;
                 if let Value::Str(s) = &target_val
@@ -4113,9 +4129,31 @@ impl<S: HexSource> Interpreter<S> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Primitive decode + arithmetic.
-// ---------------------------------------------------------------------------
+/// Inverse of [`ScalarKind::from_prim`] for the primitive widths we
+/// emit as collapsed arrays. Returns `None` for `Bytes` / `Str` since
+/// those don't carry a fixed element decode -- callers fall through
+/// to the byte/char fallback in that case.
+fn scalar_kind_to_prim(kind: ScalarKind) -> Option<PrimKind> {
+    use crate::value::ScalarKind as K;
+    Some(match kind {
+        K::U8 => PrimKind::u8(),
+        K::S8 => PrimKind::s8(),
+        K::U16 => PrimKind::u16(),
+        K::S16 => PrimKind::s16(),
+        K::U32 => PrimKind::u32(),
+        K::S32 => PrimKind::s32(),
+        K::U64 => PrimKind::u64(),
+        K::S64 => PrimKind::s64(),
+        K::U128 => PrimKind::u128(),
+        K::S128 => PrimKind::s128(),
+        K::F32 => PrimKind::f32(),
+        K::F64 => PrimKind::f64(),
+        K::Bool => PrimKind::bool(),
+        K::Char => PrimKind::char(),
+        K::Char16 => PrimKind::char16(),
+        K::Bytes | K::Str => return None,
+    })
+}
 
 fn decode_prim(bytes: &[u8], kind: PrimKind, endian: Endian) -> Result<Value, RuntimeError> {
     if bytes.len() as u8 != kind.width {

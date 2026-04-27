@@ -69,10 +69,6 @@ struct Parser {
     pos: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Cursor helpers.
-// ---------------------------------------------------------------------------
-
 impl Parser {
     fn at_eof(&self) -> bool {
         self.pos >= self.tokens.len()
@@ -235,10 +231,6 @@ fn soft_ident_name(kind: &TokenKind) -> Option<&'static str> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Top level.
-// ---------------------------------------------------------------------------
-
 impl Parser {
     fn parse_top_item(&mut self) -> Result<TopItem, ParseError> {
         if matches!(self.peek_kind(), Some(TokenKind::Keyword(Keyword::Fn))) {
@@ -307,10 +299,6 @@ impl Parser {
         Ok(Param { ty: Some(ty), name, span })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Statements + declarations.
-// ---------------------------------------------------------------------------
 
 impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -1292,10 +1280,6 @@ impl Parser {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Type references + attribute lists.
-// ---------------------------------------------------------------------------
-
 impl Parser {
     fn parse_type_ref(&mut self) -> Result<TypeRef, ParseError> {
         // Field-level endian prefixes: `be u32 x;` / `le u32 x;`.
@@ -1417,10 +1401,6 @@ impl Parser {
         Ok(Attr { name, args, span: Span::new(name_span.start, end) })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Expressions (Pratt-style precedence climb).
-// ---------------------------------------------------------------------------
 
 const PREFIX_BP: u8 = 30;
 const ATTR_VALUE_BP: u8 = 1;
@@ -1770,10 +1750,6 @@ impl Parser {
         Ok(Expr::Path { segments, span: Span::new(head_span.start, end) })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------------------
 
 fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {

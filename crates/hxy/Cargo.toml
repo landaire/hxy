@@ -79,7 +79,7 @@ egui-toast = "0.20.0"
 # OpenSSL out of the build; called from a worker thread so the
 # blocking part is fine. zip + sha2 unpack the master tarball
 # and fingerprint it for the periodic-update check.
-reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }
 sha2 = "0.11.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }

@@ -14,7 +14,7 @@ MIT OR Apache-2.0 license.
 
 Source: https://github.com/emoose/xbox-reversing
 Upstream path: `templates/xbox-360/recctrl.bt`
-License: BSD 3-Clause — `Copyright (c) 2019, emoose`. Full license
+License: BSD 3-Clause -- `Copyright (c) 2019, emoose`. Full license
 text reproduced below per condition 1 of the BSD 3-Clause license.
 
 ```

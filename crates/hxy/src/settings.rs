@@ -185,6 +185,29 @@ pub struct AppSettings {
     /// take precedence when set.
     #[serde(default)]
     pub compare_recompute_deadline: RecomputeDeadline,
+
+    /// State of the upstream `WerWolv/ImHex-Patterns` corpus on disk.
+    /// Tracks the SHA-256 of the master tarball we last extracted so
+    /// the periodic-update check can detect drift, plus a
+    /// "user declined the prompt; don't ask again" flag for the
+    /// first-launch dialog.
+    #[serde(default)]
+    pub imhex_patterns: ImhexPatternsState,
+}
+
+/// Persisted state for the bundled ImHex-Patterns corpus.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImhexPatternsState {
+    /// SHA-256 of the master.zip we last extracted, hex-encoded. None
+    /// when the corpus hasn't been downloaded yet.
+    pub installed_hash: Option<String>,
+    /// When the user has explicitly declined the first-launch prompt,
+    /// don't show it again. They can still trigger a download from
+    /// settings.
+    pub declined_prompt: bool,
+    /// When the last update check ran (for periodic update prompts).
+    pub last_check: Option<jiff::Timestamp>,
 }
 
 fn default_palette_escape_pops_to_parent() -> bool {
@@ -214,6 +237,7 @@ impl Default for AppSettings {
             address_separator_char: default_address_separator_char(),
             input_mode: hxy_view::InputMode::default(),
             compare_recompute_deadline: RecomputeDeadline::default(),
+            imhex_patterns: ImhexPatternsState::default(),
         }
     }
 }

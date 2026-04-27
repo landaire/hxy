@@ -262,7 +262,7 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_owned()
     } else {
-        let cut: String = s.chars().take(n - 1).collect();
-        format!("{cut}…")
+        let cut: String = s.chars().take(n.saturating_sub(3)).collect();
+        format!("{cut}...")
     }
 }

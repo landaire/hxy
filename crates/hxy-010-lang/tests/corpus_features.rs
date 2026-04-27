@@ -31,10 +31,6 @@ fn assert_no_terminal_error(result: &RunResult) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lexer: preprocessor directives, integer suffixes, wide-string prefix.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn lexer_skips_preprocessor_directives() {
     // `#define`, `#ifdef`, `#endif`, `#error`, line continuations on
@@ -78,11 +74,6 @@ fn lexer_accepts_wide_string_prefix() {
     let result = run(src);
     assert_no_terminal_error(&result);
 }
-
-// ---------------------------------------------------------------------------
-// Parser: empty `[]`, multi-dim arrays, parameterised-struct + array,
-// `(void)` no-args, function prototypes, C-style cast, brace lists.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parser_accepts_empty_bracket_array() {
@@ -225,13 +216,6 @@ local int n = sizeof(struct Foo);
     let result = run(src);
     assert_no_terminal_error(&result);
 }
-
-// ---------------------------------------------------------------------------
-// Builtins: the high-traffic batch added in the corpus pass. Each
-// test runs the builtin in a context where the *call* succeeds
-// without any source data, so we can assert on the diagnostic /
-// return-value side-effect rather than on tree contents.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn builtin_assert_passes_when_truthy() {

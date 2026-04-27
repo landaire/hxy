@@ -55,9 +55,21 @@ impl TemplateLibrary {
     /// A missing dir yields an empty library (hosts may call this
     /// with a path that doesn't exist yet).
     pub fn load_from(dir: Option<&Path>) -> Self {
-        let Some(dir) = dir else { return Self::default() };
+        Self::load_from_dirs(dir.into_iter().collect())
+    }
+
+    /// Multi-directory variant of [`Self::load_from`]. Walks each
+    /// path in turn, skipping entries that don't exist, and merges
+    /// their templates into a single sorted list. Used to surface
+    /// both the user's `templates/` directory and the auto-installed
+    /// `imhex-patterns/` corpus at once without making either source
+    /// authoritative.
+    pub fn load_from_dirs(dirs: Vec<&Path>) -> Self {
         let mut entries = Vec::new();
-        let mut stack: VecDeque<PathBuf> = VecDeque::from([dir.to_path_buf()]);
+        let mut stack: VecDeque<PathBuf> = VecDeque::new();
+        for d in dirs {
+            stack.push_back(d.to_path_buf());
+        }
         // Cap the walk so a misconfigured templates dir pointing at,
         // say, the user's home directory doesn't tarpit the app on
         // startup. The 010 corpus is ~300 files, the ImHex corpus is

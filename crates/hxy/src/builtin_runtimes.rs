@@ -213,10 +213,6 @@ fn convert_diagnostic(d: &hxy_010_lang::Diagnostic) -> wit::Diagnostic {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ImHex pattern-language runtime.
-// ---------------------------------------------------------------------------
-
 /// In-process ImHex pattern-language runtime. Routes `.hexpat` /
 /// `.pat` files to the [`hxy_imhex_lang`] interpreter and lifts the
 /// resulting node tree into the host's WIT-shaped schema.

@@ -210,7 +210,7 @@ impl FileBlockCache {
         Self { entries: VecDeque::new(), size_bytes: 0, max_bytes }
     }
 
-    /// Look up a block. Hit → moves to front (marking just-used) +
+    /// Look up a block. Hit -> moves to front (marking just-used) +
     /// returns a clone of the bytes.
     fn get(&mut self, path: &str, block_offset: u64) -> Option<Vec<u8>> {
         let pos = self.entries.iter().position(|((p, off), _)| p == path && *off == block_offset)?;

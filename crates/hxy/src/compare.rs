@@ -222,7 +222,7 @@ impl CompareSession {
     }
 
     /// `true` while a worker thread is computing the diff. Hosts
-    /// can use this to render a "computing…" indicator and to
+    /// can use this to render a "computing..." indicator and to
     /// avoid issuing another recompute request.
     pub fn is_recomputing(&self) -> bool {
         self.pending_recompute.is_some()

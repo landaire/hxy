@@ -159,8 +159,10 @@ Header h;
     bytes.extend_from_slice(&300u16.to_le_bytes());
     let (ast, bc_run) = run_both(src, bytes);
     assert_node_parity(&ast, &bc_run);
-    // Header, magic, samples (parent), three u16 children.
-    assert_eq!(bc_run.nodes.len(), 6);
+    // Header, magic, samples. The primitive array collapses to one
+    // ScalarArray span instead of a parent + N per-element nodes,
+    // matching the 010-lang renderer behavior.
+    assert_eq!(bc_run.nodes.len(), 3);
     // Header consumed 1 + 6 = 7 bytes.
     assert_eq!(bc_run.nodes[0].length, 7);
 }

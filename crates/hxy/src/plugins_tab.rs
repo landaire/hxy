@@ -29,6 +29,25 @@ pub enum PluginsEvent {
     /// User asked to wipe the plugin's persisted state blob. The
     /// app calls `clear` on the configured `StateStore`.
     WipeState { plugin_name: String },
+    /// User clicked "Download / update ImHex patterns" in the
+    /// pattern-library section. The app spawns the worker and
+    /// renders progress through the existing `pattern_fetch`
+    /// machinery.
+    RequestPatternsDownload,
+}
+
+/// Read-only snapshot the patterns section uses to render its
+/// status text and button states. Built by the host on the fly so
+/// the tab itself stays free of state ownership.
+pub struct PatternsTabInfo<'a> {
+    /// SHA-256 of the corpus we last installed, or `None` for a
+    /// fresh install. The tab shows the leading 12 chars as a
+    /// human-readable fingerprint -- matches what the
+    /// "downloaded version" line in the dialog renders.
+    pub installed_hash: Option<&'a str>,
+    /// Bytes received so far on an in-flight download. `None`
+    /// when no fetch is running.
+    pub in_flight_bytes: Option<u64>,
 }
 
 pub fn show(
@@ -36,6 +55,7 @@ pub fn show(
     handlers_dir: Option<&PathBuf>,
     templates_dir: Option<&PathBuf>,
     plugin_handlers: &[Arc<PluginHandler>],
+    patterns: PatternsTabInfo<'_>,
 ) -> Vec<PluginsEvent> {
     let mut events = Vec::new();
     ui.heading("Plugins");
@@ -43,6 +63,8 @@ pub fn show(
     ui.separator();
 
     render_consent_section(ui, plugin_handlers, &mut events);
+    ui.add_space(12.0);
+    render_patterns_section(ui, &patterns, &mut events);
     ui.add_space(12.0);
     render_section(ui, "VFS handlers", "Mount byte sources as a browseable VFS tree.", handlers_dir, &mut events);
     ui.add_space(12.0);
@@ -54,6 +76,37 @@ pub fn show(
         &mut events,
     );
     events
+}
+
+fn render_patterns_section(
+    ui: &mut egui::Ui,
+    patterns: &PatternsTabInfo<'_>,
+    events: &mut Vec<PluginsEvent>,
+) {
+    ui.heading(hxy_i18n::t("patterns-settings-title"));
+    let status = match patterns.installed_hash {
+        Some(hash) => {
+            let short: String = hash.chars().take(12).collect();
+            hxy_i18n::t_args("patterns-settings-installed", &[("hash", &short)])
+        }
+        None => hxy_i18n::t("patterns-settings-not-installed"),
+    };
+    ui.label(status);
+    if let Some(bytes) = patterns.in_flight_bytes {
+        // Disable the buttons while a download is running so a second
+        // click can't enqueue a duplicate worker.
+        ui.label(hxy_i18n::t_args("patterns-settings-downloading", &[("bytes", &bytes.to_string())]));
+        ui.add_enabled(false, egui::Button::new(hxy_i18n::t("patterns-settings-update")));
+    } else {
+        let label = if patterns.installed_hash.is_some() {
+            hxy_i18n::t("patterns-settings-update")
+        } else {
+            hxy_i18n::t("patterns-settings-download-now")
+        };
+        if ui.button(label).clicked() {
+            events.push(PluginsEvent::RequestPatternsDownload);
+        }
+    }
 }
 
 fn render_consent_section(ui: &mut egui::Ui, plugin_handlers: &[Arc<PluginHandler>], events: &mut Vec<PluginsEvent>) {
