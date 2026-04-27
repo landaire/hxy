@@ -158,11 +158,18 @@ pub enum Op {
     /// literal integer at compile time. The VM dispatches into
     /// `read_array`, which folds char-typed reads down to a single
     /// `Str`-valued node and emits one parent + N children for any
-    /// other element type. A future op (`ReadArray` with the count
-    /// on the value stack) will handle non-literal sizes.
+    /// other element type. The dyn variant ([`Op::ReadArrayDyn`])
+    /// covers non-literal sizes by popping the count off the
+    /// value stack.
     ReadArrayFixed { ty: TypeId, name: IdentId, count: u64 },
-    ReadArray { ty: TypeId, name: IdentId }, // count on stack
-    ReadCharArr { name: IdentId },           // count on stack
+    /// Dynamic-size primitive array. Pops one [`Value`] from the
+    /// operand stack, coerces to a u64 element count, then runs
+    /// the same `read_array` host helper as [`Op::ReadArrayFixed`].
+    /// Used when the source size expression is anything other than
+    /// an integer literal (an identifier reference, a `length-1`
+    /// arithmetic, ...).
+    ReadArrayDyn { ty: TypeId, name: IdentId },
+    ReadCharArr { name: IdentId }, // count on stack
     ReadDynArr { ty: TypeId, name: IdentId, pred: Pc, end: Pc },
 
     // ---- cursor save/restore ----
@@ -224,7 +231,7 @@ impl Op {
             Op::ReadPrim { .. } => "ReadPrim",
             Op::ReadStruct { .. } => "ReadStruct",
             Op::ReadArrayFixed { .. } => "ReadArrayFixed",
-            Op::ReadArray { .. } => "ReadArray",
+            Op::ReadArrayDyn { .. } => "ReadArrayDyn",
             Op::ReadCharArr { .. } => "ReadCharArr",
             Op::ReadDynArr { .. } => "ReadDynArr",
             Op::SaveCursor => "SaveCursor",
@@ -321,6 +328,9 @@ pub enum CompileError {
 
     #[error("unsupported field decl shape: {reason}")]
     UnsupportedFieldDecl { reason: &'static str },
+
+    #[error("unsupported expression: {0}")]
+    UnsupportedExpr(&'static str),
 }
 
 /// Compile an AST [`AstProgram`] to a flat [`Program`]. Returns
@@ -561,15 +571,74 @@ fn compile_field_decl(
             out.push(Op::ReadArrayFixed { ty: ty_id, name: name_id, count: *value as u64 });
             Ok(())
         }
-        Some(crate::ast::ArraySize::Fixed(_)) => Err(CompileError::UnsupportedFieldDecl {
-            reason: "non-literal fixed array size needs the value-stack expression op set",
-        }),
+        Some(crate::ast::ArraySize::Fixed(size_expr)) => {
+            if !is_known_primitive(ty) {
+                return Err(CompileError::UnsupportedFieldDecl {
+                    reason: "non-literal-size arrays of non-primitive types not yet lowered",
+                });
+            }
+            compile_expr(p, out, size_expr)?;
+            let name_id = p.intern_ident(name);
+            let ty_id = p.push_type(ty.clone());
+            out.push(Op::ReadArrayDyn { ty: ty_id, name: name_id });
+            Ok(())
+        }
         Some(crate::ast::ArraySize::Open) => Err(CompileError::UnsupportedFieldDecl {
             reason: "open `[]` arrays not yet lowered",
         }),
         Some(crate::ast::ArraySize::While(_)) => Err(CompileError::UnsupportedFieldDecl {
             reason: "`[while(...)]` arrays not yet lowered",
         }),
+    }
+}
+
+/// Lower a tiny subset of [`crate::ast::Expr`] to ops that leave a
+/// single [`crate::value::Value`] on the operand stack. Phase D.1
+/// recognises only literal ints and bare identifiers -- enough to
+/// size dynamic arrays whose width is a previously-bound field
+/// (`u8 length; char value[length];`). Binary ops, member access,
+/// and calls are explicit follow-up phases.
+fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> Result<(), CompileError> {
+    match expr {
+        crate::ast::Expr::IntLit { value, .. } => {
+            // The AST `eval` produces `Value::UInt { kind: u64 }`
+            // regardless of magnitude; widen the literal to i128 so
+            // future signed-arithmetic ops have headroom.
+            out.push(Op::PushInt(*value as i128));
+            Ok(())
+        }
+        crate::ast::Expr::Ident { name, .. } => {
+            let id = p.intern_ident(name);
+            out.push(Op::LoadIdent(id));
+            Ok(())
+        }
+        crate::ast::Expr::Binary { op, lhs, rhs, .. } => {
+            // Mirror `eval(Expr::Binary)`: lhs first, then rhs,
+            // then the BinOp pops both. Short-circuit && and ||
+            // need a Jump op (out of scope here); reject them
+            // explicitly so the compile error is honest.
+            if matches!(op, crate::ast::BinOp::LogicalAnd | crate::ast::BinOp::LogicalOr) {
+                return Err(CompileError::UnsupportedExpr("logical && / || (need jumps)"));
+            }
+            compile_expr(p, out, lhs)?;
+            compile_expr(p, out, rhs)?;
+            out.push(Op::BinOp(*op));
+            Ok(())
+        }
+        crate::ast::Expr::BoolLit { .. } => Err(CompileError::UnsupportedExpr("bool literal")),
+        crate::ast::Expr::FloatLit { .. } => Err(CompileError::UnsupportedExpr("float literal")),
+        crate::ast::Expr::StringLit { .. } => Err(CompileError::UnsupportedExpr("string literal")),
+        crate::ast::Expr::CharLit { .. } => Err(CompileError::UnsupportedExpr("char literal")),
+        crate::ast::Expr::NullLit { .. } => Err(CompileError::UnsupportedExpr("null literal")),
+        crate::ast::Expr::Path { .. } => Err(CompileError::UnsupportedExpr("path")),
+        crate::ast::Expr::Unary { .. } => Err(CompileError::UnsupportedExpr("unary op")),
+        crate::ast::Expr::Call { .. } => Err(CompileError::UnsupportedExpr("call")),
+        crate::ast::Expr::Index { .. } => Err(CompileError::UnsupportedExpr("index")),
+        crate::ast::Expr::Member { .. } => Err(CompileError::UnsupportedExpr("member")),
+        crate::ast::Expr::Assign { .. } => Err(CompileError::UnsupportedExpr("assign")),
+        crate::ast::Expr::Ternary { .. } => Err(CompileError::UnsupportedExpr("ternary")),
+        crate::ast::Expr::Reflect { .. } => Err(CompileError::UnsupportedExpr("reflect")),
+        crate::ast::Expr::TypeRefExpr { .. } => Err(CompileError::UnsupportedExpr("type-ref expr")),
     }
 }
 

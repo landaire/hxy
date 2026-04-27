@@ -178,3 +178,81 @@ Greeting g;
     let (ast, bc_run) = run_both(src, bytes);
     assert_node_parity(&ast, &bc_run);
 }
+
+#[test]
+fn ident_sized_char_array_matches_ast() {
+    // The classic dyn-width string read: a length byte followed by
+    // that many bytes. Bencode's ASCII-decimal-prefixed strings are
+    // the canonical case (`String { ASCIIDecimal length; char
+    // value[length]; }`); this synthetic version uses a u8 length
+    // for simplicity.
+    let src = "\
+struct PString {
+    u8 length;
+    char value[length];
+};
+PString s;
+";
+    let mut bytes = vec![5];
+    bytes.extend_from_slice(b"hello");
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    // s, length, value -- 3 nodes total.
+    assert_eq!(bc_run.nodes.len(), 3);
+    assert_eq!(bc_run.nodes[0].length, 6);
+    assert_eq!(bc_run.nodes[2].length, 5);
+}
+
+#[test]
+fn ident_sized_primitive_array_matches_ast() {
+    // Element-by-element variant: a u8 count followed by `count`
+    // u16 little-endian samples. Exercises the parent + N-children
+    // emission path on the dyn-size code path.
+    let src = "\
+struct SampleSet {
+    u8 count;
+    u16 samples[count];
+};
+SampleSet set;
+";
+    let mut bytes = vec![3];
+    bytes.extend_from_slice(&0x1111u16.to_le_bytes());
+    bytes.extend_from_slice(&0x2222u16.to_le_bytes());
+    bytes.extend_from_slice(&0x3333u16.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}
+
+#[test]
+fn binop_sized_char_array_matches_ast() {
+    // `count - 1` exercises BinOp lowering through the dyn array.
+    // Common in length-prefixed strings that count the trailing
+    // separator (`u8 length; char value[length - 1];`).
+    let src = "\
+struct PStringMinus1 {
+    u8 length;
+    char value[length - 1];
+};
+PStringMinus1 s;
+";
+    let mut bytes = vec![5];
+    bytes.extend_from_slice(b"hello"); // we only consume 4
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert_eq!(bc_run.nodes[2].length, 4);
+}
+
+#[test]
+fn binop_mul_sized_primitive_array_matches_ast() {
+    // `count * 2` so the same input feeds both runs.
+    let src = "\
+struct DoubleSet {
+    u8 count;
+    u8 data[count * 2];
+};
+DoubleSet d;
+";
+    let bytes = vec![2, 0xAA, 0xBB, 0xCC, 0xDD];
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}

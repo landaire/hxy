@@ -143,6 +143,14 @@ pub enum RuntimeError {
     /// back to the AST interpreter while op coverage is incomplete.
     #[error("bytecode VM: op `{op}` not yet supported")]
     BytecodeOpUnsupported { op: &'static str },
+
+    /// An op tried to pop a value from an empty operand stack. This
+    /// always points at a compile/VM bug -- the compile pass should
+    /// have balanced every pop with an earlier push -- so it is
+    /// kept distinct from the size-shape `Type` errors that come
+    /// from genuine bad input.
+    #[error("bytecode VM: stack underflow on op `{op}`")]
+    BytecodeStackUnderflow { op: &'static str },
 }
 
 #[derive(Clone, Debug)]
@@ -365,7 +373,8 @@ impl<S: HexSource> Interpreter<S> {
         // Top-level statements run with no enclosing parent. EOF
         // tolerance applies here: a top-level read past EOF becomes
         // a diagnostic, mirroring `exec_program`'s behaviour.
-        self.exec_bytecode_body(program, &program.ops, None, true)
+        let mut stack: Vec<Value> = Vec::new();
+        self.exec_bytecode_body(program, &program.ops, None, true, &mut stack)
     }
 
     fn exec_bytecode_body(
@@ -374,6 +383,7 @@ impl<S: HexSource> Interpreter<S> {
         ops: &[crate::bc::Op],
         parent: Option<NodeIdx>,
         eof_tolerant_top_level: bool,
+        stack: &mut Vec<Value>,
     ) -> Result<(), RuntimeError> {
         use crate::bc::Op;
         let mut pc: usize = 0;
@@ -424,7 +434,60 @@ impl<S: HexSource> Interpreter<S> {
                 Op::EnterStruct { body, name, display_name } => {
                     let name_str = program.idents.get(name.0).to_owned();
                     let display = program.idents.get(display_name.0).to_owned();
-                    self.exec_bytecode_struct(program, body, &name_str, &display, parent)?;
+                    self.exec_bytecode_struct(program, body, &name_str, &display, parent, stack)?;
+                }
+                Op::PushInt(v) => {
+                    // Mirror `eval(Expr::IntLit)`: literals widen to
+                    // u64 regardless of source magnitude. Negative
+                    // literals are not lexed -- a unary minus would
+                    // emit `UnOp(Neg)` over a positive PushInt.
+                    stack.push(Value::UInt { value: v as u128, kind: PrimKind::u64() });
+                }
+                Op::LoadIdent(name) => {
+                    let name_str = program.idents.get(name.0);
+                    // Match `eval(Expr::Ident)`: `$` is the cursor,
+                    // everything else routes through `lookup_ident`.
+                    let v = if name_str == "$" {
+                        Value::UInt { value: self.cursor_tell() as u128, kind: PrimKind::u64() }
+                    } else {
+                        self.lookup_ident(name_str)?
+                    };
+                    stack.push(v);
+                }
+                Op::BinOp(binop) => {
+                    let r = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/rhs" })?;
+                    let l = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/lhs" })?;
+                    stack.push(eval_binary(binop, &l, &r)?);
+                }
+                Op::ReadArrayDyn { ty, name } => {
+                    let count_val = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayDyn" })?;
+                    let count = count_val
+                        .to_i128()
+                        .ok_or_else(|| RuntimeError::Type(format!(
+                            "array size is not numeric: {count_val}"
+                        )))?
+                        .max(0) as u64;
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let res = self.read_array(name_str, ty_ref, count, parent, &[]);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
                 ref other => {
                     return Err(RuntimeError::BytecodeOpUnsupported { op: other.variant_name() });
@@ -449,6 +512,7 @@ impl<S: HexSource> Interpreter<S> {
         name: &str,
         display_name: &str,
         parent: Option<NodeIdx>,
+        stack: &mut Vec<Value>,
     ) -> Result<(), RuntimeError> {
         let offset = self.cursor_tell();
         let idx = NodeIdx::new(self.nodes.len() as u32);
@@ -467,7 +531,7 @@ impl<S: HexSource> Interpreter<S> {
         self.this_stack.push(idx);
 
         let body_ops = &program.struct_bodies[body.0 as usize].ops;
-        let result = self.exec_bytecode_body(program, body_ops, Some(idx), false);
+        let result = self.exec_bytecode_body(program, body_ops, Some(idx), false, stack);
 
         self.this_stack.pop();
         self.scopes.pop();
