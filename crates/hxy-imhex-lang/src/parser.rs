@@ -1231,9 +1231,15 @@ impl Parser {
         if let Some(TokenKind::Ident(ident)) = self.peek_kind()
             && (ident == "in" || ident == "out")
         {
-            if placement.is_none() {
-                is_io_var = true;
-            }
+            // `in` / `out` always means "lives outside the running
+            // file cursor": form (a) is a host-supplied input
+            // variable; form (b) parks the read in a named memory
+            // section. Either way, we should *not* consume bytes
+            // from the source -- pyc.hexpat reserves a 32 KB scratch
+            // section via `u128 refs[MAX_REFS] @ 0x0 in section;`
+            // and the surrounding template assumes the file cursor
+            // stays put after the declaration.
+            is_io_var = true;
             self.bump();
             // Section identifier / expression after `in` / `out`,
             // when present, is consumed and dropped.
