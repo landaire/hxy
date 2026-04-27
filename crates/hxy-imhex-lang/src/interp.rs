@@ -2038,17 +2038,16 @@ impl<S: HexSource> Interpreter<S> {
     /// Look up a child node whose `parent == owner_idx` and whose
     /// name matches `field`. Walks the tree right-to-left so the
     /// most-recently-emitted match wins (matters for repeated names
-    /// inside a long-lived parent like an array).
+    /// inside a long-lived parent like an array). Returns `Some(Void)`
+    /// for struct/array children that don't bind a scalar value --
+    /// the *node* is still the right answer for chained accesses
+    /// (`a.b.c.field`) even though `b` itself has no value.
     fn lookup_member_under(&self, owner_idx: NodeIdx, field: &str) -> Option<Value> {
-        // Walk the by-name index right-to-left so the most-recently-
-        // emitted child wins when `field` shows up on more than one
-        // sibling (matters for repeated names inside a long-lived
-        // parent like an array).
         let candidates = self.nodes_by_name.get(field)?;
         for &idx in candidates.iter().rev() {
             let n = &self.nodes[idx.as_usize()];
             if n.parent == Some(owner_idx) {
-                return n.value.clone();
+                return Some(n.value.clone().unwrap_or(Value::Void));
             }
         }
         None

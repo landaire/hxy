@@ -184,7 +184,7 @@ fn probe_template(
                 totals.run_err += 1;
                 let msg = normalise(&format!("{err}"));
                 *totals.run_messages.entry(msg.clone()).or_insert(0) += 1;
-                if totals.failures.len() < 25 {
+                if totals.failures.len() < 100 {
                     let label = format!(
                         "{} -> {}",
                         template_name,
@@ -282,7 +282,7 @@ fn print_summary(t: &Totals) {
     }
     println!();
     println!("-- first failing fixtures --");
-    for (label, msg) in t.failures.iter().take(15) {
+    for (label, msg) in t.failures.iter().take(100) {
         println!("  {label}");
         println!("      {msg}");
     }
