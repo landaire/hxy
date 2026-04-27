@@ -15,6 +15,24 @@
 //! collapses that into one dispatch loop and lets us pre-intern
 //! every name into a `u32`.
 //!
+//! ## Lives in this crate today, generic by design
+//!
+//! The op set is intentionally language-agnostic -- it speaks in
+//! cursor reads, node emissions, scope frames, member access,
+//! control flow, and named function calls, none of which is
+//! ImHex-specific. `hxy-010-lang` could lower its own AST to the
+//! same op stream once we've pressure-tested the shape here.
+//!
+//! When the op set stabilises against the ImHex corpus, the plan is
+//! to lift this module (plus the VM and a shared `Value` /
+//! `PrimKind`) into a new `hxy-bc` workspace crate, leaving each
+//! lang crate to host only its parser + AST + compile pass + the
+//! lang-specific runtime callbacks (no_unique_address, transforms,
+//! templates for ImHex; switch fall-through, DeclModifier, typedef
+//! for 010). Premature factoring now risks letting ImHex-only
+//! semantics leak into the IR, so the shared crate waits for parity
+//! first.
+//!
 //! ## Status
 //!
 //! Scaffolding only at this stage. The op set covers value-stack
