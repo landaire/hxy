@@ -756,7 +756,16 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_block(&mut self, stmts: &[Stmt], parent: Option<NodeIdx>) -> Result<Flow, RuntimeError> {
-        self.scopes.push(Scope::default());
+        // Multi-decl groups -- a block of FieldDecls with no other
+        // stmts -- come from `local int a, b;` and similar. They
+        // shouldn't push a fresh scope: the locals need to land
+        // in the surrounding struct/function scope so subsequent
+        // statements can read and reassign them.
+        let is_decl_group = !stmts.is_empty()
+            && stmts.iter().all(|s| matches!(s, Stmt::FieldDecl { .. }));
+        if !is_decl_group {
+            self.scopes.push(Scope::default());
+        }
         let mut flow = Flow::Next;
         for s in stmts {
             flow = self.exec_stmt(s, parent)?;
@@ -764,7 +773,9 @@ impl<S: HexSource> Interpreter<S> {
                 break;
             }
         }
-        self.scopes.pop();
+        if !is_decl_group {
+            self.scopes.pop();
+        }
         Ok(flow)
     }
 
@@ -1725,10 +1736,30 @@ impl<S: HexSource> Interpreter<S> {
                             }
                         }
                     }
+                    let mut storage_void: Option<()> = None;
                     for candidate in lookup_candidates(&path, &self.path_prefix()) {
                         if let Some(v) = self.field_storage.get(&candidate).cloned() {
+                            // Local variables seed field_storage with
+                            // Void at decl time; subsequent `=`
+                            // assignments only update the scope chain
+                            // (so we don't have to track which scope
+                            // owns the path). When path lookup hits
+                            // Void, fall back to a scope-based lookup
+                            // by leaf name so the live value wins
+                            // over the stale Void placeholder.
+                            if matches!(v, Value::Void) {
+                                storage_void = Some(());
+                                continue;
+                            }
                             return Ok(v);
                         }
+                    }
+                    if storage_void.is_some()
+                        && let Some(leaf) = path.rsplit('.').next()
+                        && let Ok(v) = self.lookup_ident(leaf)
+                        && !matches!(v, Value::Void)
+                    {
+                        return Ok(v);
                     }
                     // Member access on a primitive-array path that
                     // wasn't stored as a scalar (`SecHeader.Name`
