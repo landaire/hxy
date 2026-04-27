@@ -249,10 +249,6 @@ fn toggle_global_search(app: &mut HxyApp) {
         let _ = app.dock.remove_tab(path);
         return;
     }
-    app.dock.main_surface_mut().split_below(
-        egui_dock::NodeIndex::root(),
-        0.65,
-        vec![crate::tabs::Tab::SearchResults],
-    );
+    app.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.65, vec![crate::tabs::Tab::SearchResults]);
     app.global_search.open = true;
 }

@@ -15,11 +15,7 @@ pub const MODIFIED_BYTE_BG: egui::Color32 = egui::Color32::from_rgba_premultipli
 /// owns the cell fill (background mode or highlighting disabled).
 pub const MODIFIED_BYTE_FG: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x5A, 0x4A);
 
-pub fn render_hex_body(
-    ui: &mut egui::Ui,
-    file: &mut OpenFile,
-    state: &mut PersistedState,
-) -> Option<CopyKind> {
+pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut PersistedState) -> Option<CopyKind> {
     let template_palette_override = file.template.as_ref().and_then(|t| t.byte_palette_override.clone());
     let (highlight, palette) = if let Some(table) = template_palette_override {
         (Some(state.app.byte_highlight_mode.as_view()), Some(hxy_view::HighlightPalette::Custom(table)))
@@ -148,13 +144,13 @@ pub fn render_hex_body(
         )
         .gap(12.0)
         .show(|ui| {
+            // Let the tooltip grow to the widest row instead of
+            // wrapping long type names. Each row is monospace so the
+            // tree connectors align across labels.
             for (i, line) in path.iter().enumerate() {
                 let text = egui::RichText::new(line).monospace();
-                if i + 1 == path.len() {
-                    ui.label(text.strong());
-                } else {
-                    ui.label(text);
-                }
+                let text = if i + 1 == path.len() { text.strong() } else { text };
+                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
             }
         });
     }

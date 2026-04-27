@@ -341,9 +341,7 @@ fn read_escape(input: &mut &str) -> ModalResult<u32> {
                 count += 1;
             }
             if count == 0 {
-                return Err(winnow::error::ErrMode::Backtrack(
-                    winnow::error::ContextError::new(),
-                ));
+                return Err(winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new()));
             }
             Ok(value)
         }

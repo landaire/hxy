@@ -93,9 +93,7 @@ impl Default for ToastCenter {
 impl ToastCenter {
     pub fn new() -> Self {
         Self {
-            inner: Toasts::new()
-                .anchor(Align2::RIGHT_TOP, (-12.0, 12.0))
-                .direction(egui::Direction::TopDown),
+            inner: Toasts::new().anchor(Align2::RIGHT_TOP, (-12.0, 12.0)).direction(egui::Direction::TopDown),
             prompts: Vec::new(),
             dismissed_groups: HashSet::new(),
         }
@@ -121,9 +119,7 @@ impl ToastCenter {
         Toast {
             kind,
             text: text.into(),
-            options: ToastOptions::default()
-                .duration(Duration::from_secs(4))
-                .show_progress(true),
+            options: ToastOptions::default().duration(Duration::from_secs(4)).show_progress(true),
             style: Default::default(),
         }
     }
@@ -136,13 +132,7 @@ impl ToastCenter {
         if self.prompts.iter().any(|p| p.group == group && p.template_path == template_path) {
             return;
         }
-        self.prompts.push(TemplatePrompt {
-            group,
-            file_id,
-            template_path,
-            label,
-            remaining: PROMPT_TTL_SECONDS,
-        });
+        self.prompts.push(TemplatePrompt { group, file_id, template_path, label, remaining: PROMPT_TTL_SECONDS });
     }
 
     /// Drop every prompt targeting `file_id`. Called when a tab
@@ -186,27 +176,25 @@ impl ToastCenter {
                 .order(Order::Foreground)
                 .anchor(Align2::RIGHT_TOP, vec2(-12.0, y_offset))
                 .show(ctx, |ui| {
-                    Frame::window(ui.style())
-                        .stroke(Stroke::new(1.0, Color32::from_gray(80)))
-                        .show(ui, |ui| {
-                            ui.set_max_width(280.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui_phosphor::regular::PUZZLE_PIECE);
-                                ui.label(&prompt.label);
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button(&hxy_i18n::t("toast-template-run")).clicked() {
-                                    pending_runs.push(PendingTemplateRun {
-                                        file_id: prompt.file_id,
-                                        template_path: prompt.template_path.clone(),
-                                    });
-                                    accepted_groups.insert(prompt.group);
-                                }
-                                if ui.button(&hxy_i18n::t("toast-template-dismiss")).clicked() {
-                                    accepted_groups.insert(prompt.group);
-                                }
-                            });
+                    Frame::window(ui.style()).stroke(Stroke::new(1.0, Color32::from_gray(80))).show(ui, |ui| {
+                        ui.set_max_width(280.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui_phosphor::regular::PUZZLE_PIECE);
+                            ui.label(&prompt.label);
                         });
+                        ui.horizontal(|ui| {
+                            if ui.button(hxy_i18n::t("toast-template-run")).clicked() {
+                                pending_runs.push(PendingTemplateRun {
+                                    file_id: prompt.file_id,
+                                    template_path: prompt.template_path.clone(),
+                                });
+                                accepted_groups.insert(prompt.group);
+                            }
+                            if ui.button(hxy_i18n::t("toast-template-dismiss")).clicked() {
+                                accepted_groups.insert(prompt.group);
+                            }
+                        });
+                    });
                 })
                 .response;
             // Hover pauses the inactivity timer; matches egui_toast's

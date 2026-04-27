@@ -294,14 +294,15 @@ fn lex_number(input: &mut &str) -> ModalResult<TokenKind> {
 
 fn hex_int(input: &mut &str) -> ModalResult<TokenKind> {
     let s: &str =
-        preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit() || c == '_' || c == '\'')).parse_next(input)?;
+        preceded(alt(("0x", "0X")), take_while(1.., |c: char| c.is_ascii_hexdigit() || c == '_' || c == '\''))
+            .parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 16)))
 }
 
 fn bin_int(input: &mut &str) -> ModalResult<TokenKind> {
-    let s: &str =
-        preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1' || c == '_' || c == '\'')).parse_next(input)?;
+    let s: &str = preceded(alt(("0b", "0B")), take_while(1.., |c: char| c == '0' || c == '1' || c == '_' || c == '\''))
+        .parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 2)))
 }
@@ -312,8 +313,9 @@ fn bin_int(input: &mut &str) -> ModalResult<TokenKind> {
 /// to decimal would silently miscompile a few patterns; ImHex's
 /// reference says the leading-zero form is octal so we match.
 fn oct_int(input: &mut &str) -> ModalResult<TokenKind> {
-    let s: &str = preceded(alt(("0o", "0O")), take_while(1.., |c: char| ('0'..='7').contains(&c) || c == '_' || c == '\''))
-        .parse_next(input)?;
+    let s: &str =
+        preceded(alt(("0o", "0O")), take_while(1.., |c: char| ('0'..='7').contains(&c) || c == '_' || c == '\''))
+            .parse_next(input)?;
     consume_int_suffixes(input)?;
     Ok(TokenKind::Int(parse_int(s, 8)))
 }
@@ -329,9 +331,12 @@ fn float_or_int(input: &mut &str) -> ModalResult<TokenKind> {
     int_part.push_str(rest_int);
     let fraction: Option<&str> =
         opt(preceded(".", take_while(0.., |c: char| c.is_ascii_digit() || c == '_' || c == '\''))).parse_next(input)?;
-    let exponent: Option<(&str, Option<&str>, &str)> =
-        opt((alt(("e", "E")), opt(alt(("+", "-"))), take_while(1.., |c: char| c.is_ascii_digit() || c == '_' || c == '\'')))
-            .parse_next(input)?;
+    let exponent: Option<(&str, Option<&str>, &str)> = opt((
+        alt(("e", "E")),
+        opt(alt(("+", "-"))),
+        take_while(1.., |c: char| c.is_ascii_digit() || c == '_' || c == '\''),
+    ))
+    .parse_next(input)?;
     consume_int_suffixes(input)?;
 
     if fraction.is_none() && exponent.is_none() {

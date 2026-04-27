@@ -70,8 +70,7 @@ pub fn start_compare_picker(app: &mut HxyApp) {
 pub fn start_compare_palette_flow(app: &mut HxyApp) {
     use crate::commands::palette::ComparePickState;
     use crate::commands::palette::Mode;
-    let auto_a =
-        crate::app::active_file_id(app).and_then(|id| app.files.get(&id)).and_then(|f| f.source_kind.clone());
+    let auto_a = crate::app::active_file_id(app).and_then(|id| app.files.get(&id)).and_then(|f| f.source_kind.clone());
     match auto_a {
         Some(source) => {
             app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });

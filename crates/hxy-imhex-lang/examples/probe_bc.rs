@@ -24,15 +24,11 @@ fn main() {
     let tokens = tokenize(&src).expect("lex");
     let prog = parse(tokens).expect("parse");
     let bytes = fixture.map(|p| fs::read(p).unwrap_or_default()).unwrap_or_default();
-    let resolver = chained_resolver([
-        "/Users/lander/src/ImHex-Patterns/includes",
-        "/Users/lander/src/ImHex-Patterns",
-    ]);
+    let resolver = chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
     let bc_program = bc::compile_with_resolver(&prog, resolver.as_ref()).expect("bc compile");
     let pragmas = extract_pragmas(&src);
-    let mut interp = Interpreter::new(MemorySource::new(bytes))
-        .with_import_resolver(resolver)
-        .with_step_limit(100_000_000);
+    let mut interp =
+        Interpreter::new(MemorySource::new(bytes)).with_import_resolver(resolver).with_step_limit(100_000_000);
     if let Some(e) = pragmas.endian {
         interp = interp.with_default_endian(e);
     }
@@ -40,11 +36,7 @@ fn main() {
     let result = interp.run_bytecode_experimental(&bc_program);
     let elapsed = start.elapsed();
     match result.terminal_error {
-        None => println!(
-            "ok ({} nodes) bc={} ms",
-            result.nodes.len(),
-            elapsed.as_millis()
-        ),
+        None => println!("ok ({} nodes) bc={} ms", result.nodes.len(), elapsed.as_millis()),
         Some(e) => println!("run: {e} (after {} ms)", elapsed.as_millis()),
     }
 }

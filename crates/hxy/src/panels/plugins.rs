@@ -78,11 +78,7 @@ pub fn show(
     events
 }
 
-fn render_patterns_section(
-    ui: &mut egui::Ui,
-    patterns: &PatternsTabInfo<'_>,
-    events: &mut Vec<PluginsEvent>,
-) {
+fn render_patterns_section(ui: &mut egui::Ui, patterns: &PatternsTabInfo<'_>, events: &mut Vec<PluginsEvent>) {
     ui.heading(hxy_i18n::t("patterns-settings-title"));
     let status = match patterns.installed_hash {
         Some(hash) => {

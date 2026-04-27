@@ -95,10 +95,7 @@ pub fn render_imhex_patterns_first_run(ctx: &egui::Context, app: &mut HxyApp) {
             ui.set_max_width(420.0);
             ui.label(hxy_i18n::t("patterns-prompt-body"));
             ui.add_space(8.0);
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 180, 0),
-                hxy_i18n::t("patterns-prompt-disclaimer"),
-            );
+            ui.colored_label(egui::Color32::from_rgb(220, 180, 0), hxy_i18n::t("patterns-prompt-disclaimer"));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button(hxy_i18n::t("patterns-prompt-download")).clicked() {

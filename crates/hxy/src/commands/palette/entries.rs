@@ -126,12 +126,9 @@ pub fn build_palette_entries(
     match app.palette.mode {
         Mode::Main => {
             out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-file-new"),
-                    Action::InvokeCommand(PaletteCommand::NewFile),
-                )
-                .with_icon(icon::FILE_PLUS)
-                .with_shortcut(fmt(&NEW_FILE)),
+                egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
+                    .with_icon(icon::FILE_PLUS)
+                    .with_shortcut(fmt(&NEW_FILE)),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -201,23 +198,17 @@ pub fn build_palette_entries(
                 })
                 .unwrap_or(false);
             out.push(
-                egui_palette::Entry::new(
-                    "Toggle VFS panel",
-                    Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs),
-                )
-                .with_icon(icon::TREE_STRUCTURE)
-                .with_subtitle(panel_subtitle(workspace_tree_visible)),
+                egui_palette::Entry::new("Toggle VFS panel", Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs))
+                    .with_icon(icon::TREE_STRUCTURE)
+                    .with_subtitle(panel_subtitle(workspace_tree_visible)),
             );
 
-            let tool_panel_visible =
-                app.hidden_tool_tabs.is_empty() && app.dock.iter_all_tabs().any(|(_, t)| crate::tabs::dock_ops::is_tool_tab(t));
+            let tool_panel_visible = app.hidden_tool_tabs.is_empty()
+                && app.dock.iter_all_tabs().any(|(_, t)| crate::tabs::dock_ops::is_tool_tab(t));
             out.push(
-                egui_palette::Entry::new(
-                    "Toggle tool panel",
-                    Action::InvokeCommand(PaletteCommand::ToggleToolPanel),
-                )
-                .with_icon(icon::SQUARES_FOUR)
-                .with_subtitle(panel_subtitle(tool_panel_visible)),
+                egui_palette::Entry::new("Toggle tool panel", Action::InvokeCommand(PaletteCommand::ToggleToolPanel))
+                    .with_icon(icon::SQUARES_FOUR)
+                    .with_subtitle(panel_subtitle(tool_panel_visible)),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -626,8 +617,7 @@ pub fn build_palette_entries(
             }
         }
         Mode::UninstallPlugin => {
-            for dir in [crate::app::user_plugins_dir(), crate::app::user_template_plugins_dir()].into_iter().flatten()
-            {
+            for dir in [crate::app::user_plugins_dir(), crate::app::user_template_plugins_dir()].into_iter().flatten() {
                 let Ok(read) = std::fs::read_dir(&dir) else { continue };
                 let mut wasms: Vec<std::path::PathBuf> = read
                     .filter_map(|e| e.ok())

@@ -160,7 +160,10 @@ enum TypeDef {
     /// the template parameter names from `using Foo<T> = T;`; when
     /// non-empty, the lookup site substitutes the use-site template
     /// args before continuing resolution.
-    Alias { params: Vec<String>, target: TypeRef },
+    Alias {
+        params: Vec<String>,
+        target: TypeRef,
+    },
     /// Struct / enum / bitfield decls live behind an `Arc` so the
     /// type-table clone in `resolve_type_ref` (which fires once
     /// per type lookup -- millions of times on bencode-shaped
@@ -486,10 +489,7 @@ impl<S: HexSource> Interpreter<S> {
                     self.register_decl(
                         &e.bare,
                         &e.qualified,
-                        TypeDef::Alias {
-                            params: e.decl.template_params.clone(),
-                            target: e.decl.target.clone(),
-                        },
+                        TypeDef::Alias { params: e.decl.template_params.clone(), target: e.decl.target.clone() },
                     );
                 }
             }
@@ -510,15 +510,7 @@ impl<S: HexSource> Interpreter<S> {
         // a diagnostic, mirroring `exec_program`'s behaviour.
         let mut stack: Vec<Value> = Vec::new();
         let mut pending_attrs: Vec<(String, String)> = Vec::new();
-        self.exec_bytecode_body(
-            program,
-            &bc_to_name,
-            &program.ops,
-            None,
-            true,
-            &mut stack,
-            &mut pending_attrs,
-        )
+        self.exec_bytecode_body(program, &bc_to_name, &program.ops, None, true, &mut stack, &mut pending_attrs)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -602,12 +594,7 @@ impl<S: HexSource> Interpreter<S> {
                 Op::ReadEnum { id, name } => {
                     let name_str = program.idents.get(name.0);
                     let attrs = std::mem::take(pending_attrs);
-                    let res = self.read_enum(
-                        name_str,
-                        &program.enum_decls[id.0 as usize],
-                        parent,
-                        &attrs,
-                    );
+                    let res = self.read_enum(name_str, &program.enum_decls[id.0 as usize], parent, &attrs);
                     if let Err(e) = res {
                         if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
@@ -626,12 +613,9 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 Op::CallReadUnsigned | Op::CallReadSigned => {
                     let signed = matches!(*op, Op::CallReadSigned);
-                    let size = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/size" })?;
-                    let offset = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/offset" })?;
+                    let size = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/size" })?;
+                    let offset =
+                        stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/offset" })?;
                     let v = self.std_read_int_xy(&offset, &size, signed)?;
                     stack.push(v);
                 }
@@ -639,16 +623,10 @@ impl<S: HexSource> Interpreter<S> {
                     stack.push(Value::Bool(self.cursor_tell() >= self.source.len()));
                 }
                 Op::CallSize => {
-                    stack.push(Value::UInt {
-                        value: self.source.len() as u128,
-                        kind: PrimKind::u64(),
-                    });
+                    stack.push(Value::UInt { value: self.source.len() as u128, kind: PrimKind::u64() });
                 }
                 Op::CallCurrentOffset => {
-                    stack.push(Value::UInt {
-                        value: self.cursor_tell() as u128,
-                        kind: PrimKind::u64(),
-                    });
+                    stack.push(Value::UInt { value: self.cursor_tell() as u128, kind: PrimKind::u64() });
                 }
                 Op::EvalAstExpr(id) => {
                     // Hand the stored AST expression straight to
@@ -790,9 +768,8 @@ impl<S: HexSource> Interpreter<S> {
                     )?;
                 }
                 Op::ReadAnyArrayDyn { ty, name } => {
-                    let count_val = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadAnyArrayDyn" })?;
+                    let count_val =
+                        stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadAnyArrayDyn" })?;
                     // Match the AST's `exec_field_decl` cast: i128
                     // -> u64 via plain `as`, which wraps negatives
                     // to a huge positive (later clamped by
@@ -802,9 +779,8 @@ impl<S: HexSource> Interpreter<S> {
                     // like `c_namesize - 1` underflowed.
                     let count = count_val
                         .to_i128()
-                        .ok_or_else(|| RuntimeError::Type(format!(
-                            "array size is not numeric: {count_val}"
-                        )))? as u64;
+                        .ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {count_val}")))?
+                        as u64;
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
                     let attrs = std::mem::take(pending_attrs);
@@ -823,16 +799,10 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 }
                 Op::PlacementSeek => {
-                    let offset_val = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "PlacementSeek" })?;
+                    let offset_val = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "PlacementSeek" })?;
                     let offset = offset_val
                         .to_i128()
-                        .ok_or_else(|| {
-                            RuntimeError::Type(format!(
-                                "placement offset not numeric: {offset_val}"
-                            ))
-                        })?
+                        .ok_or_else(|| RuntimeError::Type(format!("placement offset not numeric: {offset_val}")))?
                         .max(0) as u64;
                     self.cursor_seek(offset);
                     // Mirror exec_field_decl's
@@ -854,18 +824,14 @@ impl<S: HexSource> Interpreter<S> {
                     continue;
                 }
                 Op::JumpIfFalse(target) => {
-                    let cond = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfFalse" })?;
+                    let cond = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfFalse" })?;
                     if !cond.is_truthy() {
                         pc = target.0 as usize;
                         continue;
                     }
                 }
                 Op::JumpIfTrue(target) => {
-                    let cond = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfTrue" })?;
+                    let cond = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfTrue" })?;
                     if cond.is_truthy() {
                         pc = target.0 as usize;
                         continue;
@@ -884,24 +850,18 @@ impl<S: HexSource> Interpreter<S> {
                     stack.push(Value::Str(program.strings.get(id.0).to_owned()));
                 }
                 Op::UnOp(unop) => {
-                    let v = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "UnOp" })?;
+                    let v = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "UnOp" })?;
                     stack.push(eval_unary(unop, &v)?);
                 }
                 Op::Pop => {
                     stack.pop();
                 }
                 Op::StoreIdent(name) => {
-                    let value = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdent" })?;
+                    let value = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdent" })?;
                     self.bind_var_id(bc_to_name[name.0 as usize], value);
                 }
                 Op::EmitComputedLocal { name, ty_label, ty } => {
-                    let value = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "EmitComputedLocal" })?;
+                    let value = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "EmitComputedLocal" })?;
                     // Coerce numeric initializers back to the
                     // declared primitive width / signedness, matching
                     // `exec_field_decl`'s `coerce_value_to_prim` step.
@@ -924,9 +884,7 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 }
                 Op::StoreIdentCoerce { name, ty } => {
-                    let value = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdentCoerce" })?;
+                    let value = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdentCoerce" })?;
                     let value = self.coerce_to_decl_type(value, &program.types[ty.0 as usize]);
                     self.bind_var_id(bc_to_name[name.0 as usize], value);
                 }
@@ -945,18 +903,12 @@ impl<S: HexSource> Interpreter<S> {
                     stack.push(v);
                 }
                 Op::BinOp(binop) => {
-                    let r = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/rhs" })?;
-                    let l = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/lhs" })?;
+                    let r = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/rhs" })?;
+                    let l = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "BinOp/lhs" })?;
                     stack.push(eval_binary(binop, &l, &r)?);
                 }
                 Op::ReadArrayDyn { ty, name } => {
-                    let count_val = stack
-                        .pop()
-                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayDyn" })?;
+                    let count_val = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayDyn" })?;
                     // Match the AST's `exec_field_decl` cast: i128
                     // -> u64 via plain `as`, which wraps negatives
                     // to a huge positive (later clamped by
@@ -966,9 +918,8 @@ impl<S: HexSource> Interpreter<S> {
                     // like `c_namesize - 1` underflowed.
                     let count = count_val
                         .to_i128()
-                        .ok_or_else(|| RuntimeError::Type(format!(
-                            "array size is not numeric: {count_val}"
-                        )))? as u64;
+                        .ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {count_val}")))?
+                        as u64;
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
                     let attrs = std::mem::take(pending_attrs);
@@ -1046,18 +997,8 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 // Run the predicate sub-stream; it pushes one
                 // boolean (or numeric) value on the operand stack.
-                self.exec_bytecode_body(
-                    program,
-                    bc_to_name,
-                    pred_ops,
-                    parent,
-                    false,
-                    stack,
-                    pending_attrs,
-                )?;
-                let v = stack
-                    .pop()
-                    .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayWhile/pred" })?;
+                self.exec_bytecode_body(program, bc_to_name, pred_ops, parent, false, stack, pending_attrs)?;
+                let v = stack.pop().ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayWhile/pred" })?;
                 if !v.is_truthy() {
                     break;
                 }
@@ -1093,9 +1034,7 @@ impl<S: HexSource> Interpreter<S> {
                     stalls += 1;
                     if stalls > 4 {
                         self.diagnostics.push(Diagnostic {
-                            message: format!(
-                                "dynamic array `{name}` stalled at offset {now} after {count} reads"
-                            ),
+                            message: format!("dynamic array `{name}` stalled at offset {now} after {count} reads"),
                             severity: Severity::Warning,
                             file_offset: Some(now),
                             template_line: None,
@@ -1155,15 +1094,7 @@ impl<S: HexSource> Interpreter<S> {
         self.this_stack.push(idx);
 
         let body_ops = &program.struct_bodies[body.0 as usize].ops;
-        let result = self.exec_bytecode_body(
-            program,
-            bc_to_name,
-            body_ops,
-            Some(idx),
-            false,
-            stack,
-            pending_attrs,
-        );
+        let result = self.exec_bytecode_body(program, bc_to_name, body_ops, Some(idx), false, stack, pending_attrs);
 
         self.this_stack.pop();
         self.scopes.pop();
@@ -1317,11 +1248,7 @@ impl<S: HexSource> Interpreter<S> {
     /// `exec_field_decl`. Non-primitive declared types pass the
     /// value through unchanged.
     fn coerce_to_decl_type(&mut self, value: Value, ty: &TypeRef) -> Value {
-        if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) {
-            coerce_value_to_prim(value, p)
-        } else {
-            value
-        }
+        if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) { coerce_value_to_prim(value, p) } else { value }
     }
 
     /// Insert `def` under `bare` and every entry in `qualified`.
@@ -1482,11 +1409,8 @@ impl<S: HexSource> Interpreter<S> {
                         // for Vis to resolve in a scope where it
                         // doesn't exist.
                         let mut tmp = substitute_typeref(target, &subs);
-                        tmp.template_args = tmp
-                            .template_args
-                            .into_iter()
-                            .map(|e| substitute_expr_with_arg(&e, &expr_subs))
-                            .collect();
+                        tmp.template_args =
+                            tmp.template_args.into_iter().map(|e| substitute_expr_with_arg(&e, &expr_subs)).collect();
                         current = tmp;
                     } else {
                         current = TypeRef {
@@ -1605,8 +1529,7 @@ fn substitute_typeref(ty: &TypeRef, subs: &HashMap<String, TypeRef>) -> TypeRef 
         // legal: `using Foo<T> = T<u32>;`).
         let mut out = replacement.clone();
         if !ty.template_args.is_empty() {
-            out.template_args =
-                ty.template_args.iter().map(|a| substitute_expr(a, subs)).collect();
+            out.template_args = ty.template_args.iter().map(|a| substitute_expr(a, subs)).collect();
         }
         return out;
     }
@@ -1649,9 +1572,7 @@ fn substitute_expr(expr: &Expr, subs: &HashMap<String, TypeRef>) -> Expr {
                 Expr::TypeRefExpr { ty: Box::new(ty), span: *span }
             }
         }
-        Expr::TypeRefExpr { ty, span } => {
-            Expr::TypeRefExpr { ty: Box::new(substitute_typeref(ty, subs)), span: *span }
-        }
+        Expr::TypeRefExpr { ty, span } => Expr::TypeRefExpr { ty: Box::new(substitute_typeref(ty, subs)), span: *span },
         other => other.clone(),
     }
 }
@@ -1706,11 +1627,8 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(Flow::Next)
             }
             Stmt::If { cond, then_branch, else_branch, .. } => {
-                let branch: Option<&Stmt> = if self.eval(cond)?.is_truthy() {
-                    Some(then_branch.as_ref())
-                } else {
-                    else_branch.as_deref()
-                };
+                let branch: Option<&Stmt> =
+                    if self.eval(cond)?.is_truthy() { Some(then_branch.as_ref()) } else { else_branch.as_deref() };
                 let Some(branch) = branch else { return Ok(Flow::Next) };
                 // ImHex treats `if`/`else` block bodies as transparent
                 // for variable scoping: a `u32 v = ...;` declared
@@ -1995,8 +1913,7 @@ impl<S: HexSource> Interpreter<S> {
         // cursor but doesn't advance it. Save the cursor and
         // restore it after the read; the field itself still emits a
         // node and binds in scope as usual.
-        let no_unique_address =
-            attrs.0.iter().any(|a| a.name == "no_unique_address");
+        let no_unique_address = attrs.0.iter().any(|a| a.name == "no_unique_address");
         // Placement (`@ offset`) cursor semantics depend on context:
         //   - At top level, `@` is a plain seek -- the cursor stays
         //     wherever the placed read ended, so a following
@@ -2022,11 +1939,8 @@ impl<S: HexSource> Interpreter<S> {
             && placement.is_none()
             && pointer_width.is_none()
             && init.is_none();
-        let saved_pos = if placement_saves || no_unique_address || function_local {
-            Some(self.cursor_tell())
-        } else {
-            None
-        };
+        let saved_pos =
+            if placement_saves || no_unique_address || function_local { Some(self.cursor_tell()) } else { None };
         // `[[no_unique_address]]` peeks ahead -- a primitive type
         // bigger than the bytes remaining (dotnet's `u64 bytes
         // [[no_unique_address]]` near EOF) should be tolerated as
@@ -2036,27 +1950,30 @@ impl<S: HexSource> Interpreter<S> {
         // Skip the read entirely if there aren't enough bytes,
         // restore later, and let the struct's logic compute against
         // a zero peek.
-        if no_unique_address && placement.is_none() && array.is_none() && init.is_none() {
-            if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) {
-                let cur = self.cursor_tell();
-                let available = self.source.len().saturating_sub(cur);
-                if available < p.width as u64 {
-                    let value = Value::UInt { value: 0, kind: p };
-                    self.bind_var(name, value.clone());
-                    self.push_node(NodeOut {
-                        name: name.clone(),
-                        ty: NodeType::Scalar(ScalarKind::from_prim(p)),
-                        offset: cur,
-                        length: 0,
-                        value: Some(value),
-                        parent,
-                        attrs: attrs_to_pairs(attrs),
-                    });
-                    if let Some(saved) = saved_pos {
-                        self.cursor_seek(saved);
-                    }
-                    return Ok(Flow::Next);
+        if no_unique_address
+            && placement.is_none()
+            && array.is_none()
+            && init.is_none()
+            && let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty)
+        {
+            let cur = self.cursor_tell();
+            let available = self.source.len().saturating_sub(cur);
+            if available < p.width as u64 {
+                let value = Value::UInt { value: 0, kind: p };
+                self.bind_var(name, value.clone());
+                self.push_node(NodeOut {
+                    name: name.clone(),
+                    ty: NodeType::Scalar(ScalarKind::from_prim(p)),
+                    offset: cur,
+                    length: 0,
+                    value: Some(value),
+                    parent,
+                    attrs: attrs_to_pairs(attrs),
+                });
+                if let Some(saved) = saved_pos {
+                    self.cursor_seek(saved);
                 }
+                return Ok(Flow::Next);
             }
         }
         if let Some(p) = placement {
@@ -2161,9 +2078,7 @@ impl<S: HexSource> Interpreter<S> {
         }
         if let Some(fn_name) = transform_fn {
             let raw = self.lookup_ident(name).unwrap_or(Value::Void);
-            if let Ok(new_val) =
-                self.call_named_with_aliases(&fn_name, std::slice::from_ref(&raw), &[])
-            {
+            if let Ok(new_val) = self.call_named_with_aliases(&fn_name, std::slice::from_ref(&raw), &[]) {
                 let name_id = self.intern.intern(name);
                 self.current_scope_mut().vars.insert(name_id, new_val.clone());
                 if let Some(indices) = self.nodes_by_name.get(&name_id).cloned()
@@ -2341,10 +2256,8 @@ impl<S: HexSource> Interpreter<S> {
                     } else {
                         t
                     };
-                    let prev = self.types.insert(
-                        param_name.clone(),
-                        TypeDef::Alias { params: Vec::new(), target: resolved },
-                    );
+                    let prev =
+                        self.types.insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: resolved });
                     template_type_aliases.push((param_name.clone(), prev));
                 }
                 // Bind the arg's *value* in scope so the body can
@@ -2397,9 +2310,7 @@ impl<S: HexSource> Interpreter<S> {
                 if !p.template_params.is_empty() {
                     for (i, param_name) in p.template_params.iter().enumerate() {
                         let arg_expr = parent_ty.template_args.get(i);
-                        let value = arg_expr
-                            .map(|e| self.eval(e).unwrap_or(Value::Void))
-                            .unwrap_or(Value::Void);
+                        let value = arg_expr.map(|e| self.eval(e).unwrap_or(Value::Void)).unwrap_or(Value::Void);
                         self.bind_var(param_name, value);
                     }
                 }
@@ -2493,11 +2404,7 @@ impl<S: HexSource> Interpreter<S> {
         // numeric value, and use that as the variant key. Width is
         // computed from the struct's actual byte consumption.
         let (raw_u, length, prim) = if let TypeDef::Struct(s) = &backing_def {
-            let backing_ty = TypeRef {
-                path: vec![s.name.clone()],
-                template_args: Vec::new(),
-                span: decl.backing.span,
-            };
+            let backing_ty = TypeRef { path: vec![s.name.clone()], template_args: Vec::new(), span: decl.backing.span };
             let hidden_name = format!("__{}__backing", name);
             self.read_struct(&hidden_name, s, &backing_ty, parent, &[])?;
             let raw_value = self.lookup_ident(&hidden_name).unwrap_or(Value::Void);
@@ -2603,10 +2510,8 @@ impl<S: HexSource> Interpreter<S> {
                     } else {
                         t
                     };
-                    let prev = self.types.insert(
-                        param_name.clone(),
-                        TypeDef::Alias { params: Vec::new(), target: resolved },
-                    );
+                    let prev =
+                        self.types.insert(param_name.clone(), TypeDef::Alias { params: Vec::new(), target: resolved });
                     template_type_aliases.push((param_name.clone(), prev));
                 }
                 let value = arg_expr.map(|e| self.eval(e).unwrap_or(Value::Void)).unwrap_or(Value::Void);
@@ -2961,9 +2866,7 @@ impl<S: HexSource> Interpreter<S> {
                 stalls += 1;
                 if stalls > 4 {
                     self.diagnostics.push(Diagnostic {
-                        message: format!(
-                            "dynamic array `{name}` stalled at offset {now} after {count} reads"
-                        ),
+                        message: format!("dynamic array `{name}` stalled at offset {now} after {count} reads"),
                         severity: Severity::Warning,
                         file_offset: Some(now),
                         template_line: None,
@@ -3062,10 +2965,7 @@ impl<S: HexSource> Interpreter<S> {
                                 running = self.eval(value_expr)?.to_i128().unwrap_or(running);
                             }
                             if variant.name == variant_name {
-                                return Ok(Value::UInt {
-                                    value: running as u128,
-                                    kind: PrimKind::u64(),
-                                });
+                                return Ok(Value::UInt { value: running as u128, kind: PrimKind::u64() });
                             }
                             running = running.saturating_add(1);
                         }
@@ -3138,10 +3038,8 @@ impl<S: HexSource> Interpreter<S> {
                                 .lookup(field)
                                 .and_then(|id| self.nodes_by_name.get(&id).cloned())
                                 .unwrap_or_default();
-                            if let Some(idx) = candidates
-                                .into_iter()
-                                .rev()
-                                .find(|i| self.nodes[i.as_usize()].parent == Some(owner))
+                            if let Some(idx) =
+                                candidates.into_iter().rev().find(|i| self.nodes[i.as_usize()].parent == Some(owner))
                             {
                                 self.nodes[idx.as_usize()].value = Some(new_val.clone());
                             }
@@ -3288,9 +3186,7 @@ impl<S: HexSource> Interpreter<S> {
                     Expr::Path { segments, .. } => {
                         let is_builtin = segments.first().map(String::as_str) == Some("builtin");
                         let mut v = vec![segments.join("::")];
-                        if !is_builtin
-                            && let Some(leaf) = segments.last()
-                        {
+                        if !is_builtin && let Some(leaf) = segments.last() {
                             v.push(leaf.clone());
                         }
                         (v, is_builtin)
@@ -3620,9 +3516,7 @@ impl<S: HexSource> Interpreter<S> {
                 // ~2M times for nothing -- that ate ~25% of the
                 // bencode wallclock per the xct2cli profile.
                 let no_node_named = !self.nodes_by_name.contains_key(&id);
-                if no_node_named
-                    && self.scopes.iter().all(|s| !s.node_aliases.contains_key(&id))
-                {
+                if no_node_named && self.scopes.iter().all(|s| !s.node_aliases.contains_key(&id)) {
                     return None;
                 }
                 // Function-parameter aliases first: `imSpec` inside
@@ -3673,12 +3567,7 @@ impl<S: HexSource> Interpreter<S> {
         // of `String` (per-byte hash) -- the previous hot path.
         let target = parent_idx.as_u32();
         let candidates = self.nodes_by_name.get(&name)?;
-        for idx in candidates.iter().copied() {
-            if self.node_parents[idx.as_usize()] == target {
-                return Some(idx);
-            }
-        }
-        None
+        candidates.iter().copied().find(|&idx| self.node_parents[idx.as_usize()] == target)
     }
 
     /// Find the most recent top-level node (parent is `None`) with
@@ -3707,8 +3596,8 @@ impl<S: HexSource> Interpreter<S> {
     fn store_ident(&mut self, name: &str, value: Value) {
         let id = self.intern.intern(name);
         for scope in self.scopes.iter_mut().rev() {
-            if scope.vars.contains_key(&id) {
-                scope.vars.insert(id, value);
+            if let std::collections::hash_map::Entry::Occupied(mut e) = scope.vars.entry(id) {
+                e.insert(value);
                 return;
             }
         }
@@ -3885,8 +3774,7 @@ impl<S: HexSource> Interpreter<S> {
                 // arbitrary memory regions can override later.
                 Value::UInt { value: 0, kind: PrimKind::u64() }
             }
-            "builtin::std::mem::find_sequence_in_range"
-            | "std::mem::find_sequence_in_range" => {
+            "builtin::std::mem::find_sequence_in_range" | "std::mem::find_sequence_in_range" => {
                 // `find_sequence_in_range(occurrence_index,
                 // start_offset, end_offset, byte0, byte1, ...)` --
                 // search for the byte sequence within
@@ -3900,12 +3788,8 @@ impl<S: HexSource> Interpreter<S> {
                 let occurrence = args.first().and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
                 let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
                 let end_arg = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
-                let needle: Vec<u8> = args
-                    .iter()
-                    .skip(3)
-                    .filter_map(|v| v.to_i128())
-                    .map(|n| (n as i64) as u8)
-                    .collect();
+                let needle: Vec<u8> =
+                    args.iter().skip(3).filter_map(|v| v.to_i128()).map(|n| (n as i64) as u8).collect();
                 let len = self.source.len() as usize;
                 let end = end_arg.min(len);
                 if needle.is_empty() || start >= end || end - start < needle.len() {
@@ -3932,8 +3816,7 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 }
             }
-            "builtin::std::mem::find_string_in_range"
-            | "std::mem::find_string_in_range" => {
+            "builtin::std::mem::find_string_in_range" | "std::mem::find_string_in_range" => {
                 // `find_string_in_range(occurrence_index,
                 // start_offset, end_offset, needle)` -- analogous
                 // to find_sequence_in_range but with a string
@@ -4024,10 +3907,7 @@ impl<S: HexSource> Interpreter<S> {
             }
             "std::ctype::isalpha" | "isalpha" => {
                 let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
-                Value::Bool(
-                    (b'A' as i128..=b'Z' as i128).contains(&c)
-                        || (b'a' as i128..=b'z' as i128).contains(&c),
-                )
+                Value::Bool((b'A' as i128..=b'Z' as i128).contains(&c) || (b'a' as i128..=b'z' as i128).contains(&c))
             }
             "std::ctype::isalnum" | "isalnum" => {
                 let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
@@ -4094,12 +3974,7 @@ impl<S: HexSource> Interpreter<S> {
     /// By-ref variant of [`Self::std_read_int`] for the BC ops.
     /// Avoids allocating a `Vec<Value>` per call (the slice
     /// equivalent of `args.first()` / `args.get(1)`).
-    fn std_read_int_xy(
-        &self,
-        offset_v: &Value,
-        size_v: &Value,
-        signed: bool,
-    ) -> Result<Value, RuntimeError> {
+    fn std_read_int_xy(&self, offset_v: &Value, size_v: &Value, signed: bool) -> Result<Value, RuntimeError> {
         let offset = offset_v.to_i128().unwrap_or(0).max(0) as u64;
         let size = size_v.to_i128().unwrap_or(0).clamp(0, 8) as u8;
         if size == 0 {
@@ -4225,8 +4100,7 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
             // tar.hexpat uses this to print divider lines via
             // `std::print("-" * 50);`.
             BinOp::Mul => {
-                let count =
-                    r.to_i128().or_else(|| l.to_i128()).unwrap_or(0).max(0) as usize;
+                let count = r.to_i128().or_else(|| l.to_i128()).unwrap_or(0).max(0) as usize;
                 let s = if matches!(r, Value::Str(_)) { &b } else { &a };
                 Value::Str(s.repeat(count))
             }
@@ -4277,9 +4151,7 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
             value: li.checked_div(ri).unwrap_or(0),
             kind: PrimKind::s64(),
         },
-        BinOp::Rem => {
-            Value::SInt { value: li.checked_rem(ri).unwrap_or(0), kind: PrimKind::s64() }
-        }
+        BinOp::Rem => Value::SInt { value: li.checked_rem(ri).unwrap_or(0), kind: PrimKind::s64() },
         BinOp::BitAnd => Value::SInt { value: li & ri, kind: PrimKind::s64() },
         BinOp::BitOr => Value::SInt { value: li | ri, kind: PrimKind::s64() },
         BinOp::BitXor => Value::SInt { value: li ^ ri, kind: PrimKind::s64() },
@@ -4404,11 +4276,7 @@ fn format_value_with_spec(v: &Value, spec: &str) -> String {
         _ => (spec, 'd'),
     };
     // Optional `0` fill flag prefix; the width is the rest.
-    let (fill, width_str) = if let Some(rest) = width_part.strip_prefix('0') {
-        ('0', rest)
-    } else {
-        (' ', width_part)
-    };
+    let (fill, width_str) = if let Some(rest) = width_part.strip_prefix('0') { ('0', rest) } else { (' ', width_part) };
     let width: usize = width_str.parse().unwrap_or(0);
     let body = match kind {
         'X' => v.to_i128().map(|n| format!("{:X}", n as u128)).unwrap_or_else(|| format!("{v}")),

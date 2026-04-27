@@ -11,11 +11,7 @@ use crate::commands::palette::Mode;
 /// above this overflows even ultrawide monitors at sane font sizes.
 pub const PALETTE_MAX_COLUMNS: u16 = 64;
 
-pub fn build_columns_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
-    mode: Mode,
-    query: &str,
-) {
+pub fn build_columns_entries(out: &mut Vec<egui_palette::Entry<Action>>, mode: Mode, query: &str) {
     use egui_phosphor::regular as icon;
 
     if query.is_empty() {

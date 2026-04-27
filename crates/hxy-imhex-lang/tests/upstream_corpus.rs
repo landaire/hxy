@@ -121,10 +121,7 @@ fn paired_fixture_run_passes_baseline() {
             println!("  {f}");
         }
     }
-    assert!(
-        run_ok >= MIN_RUN_OK,
-        "regression: only {run_ok} fixtures passed end-to-end; baseline is {MIN_RUN_OK}",
-    );
+    assert!(run_ok >= MIN_RUN_OK, "regression: only {run_ok} fixtures passed end-to-end; baseline is {MIN_RUN_OK}",);
 }
 
 fn locate_corpus() -> Option<PathBuf> {

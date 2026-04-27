@@ -441,8 +441,7 @@ impl<S: HexSource> Interpreter<S> {
         // Now seed the global presence counter with every name we
         // just bound -- post-binding so the closure's `scope`
         // borrow is released.
-        let names: Vec<String> =
-            self.scopes.first().expect("root scope").vars.keys().cloned().collect();
+        let names: Vec<String> = self.scopes.first().expect("root scope").vars.keys().cloned().collect();
         for name in names {
             *self.scope_var_counts.entry(name).or_insert(0) += 1;
         }
@@ -887,10 +886,7 @@ impl<S: HexSource> Interpreter<S> {
             && stmts.iter().all(|s| {
                 matches!(
                     s,
-                    Stmt::FieldDecl { .. }
-                        | Stmt::TypedefAlias { .. }
-                        | Stmt::TypedefEnum(_)
-                        | Stmt::TypedefStruct(_)
+                    Stmt::FieldDecl { .. } | Stmt::TypedefAlias { .. } | Stmt::TypedefEnum(_) | Stmt::TypedefStruct(_)
                 )
             });
         if !is_decl_group {
@@ -919,10 +915,8 @@ impl<S: HexSource> Interpreter<S> {
         if matches!(modifier, crate::ast::DeclModifier::Local | crate::ast::DeclModifier::Const) {
             // Track byte size for `sizeof(localArr)` lookups before
             // we lose the array_size info to the eval.
-            if let Some(size_expr) = array_size
-                .as_ref()
-                .cloned()
-                .or_else(|| self.typedef_array_size.get(&ty.name).cloned())
+            if let Some(size_expr) =
+                array_size.as_ref().cloned().or_else(|| self.typedef_array_size.get(&ty.name).cloned())
                 && let Some(count) = self.eval(&size_expr)?.to_i128()
                 && count >= 0
             {
@@ -985,19 +979,12 @@ impl<S: HexSource> Interpreter<S> {
         // length here so the array path advances the cursor instead
         // of looping at zero progress.
         let is_flex_byte_array = matches!(array_size, Some(Expr::IntLit { value: 0, .. }))
-            && matches!(
-                ty.name.as_str(),
-                "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE"
-            );
+            && matches!(ty.name.as_str(), "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE");
         if is_flex_byte_array && count == 0 {
             let off = self.cursor.tell();
             let avail = self.cursor.len().saturating_sub(off);
             let probe = self.cursor.read_at(off, avail)?;
-            count = probe
-                .iter()
-                .position(|&b| b == 0)
-                .map(|i| (i + 1) as u64)
-                .unwrap_or(avail);
+            count = probe.iter().position(|&b| b == 0).map(|i| (i + 1) as u64).unwrap_or(avail);
         }
 
         // Evaluate struct args once; the parameterised-struct read
@@ -1044,13 +1031,9 @@ impl<S: HexSource> Interpreter<S> {
         // next iteration.
         let value = match read_result {
             Ok(v) => v,
-            Err(RuntimeError::Source(SourceError::OutOfBounds { offset, end, len }))
-                if offset >= len =>
-            {
+            Err(RuntimeError::Source(SourceError::OutOfBounds { offset, end, len })) if offset >= len => {
                 self.diagnostics.push(Diagnostic {
-                    message: format!(
-                        "field `{name}` read [{offset}..{end}) past EOF (file is {len} bytes); skipped"
-                    ),
+                    message: format!("field `{name}` read [{offset}..{end}) past EOF (file is {len} bytes); skipped"),
                     severity: Severity::Warning,
                     file_offset: Some(offset),
                     template_line: None,
@@ -1102,11 +1085,7 @@ impl<S: HexSource> Interpreter<S> {
         // storage shrinks to just enough bytes for `width` bits so
         // consecutive fields pack tightly. With padding (the
         // default), one full type-width word backs each slot.
-        let slot_bytes = if self.bitfield_padding_disabled {
-            width.div_ceil(8) as u8
-        } else {
-            prim.width
-        };
+        let slot_bytes = if self.bitfield_padding_disabled { width.div_ceil(8) as u8 } else { prim.width };
         let slot_total_bits = (slot_bytes as u32) * 8;
 
         let need_new_slot = match &self.bitfield_slot {
@@ -1163,7 +1142,7 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: pairs,
         });
-        self.bind_var(&name.to_owned(), value.clone());
+        self.bind_var(name, value.clone());
         self.store_field(name, value);
         Ok(())
     }
@@ -1203,11 +1182,7 @@ impl<S: HexSource> Interpreter<S> {
     /// templates can index-write into them (the
     /// `local char buf[N]; ReadBytes(buf, ...)` idiom). Everything
     /// else stays `Void` until a write happens.
-    fn default_local_value(
-        &mut self,
-        ty: &TypeRef,
-        array_size: Option<&Expr>,
-    ) -> Result<Value, RuntimeError> {
+    fn default_local_value(&mut self, ty: &TypeRef, array_size: Option<&Expr>) -> Result<Value, RuntimeError> {
         // `local string s;` defaults to the empty string so the
         // typical idiom `s += "frag"` works without first writing
         // a literal -- otherwise the implicit Void operand trips
@@ -1215,16 +1190,12 @@ impl<S: HexSource> Interpreter<S> {
         if matches!(ty.name.as_str(), "string" | "STRING" | "wstring" | "WSTRING") && array_size.is_none() {
             return Ok(Value::Str(String::new()));
         }
-        let array_size = array_size
-            .cloned()
-            .or_else(|| self.typedef_array_size.get(&ty.name).cloned());
+        let array_size = array_size.cloned().or_else(|| self.typedef_array_size.get(&ty.name).cloned());
         let Some(size_expr) = array_size else {
             return Ok(Value::Void);
         };
-        let is_char_like = matches!(
-            ty.name.as_str(),
-            "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE"
-        );
+        let is_char_like =
+            matches!(ty.name.as_str(), "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE");
         if !is_char_like {
             return Ok(Value::Void);
         }
@@ -1259,10 +1230,7 @@ impl<S: HexSource> Interpreter<S> {
             let max_len = self.cursor.len().saturating_sub(offset);
             let raw = self.cursor.read_at(offset, max_len)?;
             let term_pos = if wide {
-                raw.chunks_exact(2)
-                    .position(|w| w == [0, 0])
-                    .map(|i| i * 2 + 2)
-                    .unwrap_or(raw.len())
+                raw.chunks_exact(2).position(|w| w == [0, 0]).map(|i| i * 2 + 2).unwrap_or(raw.len())
             } else {
                 raw.iter().position(|&b| b == 0).map(|i| i + 1).unwrap_or(raw.len())
             };
@@ -1390,9 +1358,7 @@ impl<S: HexSource> Interpreter<S> {
                     if (param.is_ref || is_struct_ty)
                         && let Some(Some(path)) = arg_paths.get(i)
                     {
-                        self.current_scope_mut()
-                            .path_aliases
-                            .insert(param.name.clone(), path.clone());
+                        self.current_scope_mut().path_aliases.insert(param.name.clone(), path.clone());
                     }
                 }
                 let result = self.exec_struct_body(&s, offset, idx);
@@ -1650,9 +1616,7 @@ impl<S: HexSource> Interpreter<S> {
             if (param.is_ref || is_struct_ty)
                 && let Some(Some(path)) = arg_paths.get(i)
             {
-                self.current_scope_mut()
-                    .path_aliases
-                    .insert(param.name.clone(), path.clone());
+                self.current_scope_mut().path_aliases.insert(param.name.clone(), path.clone());
             }
         }
         let r = self.exec_struct_body(&s, offset, idx);
@@ -1761,24 +1725,23 @@ impl<S: HexSource> Interpreter<S> {
                 // it. We don't model 010's `function_exists` here --
                 // templates that pass a function name fall through to
                 // the builtin's value-based check.
-                if name == "exists" && args.len() == 1 {
-                    if let Some(path) = self.build_path(&args[0])? {
-                        let prefix = self.path_prefix();
-                        let found_field = lookup_candidates(&path, &prefix)
-                            .into_iter()
-                            .any(|c| self.field_storage.contains_key(&c));
-                        let found_array = lookup_candidates(&path, &prefix)
-                            .into_iter()
-                            .any(|c| self.array_storage.contains_key(&c));
-                        if found_field || found_array {
-                            return Ok(Value::Bool(true));
-                        }
-                        // Path could be built but nothing's stored:
-                        // unambiguous "not present".
-                        return Ok(Value::Bool(false));
+                if name == "exists"
+                    && args.len() == 1
+                    && let Some(path) = self.build_path(&args[0])?
+                {
+                    let prefix = self.path_prefix();
+                    let found_field =
+                        lookup_candidates(&path, &prefix).into_iter().any(|c| self.field_storage.contains_key(&c));
+                    let found_array =
+                        lookup_candidates(&path, &prefix).into_iter().any(|c| self.array_storage.contains_key(&c));
+                    if found_field || found_array {
+                        return Ok(Value::Bool(true));
                     }
-                    // Non-path argument: fall through to value check.
+                    // Path could be built but nothing's stored:
+                    // unambiguous "not present".
+                    return Ok(Value::Bool(false));
                 }
+                // Non-path argument: fall through to value check.
                 // `function_exists(name)`: 010 returns whether a
                 // user-defined function with that name was declared.
                 // Names of builtins also report as existing.
@@ -1834,9 +1797,8 @@ impl<S: HexSource> Interpreter<S> {
                         s = s.trim_start_matches([' ', '\t', '\n']);
                         match conv {
                             'd' | 'i' => {
-                                let end = s
-                                    .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+'))
-                                    .unwrap_or(s.len());
+                                let end =
+                                    s.find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+')).unwrap_or(s.len());
                                 let Ok(n) = s[..end].parse::<i64>() else { break };
                                 self.store_ident(out_name, Value::SInt { value: n as i128, kind: PrimKind::i64() })?;
                                 s = &s[end..];
@@ -1851,25 +1813,28 @@ impl<S: HexSource> Interpreter<S> {
                             }
                             'x' | 'X' => {
                                 let s2 = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-                                let end = s2
-                                    .find(|c: char| !c.is_ascii_hexdigit())
-                                    .unwrap_or(s2.len());
+                                let end = s2.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(s2.len());
                                 let Ok(n) = u64::from_str_radix(&s2[..end], 16) else { break };
                                 self.store_ident(out_name, Value::UInt { value: n as u128, kind: PrimKind::u64() })?;
                                 s = &s2[end..];
                                 filled += 1;
                             }
                             's' => {
-                                let end = s
-                                    .find(|c: char| c == ' ' || c == '\t' || c == '\n')
-                                    .unwrap_or(s.len());
+                                let end = s.find([' ', '\t', '\n']).unwrap_or(s.len());
                                 self.store_ident(out_name, Value::Str(s[..end].to_owned()))?;
                                 s = &s[end..];
                                 filled += 1;
                             }
                             'f' | 'g' | 'e' => {
                                 let end = s
-                                    .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+                                    .find(|c: char| {
+                                        !(c.is_ascii_digit()
+                                            || c == '.'
+                                            || c == '-'
+                                            || c == '+'
+                                            || c == 'e'
+                                            || c == 'E')
+                                    })
                                     .unwrap_or(s.len());
                                 let Ok(n) = s[..end].parse::<f64>() else { break };
                                 self.store_ident(out_name, Value::Float { value: n, kind: PrimKind::f64() })?;
@@ -2068,11 +2033,9 @@ impl<S: HexSource> Interpreter<S> {
                             return Ok(Value::Void);
                         };
                         let idx_value = self.eval(index)?;
-                        let idx = idx_value.to_i128().ok_or_else(|| {
-                            RuntimeError::Type(format!(
-                                "array index is not numeric: {idx_value:?}"
-                            ))
-                        })?;
+                        let idx = idx_value
+                            .to_i128()
+                            .ok_or_else(|| RuntimeError::Type(format!("array index is not numeric: {idx_value:?}")))?;
                         if let Value::Str(s) = &target_value {
                             let bytes = s.as_bytes();
                             if idx < 0 || (idx as usize) >= bytes.len() {
@@ -2081,10 +2044,7 @@ impl<S: HexSource> Interpreter<S> {
                                     bytes.len()
                                 )));
                             }
-                            return Ok(Value::Char {
-                                value: bytes[idx as usize] as u32,
-                                kind: PrimKind::char(),
-                            });
+                            return Ok(Value::Char { value: bytes[idx as usize] as u32, kind: PrimKind::char() });
                         }
                         // Other Value variants don't have an
                         // index-into operation; fall back to the
@@ -2141,10 +2101,7 @@ impl<S: HexSource> Interpreter<S> {
         // then qualifies `symbols` to the storage path so member
         // lookups inside the call find the real fields.
         let candidates = lookup_candidates(name, self.path_prefix_str());
-        if candidates
-            .iter()
-            .any(|c| self.path_has_children.contains(c.as_str()))
-        {
+        if candidates.iter().any(|c| self.path_has_children.contains(c.as_str())) {
             return Ok(Value::Void);
         }
         // Fall back to persistent field storage. Walk the current
@@ -2191,8 +2148,7 @@ impl<S: HexSource> Interpreter<S> {
             // bplist.bt walks back to the trailer offset with
             // `parentof(this).offsetTableOffset` and similar.
             Expr::Call { callee, args, .. }
-                if matches!(&**callee, Expr::Ident { name, .. } if name == "parentof")
-                    && args.len() == 1 =>
+                if matches!(&**callee, Expr::Ident { name, .. } if name == "parentof") && args.len() == 1 =>
             {
                 let Some(child) = self.build_path(&args[0])? else { return Ok(None) };
                 Ok(Some(parent_path(&child)))
@@ -2210,16 +2166,11 @@ impl<S: HexSource> Interpreter<S> {
         }
         // Auto-declare in the current scope (C-ish behaviour for
         // 010 globals that aren't explicitly `local`).
-        self.bind_var(&name.to_owned(), value);
+        self.bind_var(name, value);
         Ok(())
     }
 
-    fn exec_assign(
-        &mut self,
-        op: crate::ast::AssignOp,
-        target: &Expr,
-        value: &Expr,
-    ) -> Result<Value, RuntimeError> {
+    fn exec_assign(&mut self, op: crate::ast::AssignOp, target: &Expr, value: &Expr) -> Result<Value, RuntimeError> {
         let rhs = self.eval(value)?;
         match target {
             Expr::Ident { name, .. } => {
@@ -2235,13 +2186,12 @@ impl<S: HexSource> Interpreter<S> {
                 Ok(new_val)
             }
             Expr::Index { target: arr, index, .. } => {
-                let idx = self.eval(index)?.to_i128().ok_or_else(|| {
-                    RuntimeError::Type("indexed assignment: index is not numeric".into())
-                })?;
+                let idx = self
+                    .eval(index)?
+                    .to_i128()
+                    .ok_or_else(|| RuntimeError::Type("indexed assignment: index is not numeric".into()))?;
                 if idx < 0 {
-                    return Err(RuntimeError::Type(format!(
-                        "indexed assignment: negative index {idx}"
-                    )));
+                    return Err(RuntimeError::Type(format!("indexed assignment: negative index {idx}")));
                 }
                 // Char-buffer mutation: `local char buf[N]; buf[k] = 0;`.
                 // The local is a `Value::Str` whose bytes we patch in
@@ -2259,11 +2209,7 @@ impl<S: HexSource> Interpreter<S> {
                         other => {
                             let cur = bytes[i] as i128;
                             let bin_op = compound_to_bin(other);
-                            let folded = eval_binary(
-                                bin_op,
-                                &Value::SInt { value: cur, kind: PrimKind::i32() },
-                                &rhs,
-                            )?;
+                            let folded = eval_binary(bin_op, &Value::SInt { value: cur, kind: PrimKind::i32() }, &rhs)?;
                             folded.to_i128().unwrap_or(0) as u8
                         }
                     };
@@ -2316,9 +2262,7 @@ impl<S: HexSource> Interpreter<S> {
                 self.field_storage.insert(key, new_val.clone());
                 Ok(new_val)
             }
-            other => Err(RuntimeError::Type(format!(
-                "unsupported assignment target: {other:?}"
-            ))),
+            other => Err(RuntimeError::Type(format!("unsupported assignment target: {other:?}"))),
         }
     }
 
@@ -2367,11 +2311,7 @@ impl<S: HexSource> Interpreter<S> {
     /// matching argument resolves to a storage path gets an alias
     /// entry. Returns an empty list for builtins or when the function
     /// isn't user-defined; the caller then takes the no-alias path.
-    fn collect_call_aliases(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<Vec<(String, String)>, RuntimeError> {
+    fn collect_call_aliases(&mut self, name: &str, args: &[Expr]) -> Result<Vec<(String, String)>, RuntimeError> {
         let Some(func) = self.functions.get(name).cloned() else {
             return Ok(Vec::new());
         };
@@ -2979,8 +2919,8 @@ impl<S: HexSource> Interpreter<S> {
     /// die on them.
     fn checksum_builtin(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
         let algo_raw = args.first().and_then(|v| v.to_i128()).unwrap_or(-1);
-        let algo_str = matches!(args.first(), Some(Value::Str(_)))
-            .then(|| value_to_display(args.first().unwrap()).to_lowercase());
+        let algo_str =
+            matches!(args.first(), Some(Value::Str(_))).then(|| value_to_display(args.first().unwrap()).to_lowercase());
         let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as u64;
         let size_arg = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0);
         let source_len = self.cursor.len();
@@ -2990,8 +2930,7 @@ impl<S: HexSource> Interpreter<S> {
         // Algorithm IDs come from 010's `CHECKSUM_*` constants
         // (CRC32=5, CRC16=6, ADLER32=7). Pass-by-string also works
         // for templates that encode the algo as a literal name.
-        let crc32 = algo_raw == CHECKSUM_CRC32_ID as i128
-            || matches!(&algo_str, Some(s) if s == "crc32");
+        let crc32 = algo_raw == CHECKSUM_CRC32_ID as i128 || matches!(&algo_str, Some(s) if s == "crc32");
         let crc16 = algo_raw == 6 || matches!(&algo_str, Some(s) if s == "crc16");
         let adler32 = algo_raw == 7 || matches!(&algo_str, Some(s) if s == "adler32");
         if crc32 {
@@ -3160,12 +3099,8 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // through the same conversion.
     if matches!(op, BinOp::Add | BinOp::Eq | BinOp::NotEq)
         && let Some((a, b)) = match (l, r) {
-            (Value::Str(s), Value::Char { value, .. }) => {
-                Some((s.clone(), char_value_to_string(*value)))
-            }
-            (Value::Char { value, .. }, Value::Str(s)) => {
-                Some((char_value_to_string(*value), s.clone()))
-            }
+            (Value::Str(s), Value::Char { value, .. }) => Some((s.clone(), char_value_to_string(*value))),
+            (Value::Char { value, .. }, Value::Str(s)) => Some((char_value_to_string(*value), s.clone())),
             _ => None,
         }
     {
@@ -3203,9 +3138,13 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // run); treating Void as 0 in numeric ops lets the surrounding
     // `if (status & 0x80) ...` branches degrade gracefully so the
     // template can finish whatever loop hit the clamp.
-    let li = l.to_i128().or_else(|| matches!(l, Value::Void).then_some(0))
+    let li = l
+        .to_i128()
+        .or_else(|| matches!(l, Value::Void).then_some(0))
         .ok_or_else(|| RuntimeError::Type(format!("not numeric: {l:?}")))?;
-    let ri = r.to_i128().or_else(|| matches!(r, Value::Void).then_some(0))
+    let ri = r
+        .to_i128()
+        .or_else(|| matches!(r, Value::Void).then_some(0))
         .ok_or_else(|| RuntimeError::Type(format!("not numeric: {r:?}")))?;
     // 010 templates routinely mix signed and unsigned integer reads
     // (e.g. `local uint32 magic = ReadInt();` paired with
@@ -3213,7 +3152,8 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // For equality, compare the raw bit patterns at the narrower of
     // the two operands' widths so a sign-extended SInt and the same
     // bytes loaded as a UInt compare equal.
-    if matches!(op, BinOp::Eq | BinOp::NotEq) && let (Some(a), Some(b)) = (int_bits(l), int_bits(r))
+    if matches!(op, BinOp::Eq | BinOp::NotEq)
+        && let (Some(a), Some(b)) = (int_bits(l), int_bits(r))
     {
         let eq = a == b;
         return Ok(Value::Bool(if matches!(op, BinOp::Eq) { eq } else { !eq }));
@@ -3479,10 +3419,7 @@ fn strip_indexed_segments(path: &str) -> String {
             // Strip only when the bracket is followed by another
             // path segment (`.`), and the contents look like an
             // unsigned integer.
-            if inner.bytes().all(|b| b.is_ascii_digit())
-                && after_close < bytes.len()
-                && bytes[after_close] == b'.'
-            {
+            if inner.bytes().all(|b| b.is_ascii_digit()) && after_close < bytes.len() && bytes[after_close] == b'.' {
                 i = after_close;
                 continue;
             }
@@ -3678,11 +3615,7 @@ fn decode_prim_for_bitfield(bytes: &[u8], prim: PrimKind, endian: Endian) -> u64
         let off = 8 - prim.width as usize;
         buf[off..off + n].copy_from_slice(&bytes[..n]);
     }
-    if matches!(endian, Endian::Little) {
-        u64::from_le_bytes(buf)
-    } else {
-        u64::from_be_bytes(buf)
-    }
+    if matches!(endian, Endian::Little) { u64::from_le_bytes(buf) } else { u64::from_be_bytes(buf) }
 }
 
 fn crc32_ieee(bytes: &[u8]) -> u32 {

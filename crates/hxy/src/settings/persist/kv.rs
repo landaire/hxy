@@ -5,9 +5,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
 
+use crate::settings::AppSettings;
 use crate::settings::persist::PersistError;
 use crate::settings::persist::PersistResult;
-use crate::settings::AppSettings;
 use crate::state::OpenTabState;
 use crate::window::WindowSettings;
 

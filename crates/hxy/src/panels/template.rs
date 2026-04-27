@@ -646,7 +646,7 @@ pub fn breadcrumb_for_offset(
     }
     chain.reverse();
 
-    let mut lines: Vec<String> = chain
+    let mut raw: Vec<String> = chain
         .iter()
         .map(|idx| {
             let node = &tree.nodes[*idx as usize];
@@ -661,8 +661,24 @@ pub fn breadcrumb_for_offset(
         .collect();
 
     if let Some(row) = array_element_row(&tree.nodes[leaf as usize], source, byte) {
-        lines.push(row);
+        raw.push(row);
     }
+
+    // Decorate as a degenerate (linear) tree. Root has no connector;
+    // every deeper row gets `└─ ` prefixed by 3 spaces per ancestor
+    // depth so the indents line up with `tree` / `exa -T` output.
+    let lines: Vec<String> = raw
+        .into_iter()
+        .enumerate()
+        .map(|(depth, label)| {
+            if depth == 0 {
+                label
+            } else {
+                let indent = "   ".repeat(depth - 1);
+                format!("{indent}\u{2514}\u{2500} {label}")
+            }
+        })
+        .collect();
     Some(lines)
 }
 

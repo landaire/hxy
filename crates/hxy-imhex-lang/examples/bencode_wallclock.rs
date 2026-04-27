@@ -18,31 +18,21 @@ use hxy_imhex_lang::parse;
 use hxy_imhex_lang::tokenize;
 
 fn main() {
-    let template_path = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/Users/lander/src/ImHex-Patterns/patterns/bencode.hexpat".into());
-    let fixture_path = env::args().nth(2).unwrap_or_else(|| {
-        "/Users/lander/src/ImHex-Patterns/tests/patterns/test_data/bencode.hexpat.torrent".into()
-    });
+    let template_path =
+        env::args().nth(1).unwrap_or_else(|| "/Users/lander/src/ImHex-Patterns/patterns/bencode.hexpat".into());
+    let fixture_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "/Users/lander/src/ImHex-Patterns/tests/patterns/test_data/bencode.hexpat.torrent".into());
     let src = fs::read_to_string(&template_path).expect("read template");
     let bytes = fs::read(&fixture_path).expect("read fixture");
     let tokens = tokenize(&src).expect("lex");
     let ast = parse(tokens).expect("parse");
-    let resolver = chained_resolver([
-        "/Users/lander/src/ImHex-Patterns/includes",
-        "/Users/lander/src/ImHex-Patterns",
-    ]);
+    let resolver = chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
     let pragmas = extract_pragmas(&src);
 
     let bc_program = bc::compile_with_resolver(&ast, resolver.as_ref()).expect("bc compile");
 
-    println!(
-        "template: {} ({} bytes), fixture: {} ({} bytes)",
-        template_path,
-        src.len(),
-        fixture_path,
-        bytes.len()
-    );
+    println!("template: {} ({} bytes), fixture: {} ({} bytes)", template_path, src.len(), fixture_path, bytes.len());
 
     // AST run.
     {

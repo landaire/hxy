@@ -40,12 +40,12 @@ struct Row {
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
-    let imhex_root = args.next().map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env::var("HOME").unwrap()).join("src/ImHex-Patterns")
-    });
-    let bt_dir = args.next().map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env::var("HOME").unwrap()).join("Downloads")
-    });
+    let imhex_root = args
+        .next()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap()).join("src/ImHex-Patterns"));
+    let bt_dir =
+        args.next().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap()).join("Downloads"));
     let test_data_dir = imhex_root.join("tests/patterns/test_data");
     let patterns_dir = imhex_root.join("patterns");
     if !test_data_dir.is_dir() || !patterns_dir.is_dir() || !bt_dir.is_dir() {
@@ -92,17 +92,9 @@ fn main() -> ExitCode {
         let hexpat_src = fs::read_to_string(&hexpat_path).unwrap_or_default();
 
         let (bt_time, bt_status) = bench_bt(&bt_src, &bytes);
-        let (hexpat_time, hexpat_status) =
-            bench_imhex(&hexpat_src, &bytes, &imhex_root);
+        let (hexpat_time, hexpat_status) = bench_imhex(&hexpat_src, &bytes, &imhex_root);
 
-        rows.push(Row {
-            name: name.to_owned(),
-            fixture_size,
-            bt_time,
-            bt_status,
-            hexpat_time,
-            hexpat_status,
-        });
+        rows.push(Row { name: name.to_owned(), fixture_size, bt_time, bt_status, hexpat_time, hexpat_status });
     }
 
     print_report(&rows);
@@ -133,7 +125,8 @@ fn bench_bt(src: &str, bytes: &[u8]) -> (Option<Duration>, String) {
         let elapsed = start.elapsed();
         last_status = match &result.terminal_error {
             None => {
-                let warns = result.diagnostics.iter().filter(|d| matches!(d.severity, hxy_010_lang::Severity::Error)).count();
+                let warns =
+                    result.diagnostics.iter().filter(|d| matches!(d.severity, hxy_010_lang::Severity::Error)).count();
                 if warns > 0 { format!("err({warns})") } else { "ok".into() }
             }
             Some(e) => normalize(&format!("{e}")),
@@ -159,16 +152,14 @@ fn bench_imhex(src: &str, bytes: &[u8], imhex_root: &Path) -> (Option<Duration>,
         Ok(p) => p,
         Err(e) => return (None, format!("parse: {e:?}")),
     };
-    let resolver =
-        chained_resolver([imhex_root.join("includes"), imhex_root.to_path_buf()]);
+    let resolver = chained_resolver([imhex_root.join("includes"), imhex_root.to_path_buf()]);
     let pragmas = extract_pragmas(src);
     let mut best: Option<Duration> = None;
     let mut last_status = String::from("ok");
     for _ in 0..REPS {
         let source = MemorySource::new(bytes.to_vec());
-        let mut interp = Interpreter::new(source)
-            .with_import_resolver(resolver.clone())
-            .with_step_limit(STEP_LIMIT_IMHEX);
+        let mut interp =
+            Interpreter::new(source).with_import_resolver(resolver.clone()).with_step_limit(STEP_LIMIT_IMHEX);
         if let Some(e) = pragmas.endian {
             interp = interp.with_default_endian(e);
         }
@@ -239,11 +230,7 @@ fn print_report(rows: &[Row]) {
         both_ok,
         bt_total.as_secs_f64() * 1000.0,
         hexpat_total.as_secs_f64() * 1000.0,
-        if hexpat_total.as_nanos() > 0 {
-            bt_total.as_secs_f64() / hexpat_total.as_secs_f64()
-        } else {
-            f64::NAN
-        }
+        if hexpat_total.as_nanos() > 0 { bt_total.as_secs_f64() / hexpat_total.as_secs_f64() } else { f64::NAN }
     );
     let _ = STEP_LIMIT_010;
 }

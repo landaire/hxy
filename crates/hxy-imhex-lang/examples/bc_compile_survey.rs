@@ -19,10 +19,8 @@ use hxy_imhex_lang::tokenize;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let root: PathBuf = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Users/lander/src/ImHex-Patterns/patterns"));
+    let root: PathBuf =
+        args.next().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/Users/lander/src/ImHex-Patterns/patterns"));
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("read_dir {root:?}: {e}"))
@@ -35,10 +33,7 @@ fn main() {
     // Imports look up under `<corpus>/../includes` (where the
     // upstream `std/` library lives) and the corpus root itself.
     let includes = root.parent().map(|p| p.join("includes")).unwrap_or_else(|| root.clone());
-    let resolver = MultiResolver {
-        a: DirImportResolver::new(includes),
-        b: DirImportResolver::new(root.clone()),
-    };
+    let resolver = MultiResolver { a: DirImportResolver::new(includes), b: DirImportResolver::new(root.clone()) };
 
     let mut compiled = 0usize;
     let mut parse_failed = 0usize;

@@ -224,14 +224,10 @@ fn integer_literal_apostrophe_separators() {
     // C++14-style digit separators: `0xA000'0002` and `1'000'000`.
     // Several corpus templates use this for hex grouping.
     let ast = parse_str("u32 x = 0xA000'0002;");
-    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else {
-        panic!()
-    };
+    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else { panic!() };
     assert_eq!(*value, 0xA000_0002);
     let ast = parse_str("u32 y = 1'000'000;");
-    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else {
-        panic!()
-    };
+    let TopItem::Stmt(Stmt::FieldDecl { init: Some(Expr::IntLit { value, .. }), .. }) = &ast.items[0] else { panic!() };
     assert_eq!(*value, 1_000_000);
 }
 

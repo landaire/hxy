@@ -17,28 +17,15 @@ fn run_both(src: &str, bytes: Vec<u8>) -> (RunResult, RunResult) {
     let bc_program = bc::compile(&ast).expect("compile to bytecode");
 
     let ast_result = Interpreter::new(MemorySource::new(bytes.clone())).run(&ast);
-    let bc_result =
-        Interpreter::new(MemorySource::new(bytes)).run_bytecode_experimental(&bc_program);
+    let bc_result = Interpreter::new(MemorySource::new(bytes)).run_bytecode_experimental(&bc_program);
     (ast_result, bc_result)
 }
 
 #[track_caller]
 fn assert_node_parity(ast: &RunResult, bc_run: &RunResult) {
-    assert!(
-        ast.terminal_error.is_none(),
-        "AST run failed: {:?}",
-        ast.terminal_error
-    );
-    assert!(
-        bc_run.terminal_error.is_none(),
-        "bytecode run failed: {:?}",
-        bc_run.terminal_error
-    );
-    assert_eq!(
-        ast.nodes, bc_run.nodes,
-        "node tree diverged.\n  AST: {:#?}\n  BC:  {:#?}",
-        ast.nodes, bc_run.nodes
-    );
+    assert!(ast.terminal_error.is_none(), "AST run failed: {:?}", ast.terminal_error);
+    assert!(bc_run.terminal_error.is_none(), "bytecode run failed: {:?}", bc_run.terminal_error);
+    assert_eq!(ast.nodes, bc_run.nodes, "node tree diverged.\n  AST: {:#?}\n  BC:  {:#?}", ast.nodes, bc_run.nodes);
 }
 
 #[test]

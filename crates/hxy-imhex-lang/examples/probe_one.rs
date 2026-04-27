@@ -36,12 +36,9 @@ fn main() {
         }
     };
     let bytes = fixture.map(|p| fs::read(p).unwrap_or_default()).unwrap_or_default();
-    let resolver =
-        chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
+    let resolver = chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
     let pragmas = extract_pragmas(&src);
-    let mut interp = Interpreter::new(MemorySource::new(bytes))
-        .with_import_resolver(resolver)
-        .with_step_limit(500_000);
+    let mut interp = Interpreter::new(MemorySource::new(bytes)).with_import_resolver(resolver).with_step_limit(500_000);
     if let Some(e) = pragmas.endian {
         interp = interp.with_default_endian(e);
     }

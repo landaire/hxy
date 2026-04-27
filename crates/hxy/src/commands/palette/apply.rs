@@ -27,9 +27,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
             match id {
                 PaletteCommand::NewFile => crate::files::new::handle_new_file(app),
                 PaletteCommand::OpenFile => crate::app::apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
-                PaletteCommand::BrowseVfs => {
-                    crate::app::apply_command_effect(ctx, app, CommandEffect::MountActiveFile)
-                }
+                PaletteCommand::BrowseVfs => crate::app::apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
                 PaletteCommand::ToggleWorkspaceVfs => crate::tabs::dock_ops::toggle_workspace_vfs(app),
                 PaletteCommand::ToggleToolPanel => crate::tabs::dock_ops::toggle_tool_panel(app),
                 PaletteCommand::ToggleConsole => app.toggle_console(),
@@ -78,9 +76,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::MoveTabVisual => {
                     crate::app::start_pane_pick(app, crate::tabs::pane_pick::PaneOp::MoveTab)
                 }
-                PaletteCommand::MergeVisual => {
-                    crate::app::start_pane_pick(app, crate::tabs::pane_pick::PaneOp::Merge)
-                }
+                PaletteCommand::MergeVisual => crate::app::start_pane_pick(app, crate::tabs::pane_pick::PaneOp::Merge),
                 PaletteCommand::FocusPane => crate::app::start_pane_focus(app),
                 PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(app),
                 PaletteCommand::ToggleEditMode => crate::app::toggle_active_edit_mode(app),

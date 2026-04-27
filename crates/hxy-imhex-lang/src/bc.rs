@@ -178,18 +178,30 @@ pub enum Op {
     Index,
 
     // ---- function dispatch ----
-    Call { name: IdentId, argc: u8 },
+    Call {
+        name: IdentId,
+        argc: u8,
+    },
     Reflect(ReflectKind),
 
     // ---- reads (host-effect ops) ----
-    ReadPrim { ty: TypeId, name: IdentId },
-    ReadStruct { ty: TypeId, name: IdentId },
+    ReadPrim {
+        ty: TypeId,
+        name: IdentId,
+    },
+    ReadStruct {
+        ty: TypeId,
+        name: IdentId,
+    },
     /// Read a registered top-level enum. The VM dispatches into
     /// `read_enum` after ensuring the enum decl is in
     /// `Interpreter::types` so any variant-value expressions can
     /// resolve. Backing-struct enums (rar's vint-style) work too,
     /// since `read_enum` already handles them.
-    ReadEnum { id: EnumId, name: IdentId },
+    ReadEnum {
+        id: EnumId,
+        name: IdentId,
+    },
     /// Fixed-size primitive array `Type name[N]` where `N` is a
     /// literal integer at compile time. The VM dispatches into
     /// `read_array`, which folds char-typed reads down to a single
@@ -197,16 +209,30 @@ pub enum Op {
     /// other element type. The dyn variant ([`Op::ReadArrayDyn`])
     /// covers non-literal sizes by popping the count off the
     /// value stack.
-    ReadArrayFixed { ty: TypeId, name: IdentId, count: u64 },
+    ReadArrayFixed {
+        ty: TypeId,
+        name: IdentId,
+        count: u64,
+    },
     /// Dynamic-size primitive array. Pops one [`Value`] from the
     /// operand stack, coerces to a u64 element count, then runs
     /// the same `read_array` host helper as [`Op::ReadArrayFixed`].
     /// Used when the source size expression is anything other than
     /// an integer literal (an identifier reference, a `length-1`
     /// arithmetic, ...).
-    ReadArrayDyn { ty: TypeId, name: IdentId },
-    ReadCharArr { name: IdentId }, // count on stack
-    ReadDynArr { ty: TypeId, name: IdentId, pred: Pc, end: Pc },
+    ReadArrayDyn {
+        ty: TypeId,
+        name: IdentId,
+    },
+    ReadCharArr {
+        name: IdentId,
+    }, // count on stack
+    ReadDynArr {
+        ty: TypeId,
+        name: IdentId,
+        pred: Pc,
+        end: Pc,
+    },
 
     /// `Type x[while(cond)]` -- predicate-driven array. Per
     /// iteration the VM runs the predicate sub-stream
@@ -216,7 +242,11 @@ pub enum Op {
     /// `Interpreter::types`); if false, stop. Mirrors the AST
     /// `read_dynamic_array`'s loop semantics including the
     /// stall-detection cap and per-element EOF tolerance.
-    ReadArrayWhile { ty: TypeId, name: IdentId, pred: PredId },
+    ReadArrayWhile {
+        ty: TypeId,
+        name: IdentId,
+        pred: PredId,
+    },
     /// Same as [`Op::ReadArrayWhile`] but the per-element read
     /// dispatches directly into a compiled BC struct body --
     /// avoids a `read_scalar` -> `read_struct` -> AST-walked
@@ -252,11 +282,18 @@ pub enum Op {
     /// `coerce_value_to_prim`. At top level (no enclosing struct)
     /// the binding is the only side effect -- use the typed
     /// [`Op::StoreIdentCoerce`] there.
-    EmitComputedLocal { name: IdentId, ty_label: IdentId, ty: TypeId },
+    EmitComputedLocal {
+        name: IdentId,
+        ty_label: IdentId,
+        ty: TypeId,
+    },
     /// Top-level computed local: pop, coerce to the declared
     /// primitive (no-op for non-primitive types), bind in scope.
     /// No node emission.
-    StoreIdentCoerce { name: IdentId, ty: TypeId },
+    StoreIdentCoerce {
+        name: IdentId,
+        ty: TypeId,
+    },
 
     /// Generic fallback read: dispatches into AST `read_scalar`
     /// with whatever type the program holds at [`TypeId`]. Used
@@ -267,13 +304,23 @@ pub enum Op {
     /// flat-op-stream perf win for those fields -- they walk the
     /// same AST nodes the AST runner does -- but lets the
     /// surrounding template compile end-to-end.
-    ReadAny { ty: TypeId, name: IdentId },
+    ReadAny {
+        ty: TypeId,
+        name: IdentId,
+    },
     /// Same fallback shape for arrays. Pops a count off the stack;
     /// the AST `read_array` host helper handles char-as-string,
     /// per-element struct reads, EOF clamping, etc.
-    ReadAnyArrayDyn { ty: TypeId, name: IdentId },
+    ReadAnyArrayDyn {
+        ty: TypeId,
+        name: IdentId,
+    },
     /// Fixed-count fallback array.
-    ReadAnyArrayFixed { ty: TypeId, name: IdentId, count: u64 },
+    ReadAnyArrayFixed {
+        ty: TypeId,
+        name: IdentId,
+        count: u64,
+    },
 
     /// `std::mem::read_unsigned(offset, size)` -- pops size then
     /// offset, reads `size` bytes (clamped to 1..=8) at `offset`,
@@ -330,7 +377,11 @@ pub enum Op {
     /// pushes a fresh scope and `this_stack` entry, executes the
     /// body referenced by [`BodyId`], then closes the struct node
     /// (computing its length from the cursor delta).
-    EnterStruct { body: BodyId, name: IdentId, display_name: IdentId },
+    EnterStruct {
+        body: BodyId,
+        name: IdentId,
+        display_name: IdentId,
+    },
     ExitStruct,
     PushScope,
     PopScope,
@@ -774,11 +825,7 @@ impl<'r> Compiler<'r> {
                 if struct_is_simple(decl) && !self.ctx.struct_bodies.contains_key(&decl.name) {
                     let display_name = self.p.intern_ident(&decl.name);
                     let body_id = BodyId(self.p.struct_bodies.len() as u32);
-                    self.p.struct_bodies.push(StructBody {
-                        ops: Vec::new(),
-                        display_name,
-                        ast_decl: decl.clone(),
-                    });
+                    self.p.struct_bodies.push(StructBody { ops: Vec::new(), display_name, ast_decl: decl.clone() });
                     self.ctx.struct_bodies.insert(decl.name.clone(), body_id);
                 }
                 Ok(())
@@ -826,9 +873,8 @@ impl<'r> Compiler<'r> {
                 // skip the self-alias entirely. Without this guard
                 // the alias loops the chase up to its depth cap
                 // and hides the real struct.
-                let is_self_forward = template_params.is_empty()
-                    && source.template_args.is_empty()
-                    && source.leaf() == new_name;
+                let is_self_forward =
+                    template_params.is_empty() && source.template_args.is_empty() && source.leaf() == new_name;
                 if is_self_forward {
                     return Ok(());
                 }
@@ -836,10 +882,7 @@ impl<'r> Compiler<'r> {
                 self.p.ast_decls.aliases.push(NamedDecl {
                     bare: new_name.clone(),
                     qualified: self.qualified_name(new_name),
-                    decl: UsingAliasInfo {
-                        template_params: template_params.clone(),
-                        target: source.clone(),
-                    },
+                    decl: UsingAliasInfo { template_params: template_params.clone(), target: source.clone() },
                 });
                 self.p.decl_order.push(DeclRef::Alias(idx));
                 // Bytecode-fast-path alias chase only handles the
@@ -926,9 +969,7 @@ impl<'r> Compiler<'r> {
                     let mut body_ops = Vec::new();
                     let mut body_ok = true;
                     for s in &decl.body {
-                        if let Err(_e) =
-                            compile_struct_body_stmt(&mut self.p, &self.ctx, &mut body_ops, s)
-                        {
+                        if let Err(_e) = compile_struct_body_stmt(&mut self.p, &self.ctx, &mut body_ops, s) {
                             // Body uses something the bytecode VM
                             // can't lower (a control-flow stmt, a
                             // computed local, an unsupported attr).
@@ -1097,10 +1138,7 @@ impl CompileCtx {
 /// here so [`compile`] can pre-register only the structs it can
 /// actually handle.
 fn struct_is_simple(decl: &crate::ast::StructDecl) -> bool {
-    decl.template_params.is_empty()
-        && decl.parent.is_none()
-        && decl.attrs.0.is_empty()
-        && !decl.is_union
+    decl.template_params.is_empty() && decl.parent.is_none() && decl.attrs.0.is_empty() && !decl.is_union
 }
 
 fn compile_struct_body_stmt(
@@ -1110,18 +1148,7 @@ fn compile_struct_body_stmt(
     stmt: &Stmt,
 ) -> Result<(), CompileError> {
     match stmt {
-        Stmt::FieldDecl {
-            is_const,
-            ty,
-            name,
-            array,
-            placement,
-            init,
-            attrs,
-            is_io_var,
-            pointer_width,
-            ..
-        } => {
+        Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, is_io_var, pointer_width, .. } => {
             // Computed local / const / io-var: bind a value but
             // don't read from the source. Inside a struct body we
             // additionally emit a zero-length child node so outer
@@ -1152,13 +1179,7 @@ fn compile_struct_body_stmt(
             // bytecode subset, fall back to ExecAstStmt.
             let mut try_buf: Vec<Op> = Vec::new();
             let fast_ok = (|| -> Result<(), CompileError> {
-                field_decl_must_be_plain_array_and_placement_ok(
-                    *is_const,
-                    pointer_width,
-                    init,
-                    array,
-                    attrs,
-                )?;
+                field_decl_must_be_plain_array_and_placement_ok(*is_const, pointer_width, init, array, attrs)?;
                 if placement.is_some() {
                     return Err(CompileError::UnsupportedFieldDecl {
                         reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
@@ -1190,9 +1211,7 @@ fn compile_struct_body_stmt(
             // absolute against the final stream. Rewind via
             // `out.truncate` on failure, fall back to ExecAstStmt.
             let snapshot = out.len();
-            let res = compile_if_inline(
-                p, ctx, out, cond, then_branch.as_ref(), else_branch.as_deref(),
-            );
+            let res = compile_if_inline(p, ctx, out, cond, then_branch.as_ref(), else_branch.as_deref());
             if res.is_err() {
                 out.truncate(snapshot);
                 let id = p.push_stmt(stmt.clone());
@@ -1282,12 +1301,7 @@ fn compile_while_inline(
 /// push/pop). Recurses through `Block` stmts by walking each inner
 /// stmt through `compile_struct_body_stmt`. Used by the
 /// inline-control-flow lowerings above.
-fn compile_inline_stmt(
-    p: &mut Program,
-    ctx: &CompileCtx,
-    out: &mut Vec<Op>,
-    stmt: &Stmt,
-) -> Result<(), CompileError> {
+fn compile_inline_stmt(p: &mut Program, ctx: &CompileCtx, out: &mut Vec<Op>, stmt: &Stmt) -> Result<(), CompileError> {
     match stmt {
         Stmt::Block { stmts, .. } => {
             for s in stmts {
@@ -1342,10 +1356,7 @@ fn compute_local_init<'a>(
     if array.is_some() {
         return None;
     }
-    if (is_const && init.is_some())
-        || (is_io_var && init.is_some())
-        || (init.is_some() && !is_io_var)
-    {
+    if (is_const && init.is_some()) || (is_io_var && init.is_some()) || (init.is_some() && !is_io_var) {
         return init;
     }
     None
@@ -1354,11 +1365,7 @@ fn compute_local_init<'a>(
 /// `bool x in;` and similar: io-var with no initializer. Bind
 /// `Void` in scope so subsequent expressions don't fail with
 /// "undefined name". The AST walker does the same.
-fn compute_local_void(
-    is_io_var: bool,
-    init: Option<&crate::ast::Expr>,
-    array: Option<&crate::ast::ArraySize>,
-) -> bool {
+fn compute_local_void(is_io_var: bool, init: Option<&crate::ast::Expr>, array: Option<&crate::ast::ArraySize>) -> bool {
     is_io_var && init.is_none() && array.is_none()
 }
 
@@ -1379,35 +1386,16 @@ fn push_attr_list_op(p: &mut Program, out: &mut Vec<Op>, attrs: &crate::ast::Att
 
 fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<(), CompileError> {
     match stmt {
-        Stmt::FieldDecl {
-            is_const,
-            ty,
-            name,
-            array,
-            placement,
-            init,
-            attrs,
-            is_io_var,
-            pointer_width,
-            ..
-        } => {
+        Stmt::FieldDecl { is_const, ty, name, array, placement, init, attrs, is_io_var, pointer_width, .. } => {
             // Try the fast lowering into a side buffer; on any
             // bytecode-shape failure, fall back to ExecAstStmt
             // wrapping the whole field decl.
             let mut try_buf: Vec<Op> = Vec::new();
             let fast_ok = (|| -> Result<(), CompileError> {
-                field_decl_must_be_plain_array_and_placement_ok(
-                    *is_const,
-                    pointer_width,
-                    init,
-                    array,
-                    attrs,
-                )?;
+                field_decl_must_be_plain_array_and_placement_ok(*is_const, pointer_width, init, array, attrs)?;
                 // Computed local / const / io-var at top level:
                 // bind in scope, no source read, no node emission.
-                if let Some(e) =
-                    compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref())
-                {
+                if let Some(e) = compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref()) {
                     compile_expr(p, ctx, &mut try_buf, e)?;
                     let name_id = p.intern_ident(name);
                     let ty_id = p.push_type(ty.clone());
@@ -1656,9 +1644,7 @@ fn compile_field_decl(
     // has the transform, the alias chase doesn't see it -- we
     // also probe the unresolved leaf so most of those cases
     // still bail out.)
-    if ctx.structs_with_transform.contains(resolved_ty.leaf())
-        || ctx.structs_with_transform.contains(ty.leaf())
-    {
+    if ctx.structs_with_transform.contains(resolved_ty.leaf()) || ctx.structs_with_transform.contains(ty.leaf()) {
         return Err(CompileError::UnsupportedFieldDecl {
             reason: "type carries a [[transform]] attr; use AST fallback so post-read fn fires",
         });
@@ -1708,9 +1694,7 @@ fn compile_field_decl(
                 out.push(Op::ReadArrayFixed { ty: ty_id, name: name_id, count: *value as u64 });
                 Ok(())
             } else {
-                Err(CompileError::UnsupportedFieldDecl {
-                    reason: "fixed-array element type needs the AST fallback",
-                })
+                Err(CompileError::UnsupportedFieldDecl { reason: "fixed-array element type needs the AST fallback" })
             }
         }
         Some(crate::ast::ArraySize::Fixed(size_expr)) => {
@@ -1721,14 +1705,12 @@ fn compile_field_decl(
                 out.push(Op::ReadArrayDyn { ty: ty_id, name: name_id });
                 Ok(())
             } else {
-                Err(CompileError::UnsupportedFieldDecl {
-                    reason: "dyn-array element type needs the AST fallback",
-                })
+                Err(CompileError::UnsupportedFieldDecl { reason: "dyn-array element type needs the AST fallback" })
             }
         }
-        Some(crate::ast::ArraySize::Open) => Err(CompileError::UnsupportedFieldDecl {
-            reason: "open `[]` arrays not yet lowered",
-        }),
+        Some(crate::ast::ArraySize::Open) => {
+            Err(CompileError::UnsupportedFieldDecl { reason: "open `[]` arrays not yet lowered" })
+        }
         Some(crate::ast::ArraySize::While(cond)) => {
             // Compile the predicate into its own op stream so the
             // VM can re-run it per iteration without touching the
@@ -1767,7 +1749,12 @@ fn compile_field_decl(
 /// (`Logical &&` / `||`, ternary), calls, or member chains is
 /// out of scope here -- the corresponding `CompileError` lets
 /// the caller fall back.
-fn compile_expr(p: &mut Program, ctx: &CompileCtx, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> Result<(), CompileError> {
+fn compile_expr(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    expr: &crate::ast::Expr,
+) -> Result<(), CompileError> {
     match expr {
         crate::ast::Expr::IntLit { value, .. } => {
             // The AST `eval` produces `Value::UInt { kind: u64 }`
@@ -1912,9 +1899,7 @@ fn no_arg_builtin_op(name: &str) -> Option<Op> {
     match name {
         "std::mem::eof" | "builtin::std::mem::eof" => Some(Op::CallEof),
         "std::mem::size" | "std::mem::file_size" | "builtin::std::mem::size" => Some(Op::CallSize),
-        "std::mem::current_offset" | "builtin::std::mem::current_offset" => {
-            Some(Op::CallCurrentOffset)
-        }
+        "std::mem::current_offset" | "builtin::std::mem::current_offset" => Some(Op::CallCurrentOffset),
         _ => None,
     }
 }
@@ -2168,10 +2153,7 @@ mod tests {
         let tokens = crate::tokenize(src).unwrap();
         let ast = crate::parse(tokens).unwrap();
         let bc = compile(&ast).expect("compile must succeed via fallback path");
-        assert!(
-            bc.ast_decls.structs.iter().any(|d| d.bare == "S"),
-            "templated struct missing from ast_decls.structs",
-        );
+        assert!(bc.ast_decls.structs.iter().any(|d| d.bare == "S"), "templated struct missing from ast_decls.structs",);
         assert!(bc.struct_bodies.is_empty(), "templated struct should not get a fast-path BodyId");
     }
 }

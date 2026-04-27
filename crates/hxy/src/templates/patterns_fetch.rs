@@ -8,20 +8,19 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use egui_inbox::UiInbox;
+use sha2::Digest;
+use sha2::Sha256;
 use std::fs;
 use std::io;
 use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
-use egui_inbox::UiInbox;
-use sha2::Digest;
-use sha2::Sha256;
 
 /// Public URL for a tarball of the upstream master branch. GitHub
 /// codeload returns the same content that the web "Download ZIP"
 /// button serves.
-const PATTERNS_ZIP_URL: &str =
-    "https://codeload.github.com/WerWolv/ImHex-Patterns/zip/refs/heads/master";
+const PATTERNS_ZIP_URL: &str = "https://codeload.github.com/WerWolv/ImHex-Patterns/zip/refs/heads/master";
 
 /// Cap so a misconfigured proxy or hostile mirror can't make us
 /// allocate gigabytes. The real corpus sits around 4-5 MB; 64 MiB
@@ -160,10 +159,7 @@ fn run_fetch(dest: &Path, mut report: impl FnMut(FetchStatus)) -> Result<(String
         };
         downloaded = downloaded.saturating_add(n as u64);
         if downloaded > MAX_DOWNLOAD_BYTES {
-            return Err(format!(
-                "download exceeded {} MiB cap; aborting",
-                MAX_DOWNLOAD_BYTES / (1024 * 1024)
-            ));
+            return Err(format!("download exceeded {} MiB cap; aborting", MAX_DOWNLOAD_BYTES / (1024 * 1024)));
         }
         buf.extend_from_slice(&chunk[..n]);
         report(FetchStatus::Progress { downloaded, total });
@@ -187,20 +183,20 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> io::Result<()> {
         fs::remove_dir_all(dest)?;
     }
     fs::create_dir_all(dest)?;
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| io::Error::other(format!("open zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| io::Error::other(format!("open zip: {e}")))?;
     // The codeload zip wraps everything under a top-level
     // `ImHex-Patterns-master/` directory. Strip it so the resolver
     // sees `patterns/foo.hexpat` directly under `dest`.
     let strip_prefix = detect_top_dir(&mut archive);
     for i in 0..archive.len() {
-        let mut entry =
-            archive.by_index(i).map_err(|e| io::Error::other(format!("zip entry {i}: {e}")))?;
+        let mut entry = archive.by_index(i).map_err(|e| io::Error::other(format!("zip entry {i}: {e}")))?;
         let entry_path = match entry.enclosed_name() {
             Some(p) => p.to_path_buf(),
             None => continue,
         };
-        let stripped = match (&strip_prefix, entry_path.strip_prefix(strip_prefix.as_deref().unwrap_or(Path::new("")))) {
+        let stripped = match (&strip_prefix, entry_path.strip_prefix(strip_prefix.as_deref().unwrap_or(Path::new(""))))
+        {
             (Some(_), Ok(p)) => p.to_path_buf(),
             _ => entry_path,
         };

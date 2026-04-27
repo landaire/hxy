@@ -14,10 +14,7 @@ fn main() {
     let src = fs::read_to_string(&path).expect("read");
     let tokens = tokenize(&src).expect("lex");
     let ast = parse(tokens).expect("parse");
-    let resolver = chained_resolver([
-        "/Users/lander/src/ImHex-Patterns/includes",
-        "/Users/lander/src/ImHex-Patterns",
-    ]);
+    let resolver = chained_resolver(["/Users/lander/src/ImHex-Patterns/includes", "/Users/lander/src/ImHex-Patterns"]);
     let prog = bc::compile_with_resolver(&ast, resolver.as_ref()).expect("bc compile");
     println!("== top-level ops ({}) ==", prog.ops.len());
     for (i, op) in prog.ops.iter().enumerate() {

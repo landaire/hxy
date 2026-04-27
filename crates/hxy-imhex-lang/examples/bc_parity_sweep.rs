@@ -123,11 +123,7 @@ fn probe(template: &Path, test_data: &Path, resolver: &SharedResolver, t: &mut T
     }
     let Some(fixture) = fixtures.first() else { return };
     let Ok(bytes) = fs::read(fixture) else { return };
-    let bytes = if bytes.len() > MAX_FIXTURE_BYTES {
-        bytes[..MAX_FIXTURE_BYTES].to_vec()
-    } else {
-        bytes
-    };
+    let bytes = if bytes.len() > MAX_FIXTURE_BYTES { bytes[..MAX_FIXTURE_BYTES].to_vec() } else { bytes };
     t.fixtures_run += 1;
     eprintln!(
         "  >> {template_name} ({} bytes from {})",
@@ -267,10 +263,9 @@ fn value_eq(a: &Option<hxy_imhex_lang::Value>, b: &Option<hxy_imhex_lang::Value>
     match (a, b) {
         (None, None) => true,
         (Some(av), Some(bv)) => match (av, bv) {
-            (
-                Value::Float { value: av, kind: ak },
-                Value::Float { value: bv, kind: bk },
-            ) => ak == bk && (av.to_bits() == bv.to_bits() || (av.is_nan() && bv.is_nan())),
+            (Value::Float { value: av, kind: ak }, Value::Float { value: bv, kind: bk }) => {
+                ak == bk && (av.to_bits() == bv.to_bits() || (av.is_nan() && bv.is_nan()))
+            }
             _ => av == bv,
         },
         _ => false,
@@ -287,14 +282,22 @@ fn first_divergence(a: &RunResult, b: &RunResult) -> String {
             let bn = &b.nodes[i];
             return format!(
                 "node[{i}]: AST name={} ty={:?} off={} len={} val={:?} attrs={:?} | BC name={} ty={:?} off={} len={} val={:?} attrs={:?}",
-                an.name, an.ty, an.offset, an.length, an.value, an.attrs,
-                bn.name, bn.ty, bn.offset, bn.length, bn.value, bn.attrs,
+                an.name,
+                an.ty,
+                an.offset,
+                an.length,
+                an.value,
+                an.attrs,
+                bn.name,
+                bn.ty,
+                bn.offset,
+                bn.length,
+                bn.value,
+                bn.attrs,
             );
         }
     }
-    format!(
-        "AST nodes={alen} BC nodes={blen} (no element-wise diff in shared prefix)",
-    )
+    format!("AST nodes={alen} BC nodes={blen} (no element-wise diff in shared prefix)",)
 }
 
 fn collect_fixtures(test_data: &Path, template_name: &str) -> Vec<PathBuf> {
@@ -314,11 +317,7 @@ fn collect_fixtures(test_data: &Path, template_name: &str) -> Vec<PathBuf> {
             r.flatten()
                 .map(|e| e.path())
                 .filter(|p| p.is_file())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
+                .filter(|p| p.file_name().and_then(|s| s.to_str()).is_some_and(|n| n.starts_with(&prefix)))
                 .collect()
         })
         .unwrap_or_default();
@@ -340,11 +339,7 @@ fn print_summary(t: &Totals) {
     println!("  both_failed:  {}", t.both_failed);
     println!("  ast_timeout:  {}", t.ast_timeout);
     println!("  bc_timeout:   {}", t.bc_timeout);
-    let pct = if t.fixtures_run > 0 {
-        (t.matched as f64) * 100.0 / (t.fixtures_run as f64)
-    } else {
-        0.0
-    };
+    let pct = if t.fixtures_run > 0 { (t.matched as f64) * 100.0 / (t.fixtures_run as f64) } else { 0.0 };
     println!("  parity rate:  {pct:.1}%");
     println!();
     println!("-- first divergences (BC erred or differed) --");

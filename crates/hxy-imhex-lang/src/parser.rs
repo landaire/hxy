@@ -133,8 +133,7 @@ impl Parser {
         if matches!(self.peek_kind(), Some(TokenKind::RBracketBracket)) {
             let merged = self.tokens[self.pos].clone();
             let mid = merged.span.start + 1;
-            self.tokens[self.pos] =
-                Token { kind: TokenKind::RBracket, span: Span::new(merged.span.start, mid) };
+            self.tokens[self.pos] = Token { kind: TokenKind::RBracket, span: Span::new(merged.span.start, mid) };
             self.tokens
                 .insert(self.pos + 1, Token { kind: TokenKind::RBracket, span: Span::new(mid, merged.span.end) });
         }
@@ -154,10 +153,7 @@ impl Parser {
         {
             let first = self.bump().unwrap();
             let second = self.bump().unwrap();
-            return Ok(Token {
-                kind: TokenKind::RBracketBracket,
-                span: Span::new(first.span.start, second.span.end),
-            });
+            return Ok(Token { kind: TokenKind::RBracketBracket, span: Span::new(first.span.start, second.span.end) });
         }
         self.expect_kind(&TokenKind::RBracketBracket, "]]")
     }
@@ -399,11 +395,8 @@ impl Parser {
                 // type prefix) or a type ref. If another ident
                 // follows, the first was the type prefix.
                 let (first, _) = self.expect_soft_ident()?;
-                let name = if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
-                    self.expect_ident()?.0
-                } else {
-                    first
-                };
+                let name =
+                    if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { self.expect_ident()?.0 } else { first };
                 params.push(name);
                 if !self.eat_kind(&TokenKind::Comma) {
                     break;
@@ -566,13 +559,7 @@ impl Parser {
         self.expect_kind(&TokenKind::RBrace, "}")?;
         let attrs = self.parse_optional_attrs()?;
         let end = self.expect_kind(&TokenKind::Semi, ";")?.span.end;
-        Ok(Stmt::BitfieldDecl(BitfieldDecl {
-            name,
-            template_params,
-            body,
-            attrs,
-            span: Span::new(kw.span.start, end),
-        }))
+        Ok(Stmt::BitfieldDecl(BitfieldDecl { name, template_params, body, attrs, span: Span::new(kw.span.start, end) }))
     }
 
     /// One entry inside a bitfield body. A bit-slice field
@@ -1144,12 +1131,7 @@ impl Parser {
         // since some corpus templates use those words as field
         // names.
         match self.peek_at(i).map(|t| &t.kind) {
-            Some(
-                TokenKind::Ident(_)
-                | TokenKind::LBracketBracket
-                | TokenKind::Semi
-                | TokenKind::At,
-            ) => true,
+            Some(TokenKind::Ident(_) | TokenKind::LBracketBracket | TokenKind::Semi | TokenKind::At) => true,
             Some(k) => soft_ident_name(k).is_some(),
             None => false,
         }
@@ -1204,11 +1186,8 @@ impl Parser {
         let array = self.parse_optional_array_size()?;
         // Pointer width: `: u32` -- captured so the interpreter can
         // do an address-indirected read.
-        let pointer_width = if is_pointer && self.eat_kind(&TokenKind::Colon) {
-            Some(self.parse_type_ref()?)
-        } else {
-            None
-        };
+        let pointer_width =
+            if is_pointer && self.eat_kind(&TokenKind::Colon) { Some(self.parse_type_ref()?) } else { None };
         let placement = if self.eat_kind(&TokenKind::At) { Some(self.parse_expr()?) } else { None };
         // ImHex's `in` / `out` modifiers come in two flavours:
         // (a) `bool x in;` -- declare an input/output variable

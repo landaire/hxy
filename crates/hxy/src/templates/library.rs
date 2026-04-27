@@ -574,9 +574,7 @@ pub fn list_installed_templates(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = read
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            matches!(p.extension().and_then(|s| s.to_str()), Some("bt") | Some("hexpat") | Some("pat"))
-        })
+        .filter(|p| matches!(p.extension().and_then(|s| s.to_str()), Some("bt") | Some("hexpat") | Some("pat")))
         .collect();
     out.sort();
     out
@@ -628,9 +626,7 @@ mod tests {
 
     #[test]
     fn imhex_magic_pragma_at_offset_zero() {
-        let (exts, magic) = parse_imhex_header(
-            "#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n",
-        );
+        let (exts, magic) = parse_imhex_header("#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n");
         assert_eq!(exts, vec!["zip"]);
         assert_eq!(magic, vec![vec![0x50, 0x4B, 0x03, 0x04]]);
     }
@@ -654,11 +650,7 @@ mod tests {
             "#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\nstruct S { u32 x; };\n",
         )
         .unwrap();
-        std::fs::write(
-            tmp.path().join("png.hexpat"),
-            "#pragma magic [ 89 50 4E 47 0D 0A 1A 0A ] @ 0x00\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("png.hexpat"), "#pragma magic [ 89 50 4E 47 0D 0A 1A 0A ] @ 0x00\n").unwrap();
         let lib = TemplateLibrary::load_from(Some(tmp.path()));
         assert_eq!(lib.entries.len(), 2);
         let zip = lib.entries.iter().find(|e| e.name == "zip.hexpat").unwrap();

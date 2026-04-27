@@ -135,11 +135,7 @@ fn probe_template(
     // current fixture (lcesave's largest is ~4.2 MB) while still
     // preventing a future giant blob from exploding memory.
     const MAX_FIXTURE_BYTES: usize = 16 * 1024 * 1024;
-    let bytes = if bytes.len() > MAX_FIXTURE_BYTES {
-        bytes[..MAX_FIXTURE_BYTES].to_vec()
-    } else {
-        bytes
-    };
+    let bytes = if bytes.len() > MAX_FIXTURE_BYTES { bytes[..MAX_FIXTURE_BYTES].to_vec() } else { bytes };
     eprintln!("  >> {template_name}");
 
     // Run each template on its own thread with a wall-clock deadline.
@@ -231,11 +227,7 @@ fn collect_fixtures(test_data: &Path, template_name: &str) -> Vec<PathBuf> {
             r.flatten()
                 .map(|e| e.path())
                 .filter(|p| p.is_file())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
+                .filter(|p| p.file_name().and_then(|s| s.to_str()).is_some_and(|n| n.starts_with(&prefix)))
                 .collect()
         })
         .unwrap_or_default();
@@ -267,11 +259,7 @@ fn print_summary(t: &Totals) {
     println!("fixtures_run:   {}", t.fixtures_run);
     println!("  run_ok:       {}", t.run_ok);
     println!("  run_err:      {}", t.run_err);
-    let pct = if t.fixtures_run > 0 {
-        (t.run_ok as f64) * 100.0 / (t.fixtures_run as f64)
-    } else {
-        0.0
-    };
+    let pct = if t.fixtures_run > 0 { (t.run_ok as f64) * 100.0 / (t.fixtures_run as f64) } else { 0.0 };
     println!("  pass rate:    {pct:.1}%");
     println!();
     println!("-- top run errors --");

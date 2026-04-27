@@ -613,7 +613,10 @@ impl Parser {
             // name so the interpreter's type registry picks up both.
             if let Some(extra) = alias_for_extra {
                 return Ok(Stmt::Block {
-                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span }],
+                    stmts: vec![
+                        main,
+                        Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span },
+                    ],
                     span,
                 });
             }
@@ -691,7 +694,10 @@ impl Parser {
                 && extra != name
             {
                 return Ok(Stmt::Block {
-                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span }],
+                    stmts: vec![
+                        main,
+                        Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span },
+                    ],
                     span,
                 });
             }
@@ -834,11 +840,8 @@ impl Parser {
             // Bitfield width on the inline-enum field:
             // `enum <ubyte> { ... } Type : 4;`. 010 packs the enum
             // value into a 4-bit slot of the underlying integer.
-            let bit_width = if self.eat_kind(&TokenKind::Colon) {
-                Some(self.parse_expr_bp(BITFIELD_BP)?)
-            } else {
-                None
-            };
+            let bit_width =
+                if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(BITFIELD_BP)?) } else { None };
             let field_attrs = self.parse_optional_attrs()?;
             let span_end = self.peek().map(|t| t.span.end).unwrap_or(field_name_span.end);
             fields.push(Stmt::FieldDecl {
@@ -1254,10 +1257,8 @@ impl Parser {
         // previously-declared (or forward-declared) struct/union.
         // Recursive types use this inside their own body --
         // `typedef struct r_object { struct r_object elements[n]; }`.
-        if matches!(
-            self.peek_kind(),
-            Some(TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Union))
-        ) && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        if matches!(self.peek_kind(), Some(TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Union)))
+            && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
             self.bump();
             let (name, span) = self.expect_ident()?;

@@ -4,11 +4,11 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use crate::app::HxyApp;
+use crate::app::TabFocus;
 use crate::commands::shortcuts::FOCUS_PANE;
 use crate::commands::shortcuts::NEXT_TAB;
 use crate::commands::shortcuts::PREV_TAB;
 use crate::commands::shortcuts::TOGGLE_TAB_FOCUS;
-use crate::app::TabFocus;
 use crate::tabs::Tab;
 
 /// Cmd+K stages the visual pane-focus picker. No-op when a picker

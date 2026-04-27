@@ -32,8 +32,7 @@ fn run_both(src: &str, bytes: Vec<u8>) -> (RunResult, RunResult) {
     let bc_program = bc::compile(&ast).expect("compile to bytecode");
 
     let ast_result = Interpreter::new(MemorySource::new(bytes.clone())).run(&ast);
-    let bc_result =
-        Interpreter::new(MemorySource::new(bytes)).run_bytecode_experimental(&bc_program);
+    let bc_result = Interpreter::new(MemorySource::new(bytes)).run_bytecode_experimental(&bc_program);
     (ast_result, bc_result)
 }
 
