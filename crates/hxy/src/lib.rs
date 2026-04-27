@@ -19,6 +19,8 @@ pub mod panels;
 pub mod plugins;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod templates;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod view;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cli;

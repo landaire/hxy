@@ -56,7 +56,7 @@ pub fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: Offset
     let text = match kind {
         OffsetCopy::Caret => {
             let Some(sel) = sel else { return };
-            crate::app::format_offset(sel.cursor.get(), base)
+            crate::view::format::format_offset(sel.cursor.get(), base)
         }
         OffsetCopy::SelectionRange => {
             let Some(sel) = sel else { return };
@@ -64,16 +64,16 @@ pub fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: Offset
             let last_inclusive = range.end().get().saturating_sub(1);
             format!(
                 "{}-{} ({} bytes)",
-                crate::app::format_offset(range.start().get(), base),
-                crate::app::format_offset(last_inclusive, base),
-                crate::app::format_offset(range.len().get(), base),
+                crate::view::format::format_offset(range.start().get(), base),
+                crate::view::format::format_offset(last_inclusive, base),
+                crate::view::format::format_offset(range.len().get(), base),
             )
         }
         OffsetCopy::SelectionLength => {
             let Some(sel) = sel else { return };
-            crate::app::format_offset(sel.range().len().get(), base)
+            crate::view::format::format_offset(sel.range().len().get(), base)
         }
-        OffsetCopy::FileLength => crate::app::format_offset(source_len, base),
+        OffsetCopy::FileLength => crate::view::format::format_offset(source_len, base),
     };
     ctx.copy_text(text);
 }

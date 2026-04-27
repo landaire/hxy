@@ -337,7 +337,7 @@ pub fn build_palette_entries(
                 if let Some((start, end_exclusive)) = offset_ctx.selection {
                     let last_inclusive = end_exclusive.saturating_sub(1);
                     let len = end_exclusive.saturating_sub(start);
-                    let caret_preview = crate::app::format_offset(offset_ctx.cursor, base);
+                    let caret_preview = crate::view::format::format_offset(offset_ctx.cursor, base);
                     out.push(
                         egui_palette::Entry::new(
                             hxy_i18n::t("palette-copy-caret-offset"),
@@ -347,11 +347,11 @@ pub fn build_palette_entries(
                         .with_subtitle(caret_preview),
                     );
                     if len > 1 {
-                        let len_preview = crate::app::format_offset(len, base);
+                        let len_preview = crate::view::format::format_offset(len, base);
                         let range_preview = format!(
                             "{}-{} ({} bytes)",
-                            crate::app::format_offset(start, base),
-                            crate::app::format_offset(last_inclusive, base),
+                            crate::view::format::format_offset(start, base),
+                            crate::view::format::format_offset(last_inclusive, base),
                             len_preview,
                         );
                         out.push(
@@ -378,7 +378,7 @@ pub fn build_palette_entries(
                         Action::InvokeCommand(PaletteCommand::CopyFileLength),
                     )
                     .with_icon(icon::COPY)
-                    .with_subtitle(crate::app::format_offset(offset_ctx.source_len, base)),
+                    .with_subtitle(crate::view::format::format_offset(offset_ctx.source_len, base)),
                 );
             }
             out.push(
