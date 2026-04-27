@@ -11,6 +11,7 @@ description = "ImHex pattern language: lexer, parser, interpreter."
 [dependencies]
 thiserror = "2.0.18"
 winnow = "0.7"
+rustc-hash = "2.1"
 
 [dev-dependencies]
 insta = { version = "1.43.2", features = ["yaml"] }

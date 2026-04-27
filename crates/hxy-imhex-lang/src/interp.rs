@@ -30,6 +30,9 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+use rustc_hash::FxHashMap;
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -151,7 +154,7 @@ enum TypeDef {
 
 #[derive(Clone, Default)]
 struct Scope {
-    vars: HashMap<String, Value>,
+    vars: FxHashMap<String, Value>,
     /// Aliases from local names to emitted-node indices. Populated
     /// when a function call passes an emitted node by name (the
     /// caller's `imageSpec`) and the function's parameter
@@ -159,7 +162,7 @@ struct Scope {
     /// caller's node tree. Without this, `imSpec` evaluates to
     /// `Void` (structs don't bind a value) and member access
     /// fails with `unresolved member .height`.
-    node_aliases: HashMap<String, NodeIdx>,
+    node_aliases: FxHashMap<String, NodeIdx>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,8 +182,8 @@ enum Flow {
 pub struct Interpreter<S: HexSource> {
     source: S,
     pos: u64,
-    types: HashMap<String, TypeDef>,
-    functions: HashMap<String, FunctionDef>,
+    types: FxHashMap<String, TypeDef>,
+    functions: FxHashMap<String, FunctionDef>,
     scopes: Vec<Scope>,
     nodes: Vec<NodeOut>,
     /// Name -> indices of every emitted node with that name, in
@@ -188,7 +191,7 @@ pub struct Interpreter<S: HexSource> {
     /// chains close to O(name-collisions) per hop instead of O(N).
     /// The big device-tree-shaped corpus templates (fdt, pck, ...)
     /// time out without this index.
-    nodes_by_name: HashMap<String, Vec<NodeIdx>>,
+    nodes_by_name: FxHashMap<String, Vec<NodeIdx>>,
     diagnostics: Vec<Diagnostic>,
     endian: Endian,
     steps: u64,
@@ -250,11 +253,11 @@ impl<S: HexSource> Interpreter<S> {
         let mut me = Self {
             source,
             pos: 0,
-            types: HashMap::new(),
-            functions: HashMap::new(),
+            types: FxHashMap::default(),
+            functions: FxHashMap::default(),
             scopes: vec![Scope::default()],
             nodes: Vec::new(),
-            nodes_by_name: HashMap::new(),
+            nodes_by_name: FxHashMap::default(),
             diagnostics: Vec::new(),
             endian: Endian::Little,
             steps: 0,

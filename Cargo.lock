@@ -2873,6 +2873,7 @@ name = "hxy-imhex-lang"
 version = "0.2.0"
 dependencies = [
  "insta",
+ "rustc-hash 2.1.2",
  "thiserror 2.0.18",
  "winnow 0.7.15",
 ]
