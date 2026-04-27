@@ -194,6 +194,11 @@ pub struct Interpreter<S: HexSource> {
     /// only one element (so `header.groupID` returned just the
     /// first character of `RIFF`).
     typedef_array_size: HashMap<String, Expr>,
+    /// In-memory byte sizes for `local`/`const` array declarations,
+    /// keyed by name. Lets `sizeof(localArr)` return the declared
+    /// total size (count * element width) even though the array
+    /// never lands in the emitted node tree.
+    local_array_bytes: HashMap<String, u64>,
     /// Current path prefix for [`field_storage`] writes. Segments
     /// accrete as the interpreter descends into struct bodies and
     /// array elements -- e.g. while reading `DirectoryEntries[2].Key`
@@ -310,6 +315,7 @@ impl<S: HexSource> Interpreter<S> {
             field_storage: HashMap::new(),
             array_storage: HashMap::new(),
             typedef_array_size: HashMap::new(),
+            local_array_bytes: HashMap::new(),
             path: Vec::new(),
             field_counts: HashMap::new(),
             bitfield_slot: None,
@@ -757,6 +763,18 @@ impl<S: HexSource> Interpreter<S> {
         // `local` and `const` are ephemeral variables; they can still
         // have initializers but don't read from the source.
         if matches!(modifier, crate::ast::DeclModifier::Local | crate::ast::DeclModifier::Const) {
+            // Track byte size for `sizeof(localArr)` lookups before
+            // we lose the array_size info to the eval.
+            if let Some(size_expr) = array_size
+                .as_ref()
+                .cloned()
+                .or_else(|| self.typedef_array_size.get(&ty.name).cloned())
+                && let Some(count) = self.eval(&size_expr)?.to_i128()
+                && count >= 0
+            {
+                let elem = self.sizeof_type(&ty.name).unwrap_or(0);
+                self.local_array_bytes.insert(name.clone(), count as u64 * elem);
+            }
             let value = match init {
                 Some(expr) => self.eval(expr)?,
                 None => self.default_local_value(ty, array_size.as_ref())?,
@@ -1439,11 +1457,15 @@ impl<S: HexSource> Interpreter<S> {
                 return Ok(v.clone());
             }
         }
-        // Fall back to persistent field storage: an enum variant
-        // identifier (e.g. `Privileges` from an earlier `typedef enum`)
-        // or a cross-scope struct field access.
-        if let Some(v) = self.field_storage.get(name) {
-            return Ok(v.clone());
+        // Fall back to persistent field storage. Walk the current
+        // path prefix from the leaf upward so a bare reference
+        // like `cbCFFolder` resolves to a sibling stored under the
+        // enclosing struct (`cabFile.cffolder.cbCFFolder`) without
+        // the template having to spell out the chain.
+        for candidate in lookup_candidates(name, &self.path_prefix()) {
+            if let Some(v) = self.field_storage.get(&candidate) {
+                return Ok(v.clone());
+            }
         }
         // Enum-variant lookup: scan registered enums for a matching
         // variant and return its numeric value.
@@ -2042,7 +2064,9 @@ impl<S: HexSource> Interpreter<S> {
                 return Some(n.length);
             }
         }
-        None
+        // Locals don't emit nodes, but we tracked their byte size at
+        // declaration so `sizeof(localArr)` works without scanning.
+        self.local_array_bytes.get(name).copied()
     }
 
     /// Look up the source byte offset of a previously-emitted node by
@@ -2539,7 +2563,7 @@ fn decode_string(bytes: &[u8], wide: bool, endian: Endian) -> String {
 /// subscripts are stripped -- since single-occurrence fields are
 /// stored without a `[0]` suffix.
 fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
-    let mut out = Vec::with_capacity(4);
+    let mut out = Vec::with_capacity(8);
     let mut push = |s: String| {
         if !out.contains(&s) {
             out.push(s);
@@ -2547,9 +2571,24 @@ fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
     };
     push(path.to_owned());
     push(strip_zero_indices(path));
-    let scoped = join_path(prefix, path);
-    push(scoped.clone());
-    push(strip_zero_indices(&scoped));
+    // Try the path scoped to the current prefix, then walk up the
+    // prefix segment-by-segment so a query like `bmiHeader.biBitCount`
+    // can match a sibling stored at `images.bmiHeader.biBitCount`
+    // even while the interpreter is busy reading `images.data`.
+    let mut current = prefix.to_owned();
+    loop {
+        let scoped = join_path(&current, path);
+        push(scoped.clone());
+        push(strip_zero_indices(&scoped));
+        if current.is_empty() {
+            break;
+        }
+        // Drop the last `.segment` (or the whole string if no dot).
+        match current.rfind('.') {
+            Some(idx) => current.truncate(idx),
+            None => current.clear(),
+        }
+    }
     out
 }
 
