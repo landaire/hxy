@@ -16,9 +16,9 @@ use egui_table::TableDelegate;
 use hxy_plugin_host::ParsedTemplate;
 use hxy_plugin_host::template::Node;
 
-use crate::file::TemplateArrayId;
-use crate::file::TemplateNodeIdx;
-use crate::file::TemplateState;
+use crate::files::TemplateArrayId;
+use crate::files::TemplateNodeIdx;
+use crate::files::TemplateState;
 
 /// Events the app needs to handle after the panel renders.
 pub enum TemplateEvent {
@@ -47,7 +47,7 @@ pub enum TemplateEvent {
     ToggleColors(bool),
 }
 
-pub use crate::copy_format::CopyKind;
+pub use crate::files::copy::CopyKind;
 
 const INDENT_STEP: f32 = 14.0;
 
@@ -265,7 +265,7 @@ impl TemplateTableDelegate<'_> {
         ui.label(egui::RichText::new(format!("{}  ({} bytes)", node.name, node.span.length)).strong());
         ui.separator();
 
-        if let Some(kind) = crate::copy_format::copy_as_menu_full(ui, is_scalar, is_struct) {
+        if let Some(kind) = crate::files::copy::copy_as_menu_full(ui, is_scalar, is_struct) {
             self.events.push(TemplateEvent::Copy { idx, kind });
         }
 

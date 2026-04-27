@@ -27,7 +27,7 @@ use suture::metadata::HashAlgorithm;
 use suture::metadata::SourceDigest;
 use suture::metadata::SourceMetadata;
 
-use crate::file::EditEntry;
+use crate::files::EditEntry;
 
 /// Largest source we'll content-hash on quit. Above this, the
 /// sidecar keeps only filesystem metadata -- hashing tens of MB/s

@@ -6,13 +6,13 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::runtime::Runtime;
 
-use crate::persist::PersistResult;
-use crate::persist::store_app_settings;
-use crate::persist::store_dock_layout;
-use crate::persist::store_open_tabs;
-use crate::persist::store_plugin_grants;
-use crate::persist::store_vfs_tree_expanded;
-use crate::persist::store_window_settings;
+use crate::settings::persist::PersistResult;
+use crate::settings::persist::store_app_settings;
+use crate::settings::persist::store_dock_layout;
+use crate::settings::persist::store_open_tabs;
+use crate::settings::persist::store_plugin_grants;
+use crate::settings::persist::store_vfs_tree_expanded;
+use crate::settings::persist::store_window_settings;
 use crate::state::PersistedState;
 
 pub struct SaveSink {

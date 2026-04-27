@@ -19,7 +19,7 @@ use muda::accelerator::Code;
 use muda::accelerator::Modifiers;
 
 use crate::APP_NAME;
-use crate::copy_format::CopyKind;
+use crate::files::copy::CopyKind;
 
 /// Actions a menu item can dispatch. Produced by [`MenuState::drain_actions`]
 /// each frame; the app matches on the variant and invokes the same
@@ -177,7 +177,7 @@ impl MenuState {
         let copy_as = Submenu::new("Copy bytes as", false);
         edit_menu.append(&copy_as).expect("append copy as");
         let mut bytes_items = vec![copy_bytes.clone(), copy_hex.clone()];
-        for (label, kind) in crate::copy_format::BYTES_MENU {
+        for (label, kind) in crate::files::copy::BYTES_MENU {
             let item = MenuItem::new(*label, false, None);
             copy_as.append(&item).expect("append copy-as entry");
             actions.insert(item.id().0.clone(), MenuAction::CopyAs(*kind));
@@ -187,7 +187,7 @@ impl MenuState {
         let copy_value_as = Submenu::new("Copy value as", false);
         edit_menu.append(&copy_value_as).expect("append copy value as");
         let mut scalar_items = Vec::new();
-        for (label, kind) in crate::copy_format::VALUE_MENU {
+        for (label, kind) in crate::files::copy::VALUE_MENU {
             let item = MenuItem::new(*label, false, None);
             copy_value_as.append(&item).expect("append copy-value-as entry");
             actions.insert(item.id().0.clone(), MenuAction::CopyAs(*kind));

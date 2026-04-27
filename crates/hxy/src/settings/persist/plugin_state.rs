@@ -2,7 +2,7 @@
 //! Lives in the app crate so the host crate stays independent of
 //! sqlx; the bridge from sync (the trait contract, driven by WIT
 //! calls) to async (sqlx) goes through the same `Arc<Runtime>` the
-//! [`crate::persist::SaveSink`] uses.
+//! [`crate::settings::persist::SaveSink`] uses.
 
 use std::sync::Arc;
 

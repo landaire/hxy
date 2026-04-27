@@ -1,6 +1,6 @@
 //! Cross-file search backing the `Tab::SearchResults` tab.
 
-use crate::file::FileId;
+use crate::files::FileId;
 use crate::search::Endian;
 use crate::search::NumberWidth;
 use crate::search::SearchKind;

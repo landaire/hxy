@@ -5,8 +5,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
 
-use crate::persist::PersistError;
-use crate::persist::PersistResult;
+use crate::settings::persist::PersistError;
+use crate::settings::persist::PersistResult;
 use crate::settings::AppSettings;
 use crate::state::OpenTabState;
 use crate::window::WindowSettings;
@@ -80,7 +80,7 @@ pub async fn store_plugin_grants(pool: &SqlitePool, grants: &hxy_plugin_host::Pl
 }
 
 /// Load the most recent dock-layout snapshot as a raw JSON string.
-/// The host parses it into [`crate::persisted_dock::PersistedDock`]
+/// The host parses it into [`crate::tabs::persisted_dock::PersistedDock`]
 /// at restore time -- keeping it a string here lets the dirty check
 /// stay a cheap byte compare and keeps schema-rejection logic out
 /// of the storage layer.
@@ -89,7 +89,7 @@ pub async fn load_dock_layout(pool: &SqlitePool) -> PersistResult<Option<String>
 }
 
 /// Persist a dock-layout JSON blob. The caller is responsible for
-/// shape (typically [`crate::persisted_dock::PersistedDock`]); this
+/// shape (typically [`crate::tabs::persisted_dock::PersistedDock`]); this
 /// helper just round-trips bytes.
 pub async fn store_dock_layout(pool: &SqlitePool, json: &str) -> PersistResult<()> {
     sqlx::query(

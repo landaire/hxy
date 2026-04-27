@@ -25,10 +25,10 @@ use similar::DiffOp;
 use similar::capture_diff_slices;
 use similar::capture_diff_slices_deadline;
 
-use crate::file::EditMode;
+use crate::files::EditMode;
 
-/// Stable id for an open compare tab. Like [`crate::file::FileId`] /
-/// [`crate::file::WorkspaceId`], allocated monotonically by the host
+/// Stable id for an open compare tab. Like [`crate::files::FileId`] /
+/// [`crate::files::WorkspaceId`], allocated monotonically by the host
 /// and used as the dock tab payload (`Tab::Compare(CompareId)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CompareId(u64);

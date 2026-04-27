@@ -1,14 +1,19 @@
 //! Dock tab identifiers and rendering.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pane_pick;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod persisted_dock;
+
 use serde::Deserialize;
 use serde::Serialize;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::compare::CompareId;
-use crate::file::FileId;
+use crate::files::FileId;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::file::MountId;
-use crate::file::WorkspaceId;
+use crate::files::MountId;
+use crate::files::WorkspaceId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tab {

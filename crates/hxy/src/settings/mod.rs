@@ -1,5 +1,8 @@
 //! User-visible application settings.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod persist;
+
 use std::path::PathBuf;
 
 use hxy_core::ColumnCount;

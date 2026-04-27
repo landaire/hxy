@@ -25,7 +25,7 @@ use egui_toast::ToastKind;
 use egui_toast::ToastOptions;
 use egui_toast::Toasts;
 
-use crate::file::FileId;
+use crate::files::FileId;
 
 /// One on-screen template prompt. Lives on the [`ToastCenter`] until
 /// the user accepts or dismisses it (or its sibling does, in which
@@ -42,7 +42,7 @@ pub struct TemplatePrompt {
     /// targets it.
     pub file_id: FileId,
     /// Source path of the template that would run if the user accepts.
-    /// Resolved against [`crate::template_library::TemplateLibrary`]
+    /// Resolved against [`crate::templates::library::TemplateLibrary`]
     /// at draw time so a freshly downloaded corpus can populate
     /// new entries without restarting the app.
     pub template_path: PathBuf,

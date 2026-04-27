@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::file::FileId;
+use crate::files::FileId;
 
 /// Persistent state for the palette. Keeps both the hxy-specific
 /// cascade [`Mode`] and the generic [`egui_palette::State`] that
@@ -342,7 +342,7 @@ pub enum Action {
     UninstallPlugin(PathBuf),
     /// Copy the active file's current selection using the given
     /// format. Only offered when a non-empty selection exists.
-    Copy(crate::copy_format::CopyKind),
+    Copy(crate::files::copy::CopyKind),
     /// Open a previously-visited filesystem file by path. Used by
     /// the `Open recent` cascade mode.
     OpenRecent(PathBuf),

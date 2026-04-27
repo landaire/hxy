@@ -7,6 +7,13 @@
 //! `apply_command_effect` in `app.rs`, which is cleaner than each
 //! call site reaching directly into the dock-mutation helpers.
 
+pub mod shortcuts;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod goto;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod palette;
+
 #[derive(Debug)]
 pub enum CommandEffect {
     OpenFileDialog,

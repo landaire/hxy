@@ -5,6 +5,10 @@
 //! shared `GlobalSearchState` whose results are listed in a dedicated
 //! `Tab::SearchResults`.
 
+pub mod bar;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod global;
+
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;

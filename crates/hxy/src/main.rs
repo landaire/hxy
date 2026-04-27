@@ -6,7 +6,7 @@ fn main() -> eframe::Result<()> {
 
     use hxy_lib::cli::Cli;
     use hxy_lib::ipc;
-    use hxy_lib::persist;
+    use hxy_lib::settings::persist;
     use hxy_lib::state::PersistedState;
     use hxy_lib::state::shared;
     use tokio::runtime::Runtime;
@@ -110,7 +110,7 @@ fn main() -> eframe::Result<()> {
 /// destructure by name rather than counting tuple positions.
 #[cfg(not(target_arch = "wasm32"))]
 struct StartupPersistence {
-    sink: Option<hxy_lib::persist::SaveSink>,
+    sink: Option<hxy_lib::settings::persist::SaveSink>,
     plugin_state_store: Option<std::sync::Arc<dyn hxy_plugin_host::StateStore>>,
     app: Option<hxy_lib::settings::AppSettings>,
     open_tabs: Option<Vec<hxy_lib::state::OpenTabState>>,
@@ -121,8 +121,8 @@ struct StartupPersistence {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_persistent_state(runtime: &std::sync::Arc<tokio::runtime::Runtime>) -> StartupPersistence {
-    use hxy_lib::persist;
-    use hxy_lib::persist::SaveSink;
+    use hxy_lib::settings::persist;
+    use hxy_lib::settings::persist::SaveSink;
 
     let _guard = runtime.enter();
     let pool = match runtime.block_on(persist::open_db()) {

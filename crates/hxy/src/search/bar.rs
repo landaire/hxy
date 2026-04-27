@@ -1,7 +1,7 @@
 //! Bottom-anchored search panel rendered inside a file tab.
 //!
 //! Owns no mutable state of its own -- all state lives on
-//! [`crate::file::OpenFile::search`]. `show` returns a list of
+//! [`crate::files::OpenFile::search`]. `show` returns a list of
 //! [`SearchEvent`]s the host loop drains to perform actual byte
 //! searches, replacements, and selection moves.
 

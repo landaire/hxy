@@ -1,6 +1,6 @@
 //! Save/restore wire format for the dock layout.
 //!
-//! [`crate::tabs::Tab`] and [`crate::file::WorkspaceTab`] reference
+//! [`crate::tabs::Tab`] and [`crate::files::WorkspaceTab`] reference
 //! ephemeral [`FileId`] / [`WorkspaceId`] / [`MountId`] values that are
 //! re-allocated each launch, so serialising them directly produces
 //! gibberish on restore. This module mirrors them with stable
@@ -29,10 +29,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::compare::CompareId;
-use crate::file::FileId;
-use crate::file::MountId;
-use crate::file::WorkspaceId;
-use crate::file::WorkspaceTab;
+use crate::files::FileId;
+use crate::files::MountId;
+use crate::files::WorkspaceId;
+use crate::files::WorkspaceTab;
 use crate::tabs::Tab;
 
 /// Bumped whenever the on-disk shape of [`PersistedDock`] changes in a
@@ -119,14 +119,14 @@ pub struct RestoreMaps<'a> {
 
 /// Snapshot the live outer dock plus every workspace's inner dock
 /// into the persisted form. Tabs that can't be resolved to a stable
-/// identifier (e.g. a [`Tab::File`] whose [`crate::file::OpenFile`]
+/// identifier (e.g. a [`Tab::File`] whose [`crate::files::OpenFile`]
 /// has no [`TabSource`] -- transient anonymous buffers we don't want
 /// to persist) are filtered out; everything else round-trips.
 pub fn live_to_persisted(
     outer: &DockState<Tab>,
-    workspaces: &std::collections::BTreeMap<WorkspaceId, crate::file::Workspace>,
-    files: &HashMap<FileId, crate::file::OpenFile>,
-    mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
+    workspaces: &std::collections::BTreeMap<WorkspaceId, crate::files::Workspace>,
+    files: &HashMap<FileId, crate::files::OpenFile>,
+    mounts: &std::collections::BTreeMap<MountId, crate::files::MountedPlugin>,
     compares: &std::collections::BTreeMap<CompareId, crate::compare::CompareSession>,
 ) -> PersistedDock {
     let outer_persisted = outer.filter_map_tabs(|tab| live_to_persisted_tab(tab, workspaces, files, mounts, compares));
@@ -148,9 +148,9 @@ pub fn live_to_persisted(
 /// buffers without a [`TabSource`]).
 fn live_to_persisted_tab(
     tab: &Tab,
-    workspaces: &std::collections::BTreeMap<WorkspaceId, crate::file::Workspace>,
-    files: &HashMap<FileId, crate::file::OpenFile>,
-    mounts: &std::collections::BTreeMap<MountId, crate::file::MountedPlugin>,
+    workspaces: &std::collections::BTreeMap<WorkspaceId, crate::files::Workspace>,
+    files: &HashMap<FileId, crate::files::OpenFile>,
+    mounts: &std::collections::BTreeMap<MountId, crate::files::MountedPlugin>,
     compares: &std::collections::BTreeMap<CompareId, crate::compare::CompareSession>,
 ) -> Option<PersistedTab> {
     Some(match tab {
@@ -189,7 +189,7 @@ fn live_to_persisted_tab(
 
 fn live_to_persisted_workspace_tab(
     tab: &WorkspaceTab,
-    files: &HashMap<FileId, crate::file::OpenFile>,
+    files: &HashMap<FileId, crate::files::OpenFile>,
 ) -> Option<PersistedWorkspaceTab> {
     Some(match tab {
         WorkspaceTab::Editor => PersistedWorkspaceTab::Editor,

@@ -46,7 +46,7 @@ pub struct PersistedState {
     pub plugin_grants: hxy_plugin_host::PluginGrants,
     /// Cached JSON of the most recent dock-layout snapshot.
     /// Stored as a string rather than the typed
-    /// [`crate::persisted_dock::PersistedDock`] so the per-frame
+    /// [`crate::tabs::persisted_dock::PersistedDock`] so the per-frame
     /// dirty check stays a cheap byte comparison and so the field
     /// carries the wasm-stripped feature gate without
     /// ricocheting through every consumer of [`PersistedState`].
