@@ -1296,7 +1296,7 @@ impl<S: HexSource> Interpreter<S> {
             }
             TypeDef::Enum(e) => self.read_enum(name, &e, parent, attrs),
             TypeDef::Struct(s) => self.read_struct(name, &s, &resolved_ty, parent, attrs),
-            TypeDef::Bitfield(b) => self.read_bitfield(name, &b, parent, attrs),
+            TypeDef::Bitfield(b) => self.read_bitfield(name, &b, &resolved_ty, parent, attrs),
             TypeDef::Alias { .. } => unreachable!("resolve_type_ref follows aliases"),
         }
     }
@@ -1577,10 +1577,39 @@ impl<S: HexSource> Interpreter<S> {
         &mut self,
         name: &str,
         decl: &BitfieldDecl,
-
+        ty: &TypeRef,
         parent: Option<NodeIdx>,
         attrs: &[(String, String)],
     ) -> Result<Value, RuntimeError> {
+        // Bind template params for parametrised bitfields (e.g.
+        // `bitfield RGBA<auto R, auto G, auto B, auto A> { r : R; ...
+        // }` from `type/color.pat` -- without this `r : R` looks up
+        // `R` in scope and errors). Same shape as read_struct's
+        // template binding, scoped to the bitfield body.
+        self.scopes.push(Scope::default());
+        let mut template_type_aliases: Vec<(String, Option<TypeDef>)> = Vec::new();
+        if !decl.template_params.is_empty() {
+            for (i, param_name) in decl.template_params.iter().enumerate() {
+                let arg_expr = ty.template_args.get(i);
+                let arg_ty = arg_expr.and_then(expr_as_typeref);
+                if let Some(t) = arg_ty {
+                    let resolved = if t.path.len() == 1
+                        && let Some(TypeDef::Alias { target, .. }) = self.types.get(&t.path[0])
+                    {
+                        target.clone()
+                    } else {
+                        t
+                    };
+                    let prev = self.types.insert(
+                        param_name.clone(),
+                        TypeDef::Alias { params: Vec::new(), target: resolved },
+                    );
+                    template_type_aliases.push((param_name.clone(), prev));
+                }
+                let value = arg_expr.map(|e| self.eval(e).unwrap_or(Value::Void)).unwrap_or(Value::Void);
+                self.current_scope_mut().vars.insert(param_name.clone(), value);
+            }
+        }
         // Compute total bits by collecting every BitfieldField in the
         // body, recursing into conditionals so nested fields still
         // contribute to the slot width. We pessimistically include
@@ -1618,6 +1647,19 @@ impl<S: HexSource> Interpreter<S> {
         self.this_stack.push(bf_idx);
         let result = self.exec_bitfield_body(&decl.body, raw_u, offset, bf_idx, &mut consumed);
         self.this_stack.pop();
+        // Restore template-param aliases and pop the body scope
+        // before propagating any inner error.
+        for (alias, prev) in template_type_aliases {
+            match prev {
+                Some(def) => {
+                    self.types.insert(alias, def);
+                }
+                None => {
+                    self.types.remove(&alias);
+                }
+            }
+        }
+        self.scopes.pop();
         result?;
         Ok(Value::UInt { value: raw_u, kind: PrimKind::u128() })
     }
