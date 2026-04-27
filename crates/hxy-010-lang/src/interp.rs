@@ -222,6 +222,12 @@ pub struct Interpreter<S: HexSource> {
     /// template source flips this; default is left-to-right (high
     /// bits consumed first), matching 010's default.
     bitfield_right_to_left: bool,
+    /// `BitfieldDisablePadding()` mode. When set, each new bitfield
+    /// slot reads only the bytes needed for the *next* field's width
+    /// (rounded up), rather than the underlying type's full width
+    /// -- so consecutive `int x:24` fields consume 3 bytes each
+    /// instead of 4. WebP/PNG-style packed bitstreams need this.
+    bitfield_padding_disabled: bool,
     /// Configured wall-clock budget. Materialised into [`Self::deadline`]
     /// at the start of [`Self::run`] so the timer doesn't include
     /// time the caller spent between construction and execution.
@@ -327,6 +333,7 @@ impl<S: HexSource> Interpreter<S> {
             field_counts: HashMap::new(),
             bitfield_slot: None,
             bitfield_right_to_left: false,
+            bitfield_padding_disabled: false,
             timeout: None,
             deadline: None,
         };
@@ -943,22 +950,31 @@ impl<S: HexSource> Interpreter<S> {
                 return Err(RuntimeError::BadBitfieldType { ty: ty.name.clone() });
             }
         };
-        let total_bits = (prim.width as u32) * 8;
-        let width = width.min(total_bits);
+        let type_bits = (prim.width as u32) * 8;
+        let width = width.min(type_bits);
+        // Slot byte width: with padding disabled, the underlying
+        // storage shrinks to just enough bytes for `width` bits so
+        // consecutive fields pack tightly. With padding (the
+        // default), one full type-width word backs each slot.
+        let slot_bytes = if self.bitfield_padding_disabled {
+            width.div_ceil(8) as u8
+        } else {
+            prim.width
+        };
+        let slot_total_bits = (slot_bytes as u32) * 8;
 
         let need_new_slot = match &self.bitfield_slot {
-            Some(slot) => slot.prim.width != prim.width || slot.consumed + width > total_bits,
+            Some(slot) => slot.prim.width != prim.width || slot.consumed + width > slot_total_bits,
             None => true,
         };
         if need_new_slot {
             let offset = self.cursor.tell();
-            let bytes = self.cursor.read_advance(prim.width as u64)?;
-            let decoded = decode_prim(&bytes, prim, self.endian)?;
-            // `decode_prim` was just dispatched on an Int/Char `prim`, so
-            // the result is always numeric -- the fallback is only a
-            // floor against future drift in `decode_prim`'s output.
-            let raw = decoded.to_i128().unwrap_or(0) as u64;
-            self.bitfield_slot = Some(BitfieldSlot { prim, raw, offset, consumed: 0 });
+            let bytes = self.cursor.read_advance(slot_bytes as u64)?;
+            // Decode using a kind that matches the slot byte width
+            // (padding-disabled may give us an odd byte count like 3).
+            let slot_prim = PrimKind { class: prim.class, width: slot_bytes, signed: prim.signed };
+            let decoded = decode_prim_for_bitfield(&bytes, slot_prim, self.endian);
+            self.bitfield_slot = Some(BitfieldSlot { prim, raw: decoded, offset, consumed: 0 });
         }
         // Extract `width` bits from the slot.
         let (field_value, node_offset, node_length) = {
@@ -966,10 +982,10 @@ impl<S: HexSource> Interpreter<S> {
             let position = slot.consumed;
             let mask: u64 = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
             let shift =
-                if self.bitfield_right_to_left { position } else { total_bits.saturating_sub(position + width) };
+                if self.bitfield_right_to_left { position } else { slot_total_bits.saturating_sub(position + width) };
             let extracted = (slot.raw >> shift) & mask;
             slot.consumed += width;
-            (extracted, slot.offset, prim.width as u64)
+            (extracted, slot.offset, slot_bytes as u64)
         };
         // Emit a node for the whole underlying storage (so the span
         // covers the word) but carry only the extracted value.
@@ -2311,7 +2327,16 @@ impl<S: HexSource> Interpreter<S> {
             // Bitfield padding pragmas are presentational. The
             // interpreter packs bits the way 010 does by default;
             // padding is a renderer concern we don't model.
-            "BitfieldDisablePadding" | "BitfieldEnablePadding" => Ok(Some(Value::Void)),
+            "BitfieldDisablePadding" => {
+                self.bitfield_padding_disabled = true;
+                self.bitfield_slot = None;
+                Ok(Some(Value::Void))
+            }
+            "BitfieldEnablePadding" => {
+                self.bitfield_padding_disabled = false;
+                self.bitfield_slot = None;
+                Ok(Some(Value::Void))
+            }
             "ReadBytes" => Ok(Some(self.read_bytes_builtin(args)?)),
             "ReadFloat" => Ok(Some(self.read_float_builtin(args, false)?)),
             "ReadDouble" => Ok(Some(self.read_float_builtin(args, true)?)),
@@ -3389,6 +3414,28 @@ fn format_printf(fmt: &str, args: &[&Value]) -> String {
 
 /// Standard CRC-32/IEEE 802.3 -- PNG, zlib, et al. Polynomial
 /// 0xEDB88320, initial 0xFFFFFFFF, final xor 0xFFFFFFFF.
+/// Decode the storage word backing a bitfield slot. Unlike
+/// `decode_prim`, accepts non-power-of-two byte counts (1..=8) so
+/// `BitfieldDisablePadding()` can pack a 24-bit field into 3 bytes.
+fn decode_prim_for_bitfield(bytes: &[u8], prim: PrimKind, endian: Endian) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = bytes.len().min(8);
+    if matches!(endian, Endian::Little) {
+        buf[..n].copy_from_slice(&bytes[..n]);
+    } else {
+        // Big-endian: place the bytes at the high end of the slot
+        // so left-to-right packing reads from the most significant
+        // bits first.
+        let off = 8 - prim.width as usize;
+        buf[off..off + n].copy_from_slice(&bytes[..n]);
+    }
+    if matches!(endian, Endian::Little) {
+        u64::from_le_bytes(buf)
+    } else {
+        u64::from_be_bytes(buf)
+    }
+}
+
 fn crc32_ieee(bytes: &[u8]) -> u32 {
     const POLY: u32 = 0xEDB88320;
     let mut crc: u32 = 0xFFFF_FFFF;
