@@ -18,6 +18,7 @@
 //! field set.
 
 pub mod ast;
+pub mod bc;
 pub mod imports;
 pub mod interp;
 pub mod lexer;

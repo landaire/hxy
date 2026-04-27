@@ -183,7 +183,13 @@ pub struct Interpreter<S: HexSource> {
     source: S,
     pos: u64,
     types: FxHashMap<String, TypeDef>,
-    functions: FxHashMap<String, FunctionDef>,
+    /// User functions are stored behind an `Arc` so call sites
+    /// only bump a refcount instead of deep-cloning the body
+    /// (params Vec + Stmts Vec + nested Exprs) on every call.
+    /// Bencode's predicate-driven loops invoke `isdigit` /
+    /// `read_unsigned` millions of times; the deep clone showed up
+    /// near the top of the profile.
+    functions: FxHashMap<String, Arc<FunctionDef>>,
     scopes: Vec<Scope>,
     nodes: Vec<NodeOut>,
     /// Name -> indices of every emitted node with that name, in
@@ -463,10 +469,11 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn register_function(&mut self, name: &str, def: FunctionDef) {
-        self.functions.insert(name.to_owned(), def.clone());
+        let shared = Arc::new(def);
+        self.functions.insert(name.to_owned(), Arc::clone(&shared));
         if !self.namespace_stack.is_empty() {
             let qualified = format!("{}::{}", self.namespace_stack.join("::"), name);
-            self.functions.insert(qualified, def);
+            self.functions.insert(qualified, shared);
         }
     }
 
