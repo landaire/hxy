@@ -53,6 +53,27 @@ fn corpus_n64_compiles_and_matches_ast() {
 }
 
 #[test]
+fn corpus_pkm_compiles_and_matches_ast() {
+    let Some(src) = read_template("pkm.hexpat") else {
+        eprintln!("skip: pkm.hexpat not present in {CORPUS_ROOT}");
+        return;
+    };
+    // PKMHeader: char[4] + char[2] + u16 + u16 + u16 + u16 + u16 = 16 bytes.
+    let mut bytes = Vec::with_capacity(16);
+    bytes.extend_from_slice(b"PKM ");
+    bytes.extend_from_slice(b"20");
+    bytes.extend_from_slice(&3u16.to_be_bytes()); // ETC2PACKAGE_RGBA_NO_MIPMAPS
+    bytes.extend_from_slice(&64u16.to_be_bytes());
+    bytes.extend_from_slice(&64u16.to_be_bytes());
+    bytes.extend_from_slice(&64u16.to_be_bytes());
+    bytes.extend_from_slice(&64u16.to_be_bytes());
+    let (ast, bc_run) = run_both(&src, bytes);
+    assert!(ast.terminal_error.is_none(), "AST: {:?}", ast.terminal_error);
+    assert!(bc_run.terminal_error.is_none(), "BC: {:?}", bc_run.terminal_error);
+    assert_eq!(ast.nodes, bc_run.nodes);
+}
+
+#[test]
 fn corpus_cda_compiles_and_matches_ast() {
     let Some(src) = read_template("cda.hexpat") else {
         eprintln!("skip: cda.hexpat not present in {CORPUS_ROOT}");

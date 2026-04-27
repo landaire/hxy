@@ -285,6 +285,38 @@ fn top_level_placement_char_array_matches_ast() {
 }
 
 #[test]
+fn simple_enum_inside_struct_matches_ast() {
+    let src = "\
+enum Tag : u8 {
+    A,
+    B,
+    C
+};
+struct S {
+    Tag tag;
+    u16 value;
+};
+S s;
+";
+    let bytes = vec![1, 0xCD, 0xAB];
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}
+
+#[test]
+fn decorative_attrs_pass_through_matches_ast() {
+    // `[[name(...), comment(...)]]` are pure pass-through to the
+    // emitted node's attr list -- the renderer reads them but the
+    // VM doesn't need to do anything special.
+    let src = "u32 magic [[name(\"Magic\"), comment(\"file magic\")]];\n";
+    let bytes = 0xDEADBEEFu32.to_le_bytes().to_vec();
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "name" && v == "Magic"));
+    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "comment" && v == "file magic"));
+}
+
+#[test]
 fn top_level_placement_struct_matches_ast() {
     // Real-world shape from cda.hexpat: two top-level placed structs.
     let src = "\

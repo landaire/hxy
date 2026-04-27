@@ -370,6 +370,14 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
+        // Pre-register every enum decl into `self.types` so
+        // `read_enum` (which looks up the backing type by name and
+        // evaluates variant value expressions) can resolve. The
+        // AST walker does this in `collect_decl`; the bytecode
+        // path needs the same setup.
+        for decl in &program.enum_decls {
+            self.types.insert(decl.name.clone(), TypeDef::Enum(decl.clone()));
+        }
         // Top-level statements run with no enclosing parent. EOF
         // tolerance applies here: a top-level read past EOF becomes
         // a diagnostic, mirroring `exec_program`'s behaviour.
@@ -449,6 +457,27 @@ impl<S: HexSource> Interpreter<S> {
                     self.exec_bytecode_struct(
                         program, body, &name_str, &display, parent, stack, pending_attrs, &attrs,
                     )?;
+                }
+                Op::ReadEnum { id, name } => {
+                    let name_str = program.idents.get(name.0).to_owned();
+                    let decl = program.enum_decls[id.0 as usize].clone();
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_enum(&name_str, &decl, parent, &attrs);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+                Op::PushAttrs(id) => {
+                    pending_attrs.extend_from_slice(&program.attr_lists[id.0 as usize]);
                 }
                 Op::PlacementSeek => {
                     let offset_val = stack

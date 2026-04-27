@@ -82,6 +82,17 @@ pub struct Pc(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct BodyId(pub u32);
 
+/// Index into [`Program::enum_decls`]. Each top-level enum decl
+/// the compile pass registers gets one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EnumId(pub u32);
+
+/// Index into [`Program::attr_lists`]. A single attr list can be
+/// shared between multiple ops (decorative attrs on a placement vs.
+/// the read it modifies, for example).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AttrListId(pub u32);
+
 /// Intern table for identifiers (or string literals -- two of these
 /// live on a [`Program`], one per kind). Insertion is O(1) hashed;
 /// lookup is `u32 -> &str`.
@@ -154,6 +165,12 @@ pub enum Op {
     // ---- reads (host-effect ops) ----
     ReadPrim { ty: TypeId, name: IdentId },
     ReadStruct { ty: TypeId, name: IdentId },
+    /// Read a registered top-level enum. The VM dispatches into
+    /// `read_enum` after ensuring the enum decl is in
+    /// `Interpreter::types` so any variant-value expressions can
+    /// resolve. Backing-struct enums (rar's vint-style) work too,
+    /// since `read_enum` already handles them.
+    ReadEnum { id: EnumId, name: IdentId },
     /// Fixed-size primitive array `Type name[N]` where `N` is a
     /// literal integer at compile time. The VM dispatches into
     /// `read_array`, which folds char-typed reads down to a single
@@ -171,6 +188,16 @@ pub enum Op {
     ReadArrayDyn { ty: TypeId, name: IdentId },
     ReadCharArr { name: IdentId }, // count on stack
     ReadDynArr { ty: TypeId, name: IdentId, pred: Pc, end: Pc },
+
+    /// Append a pre-baked attribute list (key/value pairs) to the
+    /// VM's pending-attrs buffer so the next read op picks them up.
+    /// The compile pass emits one of these for every `[[attr, ...]]`
+    /// list on a field decl. Decorative attrs (`name`, `comment`,
+    /// `format`, ...) flow straight through; behaviour-changing
+    /// attrs (`transform`, `no_unique_address`, ...) still need
+    /// dedicated lowering -- the compile pass refuses such field
+    /// decls today.
+    PushAttrs(AttrListId),
 
     // ---- cursor save/restore ----
     SaveCursor,
@@ -240,8 +267,10 @@ impl Op {
             Op::Reflect(_) => "Reflect",
             Op::ReadPrim { .. } => "ReadPrim",
             Op::ReadStruct { .. } => "ReadStruct",
+            Op::ReadEnum { .. } => "ReadEnum",
             Op::ReadArrayFixed { .. } => "ReadArrayFixed",
             Op::ReadArrayDyn { .. } => "ReadArrayDyn",
+            Op::PushAttrs(_) => "PushAttrs",
             Op::ReadCharArr { .. } => "ReadCharArr",
             Op::ReadDynArr { .. } => "ReadDynArr",
             Op::SaveCursor => "SaveCursor",
@@ -285,6 +314,17 @@ pub struct Program {
     /// from multiple sites without duplicating the body, and so a
     /// recursive struct can refer to its own `BodyId` cleanly.
     pub struct_bodies: Vec<StructBody>,
+    /// Top-level enum decls registered by the compile pass, indexed
+    /// by [`EnumId`]. The VM hands the corresponding [`crate::ast::EnumDecl`]
+    /// straight to `Interpreter::read_enum`, so behaviour matches
+    /// the AST walker (variant-value expressions, struct-backed
+    /// vint-style enums, etc.) for free.
+    pub enum_decls: Vec<crate::ast::EnumDecl>,
+    /// Pre-baked attribute lists, indexed by [`AttrListId`]. Each
+    /// entry is the (key, value) pairs for one `[[attr, ...]]`
+    /// list on a field decl. The compile pass dedups by structural
+    /// equality so identical attr lists share a slot.
+    pub attr_lists: Vec<Vec<(String, String)>>,
 }
 
 /// One compiled struct body plus the metadata the VM needs to set
@@ -322,6 +362,17 @@ impl Program {
         let id = self.types.len() as u32;
         self.types.push(ty);
         TypeId(id)
+    }
+
+    /// Reserve and store an attribute list. Linear-scan dedup keeps
+    /// the table small while avoiding a second hashmap.
+    pub fn push_attr_list(&mut self, list: Vec<(String, String)>) -> AttrListId {
+        if let Some(existing) = self.attr_lists.iter().position(|l| l == &list) {
+            return AttrListId(existing as u32);
+        }
+        let id = self.attr_lists.len() as u32;
+        self.attr_lists.push(list);
+        AttrListId(id)
     }
 }
 
@@ -363,18 +414,24 @@ pub fn compile(ast: &AstProgram) -> Result<Program, CompileError> {
     let mut p = Program::new();
     let mut ctx = CompileCtx::default();
 
-    // Pass 1: collect simple top-level structs and reserve their
-    // BodyIds. Reserving up-front means a struct field (`Foo f;`)
-    // anywhere in the program can resolve `Foo`'s body without the
-    // compile order mattering.
+    // Pass 1: collect simple top-level structs + enums and reserve
+    // their BodyIds / EnumIds. Reserving up-front means a struct
+    // or enum referenced before its declaration still resolves
+    // without a second AST traversal.
     for it in &ast.items {
-        if let TopItem::Stmt(Stmt::StructDecl(decl)) = it
-            && struct_is_simple(decl)
-        {
-            let display_name = p.intern_ident(&decl.name);
-            let body_id = BodyId(p.struct_bodies.len() as u32);
-            p.struct_bodies.push(StructBody { ops: Vec::new(), display_name });
-            ctx.struct_bodies.insert(decl.name.clone(), body_id);
+        match it {
+            TopItem::Stmt(Stmt::StructDecl(decl)) if struct_is_simple(decl) => {
+                let display_name = p.intern_ident(&decl.name);
+                let body_id = BodyId(p.struct_bodies.len() as u32);
+                p.struct_bodies.push(StructBody { ops: Vec::new(), display_name });
+                ctx.struct_bodies.insert(decl.name.clone(), body_id);
+            }
+            TopItem::Stmt(Stmt::EnumDecl(decl)) if enum_is_simple(decl) => {
+                let id = EnumId(p.enum_decls.len() as u32);
+                p.enum_decls.push(decl.clone());
+                ctx.enums.insert(decl.name.clone(), id);
+            }
+            _ => {}
         }
     }
 
@@ -396,18 +453,36 @@ pub fn compile(ast: &AstProgram) -> Result<Program, CompileError> {
                 }
                 p.struct_bodies[body_id.0 as usize].ops = body_ops;
             }
+            TopItem::Stmt(Stmt::EnumDecl(decl)) => {
+                if !ctx.enums.contains_key(&decl.name) {
+                    return Err(CompileError::UnsupportedStmt(
+                        "enum decl uses an unsupported shape (template, transform attr, ...)",
+                    ));
+                }
+                // Already registered in pass 1; nothing to lower.
+            }
             TopItem::Stmt(s) => compile_top_stmt(&mut p, &ctx, s)?,
         }
     }
     Ok(p)
 }
 
+/// Enum is "simple" when the compile pass + VM can handle it
+/// without extra plumbing. Reject template params and any attrs
+/// (`[[transform(...)]]`-style attrs change runtime behaviour and
+/// would need a dedicated lowering).
+fn enum_is_simple(decl: &crate::ast::EnumDecl) -> bool {
+    decl.template_params.is_empty() && decl.attrs.0.is_empty()
+}
+
 /// Side state the compile pass threads through its passes. Maps a
 /// struct's source-level name to its reserved [`BodyId`] so field
 /// decls can resolve struct types without a runtime name lookup.
+/// Same idea for enum names -> [`EnumId`].
 #[derive(Default)]
 struct CompileCtx {
     struct_bodies: rustc_hash::FxHashMap<String, BodyId>,
+    enums: rustc_hash::FxHashMap<String, EnumId>,
 }
 
 /// True when a struct decl matches the narrow shape Phase B can
@@ -457,10 +532,26 @@ fn compile_struct_body_stmt(
                     reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
                 });
             }
+            push_attr_list_op(p, out, attrs);
             compile_field_decl(p, ctx, out, ty, name, array.as_ref())
         }
         _ => Err(CompileError::UnsupportedStmt("non-field-decl in struct body")),
     }
+}
+
+/// If `attrs` contains decorative pairs, intern them and emit a
+/// `PushAttrs` op so the next read picks them up. Empty attr lists
+/// are skipped to keep the op stream tight.
+fn push_attr_list_op(p: &mut Program, out: &mut Vec<Op>, attrs: &crate::ast::Attrs) {
+    if attrs.0.is_empty() {
+        return;
+    }
+    let pairs = ast_attrs_to_pairs(attrs);
+    if pairs.is_empty() {
+        return;
+    }
+    let id = p.push_attr_list(pairs);
+    out.push(Op::PushAttrs(id));
 }
 
 fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<(), CompileError> {
@@ -489,6 +580,10 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             // an `&mut Vec<Op>` aliased with `&mut Program`.
             let mut top_ops = std::mem::take(&mut p.ops);
             let res = (|| -> Result<(), CompileError> {
+                // Decorative attrs first so they sit in the pending
+                // buffer; the AST walker prepends them to the
+                // node's attr list before adding `hxy_placement`.
+                push_attr_list_op(p, &mut top_ops, attrs);
                 if let Some(offset_expr) = placement {
                     // Top-level placement is a plain seek (no
                     // save+restore); lower the offset, push the
@@ -526,7 +621,9 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
 /// Reject every `FieldDecl` modifier outside the small subset the
 /// VM currently implements. Placement (`@ offset`) and the array
 /// shape are *not* checked here -- the per-context compile callers
-/// validate them (top-level vs in-struct rules differ).
+/// validate them (top-level vs in-struct rules differ). Attrs are
+/// validated separately via [`field_attrs_must_be_decorative`] so
+/// the caller can intern the (key, value) pairs after gating.
 fn field_decl_must_be_plain_array_and_placement_ok(
     is_const: bool,
     is_io_var: bool,
@@ -546,16 +643,103 @@ fn field_decl_must_be_plain_array_and_placement_ok(
     if init.is_some() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
     }
-    if !attrs.0.is_empty() {
-        return Err(CompileError::UnsupportedFieldDecl { reason: "attrs" });
+    field_attrs_must_be_decorative(attrs)?;
+    Ok(())
+}
+
+/// Allow attrs that the AST walker treats as pure pass-through to
+/// the emitted node (`name`, `comment`, `format`, `sealed`,
+/// `hidden`, `inline`, `color`, `single_color`, `bitfield_order`,
+/// `right_to_left`, `static`). Reject `transform` and
+/// `no_unique_address` -- those change cursor or value behaviour
+/// and need dedicated lowering before the bytecode VM can match
+/// the AST's results.
+fn field_attrs_must_be_decorative(attrs: &crate::ast::Attrs) -> Result<(), CompileError> {
+    for a in &attrs.0 {
+        if !is_decorative_attr_name(&a.name) {
+            return Err(CompileError::UnsupportedFieldDecl {
+                reason: "field carries a behaviour-changing attr (transform / no_unique_address / unknown)",
+            });
+        }
+        // Defensive: we only know how to format literal-shaped attr
+        // arguments. A `[[name(std::format("Channel: {}", this))]]`
+        // would need expression eval; reject so we don't silently
+        // serialise the wrong string into the attr.
+        for arg in &a.args {
+            if !is_format_friendly_attr_arg(arg) {
+                return Err(CompileError::UnsupportedFieldDecl {
+                    reason: "decorative attr argument is non-literal (needs eval)",
+                });
+            }
+        }
     }
     Ok(())
 }
 
+fn is_decorative_attr_name(name: &str) -> bool {
+    matches!(
+        name,
+        "name"
+            | "comment"
+            | "format"
+            | "format_read"
+            | "format_write"
+            | "format_entries"
+            | "sealed"
+            | "hidden"
+            | "inline"
+            | "color"
+            | "single_color"
+            | "bitfield_order"
+            | "right_to_left"
+            | "left_to_right"
+            | "static"
+            | "export"
+            | "highlight_hidden"
+    )
+}
+
+fn is_format_friendly_attr_arg(e: &crate::ast::Expr) -> bool {
+    matches!(
+        e,
+        crate::ast::Expr::IntLit { .. }
+            | crate::ast::Expr::StringLit { .. }
+            | crate::ast::Expr::BoolLit { .. }
+            | crate::ast::Expr::Ident { .. }
+            | crate::ast::Expr::CharLit { .. }
+    )
+}
+
+/// Mirror the AST's `attrs_to_pairs` helper so the bytecode path
+/// emits identical (key, value) lists. Kept inline (rather than
+/// reused from `interp`) because the AST helper is a private
+/// `fn`; lifting it out is a follow-up.
+fn ast_attrs_to_pairs(attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
+    attrs
+        .0
+        .iter()
+        .map(|a| {
+            let value = a.args.first().map(format_attr_arg).unwrap_or_default();
+            (a.name.clone(), value)
+        })
+        .collect()
+}
+
+fn format_attr_arg(e: &crate::ast::Expr) -> String {
+    match e {
+        crate::ast::Expr::IntLit { value, .. } => value.to_string(),
+        crate::ast::Expr::StringLit { value, .. } => value.clone(),
+        crate::ast::Expr::BoolLit { value, .. } => value.to_string(),
+        crate::ast::Expr::Ident { name, .. } => name.clone(),
+        // Other shapes are blocked at the gate, but be defensive.
+        other => format!("{:?}", other.span()),
+    }
+}
+
 /// Lower a single `FieldDecl` (already gated by
-/// [`field_decl_must_be_plain_array_ok`]) into the right op. Shared
-/// between top-level and struct-body callers since the shape rules
-/// are identical.
+/// [`field_decl_must_be_plain_array_and_placement_ok`]) into the
+/// right op. Shared between top-level and struct-body callers
+/// since the shape rules are identical.
 fn compile_field_decl(
     p: &mut Program,
     ctx: &CompileCtx,
@@ -576,9 +760,13 @@ fn compile_field_decl(
                 let display = p.struct_bodies[body_id.0 as usize].display_name;
                 out.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
                 Ok(())
+            } else if let Some(enum_id) = ctx.enums.get(ty.leaf()) {
+                let name_id = p.intern_ident(name);
+                out.push(Op::ReadEnum { id: *enum_id, name: name_id });
+                Ok(())
             } else {
                 Err(CompileError::UnsupportedFieldDecl {
-                    reason: "field type is neither a primitive nor a registered simple struct",
+                    reason: "field type is unrecognised (not a primitive, registered simple struct, or simple enum)",
                 })
             }
         }
