@@ -6,6 +6,11 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+pub mod apply;
+pub mod columns;
+pub mod entries;
+pub mod offset;
+
 use std::path::PathBuf;
 
 use crate::files::FileId;

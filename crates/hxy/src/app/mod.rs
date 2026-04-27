@@ -54,7 +54,7 @@ pub struct HxyApp {
     /// File-mounted VFS workspaces, keyed by `WorkspaceId`. Each entry
     /// backs a `Tab::Workspace` and owns a nested `DockState` plus the
     /// `MountedVfs` that supplies child entries.
-    workspaces: std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
+    pub(crate) workspaces: std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
     next_workspace_id: u64,
     /// Active plugin VFS mounts, keyed by `MountId`. Each entry backs a
     /// `Tab::PluginMount` and supplies the byte source for child VFS
@@ -79,7 +79,7 @@ pub struct HxyApp {
     /// command contributions without going through the trait-
     /// object erasure the registry stores.
     #[cfg(not(target_arch = "wasm32"))]
-    plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>>,
+    pub(crate) plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>>,
     /// Shared per-plugin blob persistence. `None` means no SQLite
     /// pool was wired (e.g. db open failed at startup); plugins
     /// granted `persist` then see `denied` from the state interface.
@@ -180,12 +180,12 @@ pub struct HxyApp {
     /// Drained each frame; ready ops dispatch their outcome through
     /// the same paths the synchronous calls used to take.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_plugin_ops: Vec<crate::plugins::runner::PendingOp>,
+    pub(crate) pending_plugin_ops: Vec<crate::plugins::runner::PendingOp>,
     /// Auto-detected template library loaded from the user's
     /// `templates/` dir. Consulted when a file is opened so the
     /// toolbar can offer `Run ZIP.bt` directly.
     #[cfg(not(target_arch = "wasm32"))]
-    templates: crate::templates::library::TemplateLibrary,
+    pub(crate) templates: crate::templates::library::TemplateLibrary,
     /// Cmd+P / Ctrl+P unified palette. Outlives individual opens so
     /// toggling off and back on feels continuous; the state is reset
     /// explicitly when switching modes.
@@ -197,7 +197,7 @@ pub struct HxyApp {
     /// Mutually exclusive with `palette` -- entering the picker
     /// closes the palette, opening the palette cancels the picker.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_pane_pick: Option<crate::tabs::pane_pick::PendingPanePick>,
+    pub(crate) pending_pane_pick: Option<crate::tabs::pane_pick::PendingPanePick>,
     /// Persistent letter assignments for the visual pane picker,
     /// keyed by a content hash of each leaf's tabs. Lets a leaf
     /// keep the same letter across pick sessions even when other
@@ -211,21 +211,21 @@ pub struct HxyApp {
     /// renders next frame and asks Save / Don't Save / Cancel;
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
-    pending_close_tab: Option<PendingCloseTab>,
+    pub(crate) pending_close_tab: Option<PendingCloseTab>,
     /// Tracks which dock the user's last tab-bar interaction was in,
     /// so `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the correct surface
     /// (outer dock vs a specific workspace's inner dock). Toggled
     /// directly by `Alt+Tab`. Updated on mouse click via the
     /// viewer's `on_tab_button` hook.
-    tab_focus: TabFocus,
+    pub(crate) tab_focus: TabFocus,
     /// Same shape as `pending_close_tab` but written from the inner
     /// workspace dock's `on_close`. Drained alongside the regular
     /// pending-close slot; the modal treats them identically.
-    pending_close_workspace_entry: Option<PendingCloseTab>,
+    pub(crate) pending_close_workspace_entry: Option<PendingCloseTab>,
     /// `WorkspaceId`s the inner dock drained to "no tabs left except
     /// the editor". Drained post-dock to collapse the workspace back
     /// to a plain `Tab::File` in the outer dock.
-    pending_collapse_workspace: Vec<crate::files::WorkspaceId>,
+    pub(crate) pending_collapse_workspace: Vec<crate::files::WorkspaceId>,
     /// Set when the user X-clicks a `Tab::PluginMount`; drained after
     /// the dock pass to remove the mount entry from `mounts` and any
     /// matching record from `state.open_tabs`.
@@ -236,7 +236,7 @@ pub struct HxyApp {
     /// no leaf for these tabs at all, so the surrounding panes get
     /// their horizontal space back. Toggling again recreates the
     /// right-split leaf and pushes these tabs into it.
-    hidden_tool_tabs: Vec<Tab>,
+    pub(crate) hidden_tool_tabs: Vec<Tab>,
     /// Shared cross-file search state. Backs the `Tab::SearchResults`
     /// dock tab; lives on the app so query / matches survive the user
     /// closing and reopening the tab.
@@ -804,7 +804,7 @@ impl HxyApp {
     }
 
     /// Move dock focus to the tab backing `file_id`, if found.
-    fn focus_file_tab(&mut self, file_id: FileId) {
+    pub(crate) fn focus_file_tab(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::File(file_id)) {
             let node_path = path.node_path();
             let _ = self.dock.set_active_tab(path);
@@ -2566,7 +2566,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
 #[cfg(target_arch = "wasm32")]
 fn drain_pending_vfs_opens(_ctx: &egui::Context, _app: &mut HxyApp) {}
 
-fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
+pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
     use crate::commands::CommandEffect;
     match effect {
         CommandEffect::OpenFileDialog => handle_open_file(app),
@@ -2755,7 +2755,7 @@ fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_
 /// to take the space. When hidden, recreates the right-split leaf
 /// at the standard 28% width and refills it from the stash.
 #[cfg(not(target_arch = "wasm32"))]
-fn toggle_tool_panel(app: &mut HxyApp) {
+pub(crate) fn toggle_tool_panel(app: &mut HxyApp) {
     if !app.hidden_tool_tabs.is_empty() {
         // Restore.
         let to_restore = std::mem::take(&mut app.hidden_tool_tabs);
@@ -2799,7 +2799,7 @@ fn toggle_tool_panel(app: &mut HxyApp) {
 /// returning that horizontal slice to the editor + entries leaf).
 /// Show re-adds the tree as a fresh left split at the same default
 /// fraction we use for new workspaces.
-fn toggle_workspace_vfs(app: &mut HxyApp) {
+pub(crate) fn toggle_workspace_vfs(app: &mut HxyApp) {
     let Some(workspace_id) = active_workspace_id(app) else { return };
     let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
     if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::VfsTree) {
@@ -2838,7 +2838,7 @@ fn push_workspace_entry(workspace: &mut crate::files::Workspace, file_id: FileId
 /// (e.g. a hypothetical `Tab::Workspace`) means listing it here so the
 /// dock router knows to keep it out of the file editing area.
 #[cfg(not(target_arch = "wasm32"))]
-fn is_tool_tab(t: &Tab) -> bool {
+pub(crate) fn is_tool_tab(t: &Tab) -> bool {
     matches!(t, Tab::Plugins | Tab::PluginMount(_))
 }
 
@@ -3004,7 +3004,7 @@ fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, path: std::path::PathBuf) {
+pub(crate) fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, path: std::path::PathBuf) {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
 
     let data_name = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()));
@@ -4494,7 +4494,7 @@ fn register_user_plugins(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn user_plugins_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn user_plugins_dir() -> Option<std::path::PathBuf> {
     // Plugins are installed artefacts (binaries + metadata), not user
     // settings -- they belong under the data dir, not the config dir.
     // On Linux this resolves to `$XDG_DATA_HOME/hxy/plugins` (i.e.
@@ -4505,7 +4505,7 @@ fn user_plugins_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
     let base = dirs::data_dir()?;
     Some(base.join(APP_NAME).join("template-plugins"))
 }
@@ -4514,7 +4514,7 @@ fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
 /// [`TemplateLibrary`] scans this for auto-detection; distinct from
 /// `template-plugins/`, which holds compiled WASM runtimes.
 #[cfg(not(target_arch = "wasm32"))]
-fn user_templates_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn user_templates_dir() -> Option<std::path::PathBuf> {
     let base = dirs::data_dir()?;
     Some(base.join(APP_NAME).join("templates"))
 }
@@ -4657,7 +4657,7 @@ fn sync_native_menu_state(app: &mut HxyApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn toggle_active_edit_mode(app: &mut HxyApp) {
+pub(crate) fn toggle_active_edit_mode(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
     // Hard read-only files refuse the toggle the same way the lock
@@ -4675,7 +4675,7 @@ fn toggle_active_edit_mode(app: &mut HxyApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
+pub(crate) fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
     let Some(id) = active_file_id(app) else { return };
     let edit_mode = app.files.get(&id).map(|f| f.editor.edit_mode());
     if edit_mode != Some(crate::files::EditMode::Mutable) {
@@ -5301,7 +5301,7 @@ enum CloseTabAction {
 /// owns the screen, and records the op for `handle_pane_pick` to
 /// drive next frame. No-op when there's no resolvable source.
 #[cfg(not(target_arch = "wasm32"))]
-fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::PaneOp) {
+pub(crate) fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::PaneOp) {
     let Some(source) = resolve_target_leaf(app) else { return };
     app.palette.close();
     app.pending_pane_pick = Some(crate::tabs::pane_pick::PendingPanePick { op, source: Some(source) });
@@ -5311,7 +5311,7 @@ fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::PaneOp) {
 /// `Vim`, then walks every open file's editor and applies the new
 /// mode so the change takes effect immediately rather than waiting
 /// for the next file to open.
-fn toggle_vim_mode(app: &mut HxyApp) {
+pub(crate) fn toggle_vim_mode(app: &mut HxyApp) {
     let next = match app.state.read().app.input_mode {
         hxy_view::InputMode::Default => hxy_view::InputMode::Vim,
         hxy_view::InputMode::Vim => hxy_view::InputMode::Default,
@@ -5326,7 +5326,7 @@ fn toggle_vim_mode(app: &mut HxyApp) {
 /// "from" leaf (currently just `Focus`). Every leaf in the dock
 /// becomes a target. No-op when there's no dock (shouldn't happen).
 #[cfg(not(target_arch = "wasm32"))]
-fn start_pane_focus(app: &mut HxyApp) {
+pub(crate) fn start_pane_focus(app: &mut HxyApp) {
     app.palette.close();
     app.pending_pane_pick =
         Some(crate::tabs::pane_pick::PendingPanePick { op: crate::tabs::pane_pick::PaneOp::Focus, source: None });
@@ -5406,15 +5406,16 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     if !app.palette.is_open() {
         return;
     }
-    let copy_ctx = copy_palette_context(app);
-    let history_ctx = history_palette_context(app);
-    let template_ctx = template_palette_context(app);
-    let offset_ctx = offset_palette_context(app);
-    let entries = build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx, &offset_ctx);
+    let copy_ctx = crate::commands::palette::entries::copy_palette_context(app);
+    let history_ctx = crate::commands::palette::entries::history_palette_context(app);
+    let template_ctx = crate::commands::palette::entries::template_palette_context(app);
+    let offset_ctx = crate::commands::palette::offset::offset_palette_context(app);
+    let entries =
+        crate::commands::palette::entries::build_palette_entries(ctx, app, copy_ctx, history_ctx, &template_ctx, &offset_ctx);
     let Some(outcome) = crate::commands::palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::commands::palette::Outcome::Dismissed(reason) => dismiss_palette(app, reason),
-        crate::commands::palette::Outcome::Picked(action) => apply_palette_action(ctx, app, action),
+        crate::commands::palette::Outcome::Picked(action) => crate::commands::palette::apply::apply_palette_action(ctx, app, action),
     }
 }
 
@@ -5438,1345 +5439,9 @@ fn dismiss_palette(app: &mut HxyApp, reason: crate::commands::palette::DismissRe
     }
 }
 
-/// Snapshot of the active selection used by the palette to decide
-/// which `Copy as...` entries to expose. `None` when no file is
-/// focused or the selection is empty.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy)]
-struct CopyPaletteContext {
-    /// True when the selection width is a scalar integer width
-    /// (1/2/4/8 bytes), meaning the `Copy value as...` options apply.
-    scalar_width: bool,
-}
 
 #[cfg(not(target_arch = "wasm32"))]
-fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
-    let Some(id) = active_file_id(app) else { return HistoryPaletteContext::default() };
-    let Some(file) = app.files.get(&id) else { return HistoryPaletteContext::default() };
-    HistoryPaletteContext {
-        can_undo: file.editor.can_undo(),
-        can_redo: file.editor.can_redo(),
-        can_paste: file.editor.edit_mode() == crate::files::EditMode::Mutable,
-        has_active_file: true,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
-    let id = active_file_id(app)?;
-    let file = app.files.get(&id)?;
-    let sel = file.editor.selection()?;
-    let range = sel.range();
-    if range.is_empty() {
-        return None;
-    }
-    Some(CopyPaletteContext { scalar_width: matches!(range.len().get(), 1 | 2 | 4 | 8) })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Default)]
-struct HistoryPaletteContext {
-    can_undo: bool,
-    can_redo: bool,
-    /// True when the active tab is mutable and would accept a paste.
-    can_paste: bool,
-    /// True when an active file tab exists, regardless of edit mode.
-    /// Gates toggle-read-only and other tab-level actions.
-    has_active_file: bool,
-}
-
-/// Snapshot of the active tab used for ranking `Run Template`
-/// entries against its content. Empty when no file is active --
-/// `rank_entries` falls through to the default ordering in that
-/// case.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Default)]
-struct TemplatePaletteContext {
-    extension: Option<String>,
-    head_bytes: Vec<u8>,
-}
-
-/// Snapshot of the active tab's caret + source length, used by the
-/// Go-To / Select palette modes to resolve relative offsets and
-/// bounds-check resulting ranges.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Default)]
-struct OffsetPaletteContext {
-    cursor: u64,
-    source_len: u64,
-    available: bool,
-    /// `Some((start, end_exclusive))` when the active tab has a
-    /// non-empty selection (including a single-byte caret). `None`
-    /// means no selection exists -- caret-specific copy entries
-    /// skip themselves in that case.
-    selection: Option<(u64, u64)>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Debug)]
-enum OffsetCopy {
-    Caret,
-    SelectionRange,
-    SelectionLength,
-    FileLength,
-}
-
-/// Copy a formatted offset / length / range from the active tab to
-/// the clipboard. Used by the palette's Copy-caret / Copy-selection
-/// / Copy-file-length entries; formatting matches the status bar
-/// (current `OffsetBase` setting).
-#[cfg(not(target_arch = "wasm32"))]
-fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: OffsetCopy) {
-    let Some(id) = active_file_id(app) else { return };
-    let base = app.state.read().app.offset_base;
-    let Some(file) = app.files.get(&id) else { return };
-    let source_len = file.editor.source().len().get();
-    let sel = file.editor.selection();
-    let text = match kind {
-        OffsetCopy::Caret => {
-            let Some(sel) = sel else { return };
-            format_offset(sel.cursor.get(), base)
-        }
-        OffsetCopy::SelectionRange => {
-            let Some(sel) = sel else { return };
-            let range = sel.range();
-            let last_inclusive = range.end().get().saturating_sub(1);
-            format!(
-                "{}-{} ({} bytes)",
-                format_offset(range.start().get(), base),
-                format_offset(last_inclusive, base),
-                format_offset(range.len().get(), base),
-            )
-        }
-        OffsetCopy::SelectionLength => {
-            let Some(sel) = sel else { return };
-            format_offset(sel.range().len().get(), base)
-        }
-        OffsetCopy::FileLength => format_offset(source_len, base),
-    };
-    ctx.copy_text(text);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
-    let Some(id) = active_file_id(app) else { return OffsetPaletteContext::default() };
-    let Some(file) = app.files.get(&id) else { return OffsetPaletteContext::default() };
-    let source_len = file.editor.source().len().get();
-    let sel = file.editor.selection();
-    let cursor = sel.map(|s| s.cursor.get()).unwrap_or(0);
-    let selection = sel.map(|s| {
-        let r = s.range();
-        (r.start().get(), r.end().get())
-    });
-    OffsetPaletteContext { cursor, source_len, available: true, selection }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
-    let Some(id) = active_file_id(app) else { return TemplatePaletteContext::default() };
-    let Some(file) = app.files.get(&id) else { return TemplatePaletteContext::default() };
-    let extension =
-        file.root_path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
-    let source_len = file.editor.source().len().get();
-    let window = source_len.min(crate::templates::library::DETECTION_WINDOW as u64);
-    let head_bytes = if window == 0 {
-        Vec::new()
-    } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window))
-    {
-        file.editor.source().read(range).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    TemplatePaletteContext { extension, head_bytes }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn build_palette_entries(
-    ctx: &egui::Context,
-    app: &HxyApp,
-    copy_ctx: Option<CopyPaletteContext>,
-    history_ctx: HistoryPaletteContext,
-    template_ctx: &TemplatePaletteContext,
-    offset_ctx: &OffsetPaletteContext,
-) -> Vec<egui_palette::Entry<crate::commands::palette::Action>> {
-    use crate::commands::palette::Action;
-    use crate::commands::palette::Mode;
-    use egui_phosphor::regular as icon;
-
-    let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
-    let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
-    match app.palette.mode {
-        Mode::Main => {
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-file-new"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::NewFile),
-                )
-                .with_icon(icon::FILE_PLUS)
-                .with_shortcut(fmt(&NEW_FILE)),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("toolbar-open-file"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::OpenFile),
-                )
-                .with_icon(icon::FOLDER_OPEN),
-            );
-            // "Open recent" cascades into a filtered list of recently
-            // used files, omitting paths that are already open in the
-            // current session.
-            if !app.state.read().app.recent_files.is_empty() {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-open-recent-entry"),
-                        Action::SwitchMode(Mode::Recent),
-                    )
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
-                );
-            }
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("toolbar-browse-vfs"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::BrowseVfs),
-                )
-                .with_icon(icon::TREE_STRUCTURE),
-            );
-            // Toggle entries for the side panels. Subtitle flips
-            // between "Show" / "Hide" so the user knows which
-            // direction activation will take them without having
-            // to peek at the dock.
-            let panel_subtitle = |visible: bool| -> String {
-                hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" })
-            };
-            let console_visible = app.dock.find_tab(&Tab::Console).is_some();
-            let inspector_visible = app.dock.find_tab(&Tab::Inspector).is_some();
-            let plugins_visible = app.dock.find_tab(&Tab::Plugins).is_some();
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-console"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleConsole),
-                )
-                .with_icon(icon::TERMINAL)
-                .with_subtitle(panel_subtitle(console_visible)),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-inspector"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleInspector),
-                )
-                .with_icon(icon::EYE)
-                .with_subtitle(panel_subtitle(inspector_visible)),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-plugins"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::TogglePlugins),
-                )
-                .with_icon(icon::PUZZLE_PIECE)
-                .with_subtitle(panel_subtitle(plugins_visible)),
-            );
-
-            // Toggle the workspace VFS tree (only meaningful when the
-            // active tab is a workspace; the dispatcher no-ops
-            // otherwise so we still surface the entry for keyboard
-            // discoverability).
-            let workspace_tree_visible = app
-                .dock
-                .focused_leaf()
-                .and_then(|p| app.dock.leaf(p).ok())
-                .and_then(|leaf| leaf.tabs().get(leaf.active.0))
-                .and_then(|tab| match tab {
-                    Tab::Workspace(workspace_id) => app
-                        .workspaces
-                        .get(workspace_id)
-                        .map(|w| w.dock.find_tab(&crate::files::WorkspaceTab::VfsTree).is_some()),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            out.push(
-                egui_palette::Entry::new(
-                    "Toggle VFS panel",
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleWorkspaceVfs),
-                )
-                .with_icon(icon::TREE_STRUCTURE)
-                .with_subtitle(panel_subtitle(workspace_tree_visible)),
-            );
-
-            // Toggle the right-hand tool panel as a unit (Plugins
-            // manager + every plugin mount tab). Distinct from the
-            // single-panel Plugins toggle above.
-            let tool_panel_visible =
-                app.hidden_tool_tabs.is_empty() && app.dock.iter_all_tabs().any(|(_, t)| is_tool_tab(t));
-            out.push(
-                egui_palette::Entry::new(
-                    "Toggle tool panel",
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleToolPanel),
-                )
-                .with_icon(icon::SQUARES_FOUR)
-                .with_subtitle(panel_subtitle(tool_panel_visible)),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-run-template-entry"),
-                    Action::SwitchMode(Mode::Templates),
-                )
-                .with_icon(icon::SCROLL),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-uninstall-template"),
-                    Action::SwitchMode(Mode::Uninstall),
-                )
-                .with_icon(icon::TRASH),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-uninstall-plugin"),
-                    Action::SwitchMode(Mode::UninstallPlugin),
-                )
-                .with_subtitle(hxy_i18n::t("palette-delete-plugin-subtitle"))
-                .with_icon(icon::TRASH),
-            );
-            if history_ctx.has_active_file {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-go-to-offset-entry"),
-                        Action::SwitchMode(Mode::GoToOffset),
-                    )
-                    .with_icon(icon::CROSSHAIR),
-                );
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-select-from-offset-entry"),
-                        Action::SwitchMode(Mode::SelectFromOffset),
-                    )
-                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
-                );
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-select-range-entry"),
-                        Action::SwitchMode(Mode::SelectRange),
-                    )
-                    .with_icon(icon::BRACKETS_CURLY),
-                );
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-set-columns-local-entry"),
-                        Action::SwitchMode(Mode::SetColumnsLocal),
-                    )
-                    .with_icon(icon::COLUMNS),
-                );
-            }
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-set-columns-global-entry"),
-                    Action::SwitchMode(Mode::SetColumnsGlobal),
-                )
-                .with_icon(icon::COLUMNS_PLUS_RIGHT),
-            );
-            if history_ctx.can_undo {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("menu-edit-undo"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::Undo),
-                    )
-                    .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
-                    .with_shortcut(fmt(&UNDO)),
-                );
-            }
-            if history_ctx.can_redo {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("menu-edit-redo"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::Redo),
-                    )
-                    .with_icon(icon::ARROW_CLOCKWISE)
-                    .with_shortcut(fmt(&REDO)),
-                );
-            }
-            if history_ctx.has_active_file {
-                // Subtitle advertises the *resulting* state: when
-                // currently mutable, invoking flips us to readonly,
-                // and vice-versa. Same intent as the icon, spelled
-                // out in words so the user doesn't have to interpret
-                // padlock vs open-padlock semantics.
-                let (result_key, toggle_icon) = if history_ctx.can_paste {
-                    ("palette-toggle-readonly-result-readonly", icon::LOCK)
-                } else {
-                    ("palette-toggle-readonly-result-mutable", icon::LOCK_OPEN)
-                };
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-toggle-readonly"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleEditMode),
-                    )
-                    .with_subtitle(hxy_i18n::t(result_key))
-                    .with_icon(toggle_icon)
-                    .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
-                );
-            }
-            if history_ctx.can_paste {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("menu-edit-paste"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::Paste),
-                    )
-                    .with_icon(icon::CLIPBOARD_TEXT)
-                    .with_shortcut(fmt(&PASTE)),
-                );
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("menu-edit-paste-as-hex"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::PasteAsHex),
-                    )
-                    .with_icon(icon::CLIPBOARD_TEXT)
-                    .with_shortcut(fmt(&PASTE_AS_HEX)),
-                );
-            }
-            if history_ctx.has_active_file {
-                // Subtitles preview what would hit the clipboard so
-                // the user doesn't have to guess between hex and
-                // decimal or inclusive vs exclusive end.
-                let base = app.state.read().app.offset_base;
-                if let Some((start, end_exclusive)) = offset_ctx.selection {
-                    let last_inclusive = end_exclusive.saturating_sub(1);
-                    let len = end_exclusive.saturating_sub(start);
-                    let caret_preview = format_offset(offset_ctx.cursor, base);
-                    out.push(
-                        egui_palette::Entry::new(
-                            hxy_i18n::t("palette-copy-caret-offset"),
-                            Action::InvokeCommand(crate::commands::palette::PaletteCommand::CopyCaretOffset),
-                        )
-                        .with_icon(icon::COPY)
-                        .with_subtitle(caret_preview),
-                    );
-                    if len > 1 {
-                        let len_preview = format_offset(len, base);
-                        let range_preview = format!(
-                            "{}-{} ({} bytes)",
-                            format_offset(start, base),
-                            format_offset(last_inclusive, base),
-                            len_preview,
-                        );
-                        out.push(
-                            egui_palette::Entry::new(
-                                hxy_i18n::t("palette-copy-selection-range"),
-                                Action::InvokeCommand(crate::commands::palette::PaletteCommand::CopySelectionRange),
-                            )
-                            .with_icon(icon::COPY)
-                            .with_subtitle(range_preview),
-                        );
-                        out.push(
-                            egui_palette::Entry::new(
-                                hxy_i18n::t("palette-copy-selection-length"),
-                                Action::InvokeCommand(crate::commands::palette::PaletteCommand::CopySelectionLength),
-                            )
-                            .with_icon(icon::COPY)
-                            .with_subtitle(len_preview),
-                        );
-                    }
-                }
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-copy-file-length"),
-                        Action::InvokeCommand(crate::commands::palette::PaletteCommand::CopyFileLength),
-                    )
-                    .with_icon(icon::COPY)
-                    .with_subtitle(format_offset(offset_ctx.source_len, base)),
-                );
-            }
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-compare-files"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::CompareFiles),
-                )
-                .with_icon(icon::COLUMNS)
-                .with_subtitle(hxy_i18n::t("palette-compare-files-subtitle")),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-compare-files-dialog"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::CompareFilesDialog),
-                )
-                .with_icon(icon::COLUMNS)
-                .with_subtitle(hxy_i18n::t("palette-compare-files-dialog-subtitle")),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-split-right"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::SplitRight),
-                )
-                .with_icon(icon::ARROW_SQUARE_RIGHT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-split-left"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::SplitLeft),
-                )
-                .with_icon(icon::ARROW_SQUARE_LEFT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-split-down"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::SplitDown),
-                )
-                .with_icon(icon::ARROW_SQUARE_DOWN),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-split-up"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::SplitUp),
-                )
-                .with_icon(icon::ARROW_SQUARE_UP),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-merge-right"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MergeRight),
-                )
-                .with_icon(icon::ARROW_LINE_RIGHT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-merge-left"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MergeLeft),
-                )
-                .with_icon(icon::ARROW_LINE_LEFT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-merge-down"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MergeDown),
-                )
-                .with_icon(icon::ARROW_LINE_DOWN),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-merge-up"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MergeUp),
-                )
-                .with_icon(icon::ARROW_LINE_UP),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-move-tab-right"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MoveTabRight),
-                )
-                .with_icon(icon::ARROW_FAT_RIGHT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-move-tab-left"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MoveTabLeft),
-                )
-                .with_icon(icon::ARROW_FAT_LEFT),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-move-tab-down"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MoveTabDown),
-                )
-                .with_icon(icon::ARROW_FAT_DOWN),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-move-tab-up"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MoveTabUp),
-                )
-                .with_icon(icon::ARROW_FAT_UP),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-move-tab-visual"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MoveTabVisual),
-                )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
-                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-merge-visual"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::MergeVisual),
-                )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
-                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-focus-pane"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::FocusPane),
-                )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
-                .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle"))
-                .with_shortcut(fmt(&FOCUS_PANE)),
-            );
-            let vim_active = matches!(app.state.read().app.input_mode, hxy_view::InputMode::Vim);
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-toggle-vim"),
-                    Action::InvokeCommand(crate::commands::palette::PaletteCommand::ToggleVim),
-                )
-                .with_icon(icon::KEYBOARD)
-                .with_subtitle(hxy_i18n::t(if vim_active {
-                    "palette-toggle-vim-subtitle-on"
-                } else {
-                    "palette-toggle-vim-subtitle-off"
-                })),
-            );
-            if let Some(copy) = copy_ctx {
-                for (label, kind) in crate::files::copy::BYTES_MENU {
-                    let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
-                        .with_icon(icon::COPY);
-                    if matches!(kind, CopyKind::BytesLossyUtf8) {
-                        entry = entry.with_shortcut(fmt(&COPY_BYTES));
-                    } else if matches!(kind, CopyKind::BytesHexSpaced) {
-                        entry = entry.with_shortcut(fmt(&COPY_HEX));
-                    }
-                    out.push(entry);
-                }
-                if copy.scalar_width {
-                    for (label, kind) in crate::files::copy::VALUE_MENU {
-                        out.push(
-                            egui_palette::Entry::new(format!("Copy value: {label}"), Action::Copy(*kind))
-                                .with_icon(icon::COPY),
-                        );
-                    }
-                }
-            }
-            // Open files don't appear in Mode::Main any more --
-            // file-switching has its own mode (Cmd+P / `Mode::QuickOpen`)
-            // so the full command palette stays focused on commands +
-            // plugin contributions instead of mixing the two.
-            // Plugin-contributed entries. Each loaded plugin is
-            // asked for its current command list (gated host-side
-            // by the `commands` permission); the host prefixes the
-            // displayed label with the plugin's name so duplicates
-            // across plugins stay disambiguated. The `puzzle-piece`
-            // icon is the fallback when the plugin doesn't supply
-            // one of its own.
-            for plugin in &app.plugin_handlers {
-                let plugin_name = plugin.name().to_owned();
-                for cmd in plugin.list_commands() {
-                    let mut entry = egui_palette::Entry::new(
-                        format!("{plugin_name}: {}", cmd.label),
-                        Action::InvokePluginCommand { plugin_name: plugin_name.clone(), command_id: cmd.id },
-                    );
-                    if let Some(s) = cmd.subtitle {
-                        entry = entry.with_subtitle(s);
-                    }
-                    entry = entry.with_icon(cmd.icon.unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
-                    out.push(entry);
-                }
-            }
-        }
-        Mode::QuickOpen => {
-            // Files-only fast switcher. Lists every open file in
-            // `app.files` plus recent paths the user could re-open.
-            // No commands, plugin entries, or copy actions -- this
-            // is the "I just want to switch tabs" path.
-            for (id, file) in &app.files {
-                let mut entry =
-                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon(icon::FILE);
-                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
-            // Recent files that aren't currently open. Same Action
-            // as the cascading Recent mode, just inline so the user
-            // doesn't need to hop modes for the common case.
-            let open_paths: std::collections::HashSet<std::path::PathBuf> =
-                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
-            for recent in &app.state.read().app.recent_files {
-                if open_paths.contains(&recent.path) {
-                    continue;
-                }
-                let name = recent
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| recent.path.display().to_string());
-                let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
-                if let Some(parent) = recent.path.parent() {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
-        }
-        Mode::Templates => {
-            let ranked = app.templates.rank_entries(template_ctx.extension.as_deref(), &template_ctx.head_bytes);
-            for entry in ranked {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),
-                        Action::RunTemplate(entry.path.clone()),
-                    )
-                    .with_subtitle(entry.path.display().to_string())
-                    .with_icon(icon::SCROLL),
-                );
-            }
-            out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-install-template"), Action::InstallTemplate)
-                    .with_subtitle(hxy_i18n::t("palette-install-template-subtitle"))
-                    .with_icon(icon::DOWNLOAD),
-            );
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("palette-uninstall-template"),
-                    Action::SwitchMode(Mode::Uninstall),
-                )
-                .with_icon(icon::TRASH),
-            );
-        }
-        Mode::Uninstall => {
-            if let Some(dir) = user_templates_dir() {
-                for path in crate::templates::library::list_installed_templates(&dir) {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    out.push(
-                        egui_palette::Entry::new(
-                            hxy_i18n::t_args("palette-delete-template-fmt", &[("name", &name)]),
-                            Action::UninstallTemplate(path.clone()),
-                        )
-                        .with_subtitle(path.display().to_string())
-                        .with_icon(icon::TRASH),
-                    );
-                }
-            }
-        }
-        Mode::UninstallPlugin => {
-            // Pull from both plugin directories so a single palette
-            // mode covers handler plugins (`plugins/`) and template
-            // runtimes (`template-plugins/`). The dispatcher handles
-            // both the same way: delete the .wasm + sidecar, drop
-            // grant, clear state, rescan.
-            for dir in [user_plugins_dir(), user_template_plugins_dir()].into_iter().flatten() {
-                let Ok(read) = std::fs::read_dir(&dir) else { continue };
-                let mut wasms: Vec<std::path::PathBuf> = read
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wasm"))
-                    .collect();
-                wasms.sort();
-                for path in wasms {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    out.push(
-                        egui_palette::Entry::new(
-                            hxy_i18n::t_args("palette-delete-plugin-fmt", &[("name", &name)]),
-                            Action::UninstallPlugin(path.clone()),
-                        )
-                        .with_subtitle(path.display().to_string())
-                        .with_icon(icon::TRASH),
-                    );
-                }
-            }
-        }
-        Mode::Recent => {
-            // Already-open paths would just switch focus; FocusFile
-            // from Main covers that case cleanly. Filter them out
-            // here so "Open recent" only offers files that would
-            // actually open a fresh tab.
-            let open_paths: std::collections::HashSet<std::path::PathBuf> =
-                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
-            for recent in &app.state.read().app.recent_files {
-                if open_paths.contains(&recent.path) {
-                    continue;
-                }
-                let name = recent
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| recent.path.display().to_string());
-                let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
-                if let Some(parent) = recent.path.parent() {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
-        }
-        Mode::CompareSideA | Mode::CompareSideB => {
-            let side = if matches!(app.palette.mode, Mode::CompareSideA) {
-                crate::commands::palette::CompareSide::A
-            } else {
-                crate::commands::palette::CompareSide::B
-            };
-            let picked_a = app.palette.compare_pick.as_ref().and_then(|p| p.picked_a.clone());
-            for file in app.files.values() {
-                // Anonymous buffers can't be compared (no stable
-                // identity to read fresh bytes from), so they don't
-                // appear in the picker.
-                let Some(source) = file.source_kind.clone() else {
-                    continue;
-                };
-                // On the B pick, drop A from the list so the user
-                // can't accidentally compare a file with itself.
-                if matches!(side, crate::commands::palette::CompareSide::B)
-                    && picked_a.as_ref().is_some_and(|a| a == &source)
-                {
-                    continue;
-                }
-                let mut entry =
-                    egui_palette::Entry::new(file.display_name.clone(), Action::CompareSelectSource { side, source })
-                        .with_icon(icon::FILE);
-                if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
-            let recent_mode = match side {
-                crate::commands::palette::CompareSide::A => Mode::CompareSideARecent,
-                crate::commands::palette::CompareSide::B => Mode::CompareSideBRecent,
-            };
-            if !app.state.read().app.recent_files.is_empty() {
-                out.push(
-                    egui_palette::Entry::new(hxy_i18n::t("palette-open-recent-entry"), Action::SwitchMode(recent_mode))
-                        .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
-                );
-            }
-            out.push(
-                egui_palette::Entry::new(hxy_i18n::t("compare-picker-browse"), Action::CompareBrowse(side))
-                    .with_icon(icon::FOLDER_OPEN),
-            );
-        }
-        Mode::CompareSideARecent | Mode::CompareSideBRecent => {
-            let side = if matches!(app.palette.mode, Mode::CompareSideARecent) {
-                crate::commands::palette::CompareSide::A
-            } else {
-                crate::commands::palette::CompareSide::B
-            };
-            let picked_a_path =
-                app.palette.compare_pick.as_ref().and_then(|p| p.picked_a.as_ref()).and_then(|s| match s {
-                    TabSource::Filesystem(p) => Some(p.clone()),
-                    _ => None,
-                });
-            let open_paths: std::collections::HashSet<std::path::PathBuf> =
-                app.files.values().filter_map(|f| f.root_path().cloned()).collect();
-            for recent in &app.state.read().app.recent_files {
-                if open_paths.contains(&recent.path) {
-                    continue;
-                }
-                if matches!(side, crate::commands::palette::CompareSide::B)
-                    && picked_a_path.as_ref().is_some_and(|a| a == &recent.path)
-                {
-                    continue;
-                }
-                let name = recent
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| recent.path.display().to_string());
-                let mut entry = egui_palette::Entry::new(
-                    name,
-                    Action::CompareSelectSource { side, source: TabSource::Filesystem(recent.path.clone()) },
-                )
-                .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
-                if let Some(parent) = recent.path.parent() {
-                    entry = entry.with_subtitle(parent.display().to_string());
-                }
-                out.push(entry);
-            }
-        }
-        Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange => {
-            // Argument-style modes -- the palette's query *is* the
-            // input. Build a single dynamic entry that's actionable
-            // only when the query parses; invalid queries show an
-            // Invalid row that picks to a no-op (no dispatch arm).
-            let query = app.palette.inner.query.trim();
-            if !offset_ctx.available {
-                // Surface the failure mode instead of returning an
-                // empty list -- otherwise the user just sees the
-                // generic "No matches." panel and has no idea why
-                // their range didn't take.
-                invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
-            } else {
-                build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
-            }
-        }
-        Mode::SetColumnsLocal | Mode::SetColumnsGlobal => {
-            let query = app.palette.inner.query.trim();
-            // Local needs an active tab to write into; Global writes
-            // straight into the persisted settings so it's always
-            // available.
-            if matches!(app.palette.mode, Mode::SetColumnsLocal) && !offset_ctx.available {
-                invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
-            } else {
-                build_columns_entries(&mut out, app.palette.mode, query);
-            }
-        }
-        Mode::PluginCascade => {
-            // The plugin's `Cascade` outcome stashed both the
-            // commands list and the plugin name on `palette.plugin_cascade`.
-            // We render entries from that snapshot rather than
-            // re-asking the plugin every frame -- otherwise the
-            // user's selection would jitter as the list rebuilt.
-            if let Some(cascade) = app.palette.plugin_cascade.as_ref() {
-                let plugin_name = &cascade.plugin_name;
-                for cmd in &cascade.commands {
-                    let mut entry = egui_palette::Entry::new(
-                        cmd.label.clone(),
-                        Action::InvokePluginCommand { plugin_name: plugin_name.clone(), command_id: cmd.id.clone() },
-                    );
-                    if let Some(s) = cmd.subtitle.clone() {
-                        entry = entry.with_subtitle(s);
-                    }
-                    entry = entry.with_icon(cmd.icon.clone().unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
-                    out.push(entry);
-                }
-            }
-        }
-        Mode::PluginPrompt => {
-            // Argument-style prompt: one dynamic entry whose label
-            // is the user's current input, action sends the answer
-            // back to the plugin. Mirrors the Go-To Offset / Select
-            // Range modes -- bypass_filter is on for this mode so
-            // the entry isn't fuzzy-filtered out as the user types.
-            if let Some(prompt) = app.palette.plugin_prompt.as_ref() {
-                let answer = app.palette.inner.query.clone();
-                let label = if answer.is_empty() { hxy_i18n::t("palette-plugin-prompt-empty") } else { answer.clone() };
-                let mut entry = egui_palette::Entry::new(
-                    label,
-                    Action::RespondToPlugin {
-                        plugin_name: prompt.plugin_name.clone(),
-                        command_id: prompt.command_id.clone(),
-                        answer,
-                    },
-                )
-                .with_icon(icon::ARROW_BEND_DOWN_LEFT);
-                entry = entry.with_subtitle(prompt.title.clone());
-                out.push(entry);
-            }
-        }
-    }
-    out
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn build_offset_entries(
-    out: &mut Vec<egui_palette::Entry<crate::commands::palette::Action>>,
-    mode: crate::commands::palette::Mode,
-    query: &str,
-    offset_ctx: &OffsetPaletteContext,
-) {
-    use crate::commands::palette::Action;
-    use crate::commands::palette::Mode;
-    use egui_phosphor::regular as icon;
-
-    if query.is_empty() {
-        return;
-    }
-    match mode {
-        Mode::GoToOffset => match crate::commands::goto::parse_number(query).and_then(|n| {
-            n.resolve(offset_ctx.cursor, offset_ctx.source_len).ok_or(crate::commands::goto::ParseError::OutOfRange)
-        }) {
-            Ok(target) => {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
-                        Action::GoToOffset(target),
-                    )
-                    .with_icon(icon::CROSSHAIR)
-                    .with_subtitle(format!("{target}")),
-                );
-            }
-            Err(e) => invalid_entry(out, query, &e.to_string()),
-        },
-        Mode::SelectFromOffset => match crate::commands::goto::parse_number(query) {
-            // A byte count. Relative doesn't make sense here (what
-            // is it relative to?), but treating `+N`/`-N` like `N`
-            // /`abs(N)` would silently accept typos; require the
-            // absolute form so the input matches the mental model.
-            Ok(crate::commands::goto::Number::Absolute(count)) if count > 0 => {
-                let start = offset_ctx.cursor;
-                let available = offset_ctx.source_len.saturating_sub(start);
-                if available == 0 {
-                    invalid_entry(out, query, "at EOF");
-                    return;
-                }
-                let clamped = count.min(available);
-                let end_exclusive = start + clamped;
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t_args(
-                            "palette-select-from-offset-fmt",
-                            &[("count", &format!("{clamped}")), ("start", &format!("0x{start:X}"))],
-                        ),
-                        Action::SetSelection { start, end_exclusive },
-                    )
-                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL)
-                    .with_subtitle(format!("0x{start:X} .. 0x{end_exclusive:X}")),
-                );
-            }
-            Ok(crate::commands::goto::Number::Absolute(_)) => invalid_entry(out, query, "count must be nonzero"),
-            Ok(crate::commands::goto::Number::Relative(_)) => {
-                invalid_entry(out, query, "count must be absolute (no + / - prefix)")
-            }
-            Err(e) => invalid_entry(out, query, &e.to_string()),
-        },
-        Mode::SelectRange => match crate::commands::goto::parse_range(query, offset_ctx.source_len) {
-            Ok(range) => {
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t_args(
-                            "palette-select-range-fmt",
-                            &[
-                                ("start", &format!("0x{:X}", range.start)),
-                                ("end", &format!("0x{:X}", range.end_exclusive)),
-                                ("count", &format!("{}", range.len())),
-                            ],
-                        ),
-                        Action::SetSelection { start: range.start, end_exclusive: range.end_exclusive },
-                    )
-                    .with_icon(icon::BRACKETS_CURLY),
-                );
-            }
-            Err(e) => invalid_entry(out, query, &e.to_string()),
-        },
-        _ => {}
-    }
-}
-
-/// Match the Settings panel's slider cap so a user can't end up
-/// with a hex view they can't comfortably read. The underlying
-/// [`hxy_core::ColumnCount`] allows up to `u16::MAX`, but anything
-/// above this overflows even ultrawide monitors at sane font sizes.
-#[cfg(not(target_arch = "wasm32"))]
-const PALETTE_MAX_COLUMNS: u16 = 64;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn build_columns_entries(
-    out: &mut Vec<egui_palette::Entry<crate::commands::palette::Action>>,
-    mode: crate::commands::palette::Mode,
-    query: &str,
-) {
-    use crate::commands::palette::Action;
-    use crate::commands::palette::ColumnScope;
-    use crate::commands::palette::Mode;
-    use egui_phosphor::regular as icon;
-
-    if query.is_empty() {
-        return;
-    }
-    let scope = match mode {
-        Mode::SetColumnsLocal => ColumnScope::Local,
-        Mode::SetColumnsGlobal => ColumnScope::Global,
-        _ => return,
-    };
-    let parsed = match crate::commands::goto::parse_number(query) {
-        Ok(crate::commands::goto::Number::Absolute(n)) => n,
-        Ok(crate::commands::goto::Number::Relative(_)) => {
-            invalid_entry(out, query, "column count must be absolute (no + / - prefix)");
-            return;
-        }
-        Err(e) => {
-            invalid_entry(out, query, &e.to_string());
-            return;
-        }
-    };
-    let n_u16 = match u16::try_from(parsed) {
-        Ok(n) if (1..=u64::from(PALETTE_MAX_COLUMNS)).contains(&parsed) => n,
-        _ => {
-            invalid_entry(
-                out,
-                query,
-                &hxy_i18n::t_args("palette-invalid-columns-range", &[("max", &PALETTE_MAX_COLUMNS.to_string())]),
-            );
-            return;
-        }
-    };
-    let count = match hxy_core::ColumnCount::new(n_u16) {
-        Ok(c) => c,
-        Err(e) => {
-            invalid_entry(out, query, &e.to_string());
-            return;
-        }
-    };
-    let (key, scope_icon) = match scope {
-        ColumnScope::Local => ("palette-set-columns-local-fmt", icon::COLUMNS),
-        ColumnScope::Global => ("palette-set-columns-global-fmt", icon::COLUMNS_PLUS_RIGHT),
-    };
-    out.push(
-        egui_palette::Entry::new(
-            hxy_i18n::t_args(key, &[("count", &n_u16.to_string())]),
-            Action::SetColumns { scope, count },
-        )
-        .with_icon(scope_icon),
-    );
-}
-
-/// Push a non-actionable "Invalid: {reason}" row. Activating it
-/// falls through to `apply_palette_action`'s existing Invalid arm
-/// which just closes the palette -- keeps a visible indication
-/// that the query isn't parseable without silently showing an
-/// empty list.
-#[cfg(not(target_arch = "wasm32"))]
-fn invalid_entry(out: &mut Vec<egui_palette::Entry<crate::commands::palette::Action>>, query: &str, reason: &str) {
-    use crate::commands::palette::Action;
-    use egui_phosphor::regular as icon;
-
-    out.push(
-        egui_palette::Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), Action::NoOp)
-            .with_icon(icon::WARNING)
-            .with_subtitle(query.to_owned()),
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::commands::palette::Action) {
-    use crate::commands::CommandEffect;
-    match action {
-        crate::commands::palette::Action::InvokeCommand(id) => {
-            app.palette.close();
-            {
-                use crate::commands::palette::PaletteCommand;
-                use crate::commands::DockDir;
-                match id {
-                    PaletteCommand::NewFile => handle_new_file(app),
-                    PaletteCommand::OpenFile => apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
-                    PaletteCommand::BrowseVfs => apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
-                    PaletteCommand::ToggleWorkspaceVfs => toggle_workspace_vfs(app),
-                    PaletteCommand::ToggleToolPanel => toggle_tool_panel(app),
-                    PaletteCommand::ToggleConsole => app.toggle_console(),
-                    PaletteCommand::ToggleInspector => app.toggle_inspector(),
-                    PaletteCommand::TogglePlugins => app.toggle_plugins(),
-                    PaletteCommand::Undo => apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
-                    PaletteCommand::Redo => apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),
-                    PaletteCommand::Paste => paste_active_file(app, false),
-                    PaletteCommand::PasteAsHex => paste_active_file(app, true),
-                    PaletteCommand::SplitRight => {
-                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Right))
-                    }
-                    PaletteCommand::SplitLeft => {
-                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Left))
-                    }
-                    PaletteCommand::SplitUp => apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Up)),
-                    PaletteCommand::SplitDown => {
-                        apply_command_effect(ctx, app, CommandEffect::DockSplit(DockDir::Down))
-                    }
-                    PaletteCommand::MergeRight => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Right))
-                    }
-                    PaletteCommand::MergeLeft => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Left))
-                    }
-                    PaletteCommand::MergeUp => apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Up)),
-                    PaletteCommand::MergeDown => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMerge(DockDir::Down))
-                    }
-                    PaletteCommand::MoveTabRight => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Right))
-                    }
-                    PaletteCommand::MoveTabLeft => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Left))
-                    }
-                    PaletteCommand::MoveTabUp => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Up))
-                    }
-                    PaletteCommand::MoveTabDown => {
-                        apply_command_effect(ctx, app, CommandEffect::DockMoveTab(DockDir::Down))
-                    }
-                    PaletteCommand::MoveTabVisual => start_pane_pick(app, crate::tabs::pane_pick::PaneOp::MoveTab),
-                    PaletteCommand::MergeVisual => start_pane_pick(app, crate::tabs::pane_pick::PaneOp::Merge),
-                    PaletteCommand::FocusPane => start_pane_focus(app),
-                    PaletteCommand::ToggleVim => toggle_vim_mode(app),
-                    PaletteCommand::ToggleEditMode => toggle_active_edit_mode(app),
-                    PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
-                    PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
-                    PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
-                    PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
-                    PaletteCommand::CompareFiles => crate::compare::picker::start_compare_palette_flow(app),
-                    PaletteCommand::CompareFilesDialog => crate::compare::picker::start_compare_picker(app),
-                }
-            }
-        }
-        crate::commands::palette::Action::FocusFile(id) => {
-            app.palette.close();
-            app.focus_file_tab(id);
-        }
-        crate::commands::palette::Action::RunTemplate(path) => {
-            app.palette.close();
-            if let Some(id) = active_file_id(app) {
-                run_template_from_path(ctx, app, id, path);
-            }
-        }
-        crate::commands::palette::Action::SwitchMode(mode) => {
-            app.palette.open_at(mode);
-        }
-        crate::commands::palette::Action::InstallTemplate => {
-            app.palette.close();
-            install_template_from_dialog(app);
-        }
-        crate::commands::palette::Action::UninstallTemplate(path) => {
-            app.palette.close();
-            uninstall_template(app, &path);
-        }
-        crate::commands::palette::Action::UninstallPlugin(path) => {
-            app.palette.close();
-            uninstall_plugin(app, &path);
-        }
-        crate::commands::palette::Action::Copy(kind) => {
-            app.palette.close();
-            if let Some(id) = active_file_id(app)
-                && let Some(file) = app.files.get(&id)
-            {
-                do_copy(ctx, file, kind);
-            }
-        }
-        crate::commands::palette::Action::OpenRecent(path) => {
-            app.palette.close();
-            apply_command_effect(ctx, app, CommandEffect::OpenRecent(path));
-        }
-        crate::commands::palette::Action::GoToOffset(target) => {
-            app.palette.close();
-            if let Some(id) = active_file_id(app)
-                && let Some(file) = app.files.get_mut(&id)
-            {
-                let max = file.editor.source().len().get().saturating_sub(1);
-                let clamped = hxy_core::ByteOffset::new(target.min(max));
-                file.editor.set_selection(Some(hxy_core::Selection::caret(clamped)));
-                // Only snap the viewport when the target isn't already
-                // on screen; a nearby jump within the visible range
-                // should leave scroll exactly where it is.
-                if !file.editor.is_offset_visible(clamped) {
-                    file.editor.set_scroll_to_byte(clamped);
-                }
-            }
-        }
-        crate::commands::palette::Action::SetSelection { start, end_exclusive } => {
-            app.palette.close();
-            if let Some(id) = active_file_id(app)
-                && let Some(file) = app.files.get_mut(&id)
-            {
-                let source_len = file.editor.source().len().get();
-                if source_len == 0 || end_exclusive <= start {
-                    return;
-                }
-                let last = end_exclusive.saturating_sub(1).min(source_len.saturating_sub(1));
-                let anchor = hxy_core::ByteOffset::new(start.min(source_len.saturating_sub(1)));
-                file.editor
-                    .set_selection(Some(hxy_core::Selection { anchor, cursor: hxy_core::ByteOffset::new(last) }));
-                if !file.editor.is_offset_visible(anchor) {
-                    file.editor.set_scroll_to_byte(anchor);
-                }
-            }
-        }
-        crate::commands::palette::Action::SetColumns { scope, count } => {
-            use crate::commands::palette::ColumnScope;
-            app.palette.close();
-            match scope {
-                ColumnScope::Local => {
-                    if let Some(id) = active_file_id(app)
-                        && let Some(file) = app.files.get_mut(&id)
-                    {
-                        file.hex_columns_override = Some(count);
-                    }
-                }
-                ColumnScope::Global => {
-                    app.state.write().app.hex_columns = count;
-                }
-            }
-        }
-        crate::commands::palette::Action::InvokePluginCommand { plugin_name, command_id } => {
-            // Look up the plugin by its self-reported name. The
-            // entry was built from the same source so a missing
-            // hit means the plugin list reshuffled (rescan, hot-
-            // reload) between palette open and activation -- log
-            // and bail rather than guess.
-            let Some(plugin) = app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() else {
-                tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin invoke target missing");
-                app.palette.close();
-                return;
-            };
-            // Close the palette immediately so the user can keep
-            // typing; the worker thread runs in the background and
-            // dispatches its outcome through `drain_pending_plugin_ops`.
-            app.palette.close();
-            let repaint = ctx.clone();
-            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
-            crate::plugins::runner::spawn_invoke(&mut ops, app, repaint, plugin, plugin_name, command_id);
-            app.pending_plugin_ops = ops;
-        }
-        crate::commands::palette::Action::RespondToPlugin { plugin_name, command_id, answer } => {
-            let Some(plugin) = app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() else {
-                tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin respond target missing");
-                app.palette.close();
-                return;
-            };
-            app.palette.close();
-            let repaint = ctx.clone();
-            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
-            crate::plugins::runner::spawn_respond(&mut ops, app, repaint, plugin, plugin_name, command_id, answer);
-            app.pending_plugin_ops = ops;
-        }
-        crate::commands::palette::Action::NoOp => {
-            // Placeholder rows (e.g. "Invalid: ..." in the Go-To
-            // cascade) pick to this. Close the palette so repeated
-            // Enter presses don't get the user stuck on an inert
-            // row, but don't dispatch any other effect.
-            app.palette.close();
-        }
-        crate::commands::palette::Action::CompareSelectSource { side, source } => {
-            use crate::commands::palette::ComparePickState;
-            use crate::commands::palette::CompareSide;
-            use crate::commands::palette::Mode;
-            match side {
-                CompareSide::A => {
-                    app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
-                    app.palette.open_at(Mode::CompareSideB);
-                }
-                CompareSide::B => {
-                    let Some(pick) = app.palette.compare_pick.take() else {
-                        app.palette.close();
-                        return;
-                    };
-                    let Some(a) = pick.picked_a else {
-                        app.palette.close();
-                        return;
-                    };
-                    app.palette.close();
-                    crate::compare::picker::spawn_compare_from_palette(app, ctx, a, source);
-                }
-            }
-        }
-        crate::commands::palette::Action::CompareBrowse(side) => {
-            use crate::commands::palette::ComparePickState;
-            use crate::commands::palette::CompareSide;
-            use crate::commands::palette::Mode;
-            let Some(path) = rfd::FileDialog::new().pick_file() else {
-                return;
-            };
-            let source = TabSource::Filesystem(path);
-            match side {
-                CompareSide::A => {
-                    app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
-                    app.palette.open_at(Mode::CompareSideB);
-                }
-                CompareSide::B => {
-                    let Some(pick) = app.palette.compare_pick.take() else {
-                        app.palette.close();
-                        return;
-                    };
-                    let Some(a) = pick.picked_a else {
-                        app.palette.close();
-                        return;
-                    };
-                    app.palette.close();
-                    crate::compare::picker::spawn_compare_from_palette(app, ctx, a, source);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn install_template_from_dialog(app: &mut HxyApp) {
+pub(crate) fn install_template_from_dialog(app: &mut HxyApp) {
     let Some(picked) = rfd::FileDialog::new().add_filter("010 Editor binary template", &["bt"]).pick_file() else {
         return;
     };
@@ -6810,7 +5475,7 @@ fn install_template_from_dialog(app: &mut HxyApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
+pub(crate) fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
     let ctx = format!("Uninstall {}", path.display());
     match std::fs::remove_file(path) {
         Ok(_) => {
@@ -6830,7 +5495,7 @@ fn uninstall_template(app: &mut HxyApp, path: &std::path::Path) {
 /// (a stale grant or leftover state shouldn't block the disk
 /// cleanup that the user actually asked for).
 #[cfg(not(target_arch = "wasm32"))]
-fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
+pub(crate) fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
     let ctx = format!("Uninstall {}", wasm_path.display());
 
     // Read the sidecar before deleting so we can scope the grant +
@@ -7104,7 +5769,7 @@ fn install_mount_tab(
     tracing::info!(plugin = %plugin_name, title = %title, id = %mount_id.get(), "mount tab installed");
 }
 
-fn handle_new_file(app: &mut HxyApp) {
+pub(crate) fn handle_new_file(app: &mut HxyApp) {
     let mut used_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for file in app.files.values() {
         if let Some(TabSource::Anonymous { id, .. }) = &file.source_kind {
@@ -8157,7 +6822,7 @@ fn copyable_status_label(
     }
 }
 
-fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
+pub(crate) fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
     match base {
         crate::settings::OffsetBase::Hex => format!("0x{value:X}"),
         crate::settings::OffsetBase::Decimal => format!("{value}"),
@@ -8208,7 +6873,7 @@ fn range_contains(ranges: &[(u64, u64)], offset: u64) -> bool {
 /// first `selection.len()` bytes as a LE integer (0-8 bytes) -- the
 /// hex view has no type context, so this is the best we can do
 /// without a template supplying sign + endianness.
-fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
+pub(crate) fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
     let Some(selection) = file.editor.selection() else { return };
     let range = selection.range();
     if range.is_empty() {
