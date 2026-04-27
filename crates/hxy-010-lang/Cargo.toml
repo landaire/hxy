@@ -23,4 +23,5 @@ thiserror = "2.0.18"
 winnow = "0.7"
 
 [dev-dependencies]
+hxy-imhex-lang = { path = "../hxy-imhex-lang" }
 insta = { version = "1.43.2", features = ["yaml"] }

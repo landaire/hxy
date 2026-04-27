@@ -415,12 +415,20 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     /// Record a primitive / enum value at the current path plus `name`.
-    /// Silent if the key already exists -- the last write wins, which
-    /// matches 010's "redeclaring the same name at the same scope
-    /// overwrites" behaviour for loops like
-    /// `while (!FEof()) { PNG_CHUNK chunk; }`.
+    /// First occurrence stores under the bare name; repeats at the
+    /// same path get an `[i]` suffix so each declaration retains its
+    /// own slot. 010 uses this to collect a series of same-named
+    /// fields into an array-like sequence (`uleb128` reads up to five
+    /// `ubyte val` fields and accesses them as `val[0]`...`val[4]`).
     fn store_field(&mut self, name: &str, value: Value) {
-        self.store_at_path(self.storage_key(name), value);
+        let prefix = self.path_prefix();
+        let slot = FieldSlot { prefix: prefix.clone(), name: name.to_owned() };
+        let count = self.field_counts.entry(slot).or_insert(0);
+        let idx = *count;
+        *count += 1;
+        let segment = if idx == 0 { name.to_owned() } else { format!("{name}[{idx}]") };
+        let key = join_path(&prefix, &segment);
+        self.store_at_path(key, value);
     }
 
     /// Insert `value` at `key` in [`field_storage`]. Lookups handle
@@ -1913,8 +1921,21 @@ impl<S: HexSource> Interpreter<S> {
                         let target_value = if let Expr::Ident { name, .. } = &**target {
                             self.lookup_ident(name)?
                         } else {
+                            // Index into a Member chain that didn't
+                            // resolve (a uleb128's `val[N]` past the
+                            // last conditional read, a sized-array
+                            // probe past the recorded element count).
+                            // Surface a Warning and return Void so
+                            // the surrounding expression degrades to
+                            // a default branch instead of trapping.
                             let target_path = self.build_path(target)?.unwrap_or_default();
-                            return Err(RuntimeError::UnresolvedIndex { target: target_path });
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("unresolved array index on `{target_path}`; returning 0"),
+                                severity: Severity::Warning,
+                                file_offset: Some(self.cursor.tell()),
+                                template_line: None,
+                            });
+                            return Ok(Value::Void);
                         };
                         let idx_value = self.eval(index)?;
                         let idx = idx_value.to_i128().ok_or_else(|| {

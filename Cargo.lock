@@ -2841,6 +2841,7 @@ name = "hxy-010-lang"
 version = "0.2.0"
 dependencies = [
  "arbitrary",
+ "hxy-imhex-lang",
  "insta",
  "rustc-hash 2.1.2",
  "thiserror 2.0.18",
