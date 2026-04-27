@@ -1407,6 +1407,23 @@ impl<S: HexSource> Interpreter<S> {
                 let Some(parent_ty) = current_parent.as_ref() else { break };
                 let Ok(TypeDef::Struct(p)) = self.lookup_type(parent_ty) else { break };
                 let next_parent = p.parent.clone();
+                // Bind the parent's template params to the args
+                // supplied by the inheritance reference. dotnet's
+                // `struct ClassWithId : RecordTypeEnumT<
+                // RecordTypeEnum::ClassWithId>` needs
+                // `_recordTypeEnumT = ClassWithId` visible while we
+                // execute RecordTypeEnumT's body in this struct's
+                // scope. Without this, the inherited body sees
+                // `_recordTypeEnumT` as an undefined name.
+                if !p.template_params.is_empty() {
+                    for (i, param_name) in p.template_params.iter().enumerate() {
+                        let arg_expr = parent_ty.template_args.get(i);
+                        let value = arg_expr
+                            .map(|e| self.eval(e).unwrap_or(Value::Void))
+                            .unwrap_or(Value::Void);
+                        self.current_scope_mut().vars.insert(param_name.clone(), value);
+                    }
+                }
                 chain.push(p.body.clone());
                 current_parent = next_parent;
             }
