@@ -2327,19 +2327,92 @@ impl<S: HexSource> Interpreter<S> {
                 // arbitrary memory regions can override later.
                 Value::UInt { value: 0, kind: PrimKind::u64() }
             }
-            "builtin::std::mem::find_string_in_range"
-            | "builtin::std::mem::find_sequence_in_range"
-            | "std::mem::find_string_in_range"
+            "builtin::std::mem::find_sequence_in_range"
             | "std::mem::find_sequence_in_range" => {
-                // Not modelled yet -- `MagicSearch<...>` and friends
-                // call this. ImHex's documented sentinel for "not
-                // found" is `-1` (signed). Templates that use this
-                // typically `if (pos < 0) break;` -- which works
-                // directly. Templates that compare against
-                // `0xFFFFFFFFFFFFFFFF` cast through a `u64 pos = ...`
-                // assignment, which `coerce_value_to_prim` truncates
-                // -1 to the all-ones u64 bit pattern for them.
-                Value::SInt { value: -1, kind: PrimKind::s128() }
+                // `find_sequence_in_range(occurrence_index,
+                // start_offset, end_offset, byte0, byte1, ...)` --
+                // search for the byte sequence within
+                // `[start, end)`. Returns the absolute offset of
+                // the `occurrence_index`-th match, or -1 if not
+                // found. Templates use it to locate magic markers
+                // anywhere in the file; without an implementation
+                // every search returned -1 and the templates that
+                // depend on this builtin (zip's `find_eocd`) bailed
+                // out.
+                let occurrence = args.first().and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let end_arg = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let needle: Vec<u8> = args
+                    .iter()
+                    .skip(3)
+                    .filter_map(|v| v.to_i128())
+                    .map(|n| (n as i64) as u8)
+                    .collect();
+                let len = self.source.len() as usize;
+                let end = end_arg.min(len);
+                if needle.is_empty() || start >= end || end - start < needle.len() {
+                    Value::SInt { value: -1, kind: PrimKind::s128() }
+                } else {
+                    let haystack = self.source.read(start as u64, (end - start) as u64).ok();
+                    let Some(haystack) = haystack else {
+                        return Ok(Some(Value::SInt { value: -1, kind: PrimKind::s128() }));
+                    };
+                    let mut hits = 0usize;
+                    let mut found: Option<usize> = None;
+                    for i in 0..haystack.len().saturating_sub(needle.len()).saturating_add(1) {
+                        if haystack[i..i + needle.len()] == needle[..] {
+                            if hits == occurrence {
+                                found = Some(start + i);
+                                break;
+                            }
+                            hits += 1;
+                        }
+                    }
+                    match found {
+                        Some(off) => Value::SInt { value: off as i128, kind: PrimKind::s128() },
+                        None => Value::SInt { value: -1, kind: PrimKind::s128() },
+                    }
+                }
+            }
+            "builtin::std::mem::find_string_in_range"
+            | "std::mem::find_string_in_range" => {
+                // `find_string_in_range(occurrence_index,
+                // start_offset, end_offset, needle)` -- analogous
+                // to find_sequence_in_range but with a string
+                // needle.
+                let occurrence = args.first().and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let end_arg = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as usize;
+                let needle: Vec<u8> = match args.get(3) {
+                    Some(Value::Str(s)) => s.bytes().collect(),
+                    Some(Value::Bytes(b)) => b.clone(),
+                    _ => Vec::new(),
+                };
+                let len = self.source.len() as usize;
+                let end = end_arg.min(len);
+                if needle.is_empty() || start >= end || end - start < needle.len() {
+                    Value::SInt { value: -1, kind: PrimKind::s128() }
+                } else {
+                    let haystack = self.source.read(start as u64, (end - start) as u64).ok();
+                    let Some(haystack) = haystack else {
+                        return Ok(Some(Value::SInt { value: -1, kind: PrimKind::s128() }));
+                    };
+                    let mut hits = 0usize;
+                    let mut found: Option<usize> = None;
+                    for i in 0..haystack.len().saturating_sub(needle.len()).saturating_add(1) {
+                        if haystack[i..i + needle.len()] == needle[..] {
+                            if hits == occurrence {
+                                found = Some(start + i);
+                                break;
+                            }
+                            hits += 1;
+                        }
+                    }
+                    match found {
+                        Some(off) => Value::SInt { value: off as i128, kind: PrimKind::s128() },
+                        None => Value::SInt { value: -1, kind: PrimKind::s128() },
+                    }
+                }
             }
             // Random-access reads. `std::mem::read_unsigned(off, n)`
             // / `read_signed(off, n)` return n-byte ints from the
