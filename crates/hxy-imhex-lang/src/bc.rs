@@ -76,6 +76,12 @@ pub struct TypeId(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Pc(pub u32);
 
+/// Index into [`Program::struct_bodies`]. Each compiled struct body
+/// gets one. Distinct from [`TypeId`] so a `BodyId` cannot be used
+/// where a type-table lookup is expected.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BodyId(pub u32);
+
 /// Intern table for identifiers (or string literals -- two of these
 /// live on a [`Program`], one per kind). Insertion is O(1) hashed;
 /// lookup is `u32 -> &str`.
@@ -158,7 +164,11 @@ pub enum Op {
     SeekTo, // offset on stack
 
     // ---- struct/scope frames ----
-    EnterStruct { ty: TypeId, name: IdentId },
+    /// Read a compiled struct body. The VM pushes a struct node,
+    /// pushes a fresh scope and `this_stack` entry, executes the
+    /// body referenced by [`BodyId`], then closes the struct node
+    /// (computing its length from the cursor delta).
+    EnterStruct { body: BodyId, name: IdentId, display_name: IdentId },
     ExitStruct,
     PushScope,
     PopScope,
@@ -233,6 +243,7 @@ impl Op {
 /// across runs against different fixtures.
 #[derive(Debug, Default)]
 pub struct Program {
+    /// Top-level (entry-point) op stream. Walked once per run.
     pub ops: Vec<Op>,
     pub idents: InternTable,
     pub strings: InternTable,
@@ -242,6 +253,25 @@ pub struct Program {
     /// can hand it straight to the existing `read_scalar` /
     /// `lookup_type` helpers without a parallel resolution pass.
     pub types: Vec<TypeRef>,
+    /// Compiled struct bodies, indexed by [`BodyId`]. `EnterStruct`
+    /// dispatches into one of these. Held out-of-line (rather than
+    /// inlined into [`Self::ops`]) so a struct can be referenced
+    /// from multiple sites without duplicating the body, and so a
+    /// recursive struct can refer to its own `BodyId` cleanly.
+    pub struct_bodies: Vec<StructBody>,
+}
+
+/// One compiled struct body plus the metadata the VM needs to set
+/// up the struct node before running it.
+#[derive(Debug)]
+pub struct StructBody {
+    /// The op stream for the struct's field reads, in source order.
+    pub ops: Vec<Op>,
+    /// The AST display name (`Foo` from `struct Foo { ... }`). The
+    /// VM stamps this onto the emitted [`crate::interp::NodeOut`]
+    /// so [`crate::value::NodeType::StructType`] carries the
+    /// human-readable name the renderer expects.
+    pub display_name: IdentId,
 }
 
 impl Program {
@@ -290,23 +320,86 @@ pub enum CompileError {
 /// lowering -- the caller (parity tests, future opt-in runner) can
 /// fall back to the AST interpreter on failure.
 ///
-/// This is the *staged* lowering: today only top-level
-/// `PrimitiveType name;` field decls compile. Each new op gets
-/// added with a paired test in follow-up commits.
+/// Two-pass design:
+///
+/// 1. Pre-register simple struct decls (no template params, no
+///    parent inheritance, no attrs, no union, body is sequential
+///    primitive [`Stmt::FieldDecl`]s) so a top-level field can
+///    refer to its `BodyId` before the body has been compiled.
+/// 2. Compile each registered body and the top-level statements.
+///
+/// Anything outside the supported subset becomes a
+/// [`CompileError`].
 pub fn compile(ast: &AstProgram) -> Result<Program, CompileError> {
     let mut p = Program::new();
+    let mut ctx = CompileCtx::default();
+
+    // Pass 1: collect simple top-level structs and reserve their
+    // BodyIds. Reserving up-front means a struct field (`Foo f;`)
+    // anywhere in the program can resolve `Foo`'s body without the
+    // compile order mattering.
+    for it in &ast.items {
+        if let TopItem::Stmt(Stmt::StructDecl(decl)) = it
+            && struct_is_simple(decl)
+        {
+            let display_name = p.intern_ident(&decl.name);
+            let body_id = BodyId(p.struct_bodies.len() as u32);
+            p.struct_bodies.push(StructBody { ops: Vec::new(), display_name });
+            ctx.struct_bodies.insert(decl.name.clone(), body_id);
+        }
+    }
+
+    // Pass 2: compile struct bodies + top-level statements.
     for it in &ast.items {
         match it {
             TopItem::Function(_) => {
                 return Err(CompileError::UnsupportedTopItem("fn decl"));
             }
-            TopItem::Stmt(s) => compile_top_stmt(&mut p, s)?,
+            TopItem::Stmt(Stmt::StructDecl(decl)) => {
+                let Some(&body_id) = ctx.struct_bodies.get(&decl.name) else {
+                    return Err(CompileError::UnsupportedStmt(
+                        "struct decl uses an unsupported shape (template, parent, attrs, ...)",
+                    ));
+                };
+                let mut body_ops = Vec::new();
+                for s in &decl.body {
+                    compile_struct_body_stmt(&mut p, &ctx, &mut body_ops, s)?;
+                }
+                p.struct_bodies[body_id.0 as usize].ops = body_ops;
+            }
+            TopItem::Stmt(s) => compile_top_stmt(&mut p, &ctx, s)?,
         }
     }
     Ok(p)
 }
 
-fn compile_top_stmt(p: &mut Program, stmt: &Stmt) -> Result<(), CompileError> {
+/// Side state the compile pass threads through its passes. Maps a
+/// struct's source-level name to its reserved [`BodyId`] so field
+/// decls can resolve struct types without a runtime name lookup.
+#[derive(Default)]
+struct CompileCtx {
+    struct_bodies: rustc_hash::FxHashMap<String, BodyId>,
+}
+
+/// True when a struct decl matches the narrow shape Phase B can
+/// lower: no template params, no parent, no `[[attrs]]`, not a
+/// union, and the body is purely sequential primitive field reads
+/// (checked further inside [`compile_struct_body_stmt`]). Restrict
+/// here so [`compile`] can pre-register only the structs it can
+/// actually handle.
+fn struct_is_simple(decl: &crate::ast::StructDecl) -> bool {
+    decl.template_params.is_empty()
+        && decl.parent.is_none()
+        && decl.attrs.0.is_empty()
+        && !decl.is_union
+}
+
+fn compile_struct_body_stmt(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    stmt: &Stmt,
+) -> Result<(), CompileError> {
     match stmt {
         Stmt::FieldDecl {
             is_const,
@@ -320,36 +413,59 @@ fn compile_top_stmt(p: &mut Program, stmt: &Stmt) -> Result<(), CompileError> {
             pointer_width,
             ..
         } => {
-            if *is_const {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "const" });
+            field_decl_must_be_plain(*is_const, *is_io_var, pointer_width, placement, init, array, attrs)?;
+            if is_known_primitive(ty) {
+                let name_id = p.intern_ident(name);
+                let ty_id = p.push_type(ty.clone());
+                out.push(Op::ReadPrim { ty: ty_id, name: name_id });
+                Ok(())
+            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
+                let name_id = p.intern_ident(name);
+                let display = p.struct_bodies[body_id.0 as usize].display_name;
+                out.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
+                Ok(())
+            } else {
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "field type is neither a primitive nor a registered simple struct",
+                })
             }
-            if *is_io_var {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "io var" });
-            }
-            if pointer_width.is_some() {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "pointer" });
-            }
-            if placement.is_some() {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "placement" });
-            }
-            if init.is_some() {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
-            }
-            if array.is_some() {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "array" });
-            }
-            if !attrs.0.is_empty() {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "attrs" });
-            }
-            if !is_known_primitive(ty) {
-                return Err(CompileError::UnsupportedFieldDecl { reason: "non-primitive type" });
-            }
-            let name_id = p.intern_ident(name);
-            let ty_id = p.push_type(ty.clone());
-            p.ops.push(Op::ReadPrim { ty: ty_id, name: name_id });
-            Ok(())
         }
-        Stmt::StructDecl(_) => Err(CompileError::UnsupportedStmt("struct decl")),
+        _ => Err(CompileError::UnsupportedStmt("non-field-decl in struct body")),
+    }
+}
+
+fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<(), CompileError> {
+    match stmt {
+        Stmt::FieldDecl {
+            is_const,
+            ty,
+            name,
+            array,
+            placement,
+            init,
+            attrs,
+            is_io_var,
+            pointer_width,
+            ..
+        } => {
+            field_decl_must_be_plain(*is_const, *is_io_var, pointer_width, placement, init, array, attrs)?;
+            if is_known_primitive(ty) {
+                let name_id = p.intern_ident(name);
+                let ty_id = p.push_type(ty.clone());
+                p.ops.push(Op::ReadPrim { ty: ty_id, name: name_id });
+                Ok(())
+            } else if let Some(body_id) = ctx.struct_bodies.get(ty.leaf()) {
+                let name_id = p.intern_ident(name);
+                let display = p.struct_bodies[body_id.0 as usize].display_name;
+                p.ops.push(Op::EnterStruct { body: *body_id, name: name_id, display_name: display });
+                Ok(())
+            } else {
+                Err(CompileError::UnsupportedFieldDecl {
+                    reason: "field type is neither a primitive nor a registered simple struct",
+                })
+            }
+        }
+        Stmt::StructDecl(_) => unreachable!("handled by compile()"),
         Stmt::EnumDecl(_) => Err(CompileError::UnsupportedStmt("enum decl")),
         Stmt::BitfieldDecl(_) => Err(CompileError::UnsupportedStmt("bitfield decl")),
         Stmt::UsingAlias { .. } => Err(CompileError::UnsupportedStmt("using alias")),
@@ -366,10 +482,43 @@ fn compile_top_stmt(p: &mut Program, stmt: &Stmt) -> Result<(), CompileError> {
         Stmt::Return { .. } => Err(CompileError::UnsupportedStmt("return")),
         Stmt::Break { .. } => Err(CompileError::UnsupportedStmt("break")),
         Stmt::Continue { .. } => Err(CompileError::UnsupportedStmt("continue")),
-        Stmt::BitfieldField { .. } => {
-            Err(CompileError::UnsupportedStmt("bitfield field"))
-        }
+        Stmt::BitfieldField { .. } => Err(CompileError::UnsupportedStmt("bitfield field")),
     }
+}
+
+/// Reject every `FieldDecl` modifier the Phase B VM does not yet
+/// implement. Keeps the supported shape obvious at the call sites.
+fn field_decl_must_be_plain(
+    is_const: bool,
+    is_io_var: bool,
+    pointer_width: &Option<TypeRef>,
+    placement: &Option<crate::ast::Expr>,
+    init: &Option<crate::ast::Expr>,
+    array: &Option<crate::ast::ArraySize>,
+    attrs: &crate::ast::Attrs,
+) -> Result<(), CompileError> {
+    if is_const {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "const" });
+    }
+    if is_io_var {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "io var" });
+    }
+    if pointer_width.is_some() {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "pointer" });
+    }
+    if placement.is_some() {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "placement" });
+    }
+    if init.is_some() {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
+    }
+    if array.is_some() {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "array" });
+    }
+    if !attrs.0.is_empty() {
+        return Err(CompileError::UnsupportedFieldDecl { reason: "attrs" });
+    }
+    Ok(())
 }
 
 /// True when `ty` names a built-in primitive that the AST interpreter
@@ -478,11 +627,36 @@ mod tests {
     }
 
     #[test]
-    fn compile_refuses_struct_decl_for_now() {
-        let src = "struct S { u8 a; }; S s;\n";
+    fn compile_lowers_simple_struct_to_enter_struct() {
+        let src = "struct S { u8 a; u32 b; }; S s;\n";
         let tokens = crate::tokenize(src).unwrap();
         let ast = crate::parse(tokens).unwrap();
+        let bc = compile(&ast).expect("simple struct must lower");
+        assert_eq!(bc.struct_bodies.len(), 1);
+        assert_eq!(bc.struct_bodies[0].ops.len(), 2);
+        assert_eq!(bc.ops.len(), 1);
+        match bc.ops[0] {
+            Op::EnterStruct { body, name, display_name } => {
+                assert_eq!(body.0, 0);
+                assert_eq!(bc.idents.get(name.0), "s");
+                assert_eq!(bc.idents.get(display_name.0), "S");
+            }
+            ref other => panic!("expected EnterStruct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_refuses_struct_with_template_params() {
+        let src = "struct S<T> { T value; }; u8 dummy;\n";
+        let tokens = crate::tokenize(src).unwrap();
+        let ast = crate::parse(tokens).unwrap();
+        // Template structs are not pre-registered; the field decl
+        // succeeds (it's `u8 dummy;`) but the struct decl pass2
+        // refuses since its body shape isn't simple.
         let err = compile(&ast).unwrap_err();
-        assert!(matches!(err, CompileError::UnsupportedStmt("struct decl")), "{err:?}");
+        match err {
+            CompileError::UnsupportedStmt(_) => {}
+            other => panic!("expected UnsupportedStmt, got {other:?}"),
+        }
     }
 }

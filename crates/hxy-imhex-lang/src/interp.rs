@@ -362,9 +362,22 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
+        // Top-level statements run with no enclosing parent. EOF
+        // tolerance applies here: a top-level read past EOF becomes
+        // a diagnostic, mirroring `exec_program`'s behaviour.
+        self.exec_bytecode_body(program, &program.ops, None, true)
+    }
+
+    fn exec_bytecode_body(
+        &mut self,
+        program: &crate::bc::Program,
+        ops: &[crate::bc::Op],
+        parent: Option<NodeIdx>,
+        eof_tolerant_top_level: bool,
+    ) -> Result<(), RuntimeError> {
         use crate::bc::Op;
         let mut pc: usize = 0;
-        while pc < program.ops.len() {
+        while pc < ops.len() {
             if self.interrupt.load(Ordering::Relaxed) {
                 return Err(RuntimeError::TimedOut { timeout_ms: 0 });
             }
@@ -372,27 +385,29 @@ impl<S: HexSource> Interpreter<S> {
             if self.steps > self.step_limit {
                 return Err(RuntimeError::StepLimitHit { step_limit: self.step_limit });
             }
-            let op = &program.ops[pc];
+            let op = &ops[pc];
             match *op {
                 Op::ReadPrim { ty, name } => {
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
-                    // Match the AST's top-level EOF tolerance: a
-                    // primitive read past the file end becomes a
-                    // diagnostic instead of a terminal error so the
-                    // remaining ops keep running.
-                    match self.read_scalar(name_str, ty_ref, None, &[], None) {
-                        Ok(_) => {}
-                        Err(RuntimeError::Source(e)) => {
+                    let res = self.read_scalar(name_str, ty_ref, parent, &[], None);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
                                 message: format!("read past EOF at top level: {e:?}"),
                                 severity: Severity::Warning,
                                 file_offset: None,
                                 template_line: None,
                             });
+                        } else {
+                            return Err(e);
                         }
-                        Err(e) => return Err(e),
                     }
+                }
+                Op::EnterStruct { body, name, display_name } => {
+                    let name_str = program.idents.get(name.0).to_owned();
+                    let display = program.idents.get(display_name.0).to_owned();
+                    self.exec_bytecode_struct(program, body, &name_str, &display, parent)?;
                 }
                 ref other => {
                     return Err(RuntimeError::BytecodeOpUnsupported { op: other.variant_name() });
@@ -400,6 +415,50 @@ impl<S: HexSource> Interpreter<S> {
             }
             pc += 1;
         }
+        Ok(())
+    }
+
+    /// Mirrors the minimal subset of [`Self::read_struct`] the
+    /// Phase B compile pass requires: emit a struct node, push a
+    /// fresh scope + this_stack entry, run the body ops, then close
+    /// the struct (pop frames, set the node's length from the
+    /// cursor delta). Templates, parent inheritance, attrs,
+    /// `[[transform]]`, and unions are all out of scope; the
+    /// compile pass refuses to register any decl that uses them.
+    fn exec_bytecode_struct(
+        &mut self,
+        program: &crate::bc::Program,
+        body: crate::bc::BodyId,
+        name: &str,
+        display_name: &str,
+        parent: Option<NodeIdx>,
+    ) -> Result<(), RuntimeError> {
+        let offset = self.cursor_tell();
+        let idx = NodeIdx::new(self.nodes.len() as u32);
+        self.push_node(NodeOut {
+            name: name.to_owned(),
+            ty: NodeType::StructType(display_name.to_owned()),
+            offset,
+            length: 0,
+            value: None,
+            parent,
+            attrs: Vec::new(),
+        });
+        let prev_parent = self.current_parent;
+        self.current_parent = parent;
+        self.scopes.push(Scope::default());
+        self.this_stack.push(idx);
+
+        let body_ops = &program.struct_bodies[body.0 as usize].ops;
+        let result = self.exec_bytecode_body(program, body_ops, Some(idx), false);
+
+        self.this_stack.pop();
+        self.scopes.pop();
+        self.current_parent = prev_parent;
+
+        result?;
+        let end = self.cursor_tell();
+        self.nodes[idx.as_usize()].length = end.saturating_sub(offset);
         Ok(())
     }
 

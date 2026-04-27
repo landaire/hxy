@@ -74,3 +74,60 @@ fn top_level_generic_int_spelling_matches_ast() {
     assert_node_parity(&ast, &bc_run);
     assert_eq!(bc_run.nodes.len(), 1);
 }
+
+#[test]
+fn simple_struct_body_matches_ast() {
+    let src = "\
+struct Header {
+    u8 magic;
+    u32 size;
+};
+Header header;
+";
+    let mut bytes = vec![0xAB];
+    bytes.extend_from_slice(&0x01020304u32.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert_eq!(bc_run.nodes.len(), 3);
+    // Struct node carries the right length (1 + 4 = 5 bytes consumed).
+    assert_eq!(bc_run.nodes[0].length, 5);
+}
+
+#[test]
+fn nested_struct_body_matches_ast() {
+    let src = "\
+struct Inner {
+    u16 a;
+    u16 b;
+};
+struct Outer {
+    u8 tag;
+    Inner inner;
+};
+Outer outer;
+";
+    let mut bytes = vec![0x42];
+    bytes.extend_from_slice(&0x1111u16.to_le_bytes());
+    bytes.extend_from_slice(&0x2222u16.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    // outer, tag, inner, a, b -- 5 nodes.
+    assert_eq!(bc_run.nodes.len(), 5);
+    assert_eq!(bc_run.nodes[0].length, 5); // outer span
+    assert_eq!(bc_run.nodes[2].length, 4); // inner span
+}
+
+#[test]
+fn sequential_top_level_struct_then_primitive_matches_ast() {
+    let src = "\
+struct Pair {
+    u8 a;
+    u8 b;
+};
+Pair p;
+u32 trailer;
+";
+    let bytes = vec![0x01, 0x02, 0x10, 0x20, 0x30, 0x40];
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}
