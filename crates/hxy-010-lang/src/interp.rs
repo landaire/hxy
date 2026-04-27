@@ -383,6 +383,12 @@ impl<S: HexSource> Interpreter<S> {
         bind("CHECKSUM_CRC32", CHECKSUM_CRC32_ID);
         bind("CHECKSUM_CRC16", 6);
         bind("CHECKSUM_ADLER32", 7);
+        bind("CHECKSUM_INT64_LE", 8);
+        bind("CHECKSUM_INT64_BE", 9);
+        bind("CHECKSUM_MD5", 10);
+        bind("CHECKSUM_SHA1", 11);
+        bind("CHECKSUM_SHA256", 12);
+        bind("CHECKSUM_SHA512", 13);
         // Boolean aliases some templates use.
         bind("TRUE", 1);
         bind("FALSE", 0);
@@ -1003,6 +1009,13 @@ impl<S: HexSource> Interpreter<S> {
         ty: &TypeRef,
         array_size: Option<&Expr>,
     ) -> Result<Value, RuntimeError> {
+        // `local string s;` defaults to the empty string so the
+        // typical idiom `s += "frag"` works without first writing
+        // a literal -- otherwise the implicit Void operand trips
+        // the integer path with "not numeric: Void".
+        if matches!(ty.name.as_str(), "string" | "STRING" | "wstring" | "WSTRING") && array_size.is_none() {
+            return Ok(Value::Str(String::new()));
+        }
         let array_size = array_size
             .cloned()
             .or_else(|| self.typedef_array_size.get(&ty.name).cloned());
@@ -2018,10 +2031,6 @@ impl<S: HexSource> Interpreter<S> {
         }
     }
 
-    fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
-        self.call_named_with_aliases(name, args, Vec::new())
-    }
-
     fn call_named_with_aliases(
         &mut self,
         name: &str,
@@ -2671,32 +2680,37 @@ impl<S: HexSource> Interpreter<S> {
     /// die on them.
     fn checksum_builtin(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
         let algo_raw = args.first().and_then(|v| v.to_i128()).unwrap_or(-1);
-        // CHECKSUM_CRC32 is the value 010 hands to templates. Real
-        // 010 uses the enum tag `CHECKSUM_CRC32` -- our `lookup_ident`
-        // resolves that to a u64; templates that pass the constant
-        // directly come through as the same numeric. The value is 5
-        // in 010's public header; be liberal and also accept callers
-        // that pass a string name so template authors don't have to
-        // care.
-        let algo_is_crc32 = algo_raw == CHECKSUM_CRC32_ID as i128
-            || matches!(args.first(), Some(Value::Str(s)) if s.eq_ignore_ascii_case("crc32"));
+        let algo_str = matches!(args.first(), Some(Value::Str(_)))
+            .then(|| value_to_display(args.first().unwrap()).to_lowercase());
         let start = args.get(1).and_then(|v| v.to_i128()).unwrap_or(0).max(0) as u64;
         let size_arg = args.get(2).and_then(|v| v.to_i128()).unwrap_or(0);
         let source_len = self.cursor.len();
         let size =
             if size_arg <= 0 { source_len.saturating_sub(start) } else { (size_arg as u64).min(source_len - start) };
-        if !algo_is_crc32 {
-            self.diagnostics.push(Diagnostic {
-                message: format!("Checksum algo {algo_raw} not implemented; returning 0"),
-                severity: Severity::Info,
-                file_offset: Some(self.cursor.tell()),
-                template_line: None,
-            });
-            return Ok(Value::UInt { value: 0, kind: PrimKind::u64() });
-        }
         let bytes = self.cursor.read_at(start, size)?;
-        let crc = crc32_ieee(&bytes);
-        Ok(Value::UInt { value: crc as u128, kind: PrimKind::u32() })
+        // Algorithm IDs come from 010's `CHECKSUM_*` constants
+        // (CRC32=5, CRC16=6, ADLER32=7). Pass-by-string also works
+        // for templates that encode the algo as a literal name.
+        let crc32 = algo_raw == CHECKSUM_CRC32_ID as i128
+            || matches!(&algo_str, Some(s) if s == "crc32");
+        let crc16 = algo_raw == 6 || matches!(&algo_str, Some(s) if s == "crc16");
+        let adler32 = algo_raw == 7 || matches!(&algo_str, Some(s) if s == "adler32");
+        if crc32 {
+            return Ok(Value::UInt { value: crc32_ieee(&bytes) as u128, kind: PrimKind::u32() });
+        }
+        if adler32 {
+            return Ok(Value::UInt { value: adler32_checksum(&bytes) as u128, kind: PrimKind::u32() });
+        }
+        if crc16 {
+            return Ok(Value::UInt { value: crc16_ccitt(&bytes) as u128, kind: PrimKind::u16() });
+        }
+        self.diagnostics.push(Diagnostic {
+            message: format!("Checksum algo {algo_raw} not implemented; returning 0"),
+            severity: Severity::Info,
+            file_offset: Some(self.cursor.tell()),
+            template_line: None,
+        });
+        Ok(Value::UInt { value: 0, kind: PrimKind::u64() })
     }
 
     fn read_fn_uint(&self, args: &[Value], width: u8, signed: bool) -> Result<Value, RuntimeError> {
@@ -3347,6 +3361,33 @@ fn crc32_ieee(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// Adler-32 checksum (RFC 1950). Sum-mod-65521 of the bytes, with a
+/// running running-sum-mod-65521 in the high half. Used by zlib and
+/// hence by DEX file headers.
+fn adler32_checksum(bytes: &[u8]) -> u32 {
+    const BASE: u32 = 65521;
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for &byte in bytes {
+        a = (a + byte as u32) % BASE;
+        b = (b + a) % BASE;
+    }
+    (b << 16) | a
+}
+
+/// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection,
+/// no final XOR). The variant 010 references for `CHECKSUM_CRC16`.
+fn crc16_ccitt(bytes: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in bytes {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+        }
+    }
+    crc
 }
 
 #[cfg(test)]

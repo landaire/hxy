@@ -102,11 +102,15 @@ fn harvest_defines(source: &str) -> Result<rustc_hash::FxHashMap<String, Vec<Tok
         if name.is_empty() {
             continue;
         }
-        let value = after[name_end..].trim();
-        if value.starts_with('(') {
-            // Function-like macros are not supported; skip.
+        // Function-like macros have `(` *immediately* after the
+        // name with no separating whitespace. A `(` preceded by
+        // whitespace is a parenthesized value -- common idiom for
+        // signed/hex constants like `#define X (0x12345678)`.
+        let unseparated = after.as_bytes().get(name_end) == Some(&b'(');
+        if unseparated {
             continue;
         }
+        let value = after[name_end..].trim();
         // Tokenize the value string in isolation. If it fails,
         // skip the define rather than failing the whole template.
         let mut input: &str = value;
