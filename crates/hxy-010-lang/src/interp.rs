@@ -1890,6 +1890,23 @@ impl<S: HexSource> Interpreter<S> {
         if self.resolve_path_alias(name).is_some() {
             return Ok(Value::Void);
         }
+        // Struct fields declared inside a void function (010's
+        // MachO.bt-style \`parse_symbol_table\` declares
+        // `Symbols symbols(...)` inside the helper) leave their
+        // child entries in field_storage but no scalar at the top
+        // key. Return Void so a later `Imports imports(symbols, ...)`
+        // arg eval doesn't trip UndefinedName -- collect_call_aliases
+        // then qualifies `symbols` to the storage path so member
+        // lookups inside the call find the real fields.
+        let prefix = self.path_prefix();
+        let has_children = lookup_candidates(name, &prefix).into_iter().any(|c| {
+            let probe = format!("{c}.");
+            self.field_storage.keys().any(|k| k.starts_with(&probe))
+                || self.array_storage.keys().any(|k| k.starts_with(&probe))
+        });
+        if has_children {
+            return Ok(Value::Void);
+        }
         // Fall back to persistent field storage. Walk the current
         // path prefix from the leaf upward so a bare reference
         // like `cbCFFolder` resolves to a sibling stored under the
