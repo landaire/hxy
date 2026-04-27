@@ -131,10 +131,10 @@ fn probe_template(
         Err(_) => return,
     };
     // Cap input size as a guardrail. The upstream test_data
-    // directory tops out around a few MB; 4 MiB covers every
-    // current fixture while preventing a future giant blob from
-    // exploding memory.
-    const MAX_FIXTURE_BYTES: usize = 4 * 1024 * 1024;
+    // directory tops out around a few MB; 16 MiB covers every
+    // current fixture (lcesave's largest is ~4.2 MB) while still
+    // preventing a future giant blob from exploding memory.
+    const MAX_FIXTURE_BYTES: usize = 16 * 1024 * 1024;
     let bytes = if bytes.len() > MAX_FIXTURE_BYTES {
         bytes[..MAX_FIXTURE_BYTES].to_vec()
     } else {
@@ -163,7 +163,7 @@ fn probe_template(
     let _ = thread::spawn(move || {
         let mut interp = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver_for_thread)
-            .with_step_limit(200_000)
+            .with_step_limit(2_000_000)
             .with_interrupt(interrupt_for_thread);
         if let Some(e) = pragmas.endian {
             interp = interp.with_default_endian(e);
