@@ -1329,6 +1329,26 @@ impl<S: HexSource> Interpreter<S> {
                 {
                     return Ok(Value::UInt { value: off as u128, kind: PrimKind::u64() });
                 }
+                // `SPrintf(dest, fmt, args...)`: 010 writes the
+                // formatted string into the lvalue `dest`. We need
+                // its name (not its current value) so the write goes
+                // back into scope, hence this pre-eval intercept.
+                if name == "SPrintf"
+                    && let Some(Expr::Ident { name: dest, .. }) = args.first()
+                    && args.len() >= 2
+                {
+                    let fmt = self.eval(&args[1]).map(|v| value_to_display(&v)).unwrap_or_default();
+                    let mut rest: Vec<Value> = Vec::with_capacity(args.len().saturating_sub(2));
+                    for a in &args[2..] {
+                        rest.push(self.eval(a)?);
+                    }
+                    let rest_refs: Vec<&Value> = rest.iter().collect();
+                    let formatted = format_printf(&fmt, &rest_refs);
+                    let dest_name = dest.clone();
+                    let len = formatted.len() as u128;
+                    self.store_ident(&dest_name, Value::Str(formatted))?;
+                    return Ok(Value::UInt { value: len, kind: PrimKind::u64() });
+                }
                 // `ReadBytes(dest, offset, count)` writes into the
                 // destination buffer in the caller's scope. We need
                 // the destination's *name* (not its current value),
