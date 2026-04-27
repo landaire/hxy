@@ -163,7 +163,7 @@ fn probe_template(
     let _ = thread::spawn(move || {
         let mut interp = Interpreter::new(MemorySource::new(bytes))
             .with_import_resolver(resolver_for_thread)
-            .with_step_limit(2_000_000)
+            .with_step_limit(5_000_000)
             .with_interrupt(interrupt_for_thread);
         if let Some(e) = pragmas.endian {
             interp = interp.with_default_endian(e);

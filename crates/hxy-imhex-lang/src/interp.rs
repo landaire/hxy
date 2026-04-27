@@ -1553,6 +1553,12 @@ impl<S: HexSource> Interpreter<S> {
             // would replace with `U+FFFD`.
             let total = (p.width as u64).saturating_mul(count);
             let offset = self.cursor_tell();
+            // Tolerate a string overshooting EOF (e.g. mo.hexpat's
+            // `char string[length] @ offset` when length+offset
+            // crosses the file boundary): clamp to whatever bytes
+            // remain instead of aborting the run.
+            let available = self.source.len().saturating_sub(offset);
+            let total = total.min(available);
             let bytes = self.cursor_advance(total)?;
             let s: String = bytes.iter().map(|&b| char::from(b)).collect();
             self.push_node(NodeOut {
