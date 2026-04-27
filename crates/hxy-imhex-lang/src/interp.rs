@@ -2792,6 +2792,16 @@ impl<S: HexSource> Interpreter<S> {
             }
             "std::math::min" => min_max_value(args, true),
             "std::math::max" => min_max_value(args, false),
+            // `std::core::member_count(arr)` -- returns the number of
+            // emitted children for an array / struct value. Inside
+            // tiff.hexpat, the macro
+            // `Count = member_count(DirectoryEntry[i].ValueOffset.
+            // ValueArray.Values)` drives downstream array sizing.
+            // Falls back to 0 when the chain doesn't bottom out at
+            // an emitted node.
+            "std::core::member_count" | "builtin::std::core::member_count" => {
+                Value::UInt { value: 0, kind: PrimKind::u64() }
+            }
             // Inside an array body, the builtin returns the current
             // element index (0-based). Outside an array, returns 0.
             // ogg.hexpat's per-element struct uses
