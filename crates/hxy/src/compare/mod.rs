@@ -14,6 +14,10 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+pub mod pane;
+pub mod picker;
+pub mod tab;
+
 use std::sync::Arc;
 
 use hxy_core::ByteRange;

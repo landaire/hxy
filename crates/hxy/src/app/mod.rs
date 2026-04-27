@@ -49,8 +49,8 @@ pub enum TabFocus {
 }
 
 pub struct HxyApp {
-    dock: DockState<Tab>,
-    files: HashMap<FileId, OpenFile>,
+    pub(crate) dock: DockState<Tab>,
+    pub(crate) files: HashMap<FileId, OpenFile>,
     /// File-mounted VFS workspaces, keyed by `WorkspaceId`. Each entry
     /// backs a `Tab::Workspace` and owns a nested `DockState` plus the
     /// `MountedVfs` that supplies child entries.
@@ -66,10 +66,10 @@ pub struct HxyApp {
     /// Live compare sessions, keyed by the same id their
     /// `Tab::Compare` payload carries.
     #[cfg(not(target_arch = "wasm32"))]
-    compares: std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
+    pub(crate) compares: std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
     #[cfg(not(target_arch = "wasm32"))]
-    next_compare_id: u64,
-    state: SharedPersistedState,
+    pub(crate) next_compare_id: u64,
+    pub(crate) state: SharedPersistedState,
     next_file_id: u64,
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
@@ -119,7 +119,7 @@ pub struct HxyApp {
     /// A / B selection while the dialog is up; cleared on confirm or
     /// cancel.
     #[cfg(not(target_arch = "wasm32"))]
-    compare_picker: Option<ComparePickerState>,
+    pub(crate) compare_picker: Option<crate::compare::picker::ComparePickerState>,
 
     /// Pending search-modal request stashed by [`drain_search_effects`]
     /// and rendered next frame as either a length-mismatch
@@ -190,7 +190,7 @@ pub struct HxyApp {
     /// toggling off and back on feels continuous; the state is reset
     /// explicitly when switching modes.
     #[cfg(not(target_arch = "wasm32"))]
-    palette: crate::commands::palette::PaletteState,
+    pub(crate) palette: crate::commands::palette::PaletteState,
     /// Visual pane picker session. `Some` after the user activates
     /// the visual move/merge palette commands and before they
     /// either press a target letter (op fires) or Escape (cancel).
@@ -1454,11 +1454,11 @@ impl HxyApp {
     /// the parent mount (which `restore_open_tabs` has already
     /// remounted).
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn_compare_from_sources(
+    pub(crate) fn spawn_compare_from_sources(
         &mut self,
         a: TabSource,
         b: TabSource,
-    ) -> Result<crate::compare::CompareId, CompareSpawnError> {
+    ) -> Result<crate::compare::CompareId, crate::compare::picker::CompareSpawnError> {
         let a_picked = self.read_tab_source_bytes(&a)?;
         let b_picked = self.read_tab_source_bytes(&b)?;
         let id = crate::compare::CompareId::new(self.next_compare_id);
@@ -1480,11 +1480,11 @@ impl HxyApp {
     /// for compare's purposes. Filesystem reads from disk, VFS
     /// entries route through the parent mount.
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_tab_source_bytes(&self, source: &TabSource) -> Result<RestoredCompareSide, CompareSpawnError> {
+    fn read_tab_source_bytes(&self, source: &TabSource) -> Result<RestoredCompareSide, crate::compare::picker::CompareSpawnError> {
         match source {
             TabSource::Filesystem(path) => {
                 let bytes =
-                    std::fs::read(path).map_err(|e| CompareSpawnError::ReadFile { path: path.clone(), source: e })?;
+                    std::fs::read(path).map_err(|e| crate::compare::picker::CompareSpawnError::ReadFile { path: path.clone(), source: e })?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -1494,14 +1494,14 @@ impl HxyApp {
             TabSource::VfsEntry { parent, entry_path } => {
                 let mount = self
                     .find_mount_for_source(parent.as_ref())
-                    .ok_or_else(|| CompareSpawnError::ReadOpenFile("parent VFS mount missing".to_owned()))?;
+                    .ok_or_else(|| crate::compare::picker::CompareSpawnError::ReadOpenFile("parent VFS mount missing".to_owned()))?;
                 let bytes = read_vfs_entry(&*mount.fs, entry_path)
-                    .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
+                    .map_err(|e| crate::compare::picker::CompareSpawnError::ReadOpenFile(e.to_string()))?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 Ok(RestoredCompareSide { name, bytes })
             }
             TabSource::Anonymous { .. } | TabSource::PluginMount { .. } => {
-                Err(CompareSpawnError::ReadOpenFile(format!("unsupported compare source: {source:?}")))
+                Err(crate::compare::picker::CompareSpawnError::ReadOpenFile(format!("unsupported compare source: {source:?}")))
             }
         }
     }
@@ -1698,7 +1698,7 @@ impl eframe::App for HxyApp {
         {
             drain_search_effects(self);
             render_search_modal(ui.ctx(), self);
-            render_compare_picker(ui.ctx(), self);
+            crate::compare::picker::render_compare_picker(ui.ctx(), self);
             render_imhex_patterns_first_run(ui.ctx(), self);
             pump_pattern_fetch(ui.ctx(), self);
             self.toasts.show(ui.ctx(), &mut self.pending_template_runs);
@@ -2931,7 +2931,7 @@ fn focus_content_leaf(app: &mut HxyApp) {
     }
 }
 
-fn remove_welcome_from_leaf(
+pub(crate) fn remove_welcome_from_leaf(
     dock: &mut egui_dock::DockState<Tab>,
     surface: egui_dock::SurfaceIndex,
     node: egui_dock::NodeIndex,
@@ -6591,8 +6591,8 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                     PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
                     PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
                     PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
-                    PaletteCommand::CompareFiles => start_compare_palette_flow(app),
-                    PaletteCommand::CompareFilesDialog => start_compare_picker(app),
+                    PaletteCommand::CompareFiles => crate::compare::picker::start_compare_palette_flow(app),
+                    PaletteCommand::CompareFilesDialog => crate::compare::picker::start_compare_picker(app),
                 }
             }
         }
@@ -6741,7 +6741,7 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                         return;
                     };
                     app.palette.close();
-                    spawn_compare_from_palette(app, ctx, a, source);
+                    crate::compare::picker::spawn_compare_from_palette(app, ctx, a, source);
                 }
             }
         }
@@ -6768,33 +6768,9 @@ fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: crate::co
                         return;
                     };
                     app.palette.close();
-                    spawn_compare_from_palette(app, ctx, a, source);
+                    crate::compare::picker::spawn_compare_from_palette(app, ctx, a, source);
                 }
             }
-        }
-    }
-}
-
-/// Finalise a palette-driven compare: reuse [`HxyApp::spawn_compare_from_sources`]
-/// to read fresh bytes for each side, push the resulting tab, and
-/// kick the initial diff worker. Failures only log -- the palette
-/// already closed so we don't strand the user in a half-state.
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_compare_from_palette(app: &mut HxyApp, ctx: &egui::Context, a: TabSource, b: TabSource) {
-    let global_deadline = app.state.read().app.compare_recompute_deadline;
-    match app.spawn_compare_from_sources(a, b) {
-        Ok(id) => {
-            if let Some(session) = app.compares.get_mut(&id) {
-                let deadline = session.effective_deadline(global_deadline);
-                session.request_recompute(ctx, deadline);
-            }
-            app.dock.push_to_focused_leaf(Tab::Compare(id));
-            if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
-                remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "spawn compare from palette");
         }
     }
 }
@@ -6952,7 +6928,7 @@ fn inner_active_file(workspace: &mut crate::files::Workspace) -> FileId {
 /// blank out a menu command), and finally -- when only one file is
 /// open -- that sole file. Returning `None` means there's genuinely
 /// no file to act on.
-fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
+pub(crate) fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     if let Some((_, tab)) = app.dock.find_active_focused() {
         match *tab {
             Tab::File(id) => {
@@ -7677,7 +7653,7 @@ impl TabViewer for HxyTabViewer<'_> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Tab::Compare(compare_id) => match self.compares.get_mut(compare_id) {
-                Some(session) => render_compare_tab(ui, session, self.state),
+                Some(session) => crate::compare::tab::render_compare_tab(ui, session, self.state),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing compare {compare_id:?}"));
                 }
@@ -7793,708 +7769,6 @@ impl TabViewer for HxyTabViewer<'_> {
     }
 }
 
-/// In-progress state for the file-comparison picker modal. Tracks
-/// the selected source for each side; `Source::Browse` means the
-/// user hasn't picked anything yet for that side and the dialog is
-/// still waiting on a filesystem-browse result.
-#[cfg(not(target_arch = "wasm32"))]
-pub struct ComparePickerState {
-    pub a: ComparePickerSource,
-    pub b: ComparePickerSource,
-}
-
-/// One side of the picker. `OpenFile` reuses the bytes from a
-/// currently-open tab; `Filesystem` reads from disk on confirm.
-/// `Unset` is the initial placeholder until the user picks.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ComparePickerSource {
-    Unset,
-    OpenFile(FileId),
-    Filesystem(std::path::PathBuf),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn start_compare_picker(app: &mut HxyApp) {
-    app.palette.close();
-    // Pre-fill A with whatever tab is focused -- the typical
-    // "compare this against X" workflow already has A in front
-    // of the user. Anonymous buffers fall through to Unset
-    // because they can't be compared (no stable identity to
-    // re-read bytes from).
-    let auto_a = match active_file_id(app).and_then(|id| app.files.get(&id).map(|f| (id, f))) {
-        Some((id, f)) if f.source_kind.is_some() => ComparePickerSource::OpenFile(id),
-        _ => ComparePickerSource::Unset,
-    };
-    app.compare_picker = Some(ComparePickerState { a: auto_a, b: ComparePickerSource::Unset });
-}
-
-/// Open the palette into the compare cascade, auto-selecting the
-/// focused tab as A and jumping straight to the B-pick when
-/// possible. Falls back to the A-pick mode if there's no active
-/// file or the focused buffer is anonymous (no stable source).
-#[cfg(not(target_arch = "wasm32"))]
-fn start_compare_palette_flow(app: &mut HxyApp) {
-    use crate::commands::palette::ComparePickState;
-    use crate::commands::palette::Mode;
-    let auto_a = active_file_id(app).and_then(|id| app.files.get(&id)).and_then(|f| f.source_kind.clone());
-    match auto_a {
-        Some(source) => {
-            app.palette.compare_pick = Some(ComparePickState { picked_a: Some(source) });
-            app.palette.open_at(Mode::CompareSideB);
-        }
-        None => app.palette.open_at(Mode::CompareSideA),
-    }
-}
-
-/// Render the compare picker modal, if open. Confirm spawns a
-/// `Tab::Compare`; Cancel clears the slot.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_picker(ctx: &egui::Context, app: &mut HxyApp) {
-    let Some(mut state) = app.compare_picker.take() else { return };
-    let mut keep_open = true;
-    let mut confirm = false;
-    egui::Window::new(hxy_i18n::t("compare-picker-title"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t("compare-picker-body"));
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(hxy_i18n::t("compare-picker-side-a"));
-                render_compare_picker_combo(ui, app, &mut state.a, "a");
-            });
-            ui.horizontal(|ui| {
-                ui.label(hxy_i18n::t("compare-picker-side-b"));
-                render_compare_picker_combo(ui, app, &mut state.b, "b");
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let ready =
-                    !matches!(state.a, ComparePickerSource::Unset) && !matches!(state.b, ComparePickerSource::Unset);
-                if ui.add_enabled(ready, egui::Button::new(hxy_i18n::t("compare-picker-confirm"))).clicked() {
-                    confirm = true;
-                    keep_open = false;
-                }
-                if ui.button(hxy_i18n::t("compare-picker-cancel")).clicked() {
-                    keep_open = false;
-                }
-            });
-        });
-    if confirm && let Err(e) = spawn_compare_from_picker(app, ctx, &state) {
-        tracing::warn!(error = %e, "spawn compare");
-    }
-    if keep_open {
-        app.compare_picker = Some(state);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_picker_combo(
-    ui: &mut egui::Ui,
-    app: &HxyApp,
-    selection: &mut ComparePickerSource,
-    salt: &'static str,
-) {
-    let label = match selection {
-        ComparePickerSource::Unset => hxy_i18n::t("compare-picker-unset"),
-        ComparePickerSource::OpenFile(id) => {
-            app.files.get(id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()))
-        }
-        ComparePickerSource::Filesystem(p) => {
-            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
-        }
-    };
-    egui::ComboBox::from_id_salt(("hxy-compare-picker", salt)).selected_text(label).show_ui(ui, |ui| {
-        if !app.files.is_empty() {
-            ui.weak(hxy_i18n::t("compare-picker-section-open"));
-            for (id, f) in &app.files {
-                ui.selectable_value(selection, ComparePickerSource::OpenFile(*id), &f.display_name);
-            }
-        }
-        let recent = app.state.read().app.recent_files.clone();
-        if !recent.is_empty() {
-            ui.separator();
-            ui.weak(hxy_i18n::t("compare-picker-section-recent"));
-            for entry in recent.iter().take(8) {
-                let name = entry
-                    .path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| entry.path.display().to_string());
-                if ui.selectable_label(false, &name).on_hover_text(entry.path.display().to_string()).clicked() {
-                    *selection = ComparePickerSource::Filesystem(entry.path.clone());
-                }
-            }
-        }
-        ui.separator();
-        if ui.button(hxy_i18n::t("compare-picker-browse")).clicked()
-            && let Some(path) = rfd::FileDialog::new().pick_file()
-        {
-            *selection = ComparePickerSource::Filesystem(path);
-        }
-    });
-}
-
-/// Resolve `picker` into bytes for both sides and push a fresh
-/// `Tab::Compare`. Reads filesystem sources synchronously -- v1 only;
-/// large-file streaming is a follow-up.
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_compare_from_picker(
-    app: &mut HxyApp,
-    ctx: &egui::Context,
-    state: &ComparePickerState,
-) -> Result<(), CompareSpawnError> {
-    let a = read_picker_source(app, &state.a)?;
-    let b = read_picker_source(app, &state.b)?;
-    let id = crate::compare::CompareId::new(app.next_compare_id);
-    app.next_compare_id += 1;
-    let mut session = crate::compare::CompareSession::new(
-        id,
-        crate::compare::ComparePane::from_bytes(a.name, a.source, a.bytes),
-        crate::compare::ComparePane::from_bytes(b.name, b.source, b.bytes),
-    );
-    // Run the initial diff on a worker thread so confirming the
-    // picker for two large files doesn't freeze the UI -- the
-    // tab opens immediately, the diff fills in once the worker
-    // returns. New sessions track the global setting (no override
-    // yet), so we read it straight off `app.state`.
-    let deadline = session.effective_deadline(app.state.read().app.compare_recompute_deadline);
-    session.request_recompute(ctx, deadline);
-    app.compares.insert(id, session);
-    app.dock.push_to_focused_leaf(Tab::Compare(id));
-    if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
-        remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
-    }
-    Ok(())
-}
-
-/// Read-result for one side of the picker.
-#[cfg(not(target_arch = "wasm32"))]
-struct PickedSide {
-    name: String,
-    source: Option<TabSource>,
-    bytes: Vec<u8>,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[cfg(not(target_arch = "wasm32"))]
-pub enum CompareSpawnError {
-    #[error("source not selected")]
-    Unset,
-    #[error("read filesystem source {path}")]
-    ReadFile {
-        path: std::path::PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("read open file bytes: {0}")]
-    ReadOpenFile(String),
-    #[error("open file {0} no longer exists")]
-    OpenFileGone(u64),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn read_picker_source(app: &HxyApp, side: &ComparePickerSource) -> Result<PickedSide, CompareSpawnError> {
-    match side {
-        ComparePickerSource::Unset => Err(CompareSpawnError::Unset),
-        ComparePickerSource::OpenFile(id) => {
-            let file = app.files.get(id).ok_or(CompareSpawnError::OpenFileGone(id.get()))?;
-            let len = file.editor.source().len().get();
-            let bytes = if len == 0 {
-                Vec::new()
-            } else {
-                let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                    .map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?;
-                file.editor.source().read(range).map_err(|e| CompareSpawnError::ReadOpenFile(e.to_string()))?
-            };
-            Ok(PickedSide { name: file.display_name.clone(), source: file.source_kind.clone(), bytes })
-        }
-        ComparePickerSource::Filesystem(path) => {
-            let bytes =
-                std::fs::read(path).map_err(|source| CompareSpawnError::ReadFile { path: path.clone(), source })?;
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            Ok(PickedSide { name, source: Some(TabSource::Filesystem(path.clone())), bytes })
-        }
-    }
-}
-
-/// Render the per-tab Myers diff deadline widget on the compare
-/// toolbar. Editing the value sets the per-session override; the
-/// reset button (only shown when an override is active) clears it
-/// so the session falls back to the global setting again.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_deadline_widget(
-    ui: &mut egui::Ui,
-    session: &mut crate::compare::CompareSession,
-    global: crate::settings::RecomputeDeadline,
-) {
-    use crate::settings::RecomputeDeadline;
-    ui.label(hxy_i18n::t("compare-deadline-label"));
-    let effective = session.effective_deadline(global);
-    let mut ms = effective.as_ms();
-    let response = ui.add(
-        egui::DragValue::new(&mut ms)
-            .range(RecomputeDeadline::MIN_MS..=RecomputeDeadline::MAX_MS)
-            .speed(50.0)
-            .suffix(" ms"),
-    );
-    response.on_hover_text(hxy_i18n::t("compare-deadline-tooltip"));
-    if ms != effective.as_ms() {
-        session.recompute_deadline_override = Some(RecomputeDeadline::from_ms(ms));
-    }
-    if session.recompute_deadline_override.is_some()
-        && ui
-            .small_button(hxy_i18n::t("compare-deadline-reset"))
-            .on_hover_text(hxy_i18n::t("compare-deadline-reset-tooltip"))
-            .clicked()
-    {
-        session.recompute_deadline_override = None;
-    }
-}
-
-/// Render the body of a `Tab::Compare`. Top toolbar, two hex panes
-/// side-by-side, diff table at the bottom. Synchronized scroll with
-/// gap rows / minimap leader lines are deferred to a follow-up; this
-/// commit lands the wire, the table, the diff color overlay, and a
-/// debounced live recompute.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::CompareSession, state: &mut PersistedState) {
-    use crate::compare::DebouncedDecision;
-
-    let id = session.id;
-    let tab_id = ui.id().with(("hxy-compare", id.get()));
-
-    // Pull any worker result in first so the rest of the frame
-    // sees up-to-date diff state.
-    session.poll_recompute();
-    let global_deadline = state.app.compare_recompute_deadline;
-    // Debounced live recompute: if either side mutated since the last
-    // diff, wait `RECOMPUTE_DEBOUNCE` of edit-quiet time before
-    // spawning a worker. The diff itself runs on a thread so the
-    // UI never freezes -- even a multi-MiB completely-unrelated
-    // diff degenerates gracefully past the configured deadline.
-    match session.needs_recompute_debounced(std::time::Instant::now()) {
-        DebouncedDecision::Idle => {}
-        DebouncedDecision::WaitFor(d) => ui.ctx().request_repaint_after(d),
-        DebouncedDecision::Recompute => {
-            session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
-        }
-    }
-
-    egui::Panel::top(tab_id.with("toolbar")).resizable(false).show_inside(ui, |ui| {
-        ui.horizontal(|ui| {
-            let recomputing = session.is_recomputing();
-            if ui.add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute"))).clicked() {
-                session.request_recompute(ui.ctx(), session.effective_deadline(global_deadline));
-            }
-            ui.checkbox(&mut session.sync_scroll_enabled, hxy_i18n::t("compare-sync-scroll"))
-                .on_hover_text(hxy_i18n::t("compare-sync-scroll-tooltip"));
-            render_compare_deadline_widget(ui, session, global_deadline);
-            if recomputing {
-                ui.spinner();
-                ui.weak(hxy_i18n::t("compare-status-recomputing"));
-            } else if let Some(diff) = &session.diff {
-                ui.weak(hxy_i18n::t_args(
-                    "compare-status",
-                    &[
-                        ("a", &session.a.display_name),
-                        ("b", &session.b.display_name),
-                        ("changes", &diff.change_count().to_string()),
-                    ],
-                ));
-            } else {
-                ui.weak(hxy_i18n::t("compare-status-pending"));
-            }
-        });
-    });
-
-    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show_inside(
-        ui,
-        |ui| {
-            render_compare_diff_table(ui, session);
-        },
-    );
-
-    let cols = state.app.hex_columns.as_u64();
-    let (a_ranges, b_ranges, row_maps) = match session.diff.as_ref() {
-        Some(d) => (
-            compare_pane_ranges(d, crate::compare::CompareSide::A),
-            compare_pane_ranges(d, crate::compare::CompareSide::B),
-            Some(crate::compare::build_row_maps(d, cols)),
-        ),
-        None => (Vec::new(), Vec::new(), None),
-    };
-    let (a_map, b_map): (Option<Vec<hxy_view::RowSlot>>, Option<Vec<hxy_view::RowSlot>>) = match row_maps {
-        Some(m) => (Some(m.a), Some(m.b)),
-        None => (None, None),
-    };
-    // Resolve the diff-table's hovered row to a per-side byte
-    // range so each pane can render the secondary "hover" tint
-    // around the corresponding bytes.
-    let (a_hover, b_hover) = match (session.hovered_hunk, session.diff.as_ref()) {
-        (Some(idx), Some(d)) => {
-            let hunk = d.hunks.get(idx).copied();
-            (
-                hunk.and_then(|h| pane_hover_span(h.a_offset, h.a_len)),
-                hunk.and_then(|h| pane_hover_span(h.b_offset, h.b_len)),
-            )
-        }
-        _ => (None, None),
-    };
-
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        let avail = ui.available_width();
-        let half = (avail * 0.5).max(160.0);
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(half, ui.available_height()),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    render_compare_pane(
-                        ui,
-                        &mut session.a,
-                        state,
-                        tab_id.with("pane-a"),
-                        &a_ranges,
-                        a_map.clone(),
-                        a_hover,
-                    );
-                },
-            );
-            ui.separator();
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(ui.available_width(), ui.available_height()),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    render_compare_pane(
-                        ui,
-                        &mut session.b,
-                        state,
-                        tab_id.with("pane-b"),
-                        &b_ranges,
-                        b_map.clone(),
-                        b_hover,
-                    );
-                },
-            );
-        });
-    });
-
-    // After both panes have rendered this frame, mirror the side
-    // the user just scrolled onto the other so their row maps
-    // stay aligned. The row maps already give them identical
-    // total heights; this just propagates the scrollbar position.
-    session.sync_scroll();
-}
-
-/// Sorted-by-start `(start, end_exclusive, kind)` ranges for one
-/// side's coloring. Skips hunks that don't have any bytes on that
-/// side (Added on A, Removed on B) so the styler's binary search
-/// only inspects ranges with non-zero length.
-#[cfg(not(target_arch = "wasm32"))]
-fn compare_pane_ranges(
-    diff: &crate::compare::DiffResult,
-    side: crate::compare::CompareSide,
-) -> Vec<(u64, u64, crate::compare::HunkKind)> {
-    use crate::compare::CompareSide;
-    use crate::compare::HunkKind;
-
-    diff.changes()
-        .filter_map(|h| {
-            let (offset, len) = match side {
-                CompareSide::A => (h.a_offset, h.a_len),
-                CompareSide::B => (h.b_offset, h.b_len),
-            };
-            if len == 0 {
-                return None;
-            }
-            // Project Added on the A side / Removed on the B side
-            // into nothing (they have len == 0 on that side, just
-            // filtered above). The kind we keep is whatever the
-            // user-visible color should be on this side.
-            Some((offset, offset + len, h.kind))
-        })
-        .filter(|(_, _, kind)| !matches!(kind, HunkKind::Equal))
-        .collect()
-}
-
-/// Convert a hunk's `(offset, len)` for one side into a
-/// [`hxy_core::ByteRange`] for the hex view's `hover_span`. Returns
-/// `None` for zero-length sides (Added on A / Removed on B), which
-/// leaves the corresponding pane unhighlighted.
-#[cfg(not(target_arch = "wasm32"))]
-fn pane_hover_span(offset: u64, len: u64) -> Option<hxy_core::ByteRange> {
-    if len == 0 {
-        return None;
-    }
-    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(offset), hxy_core::ByteOffset::new(offset + len)).ok()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_pane(
-    ui: &mut egui::Ui,
-    pane: &mut crate::compare::ComparePane,
-    state: &mut PersistedState,
-    salt: egui::Id,
-    diff_ranges: &[(u64, u64, crate::compare::HunkKind)],
-    row_map: Option<Vec<hxy_view::RowSlot>>,
-    hover_span: Option<hxy_core::ByteRange>,
-) {
-    ui.horizontal(|ui| {
-        ui.strong(&pane.display_name);
-        ui.checkbox(&mut pane.diff_colors, hxy_i18n::t("compare-diff-colors-toggle"));
-    });
-    let columns = state.app.hex_columns;
-    let highlight = state.app.byte_value_highlight.then(|| state.app.byte_highlight_mode.as_view());
-    // Per-frame storage for the field boundary + color slices the
-    // minimap consults. Built from `diff_ranges` only when the
-    // pane has Diff Colors on; otherwise the slices stay empty
-    // and the minimap falls back to the user's value palette /
-    // the disable-coloring setting.
-    let mut diff_field_bounds: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> = Vec::new();
-    let mut diff_field_colors: Vec<egui::Color32> = Vec::new();
-    if pane.diff_colors {
-        for (start, end_exclusive, kind) in diff_ranges {
-            let len = hxy_core::ByteLen::new(end_exclusive - start);
-            diff_field_bounds.push((hxy_core::ByteOffset::new(*start), len));
-            diff_field_colors.push(compare_kind_color(*kind));
-        }
-    }
-    let mut view = pane
-        .editor
-        .view()
-        .id_salt(salt)
-        .columns(columns)
-        .value_highlight(highlight)
-        .minimap(state.app.show_minimap)
-        .minimap_colored(state.app.minimap_colored)
-        .field_boundaries(&diff_field_bounds)
-        .field_colors(&diff_field_colors);
-    if let Some(span) = hover_span {
-        view = view.hover_span(Some(span));
-    }
-    if let Some(map) = row_map {
-        view = view.row_map(map);
-    }
-    if pane.diff_colors && !diff_ranges.is_empty() {
-        let ranges = diff_ranges.to_vec();
-        let text_mode = matches!(state.app.byte_highlight_mode, crate::settings::ByteHighlightMode::Text);
-        view = view.byte_styler(move |_byte, offset| {
-            let off = offset.get();
-            let idx = ranges.partition_point(|(start, _, _)| *start <= off);
-            if idx == 0 {
-                return hxy_view::ByteStyle { bg: None, fg: None };
-            }
-            let (_, end_exclusive, kind) = ranges[idx - 1];
-            if off >= end_exclusive {
-                return hxy_view::ByteStyle { bg: None, fg: None };
-            }
-            compare_kind_style(kind, text_mode)
-        });
-    }
-    let response = view.show(ui);
-    // Latch the just-rendered scroll offset back onto the editor so
-    // `CompareSession::sync_scroll` sees the user's drag this frame
-    // and can mirror it to the other pane next frame.
-    pane.editor.on_response(&response, columns);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn compare_kind_color(kind: crate::compare::HunkKind) -> egui::Color32 {
-    use crate::compare::HunkKind;
-    match kind {
-        HunkKind::Added => egui::Color32::from_rgb(60, 200, 100),
-        HunkKind::Removed => egui::Color32::from_rgb(220, 90, 90),
-        HunkKind::Changed => egui::Color32::from_rgb(220, 160, 60),
-        HunkKind::Equal => egui::Color32::TRANSPARENT,
-    }
-}
-
-/// Pick the diff color for `kind`, applied to either the byte fill
-/// or the text depending on the user's global byte-highlight-mode
-/// setting -- so compare colors land in the same channel as
-/// template colors.
-#[cfg(not(target_arch = "wasm32"))]
-fn compare_kind_style(kind: crate::compare::HunkKind, text_mode: bool) -> hxy_view::ByteStyle {
-    use crate::compare::HunkKind;
-    let color = match kind {
-        HunkKind::Added => egui::Color32::from_rgb(60, 200, 100),
-        HunkKind::Removed => egui::Color32::from_rgb(220, 90, 90),
-        HunkKind::Changed => egui::Color32::from_rgb(220, 160, 60),
-        HunkKind::Equal => return hxy_view::ByteStyle { bg: None, fg: None },
-    };
-    if text_mode {
-        hxy_view::ByteStyle { bg: None, fg: Some(color) }
-    } else {
-        hxy_view::ByteStyle { bg: Some(color), fg: None }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_compare_diff_table(ui: &mut egui::Ui, session: &mut crate::compare::CompareSession) {
-    use egui_table::Column;
-    use egui_table::HeaderRow;
-    use egui_table::Table;
-
-    let Some(diff) = session.diff.clone() else {
-        ui.weak(hxy_i18n::t("compare-status-pending"));
-        return;
-    };
-    // Persist the (filtered-changes-index -> original-hunk-index)
-    // mapping so click / hover dispatch can write back to
-    // `session.hovered_hunk` (which stores indices into the full
-    // hunks array, not the filtered changes list).
-    let visible: Vec<(usize, crate::compare::DiffHunk)> = diff
-        .hunks
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| !matches!(h.kind, crate::compare::HunkKind::Equal))
-        .map(|(i, h)| (i, *h))
-        .collect();
-    if visible.is_empty() {
-        ui.weak(hxy_i18n::t("compare-no-differences"));
-        return;
-    }
-
-    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
-    let mut any_hover: Option<usize> = None;
-    let mut click: Option<crate::compare::DiffHunk> = None;
-    let id_seed = ui.id().with(("hxy-compare-table", session.id.get()));
-
-    let mut delegate = CompareTableDelegate {
-        visible: &visible,
-        hovered_hunk: session.hovered_hunk,
-        any_hover: &mut any_hover,
-        click: &mut click,
-        row_height,
-    };
-
-    Table::new()
-        .id_salt(id_seed)
-        .num_rows(visible.len() as u64)
-        .columns(vec![
-            Column::new(96.0).range(60.0..=200.0).resizable(true).id(egui::Id::new("cmp-col-kind")),
-            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-a")),
-            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-b")),
-            Column::new(160.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-size")),
-        ])
-        .headers(vec![HeaderRow::new(row_height)])
-        .auto_size_mode(egui_table::AutoSizeMode::OnParentResize)
-        .show(ui, &mut delegate);
-
-    if any_hover != session.hovered_hunk {
-        session.hovered_hunk = any_hover;
-    }
-    if let Some(hunk) = click {
-        if hunk.a_len > 0 {
-            scroll_pane_to(&mut session.a, hunk.a_offset, hunk.a_len);
-        }
-        if hunk.b_len > 0 {
-            scroll_pane_to(&mut session.b, hunk.b_offset, hunk.b_len);
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CompareTableDelegate<'a> {
-    visible: &'a [(usize, crate::compare::DiffHunk)],
-    hovered_hunk: Option<usize>,
-    any_hover: &'a mut Option<usize>,
-    click: &'a mut Option<crate::compare::DiffHunk>,
-    row_height: f32,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl egui_table::TableDelegate for CompareTableDelegate<'_> {
-    fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
-        let key = match cell.col_range.start {
-            0 => "compare-table-kind",
-            1 => "compare-table-a-range",
-            2 => "compare-table-b-range",
-            3 => "compare-table-size",
-            _ => return,
-        };
-        ui.add_space(6.0);
-        ui.strong(hxy_i18n::t(key));
-    }
-
-    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
-        let Some((hunk_idx, hunk)) = self.visible.get(row_nr as usize).copied() else { return };
-        let row_rect = ui.max_rect();
-        ui.push_id(("hxy-compare-row", row_nr), |ui| {
-            let row_id = ui.id().with("interact");
-            let resp = ui.interact(row_rect, row_id, egui::Sense::click());
-            // Mirror the template panel: cell labels eat hover /
-            // click responses, so fall back to "pointer in rect"
-            // checks so the whole row behaves as one target.
-            let over_row = ui.rect_contains_pointer(row_rect);
-            if over_row {
-                *self.any_hover = Some(hunk_idx);
-            }
-            let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
-            if clicked_row {
-                *self.click = Some(hunk);
-            }
-            if self.hovered_hunk == Some(hunk_idx) {
-                ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35));
-            }
-        });
-    }
-
-    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
-        use crate::compare::HunkKind;
-        let Some((_, hunk)) = self.visible.get(cell.row_nr as usize).copied() else { return };
-        ui.add_space(6.0);
-        match cell.col_nr {
-            0 => {
-                let (key, color) = match hunk.kind {
-                    HunkKind::Added => ("compare-kind-added", egui::Color32::from_rgb(60, 200, 100)),
-                    HunkKind::Removed => ("compare-kind-removed", egui::Color32::from_rgb(220, 90, 90)),
-                    HunkKind::Changed => ("compare-kind-changed", egui::Color32::from_rgb(220, 160, 60)),
-                    HunkKind::Equal => return,
-                };
-                ui.label(egui::RichText::new(hxy_i18n::t(key)).color(color).strong());
-            }
-            1 => {
-                ui.label(format_range(hunk.a_offset, hunk.a_len));
-            }
-            2 => {
-                ui.label(format_range(hunk.b_offset, hunk.b_len));
-            }
-            3 => {
-                ui.label(hxy_i18n::t_args(
-                    "compare-table-size-fmt",
-                    &[("a", &hunk.a_len.to_string()), ("b", &hunk.b_len.to_string())],
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    fn default_row_height(&self) -> f32 {
-        self.row_height
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scroll_pane_to(pane: &mut crate::compare::ComparePane, offset: u64, len: u64) {
-    let end_inclusive = offset.saturating_add(len.max(1)).saturating_sub(1);
-    pane.editor.set_selection(Some(hxy_core::Selection {
-        anchor: hxy_core::ByteOffset::new(offset),
-        cursor: hxy_core::ByteOffset::new(end_inclusive),
-    }));
-    pane.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn format_range(offset: u64, len: u64) -> String {
-    if len == 0 { format!("0x{offset:08X} (gap)") } else { format!("0x{offset:08X} +{len}") }
-}
 
 /// Render a `Tab::Workspace` body: spin up an inner DockArea against
 /// the workspace's `dock` and dispatch to `WorkspaceTabViewer` for
