@@ -1,5 +1,8 @@
 //! Main application type.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dialogs;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -104,7 +107,7 @@ pub struct HxyApp {
     /// An open request that collided with an already-open tab. Held
     /// here while the modal asks the user whether to focus the
     /// existing tab or open a second copy. `None` outside that window.
-    pending_duplicate: Option<PendingDuplicate>,
+    pub(crate) pending_duplicate: Option<PendingDuplicate>,
 
     /// Toasts driven by `egui_toast`. Used for "search wrapped" /
     /// "replaced N matches" notifications and the open-file
@@ -134,7 +137,7 @@ pub struct HxyApp {
     /// whether to restore the saved patch or discard it; rendering
     /// happens in `update()` next to the duplicate-open dialog.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_patch_restore: Option<PendingPatchRestore>,
+    pub(crate) pending_patch_restore: Option<PendingPatchRestore>,
 
     /// Bounded ring buffer of plugin / template log entries. Rendered
     /// by the Console dock tab when it's open; entries accumulate
@@ -272,24 +275,24 @@ pub struct HxyApp {
     /// resulting hash back to [`crate::settings::ImhexPatternsState`]
     /// and reloads the template library.
     #[cfg(not(target_arch = "wasm32"))]
-    pattern_fetch: Option<crate::templates::patterns_fetch::FetchHandle>,
+    pub(crate) pattern_fetch: Option<crate::templates::patterns_fetch::FetchHandle>,
     /// Bytes downloaded so far on the active patterns fetch (mirrored
     /// from the worker's progress messages so the Plugins tab can
     /// render a progress label without re-pumping the inbox).
     #[cfg(not(target_arch = "wasm32"))]
-    pattern_in_flight_bytes: Option<u64>,
+    pub(crate) pattern_in_flight_bytes: Option<u64>,
     /// Set by the Plugins tab's "Download / update" button; drained
     /// in `update()` to spawn the worker. The flag indirection lets
     /// the click run inside the dock viewer where we don't have
     /// `&mut HxyApp`.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_pattern_download_request: bool,
+    pub(crate) pending_pattern_download_request: bool,
     /// Whether the first-launch "Download ImHex patterns?" modal
     /// should render this frame. Set on construction when the corpus
     /// isn't installed and the user hasn't declined; cleared once
     /// the user picks Download or Not Now.
     #[cfg(not(target_arch = "wasm32"))]
-    pattern_first_run_prompt: bool,
+    pub(crate) pattern_first_run_prompt: bool,
     /// Template-prompt clicks the toast layer queued up this frame.
     /// Drained after `update()` and routed through the same path the
     /// command palette's `Run Template` action takes.
@@ -318,23 +321,23 @@ pub enum ConsoleSeverity {
 /// A deferred filesystem-open request awaiting the user's choice in
 /// the duplicate-open dialog. Retains the bytes we already read so we
 /// don't hit the disk twice.
-struct PendingDuplicate {
-    display_name: String,
-    path: std::path::PathBuf,
-    bytes: Vec<u8>,
-    existing: FileId,
+pub(crate) struct PendingDuplicate {
+    pub(crate) display_name: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) existing: FileId,
 }
 
 /// A sidecar patch found on open that the user hasn't decided what
 /// to do with yet. The modal renders next frame; either side resets
 /// `pending_patch_restore` to `None`.
 #[cfg(not(target_arch = "wasm32"))]
-struct PendingPatchRestore {
-    file_id: FileId,
-    sidecar: crate::files::patch_persist::PatchSidecar,
+pub(crate) struct PendingPatchRestore {
+    pub(crate) file_id: FileId,
+    pub(crate) sidecar: crate::files::patch_persist::PatchSidecar,
     /// Classification captured at open time so the modal can reuse
     /// the reason string without re-stating the filesystem.
-    integrity: crate::files::patch_persist::RestoreIntegrity,
+    pub(crate) integrity: crate::files::patch_persist::RestoreIntegrity,
 }
 
 impl HxyApp {
@@ -1680,9 +1683,9 @@ impl eframe::App for HxyApp {
         crate::tabs::focus::dispatch_tab_focus_toggle(ui.ctx(), self);
         crate::tabs::focus::dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
-        render_duplicate_open_dialog(ui.ctx(), self);
+        crate::app::dialogs::render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        render_patch_restore_dialog(ui.ctx(), self);
+        crate::app::dialogs::render_patch_restore_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1690,8 +1693,8 @@ impl eframe::App for HxyApp {
             crate::search::modal::drain_search_effects(self);
             crate::search::modal::render_search_modal(ui.ctx(), self);
             crate::compare::picker::render_compare_picker(ui.ctx(), self);
-            render_imhex_patterns_first_run(ui.ctx(), self);
-            pump_pattern_fetch(ui.ctx(), self);
+            crate::app::dialogs::render_imhex_patterns_first_run(ui.ctx(), self);
+            crate::app::dialogs::pump_pattern_fetch(ui.ctx(), self);
             self.toasts.show(ui.ctx(), &mut self.pending_template_runs);
             crate::templates::runner::drain_pending_template_runs(ui.ctx(), self);
         }
@@ -1769,347 +1772,6 @@ impl eframe::App for HxyApp {
     }
 }
 
-/// Modal dialog shown when a user-facing open request hit a path
-/// that's already open in another tab. Offers to focus the existing
-/// tab, open a duplicate, or cancel. Held in `app.pending_duplicate`
-/// so the decision survives across frames.
-fn render_duplicate_open_dialog(ctx: &egui::Context, app: &mut HxyApp) {
-    if app.pending_duplicate.is_none() {
-        return;
-    }
-    // Local copy of the display name so we can borrow `app` mutably
-    // inside the modal body.
-    let (name, path_display) = {
-        let p = app.pending_duplicate.as_ref().unwrap();
-        (p.display_name.clone(), p.path.display().to_string())
-    };
-
-    let mut action: Option<DuplicateAction> = None;
-    let mut open = true;
-    egui::Window::new(hxy_i18n::t("duplicate-open-title"))
-        .id(egui::Id::new("hxy_duplicate_open_dialog"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t("duplicate-open-body"));
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(&name).strong());
-            ui.label(egui::RichText::new(&path_display).weak());
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("duplicate-open-focus")).clicked() {
-                    action = Some(DuplicateAction::Focus);
-                }
-                if ui.button(hxy_i18n::t("duplicate-open-new-tab")).clicked() {
-                    action = Some(DuplicateAction::OpenNewTab);
-                }
-                if ui.button(hxy_i18n::t("duplicate-open-cancel")).clicked() {
-                    action = Some(DuplicateAction::Cancel);
-                }
-            });
-        });
-
-    // Closing the window via its X button counts as cancel.
-    if !open && action.is_none() {
-        action = Some(DuplicateAction::Cancel);
-    }
-
-    let Some(action) = action else { return };
-    let pending = app.pending_duplicate.take().unwrap();
-    match action {
-        DuplicateAction::Focus => {
-            app.focus_file_tab(pending.existing);
-        }
-        DuplicateAction::OpenNewTab => {
-            app.open_filesystem(pending.display_name, pending.path, pending.bytes, None, None);
-        }
-        DuplicateAction::Cancel => {}
-    }
-}
-
-enum DuplicateAction {
-    Focus,
-    OpenNewTab,
-    Cancel,
-}
-
-/// First-launch prompt asking the user whether to download the
-/// upstream ImHex-Patterns corpus. Renders a modal Window once;
-/// the user picks Download (kicks off the worker), Not Now (the
-/// dialog disappears for this session, returns next launch), or
-/// Don't Ask Again (persists the decline so settings becomes the
-/// only path forward).
-#[cfg(not(target_arch = "wasm32"))]
-fn render_imhex_patterns_first_run(ctx: &egui::Context, app: &mut HxyApp) {
-    if !app.pattern_first_run_prompt {
-        return;
-    }
-    let mut close = false;
-    let mut start_download = false;
-    let mut decline_permanent = false;
-    egui::Window::new(hxy_i18n::t("patterns-prompt-title"))
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .collapsible(false)
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.label(hxy_i18n::t("patterns-prompt-body"));
-            ui.add_space(8.0);
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 180, 0),
-                hxy_i18n::t("patterns-prompt-disclaimer"),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("patterns-prompt-download")).clicked() {
-                    start_download = true;
-                    close = true;
-                }
-                if ui.button(hxy_i18n::t("patterns-prompt-not-now")).clicked() {
-                    close = true;
-                }
-                if ui.button(hxy_i18n::t("patterns-prompt-dont-ask")).clicked() {
-                    decline_permanent = true;
-                    close = true;
-                }
-            });
-        });
-    if start_download {
-        kick_off_pattern_download(ctx, app);
-    }
-    if decline_permanent {
-        let mut g = app.state.write();
-        g.app.imhex_patterns.declined_prompt = true;
-    }
-    if close {
-        app.pattern_first_run_prompt = false;
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn kick_off_pattern_download(ctx: &egui::Context, app: &mut HxyApp) {
-    if app.pattern_fetch.as_ref().is_some_and(|h| !h.is_done()) {
-        // Already in flight; second click is a no-op.
-        return;
-    }
-    let Some(handle) = crate::templates::patterns_fetch::spawn_default_fetch(ctx) else {
-        app.toasts.error(&hxy_i18n::t("patterns-fetch-no-data-dir"));
-        return;
-    };
-    app.toasts.info(&hxy_i18n::t("patterns-fetch-started"));
-    app.pattern_fetch = Some(handle);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn pump_pattern_fetch(ctx: &egui::Context, app: &mut HxyApp) {
-    // Service the Plugins-tab button: spawn a worker if one isn't
-    // already running. Done up here so the same frame that posted
-    // the request also paints the "Downloading..." status.
-    if std::mem::take(&mut app.pending_pattern_download_request) {
-        kick_off_pattern_download(ctx, app);
-    }
-    let Some(handle) = app.pattern_fetch.as_mut() else {
-        app.pattern_in_flight_bytes = None;
-        return;
-    };
-    let snapshot = handle.pump(ctx).cloned();
-    let Some(status) = snapshot else { return };
-    // Mirror the latest progress count so the Plugins tab can render
-    // it next frame without having to re-read the inbox.
-    if let crate::templates::patterns_fetch::FetchStatus::Progress { downloaded, .. } = &status {
-        app.pattern_in_flight_bytes = Some(*downloaded);
-    }
-    if !handle.is_done() {
-        return;
-    }
-    app.pattern_in_flight_bytes = None;
-    // Take ownership so we can clear the slot before any toast / state
-    // mutation hands the closure another `&mut self.pattern_fetch`.
-    app.pattern_fetch = None;
-    match status {
-        crate::templates::patterns_fetch::FetchStatus::Success { sha256_hex, extracted_root: _ } => {
-            {
-                let mut g = app.state.write();
-                g.app.imhex_patterns.installed_hash = Some(sha256_hex);
-                g.app.imhex_patterns.last_check = Some(jiff::Timestamp::now());
-            }
-            // Reload the user-visible template library so the freshly
-            // downloaded `.hexpat` files turn up in the palette and
-            // open-file prompts straight away.
-            app.refresh_templates_after_pattern_install();
-            app.toasts.success(&hxy_i18n::t("patterns-fetch-done"));
-        }
-        crate::templates::patterns_fetch::FetchStatus::Failed { message } => {
-            let label = hxy_i18n::t_args("patterns-fetch-failed", &[("error", &message)]);
-            app.toasts.error(&label);
-        }
-        crate::templates::patterns_fetch::FetchStatus::Progress { .. } => {
-            // Shouldn't reach here -- pump only matches on terminal
-            // states; keep an explicit arm so the match stays
-            // exhaustive without `_ => {}` swallowing future
-            // additions.
-        }
-    }
-}
-
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
-    use crate::files::patch_persist::RestoreIntegrity;
-
-    if app.pending_patch_restore.is_none() {
-        return;
-    }
-    let (path_display, op_count, integrity) = {
-        let p = app.pending_patch_restore.as_ref().unwrap();
-        (p.sidecar.source_path.display().to_string(), p.sidecar.patch.len(), p.integrity.clone())
-    };
-
-    let mut action: Option<RestoreAction> = None;
-    let mut open = true;
-    egui::Window::new(hxy_i18n::t("restore-patch-title"))
-        .id(egui::Id::new("hxy_restore_patch_dialog"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t_args("restore-patch-body", &[("ops", &op_count.to_string())]));
-            ui.label(egui::RichText::new(&path_display).weak());
-
-            // Warning banner for anything other than a clean match.
-            // Clean sidecars get the short path; modified / unknown
-            // ones get a yellow-highlighted reason plus a worded
-            // "restore anyway" button so the user can't miss the
-            // risk they're taking.
-            match &integrity {
-                RestoreIntegrity::Clean => {}
-                RestoreIntegrity::Modified { reason } => {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(hxy_i18n::t("restore-patch-warn-modified"))
-                            .color(ui.visuals().warn_fg_color)
-                            .strong(),
-                    );
-                    ui.label(egui::RichText::new(reason).weak());
-                }
-                RestoreIntegrity::Unknown { reason } => {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(hxy_i18n::t("restore-patch-warn-unknown"))
-                            .color(ui.visuals().warn_fg_color)
-                            .strong(),
-                    );
-                    ui.label(egui::RichText::new(reason).weak());
-                }
-            }
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let restore_label = match &integrity {
-                    RestoreIntegrity::Clean => hxy_i18n::t("restore-patch-restore"),
-                    _ => hxy_i18n::t("restore-patch-restore-anyway"),
-                };
-                if ui.button(restore_label).clicked() {
-                    action = Some(RestoreAction::Restore);
-                }
-                if ui.button(hxy_i18n::t("restore-patch-discard")).clicked() {
-                    action = Some(RestoreAction::Discard);
-                }
-            });
-        });
-    // Closing via the X is "decide later": leave the patch on disk
-    // and re-prompt next time the file is opened.
-    if !open {
-        app.pending_patch_restore = None;
-        return;
-    }
-    let Some(action) = action else { return };
-
-    let pending = app.pending_patch_restore.take().unwrap();
-    let path = pending.sidecar.source_path.clone();
-    let dir = crate::files::save::unsaved_edits_dir();
-    match action {
-        RestoreAction::Restore => {
-            let ctx_label = format!("Restore {}", path.display());
-            let integrity_clean = matches!(pending.integrity, RestoreIntegrity::Clean);
-            // Gather the decision + any log lines without holding a
-            // live borrow on `app`, so we can hand the patch to
-            // `file` and then fire `console_log` (which also
-            // borrows `app`) in sequence.
-            let mut log_lines: Vec<(ConsoleSeverity, String)> = Vec::new();
-            let accept = if let Some(file) = app.files.get_mut(&pending.file_id) {
-                // Clean sidecar: re-verify the full SourceMetadata
-                // (including BLAKE3 digest if recorded) so a subtle
-                // tamper still aborts.  Modified / Unknown: user
-                // already opted in, skip verification and adopt.
-                let verified = if integrity_clean {
-                    let len = file.editor.source().len().get();
-                    match file.editor.source().read(
-                        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                            .expect("range valid"),
-                    ) {
-                        Ok(bytes) => match pending.sidecar.metadata.verify(&bytes) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                log_lines.push((
-                                    ConsoleSeverity::Warning,
-                                    format!("source verification failed; not restoring: {e}"),
-                                ));
-                                false
-                            }
-                        },
-                        Err(e) => {
-                            log_lines.push((ConsoleSeverity::Error, format!("re-read source: {e}")));
-                            false
-                        }
-                    }
-                } else {
-                    true
-                };
-
-                if verified {
-                    *file.editor.patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
-                    file.editor.set_undo_stack(pending.sidecar.undo_stack);
-                    file.editor.set_redo_stack(pending.sidecar.redo_stack);
-                    file.editor.push_history_boundary();
-                    file.editor.set_edit_mode(crate::files::EditMode::Mutable);
-                    if integrity_clean {
-                        log_lines.push((ConsoleSeverity::Info, "restored unsaved edits".to_owned()));
-                    } else {
-                        log_lines.push((
-                            ConsoleSeverity::Warning,
-                            "restored unsaved edits onto a file whose on-disk state has changed".to_owned(),
-                        ));
-                    }
-                }
-                verified
-            } else {
-                false
-            };
-            let _ = accept;
-            for (severity, message) in log_lines {
-                app.console_log(severity, &ctx_label, message);
-            }
-            if let Some(dir) = dir {
-                let _ = crate::files::patch_persist::discard(&dir, &path);
-            }
-        }
-        RestoreAction::Discard => {
-            if let Some(dir) = dir {
-                let _ = crate::files::patch_persist::discard(&dir, &path);
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-enum RestoreAction {
-    Restore,
-    Discard,
-}
 
 /// App-level keypress -> nibble write + arrow-key cursor navigation
 /// dispatcher. Runs late in the frame so other widgets (palette
