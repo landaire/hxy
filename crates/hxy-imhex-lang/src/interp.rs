@@ -1231,19 +1231,28 @@ impl<S: HexSource> Interpreter<S> {
         }
         // `[[transform("fn")]]` runs `fn(value)` after the read and
         // replaces the bound value with the result. Templates like
-        // cpio_new_ascii.hexpat use this to convert hex-string
-        // fields to integers so subsequent arithmetic
-        // (`c_namesize - 1`) works on the transformed numeric form.
-        let transform_fn = attrs.0.iter().find_map(|a| {
-            if a.name == "transform" {
-                a.args.first().and_then(|arg| match arg {
-                    Expr::StringLit { value, .. } => Some(value.clone()),
-                    _ => None,
-                })
-            } else {
-                None
-            }
-        });
+        // cpio_new_ascii.hexpat attach the attr to the field decl
+        // (`char c_namesize[8] [[transform(...)]]`); others attach
+        // it to the type's own struct decl (dotnet's `struct vLength
+        // { ... } [[transform("LPS_Length_decode")]]`). Check both.
+        let attr_lookup = |attr_list: &crate::ast::Attrs| -> Option<String> {
+            attr_list.0.iter().find_map(|a| {
+                if a.name == "transform" {
+                    a.args.first().and_then(|arg| match arg {
+                        Expr::StringLit { value, .. } => Some(value.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                }
+            })
+        };
+        let mut transform_fn = attr_lookup(attrs);
+        if transform_fn.is_none()
+            && let Ok(TypeDef::Struct(s)) = self.lookup_type(ty)
+        {
+            transform_fn = attr_lookup(&s.attrs);
+        }
         if let Some(fn_name) = transform_fn {
             let raw = self.lookup_ident(name).unwrap_or(Value::Void);
             if let Ok(new_val) =
@@ -2264,6 +2273,26 @@ impl<S: HexSource> Interpreter<S> {
                     // `value` child never emitted).
                     return Ok(Value::Void);
                 }
+                // If the target chain bottoms out at a known scope
+                // variable that simply isn't an emitted node (e.g.
+                // an io_var like dotnet's `_Trackers _trackers @ 0
+                // in section;`), member access is a structural query
+                // the file doesn't carry. Return Void so the
+                // surrounding template's accumulator code keeps
+                // running.
+                fn root_ident(e: &Expr) -> Option<&str> {
+                    match e {
+                        Expr::Ident { name, .. } => Some(name.as_str()),
+                        Expr::Member { target, .. } => root_ident(target),
+                        Expr::Index { target, .. } => root_ident(target),
+                        _ => None,
+                    }
+                }
+                if let Some(root) = root_ident(target.as_ref())
+                    && self.lookup_ident(root).is_ok()
+                {
+                    return Ok(Value::Void);
+                }
                 fn describe(e: &Expr) -> String {
                     match e {
                         Expr::Ident { name, .. } => name.clone(),
@@ -2923,6 +2952,56 @@ impl<S: HexSource> Interpreter<S> {
             }
             "std::math::min" => min_max_value(args, true),
             "std::math::max" => min_max_value(args, false),
+            // `std::ctype::*` predicates are user-level wrappers in
+            // the standard library, but bencode.hexpat calls them
+            // inside a tight `[while(isdigit(...))]` predicate that
+            // walks the entire torrent fixture. Short-circuiting
+            // here bypasses the per-call scope push / pop / arg
+            // bind overhead, which is the bottleneck that pushes
+            // the run past the wall-clock deadline.
+            "std::ctype::isdigit" | "isdigit" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool((b'0' as i128..=b'9' as i128).contains(&c))
+            }
+            "std::ctype::isxdigit" | "isxdigit" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool(
+                    (b'0' as i128..=b'9' as i128).contains(&c)
+                        || (b'A' as i128..=b'F' as i128).contains(&c)
+                        || (b'a' as i128..=b'f' as i128).contains(&c),
+                )
+            }
+            "std::ctype::isupper" | "isupper" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool((b'A' as i128..=b'Z' as i128).contains(&c))
+            }
+            "std::ctype::islower" | "islower" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool((b'a' as i128..=b'z' as i128).contains(&c))
+            }
+            "std::ctype::isalpha" | "isalpha" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool(
+                    (b'A' as i128..=b'Z' as i128).contains(&c)
+                        || (b'a' as i128..=b'z' as i128).contains(&c),
+                )
+            }
+            "std::ctype::isalnum" | "isalnum" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool(
+                    (b'0' as i128..=b'9' as i128).contains(&c)
+                        || (b'A' as i128..=b'Z' as i128).contains(&c)
+                        || (b'a' as i128..=b'z' as i128).contains(&c),
+                )
+            }
+            "std::ctype::isspace" | "isspace" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0) as u8;
+                Value::Bool(matches!(c, b' ' | b'\t' | b'\n' | b'\x0B' | b'\x0C' | b'\r'))
+            }
+            "std::ctype::isprint" | "isprint" => {
+                let c = args.first().and_then(|v| v.to_i128()).unwrap_or(0);
+                Value::Bool((0x20..=0x7E).contains(&c))
+            }
             // `std::core::member_count(arr)` -- returns the number of
             // emitted children for an array / struct value. Inside
             // tiff.hexpat, the macro
