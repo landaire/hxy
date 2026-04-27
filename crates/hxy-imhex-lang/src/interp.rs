@@ -320,7 +320,26 @@ impl<S: HexSource> Interpreter<S> {
 
         for it in &program.items {
             if let TopItem::Stmt(s) = it {
-                let _ = self.exec_stmt(s, None)?;
+                // Tolerate per-top-level-statement EOF: a top-level
+                // `Header h @ 0x00;` whose body runs past the file
+                // end shouldn't abort the whole template -- the
+                // remaining statements may still produce useful
+                // output and `terminal_error` becomes None as long
+                // as nothing else fails. Errors that aren't EOF
+                // overshoots (type errors, runaway loops, etc.)
+                // still propagate.
+                match self.exec_stmt(s, None) {
+                    Ok(_) => {}
+                    Err(RuntimeError::Source(e)) => {
+                        self.diagnostics.push(Diagnostic {
+                            message: format!("read past EOF at top level: {e:?}"),
+                            severity: Severity::Warning,
+                            file_offset: None,
+                            template_line: None,
+                        });
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(())
