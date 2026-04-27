@@ -817,28 +817,50 @@ impl Parser {
             return Ok(Stmt::Block { stmts: vec![enum_stmt], span: Span::new(start, end_tok.span.end) });
         }
         let _ = has_tag;
-        let (field_name, field_name_span) = self.expect_ident()?;
-        let array_size = if self.eat_kind(&TokenKind::LBracket) {
-            let expr = self.parse_expr()?;
-            self.expect_kind(&TokenKind::RBracket, "]")?;
-            Some(expr)
-        } else {
-            None
-        };
-        let field_attrs = self.parse_optional_attrs()?;
+        // Collect one or more comma-separated field declarations
+        // sharing the inline enum type:
+        //   `enum <ubyte> { ... } FillAttributes, PopupFillAttributes;`
+        // Each field can carry its own `[array]` and `: bitfield`.
+        let mut fields: Vec<Stmt> = Vec::new();
+        loop {
+            let (field_name, field_name_span) = self.expect_ident()?;
+            let array_size = if self.eat_kind(&TokenKind::LBracket) {
+                let expr = self.parse_expr()?;
+                self.expect_kind(&TokenKind::RBracket, "]")?;
+                Some(expr)
+            } else {
+                None
+            };
+            // Bitfield width on the inline-enum field:
+            // `enum <ubyte> { ... } Type : 4;`. 010 packs the enum
+            // value into a 4-bit slot of the underlying integer.
+            let bit_width = if self.eat_kind(&TokenKind::Colon) {
+                Some(self.parse_expr_bp(BITFIELD_BP)?)
+            } else {
+                None
+            };
+            let field_attrs = self.parse_optional_attrs()?;
+            let span_end = self.peek().map(|t| t.span.end).unwrap_or(field_name_span.end);
+            fields.push(Stmt::FieldDecl {
+                modifier: DeclModifier::Field,
+                ty: TypeRef { name: anon_name.clone(), span: field_name_span },
+                name: field_name,
+                array_size,
+                args: Vec::new(),
+                bit_width,
+                init: None,
+                attrs: field_attrs,
+                span: Span::new(start, span_end),
+            });
+            if !self.eat_kind(&TokenKind::Comma) {
+                break;
+            }
+        }
         let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-        let field_stmt = Stmt::FieldDecl {
-            modifier: DeclModifier::Field,
-            ty: TypeRef { name: anon_name, span: field_name_span },
-            name: field_name,
-            array_size,
-            args: Vec::new(),
-            bit_width: None,
-            init: None,
-            attrs: field_attrs,
-            span: Span::new(start, end_tok.span.end),
-        };
-        Ok(Stmt::Block { stmts: vec![enum_stmt, field_stmt], span: Span::new(start, end_tok.span.end) })
+        let mut stmts = Vec::with_capacity(1 + fields.len());
+        stmts.push(enum_stmt);
+        stmts.extend(fields);
+        Ok(Stmt::Block { stmts, span: Span::new(start, end_tok.span.end) })
     }
 
     fn parse_switch(&mut self) -> Result<Stmt, ParseError> {

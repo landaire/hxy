@@ -289,6 +289,13 @@ enum TypeDef {
 #[derive(Default)]
 struct Scope {
     vars: HashMap<String, Value>,
+    /// Aliases from a parameter name to the storage path of the
+    /// argument it was bound to. Templates that pass a struct by
+    /// reference (`string ReadFoo(Foo &x) { return x.field; }`) get
+    /// the param `x` rewritten to the real path so member lookups
+    /// reach the original record. Set on function-call entry; cleared
+    /// when the scope pops.
+    path_aliases: HashMap<String, String>,
 }
 
 /// Inner control-flow signal raised by `return` / `break` / `continue`
@@ -1568,8 +1575,18 @@ impl<S: HexSource> Interpreter<S> {
                     self.store_ident(&dest_name, new_val)?;
                     return Ok(Value::Void);
                 }
+                // For user-defined functions whose params are passed
+                // by reference, capture the *path* of the argument
+                // before generic eval (which discards path info).
+                // Used by `<read=fn>`-style helpers that walk struct
+                // fields via a `&ref` parameter:
+                //   `string ReadFoo(Foo &x) { return x.field; }`
+                // We bind `x` to the original storage path so member
+                // lookups inside the function body reach the real
+                // record.
+                let aliases = self.collect_call_aliases(name, args)?;
                 let evaluated: Vec<Value> = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?;
-                self.call_named(name, &evaluated)
+                self.call_named_with_aliases(name, &evaluated, aliases)
             }
             Expr::Member { .. } | Expr::Index { .. } => {
                 // Try path-based lookup first. When the interpreter
@@ -1597,6 +1614,21 @@ impl<S: HexSource> Interpreter<S> {
                                 return self.decode_array_element(&span, idx);
                             }
                         }
+                    }
+                    // The path resolves to a struct -- no scalar
+                    // value is stored at the top key, but child
+                    // fields exist under it. Return Void so callers
+                    // that pass the struct by reference (and look up
+                    // members through the alias) see a placeholder
+                    // instead of a hard `UndefinedName`.
+                    let prefix = self.path_prefix();
+                    let has_children = lookup_candidates(&path, &prefix).into_iter().any(|c| {
+                        let probe = format!("{c}.");
+                        self.field_storage.keys().any(|k| k.starts_with(&probe))
+                            || self.array_storage.keys().any(|k| k.starts_with(&probe))
+                    });
+                    if has_children {
+                        return Ok(Value::Void);
                     }
                 }
                 // Fallbacks kept for simpler idioms:
@@ -1704,7 +1736,16 @@ impl<S: HexSource> Interpreter<S> {
     /// regular expression evaluation.
     fn build_path(&mut self, expr: &Expr) -> Result<Option<String>, RuntimeError> {
         match expr {
-            Expr::Ident { name, .. } => Ok(Some(name.clone())),
+            Expr::Ident { name, .. } => {
+                // Substitute the storage path when `name` is a ref
+                // alias. Inside `string ReadFoo(Foo &x) { ... }`
+                // a mention of `x.field` builds the path
+                // `<actual>.field` instead of the literal `x.field`.
+                if let Some(alias) = self.resolve_path_alias(name) {
+                    return Ok(Some(alias));
+                }
+                Ok(Some(name.clone()))
+            }
             Expr::Member { target, field, .. } => {
                 let Some(base) = self.build_path(target)? else { return Ok(None) };
                 Ok(Some(format!("{base}.{field}")))
@@ -1841,6 +1882,15 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        self.call_named_with_aliases(name, args, Vec::new())
+    }
+
+    fn call_named_with_aliases(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        aliases: Vec<(String, String)>,
+    ) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, args)? {
             return Ok(v);
         }
@@ -1857,6 +1907,9 @@ impl<S: HexSource> Interpreter<S> {
         for (p, v) in func.params.iter().zip(args.iter()) {
             self.current_scope_mut().vars.insert(p.name.clone(), v.clone());
         }
+        for (param_name, real_path) in aliases {
+            self.current_scope_mut().path_aliases.insert(param_name, real_path);
+        }
         let mut ret = Value::Void;
         for s in &func.body {
             match self.exec_stmt(s, None)? {
@@ -1870,6 +1923,59 @@ impl<S: HexSource> Interpreter<S> {
         }
         self.scopes.pop();
         Ok(ret)
+    }
+
+    /// Build the parameter -> path alias list for a user function
+    /// call. Each ref-typed (or struct-typed) parameter whose
+    /// matching argument resolves to a storage path gets an alias
+    /// entry. Returns an empty list for builtins or when the function
+    /// isn't user-defined; the caller then takes the no-alias path.
+    fn collect_call_aliases(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<Vec<(String, String)>, RuntimeError> {
+        let Some(func) = self.functions.get(name).cloned() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for (param, arg) in func.params.iter().zip(args.iter()) {
+            // Only stash aliases for ref params and struct-typed
+            // params; plain scalar args go through unmodified so a
+            // mutated alias doesn't leak back into the caller.
+            let is_struct_ty = matches!(self.types.get(&param.ty.name), Some(TypeDef::Struct(_)));
+            if !param.is_ref && !is_struct_ty {
+                continue;
+            }
+            if let Some(path) = self.build_path(arg)? {
+                // Resolve the path against the current prefix so the
+                // alias is fully qualified -- the function body runs
+                // with no prefix of its own.
+                let qualified = lookup_candidates(&path, &self.path_prefix())
+                    .into_iter()
+                    .find(|c| {
+                        self.field_storage.contains_key(c)
+                            || self.array_storage.contains_key(c)
+                            || self.field_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                            || self.array_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                    })
+                    .unwrap_or(path);
+                out.push((param.name.clone(), qualified));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Look up the alias for `name` in the current scope (innermost
+    /// first). Returns the underlying storage path when the name was
+    /// bound as a ref param at call entry.
+    fn resolve_path_alias(&self, name: &str) -> Option<String> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(p) = scope.path_aliases.get(name) {
+                return Some(p.clone());
+            }
+        }
+        None
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
@@ -2402,6 +2508,7 @@ impl<S: HexSource> Interpreter<S> {
                                 continue;
                             }
                             let len = match array_size {
+                                Some(Expr::IntLit { value, .. }) => elem.saturating_mul(*value),
                                 Some(_) => 0, // dynamic array; can't size statically
                                 None => elem,
                             };
