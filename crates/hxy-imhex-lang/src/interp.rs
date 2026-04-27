@@ -236,6 +236,13 @@ pub struct Interpreter<S: HexSource> {
     /// (so `value.value = ...` and `converter.time` resolve to a
     /// real node), but the call-site cursor is unaffected.
     function_depth: u32,
+    /// `return;` in the language doubles as a function exit *and*
+    /// a "stop processing this template" signal (blend.hexpat's
+    /// uncompressed branch returns from a struct body to skip the
+    /// trailing seek-table reads). When fired outside a function
+    /// we set this flag and let the surrounding `read_struct` /
+    /// top-level walk unwind to the program top.
+    return_pending: bool,
 }
 
 impl<S: HexSource> Interpreter<S> {
@@ -262,6 +269,7 @@ impl<S: HexSource> Interpreter<S> {
             break_pending: false,
             array_index_stack: Vec::new(),
             function_depth: 0,
+            return_pending: false,
         };
         me.register_primitives();
         me
@@ -355,6 +363,16 @@ impl<S: HexSource> Interpreter<S> {
                         });
                     }
                     Err(e) => return Err(e),
+                }
+                // `return;` outside a function (or one that bubbled
+                // up through a struct body, as in blend.hexpat's
+                // `BlendWrapper { if (magic != ZSTD) { Blend ...;
+                // return; } }`) means stop processing -- the
+                // trailing top-level statements assume a code path
+                // that doesn't apply.
+                if self.return_pending {
+                    self.return_pending = false;
+                    break;
                 }
             }
         }
@@ -917,6 +935,9 @@ impl<S: HexSource> Interpreter<S> {
                     Some(e) => Some(self.eval(e)?),
                     None => Some(Value::Void),
                 };
+                if self.function_depth == 0 {
+                    self.return_pending = true;
+                }
                 Ok(Flow::Return)
             }
             Stmt::Break { .. } => Ok(Flow::Break),
@@ -1490,6 +1511,13 @@ impl<S: HexSource> Interpreter<S> {
                 };
                 if matches!(flow, Flow::Break | Flow::Continue) {
                     self.break_pending = matches!(flow, Flow::Break);
+                    break;
+                }
+                // `return;` outside a function unwinds the entire
+                // template walk; stop emitting fields and let the
+                // surrounding caller (or `exec_program`) see the
+                // pending signal.
+                if matches!(flow, Flow::Return) || self.return_pending {
                     break;
                 }
             }
