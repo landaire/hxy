@@ -1572,9 +1572,20 @@ impl<S: HexSource> Interpreter<S> {
             attrs: attrs.to_vec(),
         });
         for i in 0..count {
-            self.read_scalar(&format!("[{i}]"), ty, Some(parent_idx), &[], None)?;
+            // ImHex tolerates an array element running past EOF: the
+            // array stops reading at the file boundary, the parent
+            // struct keeps going, and the failure surfaces as a
+            // (non-fatal) diagnostic. Treat `Source` errors the same
+            // way -- the alternative aborts the whole template on a
+            // single overshoot, which fails fixtures that are merely
+            // truncated relative to the schema (id3.hexpat, etc).
+            match self.read_scalar(&format!("[{i}]"), ty, Some(parent_idx), &[], None) {
+                Ok(_) => {}
+                Err(RuntimeError::Source(_)) => break,
+                Err(e) => return Err(e),
+            }
         }
-        self.nodes[parent_idx.as_usize()].length = self.cursor_tell() - offset;
+        self.nodes[parent_idx.as_usize()].length = self.cursor_tell().saturating_sub(offset);
         Ok(Value::Void)
     }
 
