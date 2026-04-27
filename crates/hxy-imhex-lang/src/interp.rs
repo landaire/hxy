@@ -1350,9 +1350,21 @@ impl<S: HexSource> Interpreter<S> {
                 let arg_expr = ty.template_args.get(i);
                 let arg_ty = arg_expr.and_then(expr_as_typeref);
                 if let Some(t) = arg_ty {
+                    // If the arg names another alias param (the
+                    // `using symbols_list<T> = list<T>` chain in
+                    // selinux.hexpat), resolve through it now so
+                    // the inner struct sees the eventual concrete
+                    // type instead of a self-cyclic `T -> T` alias.
+                    let resolved = if t.path.len() == 1
+                        && let Some(TypeDef::Alias { target, .. }) = self.types.get(&t.path[0])
+                    {
+                        target.clone()
+                    } else {
+                        t
+                    };
                     let prev = self.types.insert(
                         param_name.clone(),
-                        TypeDef::Alias { params: Vec::new(), target: t },
+                        TypeDef::Alias { params: Vec::new(), target: resolved },
                     );
                     template_type_aliases.push((param_name.clone(), prev));
                 }
