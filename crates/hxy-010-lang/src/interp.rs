@@ -186,6 +186,14 @@ pub struct Interpreter<S: HexSource> {
     /// `Value`s into `field_storage` (which was catastrophically slow
     /// for multi-MB byte arrays).
     array_storage: HashMap<String, ArraySpan>,
+    /// Per-typedef array suffix discovered at decl time
+    /// (`typedef CHAR DIGEST[20];`). When a field decl uses one
+    /// of these as its type, the field reads `[N]` items even
+    /// without a `[..]` on the field itself. Without this, the
+    /// alias resolved to its scalar source and the read consumed
+    /// only one element (so `header.groupID` returned just the
+    /// first character of `RIFF`).
+    typedef_array_size: HashMap<String, Expr>,
     /// Current path prefix for [`field_storage`] writes. Segments
     /// accrete as the interpreter descends into struct bodies and
     /// array elements -- e.g. while reading `DirectoryEntries[2].Key`
@@ -301,6 +309,7 @@ impl<S: HexSource> Interpreter<S> {
             step_limit: DEFAULT_STEP_LIMIT,
             field_storage: HashMap::new(),
             array_storage: HashMap::new(),
+            typedef_array_size: HashMap::new(),
             path: Vec::new(),
             field_counts: HashMap::new(),
             bitfield_slot: None,
@@ -508,13 +517,28 @@ impl<S: HexSource> Interpreter<S> {
             ("uint32", P::u32()),
             ("long", P::i32()),
             ("ulong", P::u32()),
+            ("LONG", P::i32()),
+            ("ULONG", P::u32()),
             ("INT", P::i32()),
             ("UINT", P::u32()),
             ("DWORD", P::u32()),
             ("int64", P::i64()),
             ("uint64", P::u64()),
+            ("UINT64", P::u64()),
+            ("INT64", P::i64()),
+            ("ULONG64", P::u64()),
+            ("LONG64", P::i64()),
+            ("__int64", P::i64()),
             ("QWORD", P::u64()),
             ("UQWORD", P::u64()),
+            // 010 aliases `QUAD` to a signed 64-bit integer
+            // (per the docs at sweetscape.com -- it's an
+            // older name kept for compatibility).
+            ("QUAD", P::i64()),
+            ("UQUAD", P::u64()),
+            // Lowercase byte aliases that some templates use.
+            ("int8", P::i8()),
+            ("uint8", P::u8()),
             ("float", P::f32()),
             ("double", P::f64()),
             ("FLOAT", P::f32()),
@@ -541,6 +565,8 @@ impl<S: HexSource> Interpreter<S> {
             ("STRING", P::char()),
             ("wstring", P::u16()),
             ("WSTRING", P::u16()),
+            ("wchar_t", P::u16()),
+            ("WCHAR_T", P::u16()),
         ];
         for (name, kind) in table {
             self.types.insert((*name).to_owned(), TypeDef::Primitive(*kind));
@@ -583,8 +609,13 @@ impl<S: HexSource> Interpreter<S> {
                 self.exec_field_decl(stmt, parent)?;
                 Ok(Flow::Next)
             }
-            Stmt::TypedefAlias { new_name, source, .. } => {
+            Stmt::TypedefAlias { new_name, source, array_size, .. } => {
                 self.types.insert(new_name.clone(), TypeDef::Alias(source.name.clone()));
+                if let Some(size_expr) = array_size {
+                    // Snapshot the size expr so a later
+                    // `DIGEST x;` field decl can re-attach it.
+                    self.typedef_array_size.insert(new_name.clone(), size_expr.clone());
+                }
                 Ok(Flow::Next)
             }
             Stmt::TypedefEnum(e) => {
@@ -728,7 +759,7 @@ impl<S: HexSource> Interpreter<S> {
         if matches!(modifier, crate::ast::DeclModifier::Local | crate::ast::DeclModifier::Const) {
             let value = match init {
                 Some(expr) => self.eval(expr)?,
-                None => Value::Void,
+                None => self.default_local_value(ty, array_size.as_ref())?,
             };
             self.current_scope_mut().vars.insert(name.clone(), value.clone());
             self.store_field(name, value);
@@ -749,6 +780,19 @@ impl<S: HexSource> Interpreter<S> {
 
         // Normal field read -- resolve the type, read bytes, emit nodes,
         // bind the value into the current scope.
+        //
+        // If the field's type is a typedef whose declaration carries
+        // an array suffix (`typedef CHAR DIGEST[20];`), promote the
+        // field to an array read of that size when the field itself
+        // doesn't already supply one. Without this, `DIGEST x;`
+        // collapsed to a single-char read and downstream `x !=
+        // "RIFF"` failed with a Char-vs-Str compare.
+        let array_size = match (array_size, self.typedef_array_size.get(&ty.name).cloned()) {
+            (Some(e), _) => Some(e.clone()),
+            (None, Some(typedef_size)) => Some(typedef_size),
+            (None, None) => None,
+        };
+        let array_size = array_size.as_ref();
         let count = match array_size {
             Some(expr) => {
                 let v = self.eval(expr)?;
@@ -855,6 +899,37 @@ impl<S: HexSource> Interpreter<S> {
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope stack is never empty")
+    }
+
+    /// Default value for a `local`/`const` declaration that has no
+    /// initializer. Char arrays get a zero-filled `Value::Str` so
+    /// templates can index-write into them (the
+    /// `local char buf[N]; ReadBytes(buf, ...)` idiom). Everything
+    /// else stays `Void` until a write happens.
+    fn default_local_value(
+        &mut self,
+        ty: &TypeRef,
+        array_size: Option<&Expr>,
+    ) -> Result<Value, RuntimeError> {
+        let array_size = array_size
+            .cloned()
+            .or_else(|| self.typedef_array_size.get(&ty.name).cloned());
+        let Some(size_expr) = array_size else {
+            return Ok(Value::Void);
+        };
+        let is_char_like = matches!(
+            ty.name.as_str(),
+            "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE"
+        );
+        if !is_char_like {
+            return Ok(Value::Void);
+        }
+        let n = self
+            .eval(&size_expr)?
+            .to_i128()
+            .ok_or_else(|| RuntimeError::Type("local array size is not numeric".into()))?
+            .max(0) as usize;
+        Ok(Value::Str("\0".repeat(n)))
     }
 
     fn read_scalar(
@@ -1060,7 +1135,18 @@ impl<S: HexSource> Interpreter<S> {
                 parent,
                 attrs: rendered_attrs,
             });
-            self.store_field(name, value.clone());
+            // Only store a string-array value into field_storage:
+            // a Void store under the bare path (`h.sig`) would
+            // shadow the per-element decode for queries like
+            // `h.sig[0]` because `strip_zero_indices` matches the
+            // bare path first, returning Void before the array
+            // span ever gets consulted. Strings are fine to
+            // expose under the bare path -- callers that ask for
+            // `s.value[i]` indexed access on a char array don't
+            // hit `array_storage`; they read the Str directly.
+            if matches!(value, Value::Str(_)) {
+                self.store_field(name, value.clone());
+            }
             // Register an array span so `arr[i]` lookups can decode
             // element `i` from the source on demand. Storing one
             // entry per element used to be the dominant cost for
@@ -1225,6 +1311,30 @@ impl<S: HexSource> Interpreter<S> {
                 {
                     return Ok(Value::UInt { value: off as u128, kind: PrimKind::u64() });
                 }
+                // `ReadBytes(dest, offset, count)` writes into the
+                // destination buffer in the caller's scope. We need
+                // the destination's *name* (not its current value),
+                // so this has to run before the generic arg eval.
+                if name == "ReadBytes"
+                    && let Some(Expr::Ident { name: dest, .. }) = args.first()
+                    && args.len() >= 3
+                {
+                    let offset = self.eval(&args[1])?.to_i128().unwrap_or(0).max(0) as u64;
+                    let count = self.eval(&args[2])?.to_i128().unwrap_or(0).max(0) as u64;
+                    let bytes = self.cursor.read_at(offset, count)?;
+                    let dest_name = dest.clone();
+                    let mut buf = match self.lookup_ident(&dest_name).unwrap_or(Value::Void) {
+                        Value::Str(s) => s.into_bytes(),
+                        _ => Vec::new(),
+                    };
+                    if buf.len() < bytes.len() {
+                        buf.resize(bytes.len(), 0);
+                    }
+                    buf[..bytes.len()].copy_from_slice(&bytes);
+                    let new_val = Value::Str(String::from_utf8_lossy(&buf).into_owned());
+                    self.store_ident(&dest_name, new_val)?;
+                    return Ok(Value::Void);
+                }
                 let evaluated: Vec<Value> = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?;
                 self.call_named(name, &evaluated)
             }
@@ -1271,33 +1381,48 @@ impl<S: HexSource> Interpreter<S> {
                             })
                         }
                     }
-                    Expr::Index { target, .. } => {
-                        if let Expr::Ident { name, .. } = &**target {
-                            self.lookup_ident(name)
+                    Expr::Index { target, index, .. } => {
+                        // Slice into a string-valued ident: `name[i]`
+                        // where `name` resolves to a `Value::Str`.
+                        // 010's char-array semantics let templates
+                        // index into a `char[]` field by ordinal
+                        // (tar's `OctalStrToInt(char str[])` does
+                        // `str[10-i] - 0x30` on the digits).
+                        let target_value = if let Expr::Ident { name, .. } = &**target {
+                            self.lookup_ident(name)?
                         } else {
                             let target_path = self.build_path(target)?.unwrap_or_default();
-                            Err(RuntimeError::UnresolvedIndex { target: target_path })
+                            return Err(RuntimeError::UnresolvedIndex { target: target_path });
+                        };
+                        let idx_value = self.eval(index)?;
+                        let idx = idx_value.to_i128().ok_or_else(|| {
+                            RuntimeError::Type(format!(
+                                "array index is not numeric: {idx_value:?}"
+                            ))
+                        })?;
+                        if let Value::Str(s) = &target_value {
+                            let bytes = s.as_bytes();
+                            if idx < 0 || (idx as usize) >= bytes.len() {
+                                return Err(RuntimeError::Type(format!(
+                                    "string index out of range: {idx} >= {}",
+                                    bytes.len()
+                                )));
+                            }
+                            return Ok(Value::Char {
+                                value: bytes[idx as usize] as u32,
+                                kind: PrimKind::char(),
+                            });
                         }
+                        // Other Value variants don't have an
+                        // index-into operation; fall back to the
+                        // whole value (matches the previous
+                        // behaviour).
+                        Ok(target_value)
                     }
                     _ => unreachable!(),
                 }
             }
-            Expr::Assign { op, target, value, .. } => {
-                let Expr::Ident { name, .. } = &**target else {
-                    return Err(RuntimeError::Type("assignment target must be an identifier".into()));
-                };
-                let rhs = self.eval(value)?;
-                let new_val = match op {
-                    crate::ast::AssignOp::Assign => rhs,
-                    other => {
-                        let current = self.lookup_ident(name)?;
-                        let bin_op = compound_to_bin(*other);
-                        eval_binary(bin_op, &current, &rhs)?
-                    }
-                };
-                self.store_ident(name, new_val.clone())?;
-                Ok(new_val)
-            }
+            Expr::Assign { op, target, value, .. } => self.exec_assign(*op, target, value),
             Expr::Ternary { cond, then_val, else_val, .. } => {
                 if self.eval(cond)?.is_truthy() {
                     self.eval(then_val)
@@ -1368,6 +1493,114 @@ impl<S: HexSource> Interpreter<S> {
         // 010 globals that aren't explicitly `local`).
         self.current_scope_mut().vars.insert(name.to_owned(), value);
         Ok(())
+    }
+
+    fn exec_assign(
+        &mut self,
+        op: crate::ast::AssignOp,
+        target: &Expr,
+        value: &Expr,
+    ) -> Result<Value, RuntimeError> {
+        let rhs = self.eval(value)?;
+        match target {
+            Expr::Ident { name, .. } => {
+                let new_val = match op {
+                    crate::ast::AssignOp::Assign => rhs,
+                    other => {
+                        let current = self.lookup_ident(name)?;
+                        let bin_op = compound_to_bin(other);
+                        eval_binary(bin_op, &current, &rhs)?
+                    }
+                };
+                self.store_ident(name, new_val.clone())?;
+                Ok(new_val)
+            }
+            Expr::Index { target: arr, index, .. } => {
+                let idx = self.eval(index)?.to_i128().ok_or_else(|| {
+                    RuntimeError::Type("indexed assignment: index is not numeric".into())
+                })?;
+                if idx < 0 {
+                    return Err(RuntimeError::Type(format!(
+                        "indexed assignment: negative index {idx}"
+                    )));
+                }
+                // Char-buffer mutation: `local char buf[N]; buf[k] = 0;`.
+                // The local is a `Value::Str` whose bytes we patch in
+                // place so later reads see the NUL terminator.
+                if let Expr::Ident { name, .. } = &**arr
+                    && let Ok(Value::Str(s)) = self.lookup_ident(name)
+                {
+                    let mut bytes = s.into_bytes();
+                    let i = idx as usize;
+                    if i >= bytes.len() {
+                        bytes.resize(i + 1, 0);
+                    }
+                    let byte = match op {
+                        crate::ast::AssignOp::Assign => rhs.to_i128().unwrap_or(0) as u8,
+                        other => {
+                            let cur = bytes[i] as i128;
+                            let bin_op = compound_to_bin(other);
+                            let folded = eval_binary(
+                                bin_op,
+                                &Value::SInt { value: cur, kind: PrimKind::i32() },
+                                &rhs,
+                            )?;
+                            folded.to_i128().unwrap_or(0) as u8
+                        }
+                    };
+                    bytes[i] = byte;
+                    let new_str = String::from_utf8_lossy(&bytes).into_owned();
+                    self.store_ident(name, Value::Str(new_str))?;
+                    return Ok(Value::UInt { value: byte as u128, kind: PrimKind::u8() });
+                }
+                // General case (`local <enum> NAMES[N]; NAMES[k] = ...`):
+                // route through field_storage under `name[k]`. The
+                // existing index-read path already finds those keys.
+                let Some(base_path) = self.build_path(arr)? else {
+                    return Err(RuntimeError::Type("indexed assignment: unresolvable base".into()));
+                };
+                let key = format!("{base_path}[{idx}]");
+                let new_val = match op {
+                    crate::ast::AssignOp::Assign => rhs,
+                    other => {
+                        let cur = self.field_storage.get(&key).cloned().unwrap_or(Value::Void);
+                        let bin_op = compound_to_bin(other);
+                        eval_binary(bin_op, &cur, &rhs)?
+                    }
+                };
+                self.field_storage.insert(key, new_val.clone());
+                Ok(new_val)
+            }
+            Expr::Member { target: obj, field, .. } => {
+                // `obj.field = v`: store at the resolved path so later
+                // reads via the same chain find it. Also seed the
+                // bare-name lookup so 010's path-insensitive idioms
+                // (which read `field` directly after writing it under
+                // `obj.field`) keep working.
+                let Some(base_path) = self.build_path(obj)? else {
+                    return Err(RuntimeError::Type("member assignment: unresolvable base".into()));
+                };
+                let key = format!("{base_path}.{field}");
+                let new_val = match op {
+                    crate::ast::AssignOp::Assign => rhs,
+                    other => {
+                        let cur = self
+                            .field_storage
+                            .get(&key)
+                            .cloned()
+                            .or_else(|| self.lookup_ident(field).ok())
+                            .unwrap_or(Value::Void);
+                        let bin_op = compound_to_bin(other);
+                        eval_binary(bin_op, &cur, &rhs)?
+                    }
+                };
+                self.field_storage.insert(key, new_val.clone());
+                Ok(new_val)
+            }
+            other => Err(RuntimeError::Type(format!(
+                "unsupported assignment target: {other:?}"
+            ))),
+        }
     }
 
     fn call_named(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {

@@ -613,7 +613,7 @@ impl Parser {
             // name so the interpreter's type registry picks up both.
             if let Some(extra) = alias_for_extra {
                 return Ok(Stmt::Block {
-                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, span }],
+                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span }],
                     span,
                 });
             }
@@ -649,7 +649,7 @@ impl Parser {
             let main = Stmt::TypedefStruct(StructDecl { name: name.clone(), params, body, attrs, is_union, span });
             if let Some(extra) = alias_for_extra {
                 return Ok(Stmt::Block {
-                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, span }],
+                    stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span }],
                     span,
                 });
             }
@@ -660,19 +660,27 @@ impl Parser {
         //
         // 010 allows a typedef alias to carry an optional array size
         // and / or attribute list -- e.g.
-        // `typedef CHAR DIGEST[20] <read=formatDigest>;`. We parse
-        // and discard both because our alias model is shallow; a
-        // template that depends on the array semantics of an alias
-        // would need a richer TypedefAlias variant.
+        // `typedef CHAR DIGEST[20] <read=formatDigest>;`. The array
+        // size matters: `DIGEST x;` reads 20 chars, not one. We
+        // capture the size into the AST so the interpreter can
+        // re-attach it when the alias is used as a field type.
         let source = self.parse_type_ref()?;
         let (new_name, name_span) = self.expect_ident()?;
-        if self.eat_kind(&TokenKind::LBracket) {
-            let _ = self.parse_expr()?;
+        let array_size = if self.eat_kind(&TokenKind::LBracket) {
+            let expr = self.parse_expr()?;
             self.expect_kind(&TokenKind::RBracket, "]")?;
-        }
+            Some(expr)
+        } else {
+            None
+        };
         let _ = self.parse_optional_attrs()?;
         let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
-        Ok(Stmt::TypedefAlias { new_name, source, span: Span::new(start, end_tok.span.end.max(name_span.end)) })
+        Ok(Stmt::TypedefAlias {
+            new_name,
+            source,
+            array_size,
+            span: Span::new(start, end_tok.span.end.max(name_span.end)),
+        })
     }
 
     /// Parse `[N]` if the next token is `[`. Returns `None` when no

@@ -18,6 +18,7 @@ arbitrary = ["dep:arbitrary"]
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
+rustc-hash = "2"
 thiserror = "2.0.18"
 winnow = "0.7"
 

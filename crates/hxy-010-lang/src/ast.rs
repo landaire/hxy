@@ -106,6 +106,10 @@ pub enum Stmt {
     TypedefAlias {
         new_name: String,
         source: TypeRef,
+        /// Optional array-size suffix on the typedef itself
+        /// (`typedef CHAR DIGEST[20];`). When present, every use
+        /// of `DIGEST` reads `[20]` items of `CHAR`.
+        array_size: Option<Expr>,
         span: Span,
     },
     TypedefEnum(EnumDecl),

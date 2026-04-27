@@ -34,6 +34,13 @@ pub enum LexError {
 }
 
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
+    // Pre-pass: harvest `#define NAME <tokens>` substitutions so we
+    // can macro-expand later. Real 010 templates use these for
+    // constants like `#define DEFAULT_BLOCK_SIZE 2048` (the iso
+    // template's BootRecord layout depends on it). Without
+    // expansion the constant identifier is undefined at run time.
+    let defines = harvest_defines(source)?;
+
     let mut input: &str = source;
     let mut tokens = Vec::new();
     loop {
@@ -48,9 +55,75 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
             LexError::UnexpectedChar { ch, offset }
         })?;
         let end = source.len() - input.len();
-        tokens.push(Token { kind, span: Span::new(start, end) });
+        let span = Span::new(start, end);
+        // Macro-expand: if this token is an ident matching a
+        // `#define`, splice in the define's tokens (with the
+        // original ident's span carried through so error messages
+        // still point at the use site).
+        if let TokenKind::Ident(name) = &kind
+            && let Some(replacement) = defines.get(name)
+        {
+            for t in replacement {
+                tokens.push(Token { kind: t.kind.clone(), span });
+            }
+            continue;
+        }
+        tokens.push(Token { kind, span });
     }
     Ok(tokens)
+}
+
+/// Walk the source for `#define NAME <rest of line>` directives
+/// and tokenize each `<rest of line>` so we can splice it back at
+/// every use site. `#define` macros without args (the only kind
+/// we support) are 010's go-to for named constants.
+fn harvest_defines(source: &str) -> Result<rustc_hash::FxHashMap<String, Vec<Token>>, LexError> {
+    let mut out = rustc_hash::FxHashMap::default();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        let rest = trimmed[1..].trim_start();
+        let Some(after) = rest.strip_prefix("define") else {
+            continue;
+        };
+        // Function-style macros (`#define FOO(x) ...`) need arg
+        // substitution that we don't model. Skip them so the
+        // tokens-only path doesn't accidentally splice an opening
+        // paren as the value.
+        let after = after.trim_start();
+        let Some(name_end) = after.find(|c: char| !c.is_alphanumeric() && c != '_') else {
+            // `#define NAME` (no value) -- treat as empty replacement.
+            out.insert(after.to_owned(), Vec::new());
+            continue;
+        };
+        let name = &after[..name_end];
+        if name.is_empty() {
+            continue;
+        }
+        let value = after[name_end..].trim();
+        if value.starts_with('(') {
+            // Function-like macros are not supported; skip.
+            continue;
+        }
+        // Tokenize the value string in isolation. If it fails,
+        // skip the define rather than failing the whole template.
+        let mut input: &str = value;
+        let mut tokens = Vec::new();
+        loop {
+            skip_trivia(&mut input);
+            if input.is_empty() {
+                break;
+            }
+            let Ok(kind) = lex_one(&mut input) else { break };
+            tokens.push(Token { kind, span: Span::new(0, 0) });
+        }
+        if !tokens.is_empty() {
+            out.insert(name.to_owned(), tokens);
+        }
+    }
+    Ok(out)
 }
 
 /// Single token, leaving `input` advanced past it.

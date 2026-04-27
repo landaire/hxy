@@ -14,6 +14,7 @@ Program {
                         end: 340,
                     },
                 },
+                array_size: None,
                 span: Span {
                     start: 327,
                     end: 349,
@@ -30,6 +31,7 @@ Program {
                         end: 363,
                     },
                 },
+                array_size: None,
                 span: Span {
                     start: 350,
                     end: 373,
