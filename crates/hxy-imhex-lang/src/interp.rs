@@ -1586,6 +1586,14 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: attrs.to_vec(),
         });
+        // Sanity-clamp the iteration bound. A garbage `count` (an
+        // uninitialised u32 read past the schema's intent) can claim
+        // billions of elements, and with our per-element EOF
+        // tolerance no individual read fails -- we'd just churn step
+        // budget on placement reads that happen to hit early bytes.
+        // No template legitimately holds more elements than bytes
+        // in the file, so cap the iteration count at the file size.
+        let count = count.min(self.source.len().saturating_add(1));
         for i in 0..count {
             // ImHex tolerates an array element running past EOF: the
             // array stops reading at the file boundary, the parent
