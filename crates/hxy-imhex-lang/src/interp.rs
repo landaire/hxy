@@ -624,6 +624,32 @@ impl<S: HexSource> Interpreter<S> {
                 Op::PushAttrs(id) => {
                     pending_attrs.extend_from_slice(&program.attr_lists[id.0 as usize]);
                 }
+                Op::CallReadUnsigned | Op::CallReadSigned => {
+                    let signed = matches!(*op, Op::CallReadSigned);
+                    let size = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/size" })?;
+                    let offset = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "CallReadInt/offset" })?;
+                    let v = self.std_read_int_xy(&offset, &size, signed)?;
+                    stack.push(v);
+                }
+                Op::CallEof => {
+                    stack.push(Value::Bool(self.cursor_tell() >= self.source.len()));
+                }
+                Op::CallSize => {
+                    stack.push(Value::UInt {
+                        value: self.source.len() as u128,
+                        kind: PrimKind::u64(),
+                    });
+                }
+                Op::CallCurrentOffset => {
+                    stack.push(Value::UInt {
+                        value: self.cursor_tell() as u128,
+                        kind: PrimKind::u64(),
+                    });
+                }
                 Op::EvalAstExpr(id) => {
                     // Hand the stored AST expression straight to
                     // the AST evaluator. Same scope state the
@@ -3566,6 +3592,23 @@ impl<S: HexSource> Interpreter<S> {
                 // Intern once at entry so the loop below doesn't
                 // re-hash the string per ancestor level.
                 let id = self.intern.lookup(other)?;
+                // Fast-fail: if no node has ever been emitted with
+                // this name AND the name has no scope-alias entry,
+                // there's nothing for the chain walk to find.
+                // Bencode's `Expr::Call` per-arg `resolve_node_chain`
+                // pass calls us with `$` (the cursor magic ident)
+                // for every `read_unsigned($, 1)` call inside its
+                // ASCIIDecimal predicates. With "$" interned (via
+                // the BC's `LoadIdent($)` op), `intern.lookup("$")`
+                // returned Some and the chain walk used to fire
+                // ~2M times for nothing -- that ate ~25% of the
+                // bencode wallclock per the xct2cli profile.
+                let no_node_named = !self.nodes_by_name.contains_key(&id);
+                if no_node_named
+                    && self.scopes.iter().all(|s| !s.node_aliases.contains_key(&id))
+                {
+                    return None;
+                }
                 // Function-parameter aliases first: `imSpec` inside
                 // `GetImageDataSize(imSpec)` should route through
                 // the caller's `imageSpec` node.
@@ -4030,6 +4073,25 @@ impl<S: HexSource> Interpreter<S> {
             file_offset: Some(self.cursor_tell()),
             template_line: None,
         });
+    }
+
+    /// By-ref variant of [`Self::std_read_int`] for the BC ops.
+    /// Avoids allocating a `Vec<Value>` per call (the slice
+    /// equivalent of `args.first()` / `args.get(1)`).
+    fn std_read_int_xy(
+        &self,
+        offset_v: &Value,
+        size_v: &Value,
+        signed: bool,
+    ) -> Result<Value, RuntimeError> {
+        let offset = offset_v.to_i128().unwrap_or(0).max(0) as u64;
+        let size = size_v.to_i128().unwrap_or(0).clamp(0, 8) as u8;
+        if size == 0 {
+            return Ok(Value::UInt { value: 0, kind: PrimKind::u64() });
+        }
+        let bytes = self.source.read(offset, size as u64).map_err(RuntimeError::from)?;
+        let kind = PrimKind { class: PrimClass::Int, width: size, signed };
+        decode_prim(&bytes, kind, self.endian)
     }
 
     fn std_read_int(&self, args: &[Value], signed: bool) -> Result<Value, RuntimeError> {

@@ -275,6 +275,27 @@ pub enum Op {
     /// Fixed-count fallback array.
     ReadAnyArrayFixed { ty: TypeId, name: IdentId, count: u64 },
 
+    /// `std::mem::read_unsigned(offset, size)` -- pops size then
+    /// offset, reads `size` bytes (clamped to 1..=8) at `offset`,
+    /// pushes a `Value::UInt`. Lowered specifically for the
+    /// bencode hot loop where this builtin fires per
+    /// `[while(...)]` iteration (~600k calls per torrent).
+    /// Going through `Op::EvalAstExpr` -> `eval(Call)` ->
+    /// `call_named_with_aliases` -> `call_builtin` was the
+    /// dominant per-iteration cost.
+    CallReadUnsigned,
+    /// Same but signed.
+    CallReadSigned,
+    /// `std::mem::eof()` -- no args, pushes `Value::Bool` for
+    /// "cursor at or past end of source".
+    CallEof,
+    /// `std::mem::size()` -- no args, pushes file size as
+    /// `Value::UInt(u64)`.
+    CallSize,
+    /// `std::mem::current_offset()` -- no args, pushes the
+    /// cursor's current position.
+    CallCurrentOffset,
+
     /// Generic fallback expression eval: hands an [`crate::ast::Expr`]
     /// straight to `Interpreter::eval` and pushes the resulting
     /// [`crate::value::Value`] onto the operand stack. Lets the
@@ -369,6 +390,11 @@ impl Op {
             Op::EmitComputedLocal { .. } => "EmitComputedLocal",
             Op::StoreIdentCoerce { .. } => "StoreIdentCoerce",
             Op::EvalAstExpr(_) => "EvalAstExpr",
+            Op::CallReadUnsigned => "CallReadUnsigned",
+            Op::CallReadSigned => "CallReadSigned",
+            Op::CallEof => "CallEof",
+            Op::CallSize => "CallSize",
+            Op::CallCurrentOffset => "CallCurrentOffset",
             Op::ExecAstStmt(_) => "ExecAstStmt",
             Op::ReadCharArr { .. } => "ReadCharArr",
             Op::ReadDynArr { .. } => "ReadDynArr",
@@ -1827,6 +1853,36 @@ fn compile_expr(p: &mut Program, ctx: &CompileCtx, out: &mut Vec<Op>, expr: &cra
             out.push(Op::UnOp(*op));
             Ok(())
         }
+        crate::ast::Expr::Call { callee, args, .. } => {
+            // Specialised lowering for the handful of std builtins
+            // that fire on bencode's hot loop. Anything else falls
+            // through to EvalAstExpr below.
+            if let Some(name) = call_target_name(callee) {
+                if let Some(op) = no_arg_builtin_op(&name) {
+                    if !args.is_empty() {
+                        // No-arg builtin called with args -- let
+                        // the AST handle the (probably broken)
+                        // input; we don't model arg ignoring here.
+                        let id = p.push_expr(expr.clone());
+                        out.push(Op::EvalAstExpr(id));
+                        return Ok(());
+                    }
+                    out.push(op);
+                    return Ok(());
+                }
+                if let Some(op) = two_arg_read_int_op(&name)
+                    && args.len() == 2
+                {
+                    compile_expr(p, ctx, out, &args[0])?;
+                    compile_expr(p, ctx, out, &args[1])?;
+                    out.push(op);
+                    return Ok(());
+                }
+            }
+            let id = p.push_expr(expr.clone());
+            out.push(Op::EvalAstExpr(id));
+            Ok(())
+        }
         // Anything we don't have a fast path for falls back to
         // `Op::EvalAstExpr`, which dispatches into the AST
         // `Interpreter::eval`. The bytecode VM thus accepts every
@@ -1838,6 +1894,36 @@ fn compile_expr(p: &mut Program, ctx: &CompileCtx, out: &mut Vec<Op>, expr: &cra
             out.push(Op::EvalAstExpr(id));
             Ok(())
         }
+    }
+}
+
+/// Joined `a::b::c` name for a `Call` callee, if it's a path
+/// or ident. Returns `None` for callees that aren't a simple
+/// name (member-access callees, parenthesised exprs, ...).
+fn call_target_name(callee: &crate::ast::Expr) -> Option<String> {
+    match callee {
+        crate::ast::Expr::Ident { name, .. } => Some(name.clone()),
+        crate::ast::Expr::Path { segments, .. } => Some(segments.join("::")),
+        _ => None,
+    }
+}
+
+fn no_arg_builtin_op(name: &str) -> Option<Op> {
+    match name {
+        "std::mem::eof" | "builtin::std::mem::eof" => Some(Op::CallEof),
+        "std::mem::size" | "std::mem::file_size" | "builtin::std::mem::size" => Some(Op::CallSize),
+        "std::mem::current_offset" | "builtin::std::mem::current_offset" => {
+            Some(Op::CallCurrentOffset)
+        }
+        _ => None,
+    }
+}
+
+fn two_arg_read_int_op(name: &str) -> Option<Op> {
+    match name {
+        "std::mem::read_unsigned" | "read_unsigned" => Some(Op::CallReadUnsigned),
+        "std::mem::read_signed" | "read_signed" => Some(Op::CallReadSigned),
+        _ => None,
     }
 }
 

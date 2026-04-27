@@ -32,4 +32,11 @@ fn main() {
         }
         println!();
     }
+    for (i, ops) in prog.pred_streams.iter().enumerate() {
+        println!("== pred_stream[{i}] ({} ops) ==", ops.len());
+        for (j, op) in ops.iter().enumerate() {
+            println!("  {j:4}  {op:?}");
+        }
+        println!();
+    }
 }
