@@ -2366,6 +2366,14 @@ fn decode_prim(bytes: &[u8], kind: PrimKind, endian: Endian) -> Result<Value, Ru
     })
 }
 
+fn char_value_to_string(value: u32) -> String {
+    if value < 0x80 {
+        (value as u8 as char).to_string()
+    } else {
+        char::from_u32(value).map(|c| c.to_string()).unwrap_or_else(|| String::from('\u{FFFD}'))
+    }
+}
+
 fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // String equality: 010 templates rely on `type.cname == "IHDR"`
     // for chunk dispatch. Both sides must be strings; mismatched
@@ -2381,6 +2389,28 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
             BinOp::GtEq => Value::Bool(a >= b),
             BinOp::Add => Value::Str(format!("{a}{b}")),
             _ => return Err(RuntimeError::Type(format!("string operand not supported for {op:?}"))),
+        });
+    }
+    // String + char (or char + string) concatenates: 010 templates
+    // build sentinel byte sequences with `"Rar!" + '\x1A' + '\x07'`.
+    // Comparisons on a string vs. a single-char string also slip in
+    // through the same conversion.
+    if matches!(op, BinOp::Add | BinOp::Eq | BinOp::NotEq)
+        && let Some((a, b)) = match (l, r) {
+            (Value::Str(s), Value::Char { value, .. }) => {
+                Some((s.clone(), char_value_to_string(*value)))
+            }
+            (Value::Char { value, .. }, Value::Str(s)) => {
+                Some((char_value_to_string(*value), s.clone()))
+            }
+            _ => None,
+        }
+    {
+        return Ok(match op {
+            BinOp::Add => Value::Str(format!("{a}{b}")),
+            BinOp::Eq => Value::Bool(a == b),
+            BinOp::NotEq => Value::Bool(a != b),
+            _ => unreachable!(),
         });
     }
     // Float path: if either side is a float, coerce both to f64.

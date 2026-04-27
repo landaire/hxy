@@ -627,6 +627,41 @@ impl Parser {
             self.bump();
             let tag =
                 if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) { Some(self.expect_ident()?.0) } else { None };
+            // Forward declaration -- `typedef struct Name;` with no body.
+            // Templates use this to allow recursive types (e.g. msgpack
+            // values that nest themselves). Treat as a no-op decl: the
+            // real definition appears later in the file.
+            if let Some(t) = &tag
+                && matches!(self.peek_kind(), Some(TokenKind::Semi))
+            {
+                let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+                let span = Span::new(start, end_tok.span.end);
+                return Ok(Stmt::TypedefStruct(StructDecl {
+                    name: t.clone(),
+                    params: Vec::new(),
+                    body: Vec::new(),
+                    attrs: Default::default(),
+                    is_union,
+                    span,
+                }));
+            }
+            // `typedef struct TAG NAME;` (no body) -- alias `NAME` to
+            // the previously-declared struct `TAG`. Used by templates
+            // that introduce a thin renaming for a shared underlying
+            // shape (e.g. dex's `typedef struct uleb128 uleb128p1;`).
+            if let Some(t) = &tag
+                && matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
+            {
+                let alias_name = self.expect_ident()?.0;
+                let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
+                let span = Span::new(start, end_tok.span.end);
+                return Ok(Stmt::TypedefAlias {
+                    new_name: alias_name,
+                    source: TypeRef { name: t.clone(), span },
+                    array_size: None,
+                    span,
+                });
+            }
             let params = self.parse_optional_struct_params()?;
             let body_block = self.parse_block()?;
             let Stmt::Block { stmts: body, .. } = body_block else { unreachable!() };
@@ -1092,7 +1127,7 @@ impl Parser {
         }
         // C-style bitfield: `DWORD flag : 3;` packs `flag` into the
         // low / high 3 bits of the next shared DWORD slot.
-        let bit_width = if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(ATTR_VALUE_BP)?) } else { None };
+        let bit_width = if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(BITFIELD_BP)?) } else { None };
         let attrs = self.parse_optional_attrs()?;
         let init = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
 
@@ -1144,7 +1179,7 @@ impl Parser {
                 Vec::new()
             };
             let next_bit_width =
-                if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(ATTR_VALUE_BP)?) } else { None };
+                if self.eat_kind(&TokenKind::Colon) { Some(self.parse_expr_bp(BITFIELD_BP)?) } else { None };
             let next_attrs = self.parse_optional_attrs()?;
             let next_init = if self.eat_kind(&TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
             decls.push(Stmt::FieldDecl {
@@ -1451,6 +1486,12 @@ const PREFIX_BP: u8 = 30;
 /// binary operators. Postfix operators (call, index, member access)
 /// still bind because they bypass the `min_bp` check entirely.
 const ATTR_VALUE_BP: u8 = 40;
+
+/// Min binding power for parsing a bitfield width expression. Lower
+/// than `ATTR_VALUE_BP` so arithmetic like `: NumBits + 2` is folded
+/// into the width, but high enough to leave the comparison level
+/// (`<` / `>`) alone so a trailing `<attrs>` keeps its meaning.
+const BITFIELD_BP: u8 = 17;
 
 fn infix_binding_power(kind: &TokenKind) -> Option<(u8, u8, BinOp)> {
     let (l, r, op) = match kind {

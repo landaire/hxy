@@ -284,8 +284,12 @@ fn string_inner(input: &mut &str) -> ModalResult<String> {
             Some('"') | None => return Ok(out),
             Some('\\') => {
                 any.parse_next(input)?;
-                let esc = any.parse_next(input)?;
-                out.push(decode_escape(esc));
+                let code = read_escape(input)?;
+                if let Some(c) = char::from_u32(code) {
+                    out.push(c);
+                } else {
+                    out.push('\u{FFFD}');
+                }
             }
             Some(c) => {
                 any.parse_next(input)?;
@@ -303,14 +307,57 @@ fn char_inner(input: &mut &str) -> ModalResult<u32> {
     match input.chars().next() {
         Some('\\') => {
             any.parse_next(input)?;
-            let esc = any.parse_next(input)?;
-            Ok(decode_escape(esc) as u32)
+            read_escape(input)
         }
         Some(c) => {
             any.parse_next(input)?;
             Ok(c as u32)
         }
         None => Err(winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new())),
+    }
+}
+
+/// Decode the body of an escape sequence (the part *after* the leading
+/// backslash). Handles single-letter escapes (`\n`, `\t`, ...),
+/// hex escapes (`\xHH`), and octal escapes (`\NNN`). Returns the
+/// resulting Unicode scalar value as a u32 so callers can emit the
+/// raw byte even for non-printable code points (010 templates use
+/// `'\xFF'` as a sentinel byte literal).
+fn read_escape(input: &mut &str) -> ModalResult<u32> {
+    let first = any.parse_next(input)?;
+    match first {
+        'x' | 'X' => {
+            let mut value: u32 = 0;
+            let mut count = 0;
+            while count < 2 {
+                let Some(c) = input.chars().next() else { break };
+                let Some(d) = c.to_digit(16) else { break };
+                any.parse_next(input)?;
+                value = value * 16 + d;
+                count += 1;
+            }
+            if count == 0 {
+                return Err(winnow::error::ErrMode::Backtrack(
+                    winnow::error::ContextError::new(),
+                ));
+            }
+            Ok(value)
+        }
+        '0'..='7' => {
+            // Octal escape: up to 3 octal digits (010's lexer accepts
+            // the C convention).
+            let mut value: u32 = first.to_digit(8).unwrap();
+            let mut count = 1;
+            while count < 3 {
+                let Some(c) = input.chars().next() else { break };
+                let Some(d) = c.to_digit(8) else { break };
+                any.parse_next(input)?;
+                value = value * 8 + d;
+                count += 1;
+            }
+            Ok(value)
+        }
+        other => Ok(decode_escape(other) as u32),
     }
 }
 
