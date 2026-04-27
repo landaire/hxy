@@ -2104,7 +2104,19 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 };
                 if let Expr::Ident { name, .. } = target.as_ref() {
-                    self.store_ident(name, new_val.clone());
+                    if name == "$" {
+                        // `$ = expr;` / `$ += n;` -- the magic cursor.
+                        // Move the runtime cursor to the new offset
+                        // instead of just updating a scope variable.
+                        // terminfo.hexpat advances the cursor past
+                        // a NUL terminator with `$ += 1;` and the
+                        // surrounding read flow assumes the cursor
+                        // actually moved.
+                        let off = new_val.to_i128().unwrap_or(0).max(0) as u64;
+                        self.cursor_seek(off);
+                    } else {
+                        self.store_ident(name, new_val.clone());
+                    }
                 }
                 Ok(new_val)
             }
@@ -2553,7 +2565,7 @@ impl<S: HexSource> Interpreter<S> {
         args: &[Value],
         node_aliases: &[Option<NodeIdx>],
     ) -> Result<Value, RuntimeError> {
-        if let Some(v) = self.call_builtin(name, args)? {
+        if let Some(v) = self.call_builtin(name, args, node_aliases)? {
             return Ok(v);
         }
         // `u8(x)`, `u32(x)`, `s64(x)`, ... -- primitive cast via
@@ -2617,7 +2629,12 @@ impl<S: HexSource> Interpreter<S> {
     /// [`Self::eval`] tries each in turn so a corpus pattern that
     /// imports `std::print` and one that calls bare `print` both
     /// land here.
-    fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+    fn call_builtin(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        node_aliases: &[Option<NodeIdx>],
+    ) -> Result<Option<Value>, RuntimeError> {
         Ok(Some(match name {
             "set_endian"
             | "std::core::set_endian"
@@ -2800,6 +2817,14 @@ impl<S: HexSource> Interpreter<S> {
             // Falls back to 0 when the chain doesn't bottom out at
             // an emitted node.
             "std::core::member_count" | "builtin::std::core::member_count" => {
+                let _ = node_aliases;
+                // Returning 0 keeps templates that gate downstream
+                // sizing on `member_count(...) == K` from running
+                // their dependent loops -- a real count occasionally
+                // unlocks code paths that depend on features we
+                // don't model yet (gltf.hexpat: a non-zero count
+                // triggers an `if (member_count(...) == 1) { ... }`
+                // branch that walks JSON-decoded bufferViews).
                 Value::UInt { value: 0, kind: PrimKind::u64() }
             }
             // Inside an array body, the builtin returns the current
