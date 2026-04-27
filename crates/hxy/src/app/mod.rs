@@ -113,7 +113,7 @@ pub struct HxyApp {
     /// `dismiss_group` helper for the file-open prompt flow that
     /// needs to clear sibling toasts when the user accepts one.
     #[cfg(not(target_arch = "wasm32"))]
-    toasts: crate::toasts::ToastCenter,
+    pub(crate) toasts: crate::toasts::ToastCenter,
 
     /// Open compare-picker modal, if any. Holds the user's in-progress
     /// A / B selection while the dialog is up; cleared on confirm or
@@ -127,7 +127,7 @@ pub struct HxyApp {
     /// originating `FileId` so the resume path can re-issue the
     /// operation against the right buffer.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_search_modal: Option<PendingSearchModal>,
+    pub(crate) pending_search_modal: Option<crate::search::modal::PendingSearchModal>,
 
     /// Set when an open hit a sidecar from a previous session that
     /// still matches the file on disk. The modal asks the user
@@ -1696,8 +1696,8 @@ impl eframe::App for HxyApp {
         render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            drain_search_effects(self);
-            render_search_modal(ui.ctx(), self);
+            crate::search::modal::drain_search_effects(self);
+            crate::search::modal::render_search_modal(ui.ctx(), self);
             crate::compare::picker::render_compare_picker(ui.ctx(), self);
             render_imhex_patterns_first_run(ui.ctx(), self);
             pump_pattern_fetch(ui.ctx(), self);
@@ -3235,10 +3235,10 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search::bar::Sear
                 file.search.active_idx = None;
             }
             SearchEvent::ReplaceCurrent => {
-                queue_replace_current(file);
+                crate::search::replace::queue_replace_current(file);
             }
             SearchEvent::ReplaceAll => {
-                queue_replace_all(file, bounds);
+                crate::search::replace::queue_replace_all(file, bounds);
             }
         }
     }
@@ -3274,283 +3274,6 @@ fn nearest_match_idx(matches: &[u64], caret: u64) -> Option<usize> {
     Some(matches.partition_point(|&m| m < caret).min(matches.len() - 1))
 }
 
-/// Stage a Replace-Current. The active match offset comes from the
-/// editor's current selection (set when the user last hit Find Next /
-/// Prev / clicked an All-Results entry). Defers via
-/// [`SearchSideEffect::NeedsLengthMismatchAck`] when the find/replace
-/// pair would resize the file and the user hasn't acked the splice
-/// prompt yet; otherwise performs the replace inline and re-runs Next.
-#[cfg(not(target_arch = "wasm32"))]
-fn queue_replace_current(file: &mut OpenFile) {
-    use crate::search::DeferredReplace;
-    use crate::search::SearchSideEffect;
-
-    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone()) else {
-        return;
-    };
-    let Some(sel) = file.editor.selection() else { return };
-    let offset = sel.anchor.get().min(sel.cursor.get());
-    let length = sel.range().len().get();
-    if length != find.len() as u64 {
-        return;
-    }
-    if find.len() != repl.len() && !file.search.splice_prompt_acked {
-        file.search.pending_effects.push(SearchSideEffect::NeedsLengthMismatchAck(DeferredReplace {
-            offset,
-            find_len: find.len() as u64,
-            replace_len: repl.len() as u64,
-        }));
-        return;
-    }
-    perform_replace_current(file, offset, &find, &repl);
-}
-
-/// Stage a Replace-All. Reads every match in `bounds`, then either
-/// queues the count-confirm modal (first time) or performs the
-/// splices (after both modals have been acked).
-#[cfg(not(target_arch = "wasm32"))]
-fn queue_replace_all(file: &mut OpenFile, bounds: hxy_core::ByteRange) {
-    use crate::search::DeferredReplaceAll;
-    use crate::search::SearchSideEffect;
-    use crate::search::find_all;
-
-    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone()) else {
-        return;
-    };
-    let matches = find_all(file.editor.source().as_ref(), &find, bounds);
-    if matches.is_empty() {
-        return;
-    }
-    file.search.pending_effects.push(SearchSideEffect::NeedsReplaceAllConfirm(DeferredReplaceAll {
-        matches,
-        find_len: find.len() as u64,
-        replace_len: repl.len() as u64,
-    }));
-}
-
-/// Splice / overwrite a single match at `offset`. Caller is
-/// responsible for the splice-prompt acknowledgement when sizes
-/// differ. Bumps the search refresh after so the All-Results list
-/// reflects the new layout.
-#[cfg(not(target_arch = "wasm32"))]
-fn perform_replace_current(file: &mut OpenFile, offset: u64, find: &[u8], repl: &[u8]) {
-    use crate::search::SearchSideEffect;
-
-    let result = if find.len() == repl.len() {
-        file.editor.request_write(offset, repl.to_vec()).map(|_| ())
-    } else {
-        file.editor.splice(offset, find.len() as u64, repl.to_vec()).map(|_| ())
-    };
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "replace");
-        return;
-    }
-    file.search.pending_effects.push(SearchSideEffect::Replaced { count: 1 });
-    let next_offset = offset + repl.len() as u64;
-    file.editor.set_selection(Some(hxy_core::Selection {
-        anchor: hxy_core::ByteOffset::new(next_offset),
-        cursor: hxy_core::ByteOffset::new(next_offset),
-    }));
-    file.search.refresh_pattern();
-    file.search.splice_prompt_acked = true;
-}
-
-/// Modal request raised by the search handler that the app renders
-/// next frame. Distinguishes between the length-mismatch splice
-/// prompt (single replace or replace-all) and the Replace-All count
-/// confirmation.
-#[cfg(not(target_arch = "wasm32"))]
-pub enum PendingSearchModal {
-    /// "This will resize the file" prompt for a single Replace, with
-    /// the offset / pattern lengths the user is acknowledging.
-    LengthMismatchOnce { file_id: FileId, deferred: crate::search::DeferredReplace },
-    /// "This will resize the file" prompt for Replace All; carries
-    /// the full match list so confirm can splice without re-scanning.
-    LengthMismatchAll { file_id: FileId, deferred: crate::search::DeferredReplaceAll },
-    /// "Replace N occurrences?" confirmation modal for Replace All.
-    ConfirmReplaceAll { file_id: FileId, deferred: crate::search::DeferredReplaceAll },
-}
-
-/// Drain every open file's [`crate::search::SearchState::pending_effects`]
-/// queue and turn the entries into toasts / modals.
-#[cfg(not(target_arch = "wasm32"))]
-fn drain_search_effects(app: &mut HxyApp) {
-    use crate::search::SearchSideEffect;
-
-    let file_ids: Vec<FileId> = app.files.keys().copied().collect();
-    for id in file_ids {
-        let effects: Vec<SearchSideEffect> = match app.files.get_mut(&id) {
-            Some(f) => f.search.pending_effects.drain(..).collect(),
-            None => continue,
-        };
-        for e in effects {
-            match e {
-                SearchSideEffect::WrappedForward => {
-                    app.toasts.info(&hxy_i18n::t("search-wrapped-forward"));
-                }
-                SearchSideEffect::WrappedBackward => {
-                    app.toasts.info(&hxy_i18n::t("search-wrapped-backward"));
-                }
-                SearchSideEffect::Replaced { count } => {
-                    let text = hxy_i18n::t_args("search-replaced-toast", &[("count", &count.to_string())]);
-                    app.toasts.success(&text);
-                }
-                SearchSideEffect::NeedsLengthMismatchAck(deferred) => {
-                    if app.pending_search_modal.is_none() {
-                        app.pending_search_modal =
-                            Some(PendingSearchModal::LengthMismatchOnce { file_id: id, deferred });
-                    }
-                }
-                SearchSideEffect::NeedsReplaceAllConfirm(deferred) => {
-                    if app.pending_search_modal.is_none() {
-                        app.pending_search_modal =
-                            Some(PendingSearchModal::ConfirmReplaceAll { file_id: id, deferred });
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Render whichever search modal is currently pending (at most one
-/// at a time). Confirmation routes back through the replace helpers
-/// after setting `splice_prompt_acked` where appropriate.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_search_modal(ctx: &egui::Context, app: &mut HxyApp) {
-    let Some(modal) = app.pending_search_modal.take() else { return };
-
-    match modal {
-        PendingSearchModal::LengthMismatchOnce { file_id, deferred } => {
-            let outcome = render_length_mismatch_modal(ctx, deferred.find_len, deferred.replace_len);
-            match outcome {
-                ModalOutcome::Confirm => {
-                    let Some(file) = app.files.get_mut(&file_id) else { return };
-                    let (Some(find), Some(repl)) = (file.search.pattern.clone(), file.search.replace_pattern.clone())
-                    else {
-                        return;
-                    };
-                    file.search.splice_prompt_acked = true;
-                    perform_replace_current(file, deferred.offset, &find, &repl);
-                }
-                ModalOutcome::Cancel => {}
-                ModalOutcome::Pending => {
-                    app.pending_search_modal = Some(PendingSearchModal::LengthMismatchOnce { file_id, deferred });
-                }
-            }
-        }
-        PendingSearchModal::LengthMismatchAll { file_id, deferred } => {
-            let outcome = render_length_mismatch_modal(ctx, deferred.find_len, deferred.replace_len);
-            match outcome {
-                ModalOutcome::Confirm => {
-                    let Some(file) = app.files.get_mut(&file_id) else { return };
-                    let Some(repl) = file.search.replace_pattern.clone() else { return };
-                    file.search.splice_prompt_acked = true;
-                    perform_replace_all(file, &deferred.matches, deferred.find_len, &repl);
-                }
-                ModalOutcome::Cancel => {}
-                ModalOutcome::Pending => {
-                    app.pending_search_modal = Some(PendingSearchModal::LengthMismatchAll { file_id, deferred });
-                }
-            }
-        }
-        PendingSearchModal::ConfirmReplaceAll { file_id, deferred } => {
-            let outcome = render_replace_all_confirm_modal(ctx, deferred.matches.len());
-            match outcome {
-                ModalOutcome::Confirm => {
-                    let Some(file) = app.files.get_mut(&file_id) else { return };
-                    let lengths_differ = deferred.find_len != deferred.replace_len;
-                    if lengths_differ && !file.search.splice_prompt_acked {
-                        app.pending_search_modal = Some(PendingSearchModal::LengthMismatchAll { file_id, deferred });
-                        return;
-                    }
-                    let Some(repl) = file.search.replace_pattern.clone() else { return };
-                    perform_replace_all(file, &deferred.matches, deferred.find_len, &repl);
-                }
-                ModalOutcome::Cancel => {}
-                ModalOutcome::Pending => {
-                    app.pending_search_modal = Some(PendingSearchModal::ConfirmReplaceAll { file_id, deferred });
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-enum ModalOutcome {
-    Confirm,
-    Cancel,
-    Pending,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_length_mismatch_modal(ctx: &egui::Context, find_len: u64, replace_len: u64) -> ModalOutcome {
-    let mut outcome = ModalOutcome::Pending;
-    egui::Window::new(hxy_i18n::t("search-replace-prompt-title"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t_args(
-                "search-replace-prompt-body",
-                &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
-            ));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("search-replace-prompt-confirm")).clicked() {
-                    outcome = ModalOutcome::Confirm;
-                }
-                if ui.button(hxy_i18n::t("search-replace-prompt-cancel")).clicked() {
-                    outcome = ModalOutcome::Cancel;
-                }
-            });
-        });
-    outcome
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render_replace_all_confirm_modal(ctx: &egui::Context, count: usize) -> ModalOutcome {
-    let mut outcome = ModalOutcome::Pending;
-    egui::Window::new(hxy_i18n::t("search-replace-all-confirm-title"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t_args("search-replace-all-confirm-body", &[("count", &count.to_string())]));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("search-replace-all-confirm-yes")).clicked() {
-                    outcome = ModalOutcome::Confirm;
-                }
-                if ui.button(hxy_i18n::t("search-replace-all-confirm-no")).clicked() {
-                    outcome = ModalOutcome::Cancel;
-                }
-            });
-        });
-    outcome
-}
-
-/// Apply every match in `matches` as a single batched splice so
-/// the whole Replace All counts as one undo entry. `matches` must
-/// be sorted ascending; the batch is non-overlapping by
-/// construction (each match consumes `find_len` bytes). Used after
-/// both the count-confirm and (when sizes differ) the splice
-/// prompt have been acknowledged.
-#[cfg(not(target_arch = "wasm32"))]
-fn perform_replace_all(file: &mut OpenFile, matches: &[u64], find_len: u64, repl: &[u8]) {
-    use crate::search::SearchSideEffect;
-
-    if matches.is_empty() {
-        return;
-    }
-    let ops: Vec<(u64, u64, Vec<u8>)> = matches.iter().map(|off| (*off, find_len, repl.to_vec())).collect();
-    if let Err(e) = file.editor.splice_many(&ops) {
-        tracing::warn!(error = %e, "replace-all batch");
-        return;
-    }
-    file.search.pending_effects.push(SearchSideEffect::Replaced { count: matches.len() });
-    file.search.refresh_pattern();
-    file.search.splice_prompt_acked = true;
-}
 
 /// Apply a frame's worth of cross-file search events. `Run` rebuilds
 /// the match list from scratch by scanning every open file's source;

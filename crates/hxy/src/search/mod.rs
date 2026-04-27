@@ -8,6 +8,10 @@
 pub mod bar;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod global;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod modal;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod replace;
 
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
