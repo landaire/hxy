@@ -505,6 +505,33 @@ impl<S: HexSource> Interpreter<S> {
                 Op::PushAttrs(id) => {
                     pending_attrs.extend_from_slice(&program.attr_lists[id.0 as usize]);
                 }
+                Op::EvalAstExpr(id) => {
+                    // Hand the stored AST expression straight to
+                    // the AST evaluator. Same scope state the
+                    // bytecode VM has been mutating (locals,
+                    // this_stack, current_parent, ...) is what
+                    // `eval` reads, so the result is identical.
+                    let expr = &program.ast_exprs[id.0 as usize];
+                    let v = self.eval(expr)?;
+                    stack.push(v);
+                }
+                Op::ExecAstStmt(id) => {
+                    let stmt = program.ast_stmts[id.0 as usize].clone();
+                    // Drain any pending decorative attrs into the
+                    // statement's attrs vec so `exec_stmt` sees
+                    // them on its emitted node. Most ExecAstStmt
+                    // payloads are control-flow stmts that don't
+                    // have an attrs slot, but a fallback FieldDecl
+                    // does. Easier: just clear -- the AST stmt
+                    // already carries its own attrs from the
+                    // parser. If a placement op queued
+                    // `hxy_placement`, that's also already in the
+                    // stmt's `placement` field and AST will re-add
+                    // the attr.
+                    pending_attrs.clear();
+                    let _ = stack; // silence unused-after-mem-take
+                    let _ = self.exec_stmt(&stmt, parent)?;
+                }
                 Op::ReadAny { ty, name } => {
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
@@ -594,6 +621,27 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 Op::PushVoid => {
                     stack.push(Value::Void);
+                }
+                Op::PushFloat(v) => {
+                    stack.push(Value::Float { value: v, kind: PrimKind::f64() });
+                }
+                Op::PushBool(v) => {
+                    stack.push(Value::Bool(v));
+                }
+                Op::PushChar(v) => {
+                    stack.push(Value::Char { value: v, kind: PrimKind::char() });
+                }
+                Op::PushStr(id) => {
+                    stack.push(Value::Str(program.strings.get(id.0).to_owned()));
+                }
+                Op::UnOp(unop) => {
+                    let v = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "UnOp" })?;
+                    stack.push(eval_unary(unop, &v)?);
+                }
+                Op::Pop => {
+                    stack.pop();
                 }
                 Op::StoreIdent(name) => {
                     let value = stack

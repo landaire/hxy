@@ -93,6 +93,18 @@ pub struct EnumId(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AttrListId(pub u32);
 
+/// Index into [`Program::ast_exprs`]. Used by the AST-fallback
+/// expression op so the bytecode VM can lower any expression
+/// shape it can't yet break apart into primitive ops.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExprId(pub u32);
+
+/// Index into [`Program::ast_stmts`]. Counterpart to [`ExprId`]
+/// for the statement-shape fallback (`if`, `while`, `match`,
+/// `for`, `try`, `return`, `break`, `continue`).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StmtId(pub u32);
+
 /// Intern table for identifiers (or string literals -- two of these
 /// live on a [`Program`], one per kind). Insertion is O(1) hashed;
 /// lookup is `u32 -> &str`.
@@ -226,6 +238,20 @@ pub enum Op {
     /// Fixed-count fallback array.
     ReadAnyArrayFixed { ty: TypeId, name: IdentId, count: u64 },
 
+    /// Generic fallback expression eval: hands an [`crate::ast::Expr`]
+    /// straight to `Interpreter::eval` and pushes the resulting
+    /// [`crate::value::Value`] onto the operand stack. Lets the
+    /// bytecode path lower any expression shape -- member access,
+    /// function calls, ternary, sizeof, ... -- without per-op
+    /// lowerings, at the cost of running through the AST evaluator
+    /// for that subexpression.
+    EvalAstExpr(ExprId),
+    /// Generic fallback statement eval: hands a stored
+    /// [`crate::ast::Stmt`] straight to `Interpreter::exec_stmt`.
+    /// Used for `if` / `while` / `for` / `match` / `try` / etc.
+    /// before they get dedicated control-flow op lowerings.
+    ExecAstStmt(StmtId),
+
     // ---- cursor save/restore ----
     SaveCursor,
     RestoreCursor,
@@ -302,6 +328,8 @@ impl Op {
             Op::ReadAnyArrayDyn { .. } => "ReadAnyArrayDyn",
             Op::ReadAnyArrayFixed { .. } => "ReadAnyArrayFixed",
             Op::EmitComputedLocal { .. } => "EmitComputedLocal",
+            Op::EvalAstExpr(_) => "EvalAstExpr",
+            Op::ExecAstStmt(_) => "ExecAstStmt",
             Op::ReadCharArr { .. } => "ReadCharArr",
             Op::ReadDynArr { .. } => "ReadDynArr",
             Op::SaveCursor => "SaveCursor",
@@ -371,6 +399,13 @@ pub struct Program {
     /// a subset of these -- the compile pass populates both for
     /// the names it could lower.
     pub ast_decls: AstDecls,
+    /// AST expression nodes referenced by [`Op::EvalAstExpr`].
+    /// Stored verbatim so the VM can dispatch into
+    /// `Interpreter::eval` for shapes the bytecode compile pass
+    /// can't yet break apart into primitive ops.
+    pub ast_exprs: Vec<crate::ast::Expr>,
+    /// AST statement nodes referenced by [`Op::ExecAstStmt`].
+    pub ast_stmts: Vec<crate::ast::Stmt>,
 }
 
 /// AST-shaped decl bundle pre-collected for the AST fallback paths
@@ -461,6 +496,23 @@ impl Program {
         let id = self.attr_lists.len() as u32;
         self.attr_lists.push(list);
         AttrListId(id)
+    }
+
+    /// Append an AST expression to the fallback table. No dedup --
+    /// expressions carry spans that almost never line up between
+    /// distinct source positions, so a structural compare would
+    /// rarely hit anyway.
+    pub fn push_expr(&mut self, e: crate::ast::Expr) -> ExprId {
+        let id = self.ast_exprs.len() as u32;
+        self.ast_exprs.push(e);
+        ExprId(id)
+    }
+
+    /// Append an AST statement to the fallback table.
+    pub fn push_stmt(&mut self, s: crate::ast::Stmt) -> StmtId {
+        let id = self.ast_stmts.len() as u32;
+        self.ast_stmts.push(s);
+        StmtId(id)
     }
 }
 
@@ -902,38 +954,70 @@ fn compile_struct_body_stmt(
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
-            // In-struct placement saves+restores the surrounding
-            // cursor; the VM does not yet model that. Only the
-            // top-level form (which is a plain seek) is lowered.
-            if placement.is_some() {
-                return Err(CompileError::UnsupportedFieldDecl {
-                    reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
-                });
-            }
             // Computed local / const / io-var: bind a value but
             // don't read from the source. Inside a struct body we
             // additionally emit a zero-length child node so outer
             // member access (`outer.computed`) can find the
             // binding.
-            if let Some(e) = compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref()) {
-                compile_expr(p, out, e)?;
-                let name_id = p.intern_ident(name);
-                let ty_label = p.intern_ident(ty.leaf());
-                out.push(Op::EmitComputedLocal { name: name_id, ty_label });
-                return Ok(());
+            if placement.is_none() && pointer_width.is_none() {
+                if let Some(e) = compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref()) {
+                    compile_expr(p, out, e)?;
+                    let name_id = p.intern_ident(name);
+                    let ty_label = p.intern_ident(ty.leaf());
+                    out.push(Op::EmitComputedLocal { name: name_id, ty_label });
+                    return Ok(());
+                }
+                if compute_local_void(*is_io_var, init.as_ref(), array.as_ref()) {
+                    // `bool x in;` with no initializer -- bind Void.
+                    out.push(Op::PushVoid);
+                    let name_id = p.intern_ident(name);
+                    out.push(Op::StoreIdent(name_id));
+                    return Ok(());
+                }
             }
-            if compute_local_void(*is_io_var, init.as_ref(), array.as_ref()) {
-                // `bool x in;` with no initializer -- bind Void.
-                out.push(Op::PushVoid);
-                let name_id = p.intern_ident(name);
-                out.push(Op::StoreIdent(name_id));
-                return Ok(());
+            // Try the fast lowering on a side buffer so a partial
+            // emit (e.g. PushAttrs but then the read fails the
+            // gate) never leaks attrs onto the surrounding stream.
+            // If anything in the field shape is outside the
+            // bytecode subset, fall back to ExecAstStmt.
+            let mut try_buf: Vec<Op> = Vec::new();
+            let fast_ok = (|| -> Result<(), CompileError> {
+                field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
+                if placement.is_some() {
+                    return Err(CompileError::UnsupportedFieldDecl {
+                        reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
+                    });
+                }
+                push_attr_list_op(p, &mut try_buf, attrs);
+                compile_field_decl(p, ctx, &mut try_buf, ty, name, array.as_ref())
+            })()
+            .is_ok();
+            if fast_ok {
+                out.extend(try_buf);
+            } else {
+                let id = p.push_stmt(stmt.clone());
+                out.push(Op::ExecAstStmt(id));
             }
-            push_attr_list_op(p, out, attrs);
-            compile_field_decl(p, ctx, out, ty, name, array.as_ref())
+            Ok(())
         }
-        _ => Err(CompileError::UnsupportedStmt("non-field-decl in struct body")),
+        Stmt::Expr { expr, .. } => {
+            // A bare expression statement is evaluated for side
+            // effects (`std::print(...)`, `$ -= 1`, function
+            // calls). Compile to a value-producing expression
+            // sequence + Pop to discard the value.
+            compile_expr(p, out, expr)?;
+            out.push(Op::Pop);
+            Ok(())
+        }
+        // Anything else (if/while/for/match/try/return/break/continue
+        // and any other stmt shape) falls through to the AST
+        // dispatcher. Loses the flat-op perf win for those
+        // statements but keeps the surrounding template compilable.
+        other => {
+            let id = p.push_stmt(other.clone());
+            out.push(Op::ExecAstStmt(id));
+            Ok(())
+        }
     }
 }
 
@@ -999,63 +1083,95 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
-            // Borrow the top-level op stream by moving it out, then
-            // restoring -- avoids fighting the borrow checker over
-            // an `&mut Vec<Op>` aliased with `&mut Program`.
-            let mut top_ops = std::mem::take(&mut p.ops);
-            let res = (|| -> Result<(), CompileError> {
+            // Try the fast lowering into a side buffer; on any
+            // bytecode-shape failure, fall back to ExecAstStmt
+            // wrapping the whole field decl.
+            let mut try_buf: Vec<Op> = Vec::new();
+            let fast_ok = (|| -> Result<(), CompileError> {
+                field_decl_must_be_plain_array_and_placement_ok(pointer_width, attrs)?;
                 // Computed local / const / io-var at top level:
                 // bind in scope, no source read, no node emission.
                 if let Some(e) =
                     compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref())
                 {
-                    compile_expr(p, &mut top_ops, e)?;
+                    compile_expr(p, &mut try_buf, e)?;
                     let name_id = p.intern_ident(name);
-                    top_ops.push(Op::StoreIdent(name_id));
+                    try_buf.push(Op::StoreIdent(name_id));
                     return Ok(());
                 }
                 if compute_local_void(*is_io_var, init.as_ref(), array.as_ref()) {
-                    top_ops.push(Op::PushVoid);
+                    try_buf.push(Op::PushVoid);
                     let name_id = p.intern_ident(name);
-                    top_ops.push(Op::StoreIdent(name_id));
+                    try_buf.push(Op::StoreIdent(name_id));
                     return Ok(());
                 }
                 // Decorative attrs first so they sit in the pending
                 // buffer; the AST walker prepends them to the
                 // node's attr list before adding `hxy_placement`.
-                push_attr_list_op(p, &mut top_ops, attrs);
+                push_attr_list_op(p, &mut try_buf, attrs);
                 if let Some(offset_expr) = placement {
                     // Top-level placement is a plain seek (no
                     // save+restore); lower the offset, push the
                     // PlacementSeek op which seeks AND queues the
                     // `hxy_placement` attr for the next read.
-                    compile_expr(p, &mut top_ops, offset_expr)?;
-                    top_ops.push(Op::PlacementSeek);
+                    compile_expr(p, &mut try_buf, offset_expr)?;
+                    try_buf.push(Op::PlacementSeek);
                 }
-                compile_field_decl(p, ctx, &mut top_ops, ty, name, array.as_ref())
+                compile_field_decl(p, ctx, &mut try_buf, ty, name, array.as_ref())
+            })()
+            .is_ok();
+            if fast_ok {
+                p.ops.extend(try_buf);
+            } else {
+                let id = p.push_stmt(stmt.clone());
+                p.ops.push(Op::ExecAstStmt(id));
+            }
+            Ok(())
+        }
+        Stmt::StructDecl(_) => unreachable!("handled by compile()"),
+        Stmt::EnumDecl(_)
+        | Stmt::BitfieldDecl(_)
+        | Stmt::UsingAlias { .. }
+        | Stmt::FnDecl(_)
+        | Stmt::Namespace { .. }
+        | Stmt::Import { .. } => {
+            // Decl-only / namespace / import shapes contribute
+            // nothing to the top-level cursor walk; the pre-passes
+            // already registered them.
+            Ok(())
+        }
+        Stmt::Block { stmts, .. } => {
+            // Top-level callers (`compile_top_stmt_dispatch`) handle
+            // Block by recursion; this branch fires when a Block
+            // shows up inside a struct body's statement list (rare;
+            // some templates use `{ }` to scope locals). Treat as
+            // a flat sequence -- the inner stmts run in the same
+            // surrounding scope, matching the AST walker.
+            for s in stmts {
+                compile_top_stmt(p, ctx, s)?;
+            }
+            Ok(())
+        }
+        Stmt::Expr { expr, .. } => {
+            // Top-level expression statement -- compile + pop.
+            let mut top_ops = std::mem::take(&mut p.ops);
+            let res = (|| -> Result<(), CompileError> {
+                compile_expr(p, &mut top_ops, expr)?;
+                top_ops.push(Op::Pop);
+                Ok(())
             })();
             p.ops = top_ops;
             res
         }
-        Stmt::StructDecl(_) => unreachable!("handled by compile()"),
-        Stmt::EnumDecl(_) => Err(CompileError::UnsupportedStmt("enum decl")),
-        Stmt::BitfieldDecl(_) => Err(CompileError::UnsupportedStmt("bitfield decl")),
-        Stmt::UsingAlias { .. } => Err(CompileError::UnsupportedStmt("using alias")),
-        Stmt::FnDecl(_) => Err(CompileError::UnsupportedStmt("nested fn decl")),
-        Stmt::Namespace { .. } => Err(CompileError::UnsupportedStmt("namespace")),
-        Stmt::Import { .. } => Err(CompileError::UnsupportedStmt("import")),
-        Stmt::Block { .. } => Err(CompileError::UnsupportedStmt("block")),
-        Stmt::Expr { .. } => Err(CompileError::UnsupportedStmt("expr stmt")),
-        Stmt::If { .. } => Err(CompileError::UnsupportedStmt("if")),
-        Stmt::While { .. } => Err(CompileError::UnsupportedStmt("while")),
-        Stmt::For { .. } => Err(CompileError::UnsupportedStmt("for")),
-        Stmt::Match { .. } => Err(CompileError::UnsupportedStmt("match")),
-        Stmt::TryBlock { .. } => Err(CompileError::UnsupportedStmt("try")),
-        Stmt::Return { .. } => Err(CompileError::UnsupportedStmt("return")),
-        Stmt::Break { .. } => Err(CompileError::UnsupportedStmt("break")),
-        Stmt::Continue { .. } => Err(CompileError::UnsupportedStmt("continue")),
-        Stmt::BitfieldField { .. } => Err(CompileError::UnsupportedStmt("bitfield field")),
+        // Control flow + bitfield-field / break / continue / return
+        // / try fall through to the AST statement dispatcher.
+        // Same bargain as ExecAstStmt elsewhere: loses the flat-op
+        // perf win but lets the surrounding template compile.
+        other => {
+            let id = p.push_stmt(other.clone());
+            p.ops.push(Op::ExecAstStmt(id));
+            Ok(())
+        }
     }
 }
 
@@ -1236,12 +1352,12 @@ fn compile_field_decl(
     }
 }
 
-/// Lower a tiny subset of [`crate::ast::Expr`] to ops that leave a
-/// single [`crate::value::Value`] on the operand stack. Phase D.1
-/// recognises only literal ints and bare identifiers -- enough to
-/// size dynamic arrays whose width is a previously-bound field
-/// (`u8 length; char value[length];`). Binary ops, member access,
-/// and calls are explicit follow-up phases.
+/// Lower a [`crate::ast::Expr`] subset to ops that leave a single
+/// [`crate::value::Value`] on the operand stack. Mirrors the
+/// AST's `eval` per variant. Anything that needs control flow
+/// (`Logical &&` / `||`, ternary), calls, or member chains is
+/// out of scope here -- the corresponding `CompileError` lets
+/// the caller fall back.
 fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> Result<(), CompileError> {
     match expr {
         crate::ast::Expr::IntLit { value, .. } => {
@@ -1249,6 +1365,28 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             // regardless of magnitude; widen the literal to i128 so
             // future signed-arithmetic ops have headroom.
             out.push(Op::PushInt(*value as i128));
+            Ok(())
+        }
+        crate::ast::Expr::FloatLit { value, .. } => {
+            out.push(Op::PushFloat(*value));
+            Ok(())
+        }
+        crate::ast::Expr::BoolLit { value, .. } => {
+            out.push(Op::PushBool(*value));
+            Ok(())
+        }
+        crate::ast::Expr::CharLit { value, .. } => {
+            out.push(Op::PushChar(*value));
+            Ok(())
+        }
+        crate::ast::Expr::StringLit { value, .. } => {
+            let id = p.intern_str(value);
+            out.push(Op::PushStr(id));
+            Ok(())
+        }
+        crate::ast::Expr::NullLit { .. } => {
+            // `null` evaluates to `UInt(0, u64)` in the AST.
+            out.push(Op::PushInt(0));
             Ok(())
         }
         crate::ast::Expr::Ident { name, .. } => {
@@ -1269,20 +1407,34 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             out.push(Op::BinOp(*op));
             Ok(())
         }
-        crate::ast::Expr::BoolLit { .. } => Err(CompileError::UnsupportedExpr("bool literal")),
-        crate::ast::Expr::FloatLit { .. } => Err(CompileError::UnsupportedExpr("float literal")),
-        crate::ast::Expr::StringLit { .. } => Err(CompileError::UnsupportedExpr("string literal")),
-        crate::ast::Expr::CharLit { .. } => Err(CompileError::UnsupportedExpr("char literal")),
-        crate::ast::Expr::NullLit { .. } => Err(CompileError::UnsupportedExpr("null literal")),
-        crate::ast::Expr::Path { .. } => Err(CompileError::UnsupportedExpr("path")),
-        crate::ast::Expr::Unary { .. } => Err(CompileError::UnsupportedExpr("unary op")),
-        crate::ast::Expr::Call { .. } => Err(CompileError::UnsupportedExpr("call")),
-        crate::ast::Expr::Index { .. } => Err(CompileError::UnsupportedExpr("index")),
-        crate::ast::Expr::Member { .. } => Err(CompileError::UnsupportedExpr("member")),
-        crate::ast::Expr::Assign { .. } => Err(CompileError::UnsupportedExpr("assign")),
-        crate::ast::Expr::Ternary { .. } => Err(CompileError::UnsupportedExpr("ternary")),
-        crate::ast::Expr::Reflect { .. } => Err(CompileError::UnsupportedExpr("reflect")),
-        crate::ast::Expr::TypeRefExpr { .. } => Err(CompileError::UnsupportedExpr("type-ref expr")),
+        crate::ast::Expr::Unary { op, operand, .. } => {
+            // Pre/post inc/dec require an l-value the bytecode VM
+            // does not yet model. Numeric / bitwise / logical
+            // unaries lower trivially.
+            if !matches!(
+                op,
+                crate::ast::UnaryOp::Pos
+                    | crate::ast::UnaryOp::Neg
+                    | crate::ast::UnaryOp::Not
+                    | crate::ast::UnaryOp::BitNot
+            ) {
+                return Err(CompileError::UnsupportedExpr("inc/dec unary op (l-value required)"));
+            }
+            compile_expr(p, out, operand)?;
+            out.push(Op::UnOp(*op));
+            Ok(())
+        }
+        // Anything we don't have a fast path for falls back to
+        // `Op::EvalAstExpr`, which dispatches into the AST
+        // `Interpreter::eval`. The bytecode VM thus accepts every
+        // expression shape the AST walker accepts; flat-op
+        // perf wins land incrementally as more lowerings get
+        // added above.
+        other => {
+            let id = p.push_expr(other.clone());
+            out.push(Op::EvalAstExpr(id));
+            Ok(())
+        }
     }
 }
 
