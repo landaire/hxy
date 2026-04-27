@@ -161,9 +161,15 @@ enum TypeDef {
     /// non-empty, the lookup site substitutes the use-site template
     /// args before continuing resolution.
     Alias { params: Vec<String>, target: TypeRef },
-    Struct(StructDecl),
-    Enum(EnumDecl),
-    Bitfield(BitfieldDecl),
+    /// Struct / enum / bitfield decls live behind an `Arc` so the
+    /// type-table clone in `resolve_type_ref` (which fires once
+    /// per type lookup -- millions of times on bencode-shaped
+    /// inputs) is a refcount bump instead of a deep clone of the
+    /// decl's body. Re-registration under both bare and qualified
+    /// names also shares the same `Arc`.
+    Struct(Arc<StructDecl>),
+    Enum(Arc<EnumDecl>),
+    Bitfield(Arc<BitfieldDecl>),
 }
 
 #[derive(Clone, Default)]
@@ -405,13 +411,16 @@ impl<S: HexSource> Interpreter<S> {
             );
         }
         for entry in &program.ast_decls.structs {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(entry.decl.clone()));
+            let shared = Arc::new(entry.decl.clone());
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(shared));
         }
         for entry in &program.ast_decls.enums {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(entry.decl.clone()));
+            let shared = Arc::new(entry.decl.clone());
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(shared));
         }
         for entry in &program.ast_decls.bitfields {
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(entry.decl.clone()));
+            let shared = Arc::new(entry.decl.clone());
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(shared));
         }
         for entry in &program.ast_decls.functions {
             let shared = Arc::new(entry.decl.clone());
@@ -493,18 +502,32 @@ impl<S: HexSource> Interpreter<S> {
                     }
                 }
                 Op::EnterStruct { body, name, display_name } => {
-                    let name_str = program.idents.get(name.0).to_owned();
-                    let display = program.idents.get(display_name.0).to_owned();
+                    // Pass the &str slices directly out of the
+                    // program's intern table -- no `.to_owned()`.
+                    // exec_bytecode_struct takes &str, and `program`
+                    // is held as `&` throughout the dispatch loop
+                    // so the slice stays valid for the call.
                     let attrs = std::mem::take(pending_attrs);
                     self.exec_bytecode_struct(
-                        program, body, &name_str, &display, parent, stack, pending_attrs, &attrs,
+                        program,
+                        body,
+                        program.idents.get(name.0),
+                        program.idents.get(display_name.0),
+                        parent,
+                        stack,
+                        pending_attrs,
+                        &attrs,
                     )?;
                 }
                 Op::ReadEnum { id, name } => {
-                    let name_str = program.idents.get(name.0).to_owned();
-                    let decl = program.enum_decls[id.0 as usize].clone();
+                    let name_str = program.idents.get(name.0);
                     let attrs = std::mem::take(pending_attrs);
-                    let res = self.read_enum(&name_str, &decl, parent, &attrs);
+                    let res = self.read_enum(
+                        name_str,
+                        &program.enum_decls[id.0 as usize],
+                        parent,
+                        &attrs,
+                    );
                     if let Err(e) = res {
                         if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
@@ -532,27 +555,53 @@ impl<S: HexSource> Interpreter<S> {
                     stack.push(v);
                 }
                 Op::ExecAstStmt(id) => {
-                    let stmt = program.ast_stmts[id.0 as usize].clone();
-                    // The AST statement carries its own attrs /
-                    // placement metadata; pending attrs from a
-                    // preceding bytecode op would double-count.
+                    // Avoid cloning the Stmt: `program: &Program` is
+                    // immutable, `self: &mut Interpreter` is a
+                    // disjoint borrow. The previous `.clone()` walked
+                    // the entire Stmt subtree (Vec<Stmt> bodies +
+                    // nested Expr trees) on every dispatch -- one
+                    // of the bigger costs on bencode-shaped inputs
+                    // where ExecAstStmt fires per recursive Value
+                    // body (millions of calls).
                     pending_attrs.clear();
                     let _ = stack; // silence unused-after-mem-take
-                    let res = self.exec_stmt(&stmt, parent);
-                    if let Err(e) = res {
-                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
-                            // Mirror exec_program: a top-level
-                            // read past EOF is a diagnostic, not
-                            // a terminal error.
-                            self.diagnostics.push(Diagnostic {
-                                message: format!("read past EOF at top level: {e:?}"),
-                                severity: Severity::Warning,
-                                file_offset: None,
-                                template_line: None,
-                            });
-                        } else {
-                            return Err(e);
+                    let res = self.exec_stmt(&program.ast_stmts[id.0 as usize], parent);
+                    let flow = match res {
+                        Ok(f) => f,
+                        Err(e) => {
+                            if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                                // Mirror exec_program: a top-level
+                                // read past EOF is a diagnostic, not
+                                // a terminal error.
+                                self.diagnostics.push(Diagnostic {
+                                    message: format!("read past EOF at top level: {e:?}"),
+                                    severity: Severity::Warning,
+                                    file_offset: None,
+                                    template_line: None,
+                                });
+                                Flow::Next
+                            } else {
+                                return Err(e);
+                            }
                         }
+                    };
+                    // Mirror `read_struct`'s body loop: an inner
+                    // `break;` / `continue;` exits the surrounding
+                    // body and signals the enclosing array (via
+                    // `break_pending`). `return;` outside a fn
+                    // unwinds through `return_pending`.
+                    match flow {
+                        Flow::Break => {
+                            self.break_pending = true;
+                            return Ok(());
+                        }
+                        Flow::Continue => {
+                            return Ok(());
+                        }
+                        Flow::Return => {
+                            return Ok(());
+                        }
+                        Flow::Next => {}
                     }
                     // Top-level `return;` (set via exec_stmt) must
                     // unwind the bytecode walk too. Mirror
@@ -651,6 +700,28 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 Op::PushVoid => {
                     stack.push(Value::Void);
+                }
+                Op::Jump(target) => {
+                    pc = target.0 as usize;
+                    continue;
+                }
+                Op::JumpIfFalse(target) => {
+                    let cond = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfFalse" })?;
+                    if !cond.is_truthy() {
+                        pc = target.0 as usize;
+                        continue;
+                    }
+                }
+                Op::JumpIfTrue(target) => {
+                    let cond = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "JumpIfTrue" })?;
+                    if cond.is_truthy() {
+                        pc = target.0 as usize;
+                        continue;
+                    }
                 }
                 Op::PushFloat(v) => {
                     stack.push(Value::Float { value: v, kind: PrimKind::f64() });
@@ -885,13 +956,13 @@ impl<S: HexSource> Interpreter<S> {
     fn collect_stmt_decl(&mut self, s: &Stmt) {
         match s {
             Stmt::StructDecl(d) => {
-                self.register_type(&d.name, TypeDef::Struct(d.clone()));
+                self.register_type(&d.name, TypeDef::Struct(Arc::new(d.clone())));
             }
             Stmt::EnumDecl(d) => {
-                self.register_type(&d.name, TypeDef::Enum(d.clone()));
+                self.register_type(&d.name, TypeDef::Enum(Arc::new(d.clone())));
             }
             Stmt::BitfieldDecl(d) => {
-                self.register_type(&d.name, TypeDef::Bitfield(d.clone()));
+                self.register_type(&d.name, TypeDef::Bitfield(Arc::new(d.clone())));
             }
             Stmt::FnDecl(f) => {
                 self.register_function(&f.name, f.clone());
@@ -2663,22 +2734,22 @@ impl<S: HexSource> Interpreter<S> {
                     // even though `sym::Type` is the last registered
                     // bare `Type`.)
                     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-                    let mut candidates: Vec<EnumDecl> = Vec::new();
+                    let mut candidates: Vec<Arc<EnumDecl>> = Vec::new();
                     for prefix_len in (1..segments.len()).rev() {
                         let key: String = segments[..prefix_len].join("::");
                         if seen_keys.insert(key.clone())
                             && let Some(TypeDef::Enum(decl)) = self.types.get(&key)
                         {
-                            candidates.push(decl.clone());
+                            candidates.push(Arc::clone(decl));
                         }
                         let suffix = format!("::{key}");
-                        let extra: Vec<(String, EnumDecl)> = self
+                        let extra: Vec<(String, Arc<EnumDecl>)> = self
                             .types
                             .iter()
                             .filter_map(|(n, d)| {
                                 if let TypeDef::Enum(decl) = d {
                                     if n.ends_with(&suffix) || n == &key {
-                                        Some((n.clone(), decl.clone()))
+                                        Some((n.clone(), Arc::clone(decl)))
                                     } else {
                                         None
                                     }

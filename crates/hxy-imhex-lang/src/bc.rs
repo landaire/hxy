@@ -1041,8 +1041,48 @@ fn compile_struct_body_stmt(
             out.push(Op::Pop);
             Ok(())
         }
-        // Anything else (if/while/for/match/try/return/break/continue
-        // and any other stmt shape) falls through to the AST
+        Stmt::If { cond, then_branch, else_branch, .. } => {
+            // Try the bytecode lowering directly into `out`,
+            // remembering the start position so we can rewind on
+            // failure (a sub-stmt we can't lower). Emitting into
+            // `out` directly means the `Pc` targets we patch are
+            // absolute against the final op stream -- the
+            // intuitive try_buf approach broke because patched
+            // `Pc` indices were relative to the local buffer and
+            // pointed at the wrong op once the buffer got
+            // appended to a non-empty stream.
+            let snapshot = out.len();
+            let res = compile_if_inline(
+                p, ctx, out, cond, then_branch.as_ref(), else_branch.as_deref(),
+            );
+            if res.is_err() {
+                out.truncate(snapshot);
+                let id = p.push_stmt(stmt.clone());
+                out.push(Op::ExecAstStmt(id));
+            }
+            Ok(())
+        }
+        Stmt::While { cond, body, .. } => {
+            let snapshot = out.len();
+            let res = compile_while_inline(p, ctx, out, cond, body.as_ref());
+            if res.is_err() {
+                out.truncate(snapshot);
+                let id = p.push_stmt(stmt.clone());
+                out.push(Op::ExecAstStmt(id));
+            }
+            Ok(())
+        }
+        Stmt::Block { stmts, .. } => {
+            // Bare `{ ... }` -- recurse stmt-by-stmt into the same
+            // op stream (no scope push: the AST walker treats
+            // blocks as scope-transparent for struct-body purposes).
+            for s in stmts {
+                compile_struct_body_stmt(p, ctx, out, s)?;
+            }
+            Ok(())
+        }
+        // Anything else (for/match/try/return/break/continue and
+        // any other stmt shape) falls through to the AST
         // dispatcher. Loses the flat-op perf win for those
         // statements but keeps the surrounding template compilable.
         other => {
@@ -1051,6 +1091,98 @@ fn compile_struct_body_stmt(
             Ok(())
         }
     }
+}
+
+/// Lower `if (cond) then [else other]` into the current op stream.
+/// Mirrors the AST's scope-transparent semantics (no PushScope /
+/// PopScope around the branches). On failure, the caller wraps the
+/// entire `Stmt::If` in `ExecAstStmt` so the AST handles it.
+fn compile_if_inline(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    cond: &crate::ast::Expr,
+    then_branch: &Stmt,
+    else_branch: Option<&Stmt>,
+) -> Result<(), CompileError> {
+    compile_expr(p, out, cond)?;
+    let jmp_to_else = emit_placeholder(out, JumpKind::IfFalse);
+    compile_inline_stmt(p, ctx, out, then_branch)?;
+    if let Some(else_b) = else_branch {
+        let jmp_to_end = emit_placeholder(out, JumpKind::Always);
+        let then_end = out.len();
+        patch_jump(out, jmp_to_else, then_end);
+        compile_inline_stmt(p, ctx, out, else_b)?;
+        let end = out.len();
+        patch_jump(out, jmp_to_end, end);
+    } else {
+        let then_end = out.len();
+        patch_jump(out, jmp_to_else, then_end);
+    }
+    Ok(())
+}
+
+/// Lower `while (cond) body` into the current op stream.
+fn compile_while_inline(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    cond: &crate::ast::Expr,
+    body: &Stmt,
+) -> Result<(), CompileError> {
+    let loop_top = out.len();
+    compile_expr(p, out, cond)?;
+    let jmp_exit = emit_placeholder(out, JumpKind::IfFalse);
+    compile_inline_stmt(p, ctx, out, body)?;
+    out.push(Op::Jump(Pc(loop_top as u32)));
+    let end = out.len();
+    patch_jump(out, jmp_exit, end);
+    Ok(())
+}
+
+/// Compile a single statement into the same op stream (no scope
+/// push/pop). Recurses through `Block` stmts by walking each inner
+/// stmt through `compile_struct_body_stmt`. Used by the
+/// inline-control-flow lowerings above.
+fn compile_inline_stmt(
+    p: &mut Program,
+    ctx: &CompileCtx,
+    out: &mut Vec<Op>,
+    stmt: &Stmt,
+) -> Result<(), CompileError> {
+    match stmt {
+        Stmt::Block { stmts, .. } => {
+            for s in stmts {
+                compile_struct_body_stmt(p, ctx, out, s)?;
+            }
+            Ok(())
+        }
+        other => compile_struct_body_stmt(p, ctx, out, other),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum JumpKind {
+    IfFalse,
+    Always,
+}
+
+fn emit_placeholder(out: &mut Vec<Op>, kind: JumpKind) -> usize {
+    let idx = out.len();
+    out.push(match kind {
+        JumpKind::IfFalse => Op::JumpIfFalse(Pc(0)),
+        JumpKind::Always => Op::Jump(Pc(0)),
+    });
+    idx
+}
+
+fn patch_jump(out: &mut [Op], idx: usize, target: usize) {
+    let target = Pc(target as u32);
+    out[idx] = match out[idx] {
+        Op::JumpIfFalse(_) => Op::JumpIfFalse(target),
+        Op::Jump(_) => Op::Jump(target),
+        ref other => panic!("patch_jump on non-jump op: {other:?}"),
+    };
 }
 
 /// True when this field decl is a "computed local" -- something
