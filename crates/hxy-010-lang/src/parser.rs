@@ -682,7 +682,14 @@ impl Parser {
             let end_tok = self.expect_kind(&TokenKind::Semi, ";")?;
             let span = Span::new(start, end_tok.span.end);
             let main = Stmt::TypedefStruct(StructDecl { name: name.clone(), params, body, attrs, is_union, span });
-            if let Some(extra) = alias_for_extra {
+            // Skip the alias when it would be self-referential
+            // (`typedef struct r_object { ... } r_object;` declares
+            // the same name twice; emitting an alias from r_object to
+            // r_object would shadow the struct entry with a cyclic
+            // alias and break type lookup).
+            if let Some(extra) = alias_for_extra
+                && extra != name
+            {
                 return Ok(Stmt::Block {
                     stmts: vec![main, Stmt::TypedefAlias { new_name: extra, source: TypeRef { name, span }, array_size: None, span }],
                     span,
@@ -1216,6 +1223,19 @@ impl Parser {
             && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
             self.bump();
+        }
+        // `struct NAME` / `union NAME` as a type reference to a
+        // previously-declared (or forward-declared) struct/union.
+        // Recursive types use this inside their own body --
+        // `typedef struct r_object { struct r_object elements[n]; }`.
+        if matches!(
+            self.peek_kind(),
+            Some(TokenKind::Keyword(Keyword::Struct) | TokenKind::Keyword(Keyword::Union))
+        ) && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        {
+            self.bump();
+            let (name, span) = self.expect_ident()?;
+            return Ok(TypeRef { name, span });
         }
         let (name, span) = self.expect_ident()?;
         Ok(TypeRef { name, span })

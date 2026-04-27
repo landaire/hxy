@@ -1267,6 +1267,23 @@ impl<S: HexSource> Interpreter<S> {
             Expr::CharLit { value, .. } => Ok(Value::Char { value: *value, kind: PrimKind::char() }),
             Expr::Ident { name, .. } => self.lookup_ident(name),
             Expr::Binary { op, lhs, rhs, .. } => {
+                // Short-circuit `&&` / `||` so the right operand isn't
+                // evaluated when the left already determines the
+                // result. Templates rely on this for guards like
+                // `exists(h.x) && h.x > 0` where the right side would
+                // raise an UndefinedName when the field is absent.
+                if matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {
+                    let l = self.eval(lhs)?;
+                    let l_truthy = l.is_truthy();
+                    if matches!(op, BinOp::LogicalAnd) && !l_truthy {
+                        return Ok(Value::Bool(false));
+                    }
+                    if matches!(op, BinOp::LogicalOr) && l_truthy {
+                        return Ok(Value::Bool(true));
+                    }
+                    let r = self.eval(rhs)?;
+                    return Ok(Value::Bool(r.is_truthy()));
+                }
                 let l = self.eval(lhs)?;
                 let r = self.eval(rhs)?;
                 eval_binary(*op, &l, &r)
@@ -1328,6 +1345,133 @@ impl<S: HexSource> Interpreter<S> {
                     && let Some(off) = self.field_byte_offset(arg_name)
                 {
                     return Ok(Value::UInt { value: off as u128, kind: PrimKind::u64() });
+                }
+                // `exists(field)`: probe whether the named field was
+                // ever stored. Has to run before generic arg eval so
+                // a missing path doesn't trip an `UndefinedName` /
+                // `UnresolvedMember` error before `exists` ever sees
+                // it. We don't model 010's `function_exists` here --
+                // templates that pass a function name fall through to
+                // the builtin's value-based check.
+                if name == "exists" && args.len() == 1 {
+                    if let Some(path) = self.build_path(&args[0])? {
+                        let prefix = self.path_prefix();
+                        let found_field = lookup_candidates(&path, &prefix)
+                            .into_iter()
+                            .any(|c| self.field_storage.contains_key(&c));
+                        let found_array = lookup_candidates(&path, &prefix)
+                            .into_iter()
+                            .any(|c| self.array_storage.contains_key(&c));
+                        if found_field || found_array {
+                            return Ok(Value::Bool(true));
+                        }
+                        // Path could be built but nothing's stored:
+                        // unambiguous "not present".
+                        return Ok(Value::Bool(false));
+                    }
+                    // Non-path argument: fall through to value check.
+                }
+                // `function_exists(name)`: 010 returns whether a
+                // user-defined function with that name was declared.
+                // Names of builtins also report as existing.
+                if name == "function_exists" && args.len() == 1 {
+                    let fn_name = match &args[0] {
+                        Expr::Ident { name, .. } => name.clone(),
+                        Expr::StringLit { value, .. } => value.clone(),
+                        _ => return Ok(Value::Bool(false)),
+                    };
+                    let exists = self.functions.contains_key(&fn_name);
+                    return Ok(Value::Bool(exists));
+                }
+                // `SScanf(src, fmt, out_lvalues...)`: 010 parses `src`
+                // against the printf-style format and writes each
+                // captured value into the corresponding out lvalue.
+                // We intercept before generic eval so the destination
+                // names survive (the generic path would only see their
+                // current values). Returns the count of fields filled.
+                if name == "SScanf" && args.len() >= 3 {
+                    let src = self.eval(&args[0])?;
+                    let fmt = self.eval(&args[1])?;
+                    let src_str = value_to_display(&src);
+                    let fmt_str = value_to_display(&fmt);
+                    let mut filled = 0u128;
+                    let mut s = src_str.as_str();
+                    let mut out_iter = args[2..].iter();
+                    let mut chars = fmt_str.chars().peekable();
+                    while let Some(c) = chars.next() {
+                        if c != '%' {
+                            // Non-format chars must match literally;
+                            // mismatch ends the scan early (sscanf
+                            // semantics).
+                            s = s.trim_start_matches([' ', '\t', '\n']);
+                            if !s.starts_with(c) {
+                                break;
+                            }
+                            s = &s[c.len_utf8()..];
+                            continue;
+                        }
+                        // Skip width / length modifiers (digits, 'l',
+                        // 'L', 'h'), pick up the conversion letter.
+                        let mut conv = None;
+                        for nc in chars.by_ref() {
+                            if nc.is_ascii_digit() || nc == 'l' || nc == 'L' || nc == 'h' {
+                                continue;
+                            }
+                            conv = Some(nc);
+                            break;
+                        }
+                        let Some(conv) = conv else { break };
+                        let Some(out_arg) = out_iter.next() else { break };
+                        let Expr::Ident { name: out_name, .. } = out_arg else { break };
+                        s = s.trim_start_matches([' ', '\t', '\n']);
+                        match conv {
+                            'd' | 'i' => {
+                                let end = s
+                                    .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+'))
+                                    .unwrap_or(s.len());
+                                let Ok(n) = s[..end].parse::<i64>() else { break };
+                                self.store_ident(out_name, Value::SInt { value: n as i128, kind: PrimKind::i64() })?;
+                                s = &s[end..];
+                                filled += 1;
+                            }
+                            'u' => {
+                                let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+                                let Ok(n) = s[..end].parse::<u64>() else { break };
+                                self.store_ident(out_name, Value::UInt { value: n as u128, kind: PrimKind::u64() })?;
+                                s = &s[end..];
+                                filled += 1;
+                            }
+                            'x' | 'X' => {
+                                let s2 = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+                                let end = s2
+                                    .find(|c: char| !c.is_ascii_hexdigit())
+                                    .unwrap_or(s2.len());
+                                let Ok(n) = u64::from_str_radix(&s2[..end], 16) else { break };
+                                self.store_ident(out_name, Value::UInt { value: n as u128, kind: PrimKind::u64() })?;
+                                s = &s2[end..];
+                                filled += 1;
+                            }
+                            's' => {
+                                let end = s
+                                    .find(|c: char| c == ' ' || c == '\t' || c == '\n')
+                                    .unwrap_or(s.len());
+                                self.store_ident(out_name, Value::Str(s[..end].to_owned()))?;
+                                s = &s[end..];
+                                filled += 1;
+                            }
+                            'f' | 'g' | 'e' => {
+                                let end = s
+                                    .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+                                    .unwrap_or(s.len());
+                                let Ok(n) = s[..end].parse::<f64>() else { break };
+                                self.store_ident(out_name, Value::Float { value: n, kind: PrimKind::f64() })?;
+                                s = &s[end..];
+                                filled += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    return Ok(Value::SInt { value: filled as i128, kind: PrimKind::i32() });
                 }
                 // `SPrintf(dest, fmt, args...)`: 010 writes the
                 // formatted string into the lvalue `dest`. We need
