@@ -1153,6 +1153,38 @@ impl<S: HexSource> Interpreter<S> {
         } else {
             None
         };
+        // `[[no_unique_address]]` peeks ahead -- a primitive type
+        // bigger than the bytes remaining (dotnet's `u64 bytes
+        // [[no_unique_address]]` near EOF) should be tolerated as
+        // "all the bytes that fit, padded with zeros". The
+        // surrounding template doesn't actually need the extra
+        // bytes; it just wants to inspect the byte at the cursor.
+        // Skip the read entirely if there aren't enough bytes,
+        // restore later, and let the struct's logic compute against
+        // a zero peek.
+        if no_unique_address && placement.is_none() && array.is_none() && init.is_none() {
+            if let Ok(TypeDef::Primitive(p)) = self.lookup_type(ty) {
+                let cur = self.cursor_tell();
+                let available = self.source.len().saturating_sub(cur);
+                if available < p.width as u64 {
+                    let value = Value::UInt { value: 0, kind: p };
+                    self.current_scope_mut().vars.insert(name.clone(), value.clone());
+                    self.push_node(NodeOut {
+                        name: name.clone(),
+                        ty: NodeType::Scalar(ScalarKind::from_prim(p)),
+                        offset: cur,
+                        length: 0,
+                        value: Some(value),
+                        parent,
+                        attrs: attrs_to_pairs(attrs),
+                    });
+                    if let Some(saved) = saved_pos {
+                        self.cursor_seek(saved);
+                    }
+                    return Ok(Flow::Next);
+                }
+            }
+        }
         if let Some(p) = placement {
             let offset_value = self.eval(p)?;
             let offset = offset_value
