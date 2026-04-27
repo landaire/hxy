@@ -99,7 +99,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
         Action::RunTemplate(path) => {
             app.palette.close();
             if let Some(id) = crate::app::active_file_id(app) {
-                crate::app::run_template_from_path(ctx, app, id, path);
+                crate::templates::runner::run_template_from_path(ctx, app, id, path);
             }
         }
         Action::SwitchMode(mode) => {

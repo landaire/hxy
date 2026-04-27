@@ -62,7 +62,7 @@ pub struct HxyApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) mounts: std::collections::BTreeMap<crate::files::MountId, crate::files::MountedPlugin>,
     #[cfg(not(target_arch = "wasm32"))]
-    next_mount_id: u64,
+    pub(crate) next_mount_id: u64,
     /// Live compare sessions, keyed by the same id their
     /// `Tab::Compare` payload carries.
     #[cfg(not(target_arch = "wasm32"))]
@@ -294,7 +294,7 @@ pub struct HxyApp {
     /// Drained after `update()` and routed through the same path the
     /// command palette's `Run Template` action takes.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
+    pub(crate) pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
 }
 
 
@@ -627,16 +627,16 @@ impl HxyApp {
                 Ok(crate::plugins::runner::DrainResult::Pending) => {}
                 Ok(crate::plugins::runner::DrainResult::InvokeReady { plugin, command_id, outcome }) => {
                     self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
-                    dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
+                    crate::plugins::mount::dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
                 }
                 Ok(crate::plugins::runner::DrainResult::RespondReady { plugin, command_id, outcome }) => {
                     self.log_plugin_completion(&plugin_name, &label, started, outcome.is_some());
-                    dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
+                    crate::plugins::mount::dispatch_plugin_outcome(ctx, self, plugin, &plugin_name, &command_id, outcome);
                 }
                 Ok(crate::plugins::runner::DrainResult::MountReady { plugin, token, title, result }) => match result {
                     Ok(mount) => {
                         self.log_plugin_completion(&plugin_name, &label, started, true);
-                        install_mount_tab(self, plugin, mount, token, title);
+                        crate::plugins::mount::install_mount_tab(self, plugin, mount, token, title);
                     }
                     Err(e) => {
                         crate::plugins::runner::log_completion(
@@ -1019,7 +1019,7 @@ impl HxyApp {
     /// Does not push a tab -- the caller decides whether the workspace
     /// is fresh (push `Tab::Workspace`) or replacing an existing
     /// `Tab::File` for the same `editor_id` (swap the dock tab).
-    fn spawn_workspace(&mut self, editor_id: FileId, mount: Arc<MountedVfs>) -> crate::files::WorkspaceId {
+    pub(crate) fn spawn_workspace(&mut self, editor_id: FileId, mount: Arc<MountedVfs>) -> crate::files::WorkspaceId {
         let id = crate::files::WorkspaceId::new(self.next_workspace_id);
         self.next_workspace_id += 1;
         let workspace = crate::files::Workspace::new(id, editor_id, mount);
@@ -1069,7 +1069,7 @@ impl HxyApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn restore_one_tab(
+    pub(crate) fn restore_one_tab(
         &mut self,
         tab: &crate::state::OpenTabState,
         must_mount: bool,
@@ -1646,11 +1646,11 @@ impl eframe::App for HxyApp {
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        drain_pending_mount_retries(ui.ctx(), self);
+        crate::plugins::mount::drain_pending_mount_retries(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_external_open_requests(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        drain_template_runs(ui.ctx(), self);
+        crate::templates::runner::drain_template_runs(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -1693,7 +1693,7 @@ impl eframe::App for HxyApp {
             render_imhex_patterns_first_run(ui.ctx(), self);
             pump_pattern_fetch(ui.ctx(), self);
             self.toasts.show(ui.ctx(), &mut self.pending_template_runs);
-            drain_pending_template_runs(ui.ctx(), self);
+            crate::templates::runner::drain_pending_template_runs(ui.ctx(), self);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1954,17 +1954,6 @@ fn pump_pattern_fetch(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
-/// Drain the toast layer's accepted-prompt queue, dispatching each
-/// click through the same path the command palette's
-/// `Run Template` action takes. Done after `toasts.show()` so the
-/// prompts have a chance to write into the queue this frame.
-#[cfg(not(target_arch = "wasm32"))]
-fn drain_pending_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
-    let runs: Vec<crate::toasts::PendingTemplateRun> = app.pending_template_runs.drain(..).collect();
-    for run in runs {
-        run_template_from_path(ctx, app, run.file_id, run.template_path);
-    }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
@@ -2479,7 +2468,7 @@ fn capture_window_on_drag_end(
 /// Key used to stash pending VFS-entry open requests between tab
 /// rendering (which only has `&mut PersistedState`) and the app-level
 /// drain loop (which can open new tabs).
-const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
+pub(crate) const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
 
 /// One pending "open this entry as a new tab" request, queued from a
 /// VFS panel during render. `Workspace` carries a `WorkspaceId` (the
@@ -2561,15 +2550,15 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
     use crate::commands::CommandEffect;
     match effect {
         CommandEffect::OpenFileDialog => crate::files::open::handle_open_file(app),
-        CommandEffect::MountActiveFile => mount_active_file(app),
+        CommandEffect::MountActiveFile => crate::plugins::mount::mount_active_file(app),
         CommandEffect::RunTemplateDialog => {
             #[cfg(not(target_arch = "wasm32"))]
-            run_template_dialog(ctx, app);
+            crate::templates::runner::run_template_dialog(ctx, app);
         }
         CommandEffect::RunTemplateDirect(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(id) = active_file_id(app) {
-                run_template_from_path(ctx, app, id, path);
+                crate::templates::runner::run_template_from_path(ctx, app, id, path);
             }
             #[cfg(target_arch = "wasm32")]
             let _ = path;
@@ -2603,165 +2592,6 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
     }
 }
 
-
-/// Invoke the active tab's detected handler to mount its source into a
-/// browsable VFS. On success, the tree panel picks it up automatically
-/// because it reads `file.mount`.
-#[cfg(not(target_arch = "wasm32"))]
-fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
-    let Some(id) = active_file_id(app) else { return };
-    let Some(path) = rfd::FileDialog::new().pick_file() else { return };
-    run_template_from_path(ctx, app, id, path);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId, path: std::path::PathBuf) {
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
-
-    let data_name = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()));
-    let tpl_name =
-        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-    let console_ctx = format!("{data_name} / {tpl_name}");
-
-    let Some(runtime) = app.template_runtime_for(&ext) else {
-        let dir = user_template_plugins_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "$DATA/hxy/template-plugins".to_owned());
-        let msg = format!(
-            "No template runtime is registered for .{ext} files.\nInstall a matching runtime component (.wasm) into:\n{dir}"
-        );
-        app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
-        if let Some(file) = app.files.get_mut(&id) {
-            file.template = Some(crate::panels::template::error_state(msg));
-        }
-        return;
-    };
-
-    // Resolve `#include` textually before handing the source to the
-    // runtime. Sandboxed to the user's templates directory so a
-    // malicious template can't pull in arbitrary files via
-    // `#include "../../..."`. Templates run directly from a path
-    // outside the sandbox (e.g. in-tree fixtures) fall back to the
-    // raw file with no expansion.
-    let sandbox = user_templates_dir();
-    let template_source = match sandbox.as_deref().and_then(|base| {
-        let canonical_base = base.canonicalize().ok()?;
-        let canonical_path = path.canonicalize().ok()?;
-        canonical_path.starts_with(&canonical_base).then_some(canonical_base)
-    }) {
-        Some(base) => match crate::templates::library::expand_includes(&path, &base) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("Failed to read template source {}: {e}", path.display());
-                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
-                if let Some(file) = app.files.get_mut(&id) {
-                    file.template = Some(crate::panels::template::error_state(msg));
-                }
-                return;
-            }
-        },
-        None => match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("Failed to read template source {}: {e}", path.display());
-                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
-                if let Some(file) = app.files.get_mut(&id) {
-                    file.template = Some(crate::panels::template::error_state(msg));
-                }
-                return;
-            }
-        },
-    };
-
-    // Spawn parse+execute on a worker. UI thread keeps rendering
-    // while the template runs -- a big file can take seconds, which
-    // would otherwise freeze pan / scroll / input. The `UiInbox`
-    // triggers a repaint when the worker sends, so we don't poll.
-    let Some(file) = app.files.get_mut(&id) else { return };
-    let source = file.editor.source().clone();
-    file.template = None;
-    let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    file.template_running =
-        Some(crate::files::TemplateRun { inbox, template_name: tpl_name.clone(), started: jiff::Timestamp::now() });
-
-    std::thread::spawn(move || {
-        let outcome = match runtime.parse(source, &template_source) {
-            Ok(parsed) => match parsed.execute(&[]) {
-                Ok(tree) => crate::files::TemplateRunOutcome::Ok { parsed, tree },
-                Err(e) => crate::files::TemplateRunOutcome::Err(format!("Execute failed: {e}")),
-            },
-            Err(e) => crate::files::TemplateRunOutcome::Err(format!("Parse failed: {e}")),
-        };
-        // Best-effort -- if the tab closed first the sender's inbox is
-        // dropped and this returns Err, which is fine.
-        let _ = sender.send(outcome);
-    });
-
-    app.console_log(ConsoleSeverity::Info, &console_ctx, format!("running template `{tpl_name}`..."));
-}
-
-/// Pop completed template-run results off each file's inbox and
-/// swap them into the file's [`TemplateState`]. Called once per
-/// frame; `UiInbox::read` is non-blocking and yields only items
-/// that the worker has already sent.
-#[cfg(not(target_arch = "wasm32"))]
-fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
-    // Collect completed (file_id, outcome, tpl_name) first so we can
-    // access `app.console_log` and mutate `files` sequentially
-    // without borrow conflicts.
-    let mut done: Vec<(FileId, crate::files::TemplateRunOutcome, String)> = Vec::new();
-    for (id, file) in app.files.iter_mut() {
-        let Some(run) = file.template_running.as_ref() else { continue };
-        let outcomes: Vec<_> = run.inbox.read(ctx).collect();
-        if outcomes.is_empty() {
-            continue;
-        }
-        let tpl = run.template_name.clone();
-        file.template_running = None;
-        // A run only sends one outcome; if more land somehow, the
-        // final one wins.
-        for outcome in outcomes {
-            done.push((*id, outcome, tpl.clone()));
-        }
-    }
-
-    for (id, outcome, tpl) in done {
-        let data_name =
-            app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_else(|| format!("file-{}", id.get()));
-        let console_ctx = format!("{data_name} / {tpl}");
-        match outcome {
-            crate::files::TemplateRunOutcome::Ok { parsed, tree } => {
-                let diagnostics = tree.diagnostics.clone();
-                let state = crate::panels::template::new_state_from(parsed, tree);
-                if let Some(file) = app.files.get_mut(&id) {
-                    file.template = Some(state);
-                }
-                for d in &diagnostics {
-                    let severity = match d.severity {
-                        hxy_plugin_host::template::Severity::Error => ConsoleSeverity::Error,
-                        hxy_plugin_host::template::Severity::Warning => ConsoleSeverity::Warning,
-                        hxy_plugin_host::template::Severity::Info => ConsoleSeverity::Info,
-                    };
-                    let loc = match d.file_offset {
-                        Some(off) => format!(" @ {off:#x}"),
-                        None => String::new(),
-                    };
-                    app.console_log(severity, &console_ctx, format!("{}{}", d.message, loc));
-                }
-                if diagnostics.is_empty() {
-                    app.console_log(ConsoleSeverity::Info, &console_ctx, "template executed successfully");
-                }
-            }
-            crate::files::TemplateRunOutcome::Err(msg) => {
-                app.console_log(ConsoleSeverity::Error, &console_ctx, &msg);
-                if let Some(file) = app.files.get_mut(&id) {
-                    file.template = Some(crate::panels::template::error_state(msg));
-                }
-            }
-        }
-    }
-    let _ = ctx;
-}
 
 /// Apply a frame's worth of events from the search bar to `file`.
 /// The bar itself is render-only -- byte scans, selection moves, and
@@ -2948,55 +2778,6 @@ fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::search::globa
     }
 }
 
-/// "Browse VFS" entry point. Converts the active tab into a workspace
-/// view, mounting the file's detected handler if one isn't already
-/// mounted. Three resolutions:
-/// * Active is `Tab::File(id)` with a detected handler -> mount, build
-///   a `Workspace`, and swap the dock tab for `Tab::Workspace`. The
-///   user's persisted state is updated to record `as_workspace = true`
-///   so the next launch restores the same shape.
-/// * Active is already `Tab::Workspace(id)` -> ensure `WorkspaceTab::VfsTree`
-///   is present in the inner dock (re-add it if the user closed it).
-/// * Anything else (no detected handler, no active file) -> no-op.
-fn mount_active_file(app: &mut HxyApp) {
-    if let Some(workspace_id) = active_workspace_id(app) {
-        ensure_vfs_tree_visible(app, workspace_id);
-        return;
-    }
-    let Some(file_id) = active_file_id(app) else { return };
-    let Some(file) = app.files.get(&file_id) else { return };
-    let Some(handler) = file.detected_handler.clone() else { return };
-    let source = file.editor.source().clone();
-    let mount = match handler.mount(source) {
-        Ok(m) => Arc::new(m),
-        Err(e) => {
-            tracing::warn!(error = %e, handler = handler.name(), "mount vfs");
-            return;
-        }
-    };
-    let workspace_id = app.spawn_workspace(file_id, mount);
-
-    // Swap the existing Tab::File(file_id) for Tab::Workspace(workspace_id)
-    // in the same dock leaf, so the user's pane layout is preserved.
-    if let Some(path) = app.dock.find_tab(&Tab::File(file_id)) {
-        let _ = app.dock.remove_tab(path);
-    }
-    app.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
-    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
-        let _ = app.dock.set_active_tab(path);
-        app.dock.set_focused_node_and_surface(path.node_path());
-    }
-
-    // Persist the workspace flag against the file's source so restart
-    // restores the same nested-dock shape.
-    if let Some(source) = app.files.get(&file_id).and_then(|f| f.source_kind.clone()) {
-        let mut g = app.state.write();
-        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
-            entry.as_workspace = true;
-        }
-    }
-}
-
 /// Best guess at "the workspace the user is in." Tries in order:
 /// the outer-focused `Tab::Workspace`, the most recently focused
 /// workspace (so clicking into Inspector / Console doesn't make
@@ -3025,94 +2806,9 @@ pub(crate) fn active_workspace_id(app: &mut HxyApp) -> Option<crate::files::Work
     id
 }
 
-/// Re-add `WorkspaceTab::VfsTree` to the workspace's inner dock if the
-/// user previously closed it. No-op when the tree is already present.
-fn ensure_vfs_tree_visible(app: &mut HxyApp, workspace_id: crate::files::WorkspaceId) {
-    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
-    let already_present = workspace.dock.iter_all_tabs().any(|(_, t)| matches!(t, crate::files::WorkspaceTab::VfsTree));
-    if already_present {
-        return;
-    }
-    workspace.dock.main_surface_mut().split_left(
-        egui_dock::NodeIndex::root(),
-        0.3,
-        vec![crate::files::WorkspaceTab::VfsTree],
-    );
-}
 
-/// Render a `Tab::PluginMount`. The whole tab body is either the
-/// VFS tree (when the mount is [`MountStatus::Ready`]) or a
-/// plugin-supplied error placeholder + optional retry button (when
-/// [`MountStatus::Failed`]). Tree clicks queue a
-/// `PendingVfsOpen::PluginMount`; retry clicks queue a
-/// `MountId` under [`PENDING_MOUNT_RETRY_KEY`].
-#[cfg(not(target_arch = "wasm32"))]
-fn render_plugin_mount_tab(
-    ui: &mut egui::Ui,
-    mount_id: crate::files::MountId,
-    plugin: &crate::files::MountedPlugin,
-    expanded: &mut Vec<String>,
-) {
-    let mount = match &plugin.status {
-        crate::files::MountStatus::Ready(m) => m,
-        crate::files::MountStatus::Failed { message, retry_label } => {
-            render_failed_mount_placeholder(ui, mount_id, &plugin.display_name, message, retry_label.as_deref());
-            return;
-        }
-    };
-    let scope = egui::Id::new(("hxy-plugin-mount-vfs", mount_id.get()));
-    let events = crate::panels::vfs::show(ui, scope, &*mount.fs, expanded);
-    let mut to_open: Vec<String> = Vec::new();
-    for e in events {
-        let crate::panels::vfs::VfsPanelEvent::OpenEntry(path) = e;
-        to_open.push(path);
-    }
-    if !to_open.is_empty() {
-        ui.ctx().data_mut(|d| {
-            let queue: &mut Vec<PendingVfsOpen> = d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
-            for p in to_open {
-                queue.push(PendingVfsOpen::PluginMount { mount_id, entry_path: p });
-            }
-        });
-    }
-}
 
-/// Body for a `Tab::PluginMount` whose mount isn't established
-/// (couldn't connect, plugin returned an error on remount, etc.).
-/// Renders the plugin's `message` verbatim and -- when the plugin
-/// supplied `retry_label` -- a button that queues a retry under
-/// [`PENDING_MOUNT_RETRY_KEY`] for the post-dock drain to pick up.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_failed_mount_placeholder(
-    ui: &mut egui::Ui,
-    mount_id: crate::files::MountId,
-    title: &str,
-    message: &str,
-    retry_label: Option<&str>,
-) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(24.0);
-        ui.heading(title);
-        ui.add_space(12.0);
-        ui.label(message);
-        if let Some(label) = retry_label {
-            ui.add_space(16.0);
-            if ui.button(label).clicked() {
-                ui.ctx().data_mut(|d| {
-                    let queue: &mut Vec<crate::files::MountId> =
-                        d.get_temp_mut_or_default(egui::Id::new(PENDING_MOUNT_RETRY_KEY));
-                    queue.push(mount_id);
-                });
-            }
-        }
-    });
-}
 
-/// Egui temp-data key for the retry queue populated by
-/// [`render_failed_mount_placeholder`] and drained by
-/// [`drain_pending_mount_retries`].
-#[cfg(not(target_arch = "wasm32"))]
-const PENDING_MOUNT_RETRY_KEY: &str = "hxy_pending_mount_retry";
 
 /// Find-or-insert helper for the persisted VFS expansion list. The
 /// list is a [`Vec`] of `(parent_source, expanded_paths)` pairs
@@ -3128,84 +2824,7 @@ fn vfs_expanded_for<'a>(list: &'a mut Vec<(TabSource, Vec<String>)>, key: &TabSo
     &mut list.last_mut().expect("just pushed").1
 }
 
-/// Drain any pending retry-mount clicks captured by failed-mount
-/// placeholders during the dock pass. Each entry calls
-/// `mount_by_token` again with the same token; on success the
-/// `MountedPlugin` flips to `Ready` and the next render shows the
-/// VFS tree, on failure the placeholder updates to whatever the
-/// plugin reports this time.
-#[cfg(not(target_arch = "wasm32"))]
-fn drain_pending_mount_retries(ctx: &egui::Context, app: &mut HxyApp) {
-    let pending: Vec<crate::files::MountId> = ctx
-        .data_mut(|d| d.remove_temp::<Vec<crate::files::MountId>>(egui::Id::new(PENDING_MOUNT_RETRY_KEY)))
-        .unwrap_or_default();
-    for mount_id in pending {
-        retry_failed_mount(app, mount_id);
-    }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-fn retry_failed_mount(app: &mut HxyApp, mount_id: crate::files::MountId) {
-    let Some(entry) = app.mounts.get(&mount_id) else { return };
-    if entry.status.live().is_some() {
-        return;
-    }
-    let plugin_name = entry.plugin_name.clone();
-    let token = entry.token.clone();
-    let display = entry.display_name.clone();
-    let plugin = match app.plugin_handlers.iter().find(|p| p.name() == plugin_name).cloned() {
-        Some(p) => p,
-        None => {
-            app.console_log(ConsoleSeverity::Error, format!("Mount {display}"), "plugin no longer installed");
-            return;
-        }
-    };
-    let became_ready = match plugin.mount_by_token(&token) {
-        Ok(mount) => {
-            app.console_log(ConsoleSeverity::Info, format!("Mount {display}"), "remount succeeded");
-            if let Some(entry) = app.mounts.get_mut(&mount_id) {
-                entry.status = crate::files::MountStatus::Ready(Arc::new(mount));
-            }
-            true
-        }
-        Err(e) => {
-            app.console_log(ConsoleSeverity::Warning, format!("Mount {display}"), e.message.clone());
-            if let Some(entry) = app.mounts.get_mut(&mount_id) {
-                entry.status = crate::files::MountStatus::Failed { message: e.message, retry_label: e.retry_label };
-            }
-            false
-        }
-    };
-    if !became_ready {
-        return;
-    }
-    // Mount is now live -- replay any persisted VfsEntry tabs whose
-    // parent is this mount's PluginMount source. They were preserved
-    // in `open_tabs` during the original restore via
-    // `parent_mount_pending`; now the live FileId can finally be
-    // allocated. Tabs that fail to read this time around drop out
-    // silently (they were missing already from the user's POV).
-    let parent_source =
-        TabSource::PluginMount { plugin_name: plugin_name.clone(), token: token.clone(), title: display.clone() };
-    let to_open: Vec<crate::state::OpenTabState> = app
-        .state
-        .read()
-        .open_tabs
-        .iter()
-        .filter(|t| matches!(&t.source, TabSource::VfsEntry { parent, .. } if parent.as_ref() == &parent_source))
-        .filter(|t| {
-            // Skip entries that already have a live tab from a prior
-            // retry (or from session-level deferred-then-success).
-            !app.files.values().any(|f| f.source_kind.as_ref() == Some(&t.source))
-        })
-        .cloned()
-        .collect();
-    for tab in to_open {
-        if let Err(e) = app.restore_one_tab(&tab, false) {
-            tracing::warn!(error = %e, "open vfs entry after mount retry");
-        }
-    }
-}
 
 fn render_file_tab(
     ui: &mut egui::Ui,
@@ -4579,114 +4198,7 @@ pub(crate) fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     None
 }
 
-/// Drive the side effect for whatever outcome a plugin returned
-/// from `invoke` or `respond_to_prompt`. Centralized so both
-/// initial command activation and prompt answers fan out through
-/// the same switch (`Done` -> close, `Cascade` -> sub-palette,
-/// `Mount` -> tab, `Prompt` -> argument-style sub-palette that
-/// rounds back here on submit).
-#[cfg(not(target_arch = "wasm32"))]
-fn dispatch_plugin_outcome(
-    ctx: &egui::Context,
-    app: &mut HxyApp,
-    plugin: Arc<hxy_plugin_host::PluginHandler>,
-    plugin_name: &str,
-    command_id: &str,
-    outcome: Option<hxy_plugin_host::InvokeOutcome>,
-) {
-    match outcome {
-        Some(hxy_plugin_host::InvokeOutcome::Done) => app.palette.close(),
-        Some(hxy_plugin_host::InvokeOutcome::Cascade(commands)) => {
-            app.palette.enter_plugin_cascade(plugin_name.to_owned(), commands);
-        }
-        Some(hxy_plugin_host::InvokeOutcome::Mount(req)) => {
-            app.palette.close();
-            // mount_by_token does the slow TCP-connect + banner read;
-            // background-thread it so the UI stays responsive. The
-            // tab opens once the worker finishes, via
-            // `install_mount_tab` from `drain_pending_plugin_ops`.
-            let plugin_name_owned = plugin.name().to_owned();
-            let mut ops = std::mem::take(&mut app.pending_plugin_ops);
-            crate::plugins::runner::spawn_mount_by_token(
-                &mut ops,
-                app,
-                ctx.clone(),
-                plugin,
-                plugin_name_owned,
-                req.token,
-                req.title,
-            );
-            app.pending_plugin_ops = ops;
-        }
-        Some(hxy_plugin_host::InvokeOutcome::Prompt(req)) => {
-            // Switch to argument-style prompt mode. The user's
-            // typed answer rides back through `RespondToPlugin`
-            // with the same command id, so chaining prompts is
-            // just "the plugin returns another Prompt outcome".
-            app.palette.enter_plugin_prompt(
-                plugin_name.to_owned(),
-                command_id.to_owned(),
-                req.title,
-                req.default_value,
-            );
-        }
-        None => {
-            // Plugin couldn't be invoked (commands grant off, or
-            // an internal trap). PluginHandler already logged;
-            // just close.
-            app.palette.close();
-        }
-    }
-}
 
-/// Install an already-resolved `MountedVfs` as a new `Tab::PluginMount`.
-/// The mount itself lives in `app.mounts`; the dock tab carries only the
-/// `MountId`. The worker thread that ran `mount-by-token` ends here, and
-/// session restoration funnels through here too. The mount entry is
-/// recorded into `state.open_tabs` so restart re-invokes `mount_by_token`
-/// with the saved token.
-#[cfg(not(target_arch = "wasm32"))]
-fn install_mount_tab(
-    app: &mut HxyApp,
-    plugin: Arc<hxy_plugin_host::PluginHandler>,
-    mount: hxy_vfs::MountedVfs,
-    token: String,
-    title: String,
-) {
-    let mount_id = crate::files::MountId::new(app.next_mount_id);
-    app.next_mount_id += 1;
-    let plugin_name = plugin.name().to_owned();
-    let entry = crate::files::MountedPlugin {
-        display_name: title.clone(),
-        plugin_name: plugin_name.clone(),
-        token: token.clone(),
-        status: crate::files::MountStatus::Ready(Arc::new(mount)),
-    };
-    app.mounts.insert(mount_id, entry);
-
-    let source = TabSource::PluginMount { plugin_name: plugin_name.clone(), token, title: title.clone() };
-    {
-        let mut g = app.state.write();
-        if !g.open_tabs.iter().any(|t| t.source == source) {
-            g.open_tabs.push(crate::state::OpenTabState {
-                source,
-                selection: None,
-                scroll_offset: 0.0,
-                as_workspace: false,
-            });
-        }
-    }
-
-    let tool_leaf = crate::tabs::dock_ops::push_tool_tab(&mut app.dock, Tab::PluginMount(mount_id));
-    if let Some(path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
-        crate::tabs::dock_ops::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
-        if let Some(fresh_path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
-            let _ = app.dock.set_active_tab(fresh_path);
-        }
-    }
-    app.dock.set_focused_node_and_surface(tool_leaf);
-    tracing::info!(plugin = %plugin_name, title = %title, id = %mount_id.get(), "mount tab installed");
-}
 
 
 
@@ -4906,7 +4418,7 @@ impl TabViewer for HxyTabViewer<'_> {
                         title: m.display_name.clone(),
                     };
                     let expanded = vfs_expanded_for(&mut self.state.vfs_tree_expanded, &key);
-                    render_plugin_mount_tab(ui, *mount_id, m, expanded);
+                    crate::plugins::mount::render_plugin_mount_tab(ui, *mount_id, m, expanded);
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
