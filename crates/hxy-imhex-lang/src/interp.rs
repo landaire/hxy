@@ -172,9 +172,47 @@ enum TypeDef {
     Bitfield(Arc<BitfieldDecl>),
 }
 
+/// Interned-name handle. Stable for the lifetime of the
+/// [`Interpreter`] that issued it; pulled out of
+/// [`NameInterner`]. Hashes as a `u32` (one CPU op vs the
+/// per-byte string hash), which dominates the bencode hot path
+/// where every member access does several hashmap lookups.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct NameId(u32);
+
+#[derive(Default)]
+struct NameInterner {
+    storage: Vec<String>,
+    index: FxHashMap<String, u32>,
+}
+
+impl NameInterner {
+    fn intern(&mut self, name: &str) -> NameId {
+        if let Some(&id) = self.index.get(name) {
+            return NameId(id);
+        }
+        let id = self.storage.len() as u32;
+        self.storage.push(name.to_owned());
+        self.index.insert(name.to_owned(), id);
+        NameId(id)
+    }
+
+    fn lookup(&self, name: &str) -> Option<NameId> {
+        self.index.get(name).copied().map(NameId)
+    }
+
+    fn get(&self, id: NameId) -> &str {
+        &self.storage[id.0 as usize]
+    }
+}
+
 #[derive(Clone, Default)]
 struct Scope {
-    vars: FxHashMap<String, Value>,
+    /// Local-variable bindings keyed by interned name. Lookup is
+    /// a single u32 hash + bucket walk vs the previous
+    /// per-byte string hash; with bencode-shaped recursion this
+    /// is one of the bigger lookup wins.
+    vars: FxHashMap<NameId, Value>,
     /// Aliases from local names to emitted-node indices. Populated
     /// when a function call passes an emitted node by name (the
     /// caller's `imageSpec`) and the function's parameter
@@ -182,7 +220,7 @@ struct Scope {
     /// caller's node tree. Without this, `imSpec` evaluates to
     /// `Void` (structs don't bind a value) and member access
     /// fails with `unresolved member .height`.
-    node_aliases: FxHashMap<String, NodeIdx>,
+    node_aliases: FxHashMap<NameId, NodeIdx>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,12 +250,19 @@ pub struct Interpreter<S: HexSource> {
     functions: FxHashMap<String, Arc<FunctionDef>>,
     scopes: Vec<Scope>,
     nodes: Vec<NodeOut>,
-    /// Name -> indices of every emitted node with that name, in
-    /// emission order. Built incrementally to keep `parent.x.y.z`
-    /// chains close to O(name-collisions) per hop instead of O(N).
-    /// The big device-tree-shaped corpus templates (fdt, pck, ...)
-    /// time out without this index.
-    nodes_by_name: FxHashMap<String, Vec<NodeIdx>>,
+    /// Runtime name interner. Every name string the runtime
+    /// touches (scope vars, `nodes_by_name` keys, function param
+    /// aliases) is funnelled through here so subsequent lookups
+    /// hit the u32-keyed maps instead of the byte-by-byte
+    /// `String` hash that previously dominated the bencode profile
+    /// (hashbrown + rustc_hash machinery accounted for ~50% of
+    /// CPU on big bencode-shaped inputs).
+    intern: NameInterner,
+    /// Interned name -> indices of every emitted node with that
+    /// name, in emission order. The previous `String`-keyed
+    /// version's per-byte hashing showed up as the biggest hot
+    /// spot in xct2cli traces of bencode reads.
+    nodes_by_name: FxHashMap<NameId, Vec<NodeIdx>>,
     /// Companion to [`Self::nodes_by_name`]: parallel `Vec` of
     /// each node's parent index (or `NodeIdx::default()` for
     /// roots, distinguishable from real entries via a side
@@ -293,6 +338,7 @@ impl<S: HexSource> Interpreter<S> {
             functions: FxHashMap::default(),
             scopes: vec![Scope::default()],
             nodes: Vec::new(),
+            intern: NameInterner::default(),
             nodes_by_name: FxHashMap::default(),
             node_parents: Vec::new(),
             diagnostics: Vec::new(),
@@ -386,6 +432,21 @@ impl<S: HexSource> Interpreter<S> {
         RunResult { nodes: self.nodes, diagnostics: self.diagnostics, return_value: self.return_value, terminal_error }
     }
 
+    /// Build the BC `IdentId -> NameId` mapping by pre-interning
+    /// every string in `program.idents`. Once built, BC ops with
+    /// an [`crate::bc::IdentId`] can resolve to the runtime
+    /// [`NameId`] via a Vec lookup instead of doing
+    /// `intern.intern(string)` per dispatch (one extra string
+    /// hash per op). Same trick saves ~10% of bencode wallclock.
+    fn build_bc_name_map(&mut self, program: &crate::bc::Program) -> Vec<NameId> {
+        let mut map = Vec::with_capacity(program.idents.len());
+        for i in 0..program.idents.len() as u32 {
+            let s = program.idents.get(i);
+            map.push(self.intern.intern(s));
+        }
+        map
+    }
+
     fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
         // Pre-register every decl reachable through compile (main +
         // imports + namespaces + nested) into `self.types` /
@@ -440,6 +501,10 @@ impl<S: HexSource> Interpreter<S> {
                 self.functions.insert(q.clone(), Arc::clone(&shared));
             }
         }
+        // Pre-intern every BC ident string to a runtime NameId
+        // so per-op dispatch can index a Vec instead of doing
+        // `intern.intern(name)` (one per BC op with an IdentId).
+        let bc_to_name = self.build_bc_name_map(program);
         // Top-level statements run with no enclosing parent. EOF
         // tolerance applies here: a top-level read past EOF becomes
         // a diagnostic, mirroring `exec_program`'s behaviour.
@@ -447,6 +512,7 @@ impl<S: HexSource> Interpreter<S> {
         let mut pending_attrs: Vec<(String, String)> = Vec::new();
         self.exec_bytecode_body(
             program,
+            &bc_to_name,
             &program.ops,
             None,
             true,
@@ -455,9 +521,11 @@ impl<S: HexSource> Interpreter<S> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exec_bytecode_body(
         &mut self,
         program: &crate::bc::Program,
+        bc_to_name: &[NameId],
         ops: &[crate::bc::Op],
         parent: Option<NodeIdx>,
         eof_tolerant_top_level: bool,
@@ -521,6 +589,7 @@ impl<S: HexSource> Interpreter<S> {
                     let attrs = std::mem::take(pending_attrs);
                     self.exec_bytecode_struct(
                         program,
+                        bc_to_name,
                         body,
                         program.idents.get(name.0),
                         program.idents.get(display_name.0),
@@ -664,6 +733,7 @@ impl<S: HexSource> Interpreter<S> {
                     let attrs = std::mem::take(pending_attrs);
                     self.exec_bytecode_array_while(
                         program,
+                        bc_to_name,
                         Some(ty_ref),
                         name_str,
                         &attrs,
@@ -681,6 +751,7 @@ impl<S: HexSource> Interpreter<S> {
                     let attrs = std::mem::take(pending_attrs);
                     self.exec_bytecode_array_while(
                         program,
+                        bc_to_name,
                         None,
                         name_str,
                         &attrs,
@@ -799,8 +870,7 @@ impl<S: HexSource> Interpreter<S> {
                     let value = stack
                         .pop()
                         .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdent" })?;
-                    let name_str = program.idents.get(name.0).to_owned();
-                    self.current_scope_mut().vars.insert(name_str, value);
+                    self.bind_var_id(bc_to_name[name.0 as usize], value);
                 }
                 Op::EmitComputedLocal { name, ty_label, ty } => {
                     let value = stack
@@ -810,11 +880,12 @@ impl<S: HexSource> Interpreter<S> {
                     // declared primitive width / signedness, matching
                     // `exec_field_decl`'s `coerce_value_to_prim` step.
                     let value = self.coerce_to_decl_type(value, &program.types[ty.0 as usize]);
-                    let name_str = program.idents.get(name.0).to_owned();
-                    let ty_str = program.idents.get(ty_label.0).to_owned();
-                    self.current_scope_mut().vars.insert(name_str.clone(), value.clone());
+                    let name_id = bc_to_name[name.0 as usize];
+                    self.bind_var_id(name_id, value.clone());
                     if let Some(parent_idx) = parent {
                         let attrs = std::mem::take(pending_attrs);
+                        let name_str = program.idents.get(name.0).to_owned();
+                        let ty_str = program.idents.get(ty_label.0).to_owned();
                         self.push_node(NodeOut {
                             name: name_str,
                             ty: NodeType::Unknown(ty_str),
@@ -831,8 +902,7 @@ impl<S: HexSource> Interpreter<S> {
                         .pop()
                         .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdentCoerce" })?;
                     let value = self.coerce_to_decl_type(value, &program.types[ty.0 as usize]);
-                    let name_str = program.idents.get(name.0).to_owned();
-                    self.current_scope_mut().vars.insert(name_str, value);
+                    self.bind_var_id(bc_to_name[name.0 as usize], value);
                 }
                 Op::LoadIdent(name) => {
                     let name_str = program.idents.get(name.0);
@@ -841,7 +911,10 @@ impl<S: HexSource> Interpreter<S> {
                     let v = if name_str == "$" {
                         Value::UInt { value: self.cursor_tell() as u128, kind: PrimKind::u64() }
                     } else {
-                        self.lookup_ident(name_str)?
+                        // Pre-mapped NameId: skip the intern step in
+                        // `lookup_ident` and search scopes directly.
+                        let id = bc_to_name[name.0 as usize];
+                        self.lookup_ident_by_id(id, name_str)?
                     };
                     stack.push(v);
                 }
@@ -913,6 +986,7 @@ impl<S: HexSource> Interpreter<S> {
     fn exec_bytecode_array_while(
         &mut self,
         program: &crate::bc::Program,
+        bc_to_name: &[NameId],
         ty: Option<&TypeRef>,
         name: &str,
         attrs: &[(String, String)],
@@ -946,7 +1020,15 @@ impl<S: HexSource> Interpreter<S> {
                 }
                 // Run the predicate sub-stream; it pushes one
                 // boolean (or numeric) value on the operand stack.
-                self.exec_bytecode_body(program, pred_ops, parent, false, stack, pending_attrs)?;
+                self.exec_bytecode_body(
+                    program,
+                    bc_to_name,
+                    pred_ops,
+                    parent,
+                    false,
+                    stack,
+                    pending_attrs,
+                )?;
                 let v = stack
                     .pop()
                     .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayWhile/pred" })?;
@@ -957,6 +1039,7 @@ impl<S: HexSource> Interpreter<S> {
                 let read_res = match body_dispatch {
                     Some((body_id, display)) => self.exec_bytecode_struct(
                         program,
+                        bc_to_name,
                         body_id,
                         &elem_name,
                         display,
@@ -1020,6 +1103,7 @@ impl<S: HexSource> Interpreter<S> {
     fn exec_bytecode_struct(
         &mut self,
         program: &crate::bc::Program,
+        bc_to_name: &[NameId],
         body: crate::bc::BodyId,
         name: &str,
         display_name: &str,
@@ -1045,8 +1129,15 @@ impl<S: HexSource> Interpreter<S> {
         self.this_stack.push(idx);
 
         let body_ops = &program.struct_bodies[body.0 as usize].ops;
-        let result =
-            self.exec_bytecode_body(program, body_ops, Some(idx), false, stack, pending_attrs);
+        let result = self.exec_bytecode_body(
+            program,
+            bc_to_name,
+            body_ops,
+            Some(idx),
+            false,
+            stack,
+            pending_attrs,
+        );
 
         self.this_stack.pop();
         self.scopes.pop();
@@ -1825,7 +1916,7 @@ impl<S: HexSource> Interpreter<S> {
             } else {
                 value
             };
-            self.current_scope_mut().vars.insert(name.clone(), value.clone());
+            self.bind_var(name, value.clone());
             // When the computed local lives inside a struct, also
             // emit a zero-length child node so an outside reference
             // like `startheader.startEndHeader` (7z.hexpat) finds
@@ -1847,14 +1938,14 @@ impl<S: HexSource> Interpreter<S> {
         }
         if ty.leaf() == "auto" {
             // Bare `auto x;` (no init) -- nothing to bind.
-            self.current_scope_mut().vars.insert(name.clone(), Value::Void);
+            self.bind_var(name, Value::Void);
             return Ok(Flow::Next);
         }
         // `str x;` (no init) -- declare an empty string in scope.
         // ImHex's `str` is a dynamic string type, not a fixed-width
         // primitive; bare declarations don't consume bytes.
         if ty.leaf() == "str" && init.is_none() && placement.is_none() && array.is_none() {
-            self.current_scope_mut().vars.insert(name.clone(), Value::Str(String::new()));
+            self.bind_var(name, Value::Str(String::new()));
             return Ok(Flow::Next);
         }
         // `bool x in;` / `Type x out;` -- input/output variables
@@ -1866,7 +1957,7 @@ impl<S: HexSource> Interpreter<S> {
                 Some(e) => self.eval(e)?,
                 None => Value::Void,
             };
-            self.current_scope_mut().vars.insert(name.clone(), default);
+            self.bind_var(name, default);
             return Ok(Flow::Next);
         }
         // `const Type name = expr;` -- a compile-time constant,
@@ -1874,7 +1965,7 @@ impl<S: HexSource> Interpreter<S> {
         // the result without advancing the cursor.
         if *is_const && init.is_some() {
             let value = self.eval(init.as_ref().unwrap())?;
-            self.current_scope_mut().vars.insert(name.clone(), value);
+            self.bind_var(name, value);
             return Ok(Flow::Next);
         }
         let mut all_attrs = attrs_to_pairs(attrs);
@@ -1929,7 +2020,7 @@ impl<S: HexSource> Interpreter<S> {
                 let available = self.source.len().saturating_sub(cur);
                 if available < p.width as u64 {
                     let value = Value::UInt { value: 0, kind: p };
-                    self.current_scope_mut().vars.insert(name.clone(), value.clone());
+                    self.bind_var(name, value.clone());
                     self.push_node(NodeOut {
                         name: name.clone(),
                         ty: NodeType::Scalar(ScalarKind::from_prim(p)),
@@ -2051,8 +2142,9 @@ impl<S: HexSource> Interpreter<S> {
             if let Ok(new_val) =
                 self.call_named_with_aliases(&fn_name, std::slice::from_ref(&raw), &[])
             {
-                self.current_scope_mut().vars.insert(name.clone(), new_val.clone());
-                if let Some(indices) = self.nodes_by_name.get(name).cloned()
+                let name_id = self.intern.intern(name);
+                self.current_scope_mut().vars.insert(name_id, new_val.clone());
+                if let Some(indices) = self.nodes_by_name.get(&name_id).cloned()
                     && let Some(&idx) = indices.last()
                 {
                     self.nodes[idx.as_usize()].value = Some(new_val);
@@ -2079,7 +2171,8 @@ impl<S: HexSource> Interpreter<S> {
     /// directly so the lookup path stays consistent.
     fn push_node(&mut self, node: NodeOut) -> NodeIdx {
         let idx = NodeIdx::new(self.nodes.len() as u32);
-        self.nodes_by_name.entry(node.name.clone()).or_default().push(idx);
+        let name_id = self.intern.intern(&node.name);
+        self.nodes_by_name.entry(name_id).or_default().push(idx);
         // Mirror the parent index into a flat parallel `Vec<u32>`
         // so the per-name scan in `find_first_child_idx` /
         // `lookup_member_under` doesn't have to touch the
@@ -2158,7 +2251,7 @@ impl<S: HexSource> Interpreter<S> {
                     parent,
                     attrs: attrs.to_vec(),
                 });
-                self.current_scope_mut().vars.insert(name.to_owned(), value.clone());
+                self.bind_var(name, value.clone());
                 let _ = init; // primitives don't take initializers in Phase 1
                 Ok(value)
             }
@@ -2257,7 +2350,7 @@ impl<S: HexSource> Interpreter<S> {
                         })
                         .unwrap_or(Value::Void),
                 };
-                self.current_scope_mut().vars.insert(param_name.clone(), value);
+                self.bind_var(param_name, value);
             }
         }
 
@@ -2289,7 +2382,7 @@ impl<S: HexSource> Interpreter<S> {
                         let value = arg_expr
                             .map(|e| self.eval(e).unwrap_or(Value::Void))
                             .unwrap_or(Value::Void);
-                        self.current_scope_mut().vars.insert(param_name.clone(), value);
+                        self.bind_var(param_name, value);
                     }
                 }
                 chain.push(p.body.clone());
@@ -2461,7 +2554,7 @@ impl<S: HexSource> Interpreter<S> {
             parent,
             attrs: node_attrs,
         });
-        self.current_scope_mut().vars.insert(name.to_owned(), raw_value.clone());
+        self.bind_var(name, raw_value.clone());
         Ok(raw_value)
     }
 
@@ -2499,7 +2592,7 @@ impl<S: HexSource> Interpreter<S> {
                     template_type_aliases.push((param_name.clone(), prev));
                 }
                 let value = arg_expr.map(|e| self.eval(e).unwrap_or(Value::Void)).unwrap_or(Value::Void);
-                self.current_scope_mut().vars.insert(param_name.clone(), value);
+                self.bind_var(param_name, value);
             }
         }
         // Compute total bits by collecting every BitfieldField in the
@@ -2616,9 +2709,7 @@ impl<S: HexSource> Interpreter<S> {
                         parent: Some(bf_idx),
                         attrs: field_attrs,
                     });
-                    self.current_scope_mut()
-                        .vars
-                        .insert(name.clone(), Value::UInt { value: value_u, kind: PrimKind::u64() });
+                    self.bind_var(name, Value::UInt { value: value_u, kind: PrimKind::u64() });
                 }
                 Stmt::If { cond, then_branch, else_branch, .. } => {
                     let take_then = self.eval(cond)?.is_truthy();
@@ -2653,7 +2744,7 @@ impl<S: HexSource> Interpreter<S> {
                 // expressions can see it but emit no node.
                 Stmt::FieldDecl { name, init: Some(e), .. } => {
                     let v = self.eval(e)?;
-                    self.current_scope_mut().vars.insert(name.clone(), v);
+                    self.bind_var(name, v);
                 }
                 _ => {}
             }
@@ -2699,7 +2790,7 @@ impl<S: HexSource> Interpreter<S> {
                 parent,
                 attrs: attrs.to_vec(),
             });
-            self.current_scope_mut().vars.insert(name.to_owned(), Value::Str(s));
+            self.bind_var(name, Value::Str(s));
             return Ok(Value::Void);
         }
         // Generic array: emit one parent node, then `count` children.
@@ -3012,7 +3103,11 @@ impl<S: HexSource> Interpreter<S> {
                         // the child node, otherwise the surrounding
                         // `appendData(value)` sees an empty struct.
                         if let Ok(Some(owner)) = self.resolve_node_chain(inner) {
-                            let candidates = self.nodes_by_name.get(field).cloned().unwrap_or_default();
+                            let candidates = self
+                                .intern
+                                .lookup(field)
+                                .and_then(|id| self.nodes_by_name.get(&id).cloned())
+                                .unwrap_or_default();
                             if let Some(idx) = candidates
                                 .into_iter()
                                 .rev()
@@ -3301,10 +3396,41 @@ impl<S: HexSource> Interpreter<S> {
         Ok(0)
     }
 
-    fn lookup_ident(&self, name: &str) -> Result<Value, RuntimeError> {
+    /// Companion to [`Self::lookup_ident`] for callers that
+    /// already hold the interned id (BC ops). Skips the
+    /// intern lookup and falls back to the original `name`
+    /// string only for the `$` / `this` / `parent` magic
+    /// idents and the `nodes_by_name` last-resort.
+    fn lookup_ident_by_id(&self, id: NameId, name: &str) -> Result<Value, RuntimeError> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.vars.get(name) {
+            if let Some(v) = scope.vars.get(&id) {
                 return Ok(v.clone());
+            }
+        }
+        if name == "$" {
+            return Ok(Value::UInt { value: self.pos as u128, kind: PrimKind::u64() });
+        }
+        if name == "this" || name == "parent" {
+            return Ok(Value::Void);
+        }
+        if let Some(indices) = self.nodes_by_name.get(&id)
+            && let Some(idx) = indices.last()
+        {
+            return Ok(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
+        }
+        Err(RuntimeError::UndefinedName { name: name.to_owned() })
+    }
+
+    fn lookup_ident(&self, name: &str) -> Result<Value, RuntimeError> {
+        // Intern once at entry; the per-scope lookup loop becomes
+        // a u32-keyed hashmap probe instead of the per-byte
+        // string hash that previously dominated bencode's
+        // member-access path.
+        if let Some(id) = self.intern.lookup(name) {
+            for scope in self.scopes.iter().rev() {
+                if let Some(v) = scope.vars.get(&id) {
+                    return Ok(v.clone());
+                }
             }
         }
         // `$` -- current cursor offset. ImHex templates use this
@@ -3329,7 +3455,8 @@ impl<S: HexSource> Interpreter<S> {
         // when passing them to builtins (`add_virtual_file(name, file)`)
         // -- without this fallback the eval errors with
         // `undefined name`.
-        if let Some(indices) = self.nodes_by_name.get(name)
+        if let Some(id) = self.intern.lookup(name)
+            && let Some(indices) = self.nodes_by_name.get(&id)
             && let Some(idx) = indices.last()
         {
             return Ok(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
@@ -3345,13 +3472,14 @@ impl<S: HexSource> Interpreter<S> {
     /// the *node* is still the right answer for chained accesses
     /// (`a.b.c.field`) even though `b` itself has no value.
     fn lookup_member_under(&self, owner_idx: NodeIdx, field: &str) -> Option<Value> {
+        let id = self.intern.lookup(field)?;
         // Walks right-to-left so the most-recently-emitted match
         // wins (matters for repeated names inside a long-lived
         // parent like an array). Uses the flat
         // `node_parents: Vec<u32>` for the parent check -- same
         // cache-friendliness trick as `find_first_child_idx`.
         let target = owner_idx.as_u32();
-        let candidates = self.nodes_by_name.get(field)?;
+        let candidates = self.nodes_by_name.get(&id)?;
         for &idx in candidates.iter().rev() {
             if self.node_parents[idx.as_usize()] == target {
                 return Some(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
@@ -3435,44 +3563,57 @@ impl<S: HexSource> Interpreter<S> {
             "parent" => self.current_parent,
             "this" => self.most_recent_struct_idx(),
             other => {
+                // Intern once at entry so the loop below doesn't
+                // re-hash the string per ancestor level.
+                let id = self.intern.lookup(other)?;
                 // Function-parameter aliases first: `imSpec` inside
                 // `GetImageDataSize(imSpec)` should route through
                 // the caller's `imageSpec` node.
                 for scope in self.scopes.iter().rev() {
-                    if let Some(idx) = scope.node_aliases.get(other) {
+                    if let Some(idx) = scope.node_aliases.get(&id) {
                         return Some(*idx);
                     }
                 }
                 // Walk the enclosing-struct chain (this, then
                 // parent, then grandparent, ...) looking for a
-                // child named `other`.
+                // child named `other`. Each level is now a single
+                // u32-keyed hashmap probe instead of the
+                // per-byte-string-hash that dominated the bencode
+                // profile.
                 let mut cur = self.this_stack.last().copied().or(self.current_parent);
                 while let Some(idx) = cur {
-                    if let Some(found) = self.find_first_child_idx(idx, other) {
+                    if let Some(found) = self.find_first_child_idx_by_id(idx, id) {
                         return Some(found);
                     }
                     cur = self.nodes[idx.as_usize()].parent;
                 }
                 // Top-level fallback (`Outer o; ... eval somewhere
                 // that references `o`).
-                if let Some(top) = self.find_top_level_idx(other) {
+                if let Some(top) = self.find_top_level_idx_by_id(id) {
                     return Some(top);
                 }
                 // Last resort: most recent emission of that name.
-                self.nodes_by_name.get(other).and_then(|v| v.last().copied())
+                self.nodes_by_name.get(&id).and_then(|v| v.last().copied())
             }
         }
     }
 
     fn find_first_child_idx(&self, parent_idx: NodeIdx, name: &str) -> Option<NodeIdx> {
+        let id = self.intern.lookup(name)?;
+        self.find_first_child_idx_by_id(parent_idx, id)
+    }
+
+    fn find_first_child_idx_by_id(&self, parent_idx: NodeIdx, name: NameId) -> Option<NodeIdx> {
         // Linear scan over `nodes_by_name[name]` filtered by
         // parent. The hot trick: read the parent through the
         // flat `node_parents: Vec<u32>` instead of dereferencing
         // `self.nodes[i].parent` -- the latter touches a
         // ~200-byte `NodeOut` per check, whereas the former
         // streams 4 bytes per check and stays cache-resident.
+        // Map key is now the interned `NameId` (u32 hash) instead
+        // of `String` (per-byte hash) -- the previous hot path.
         let target = parent_idx.as_u32();
-        let candidates = self.nodes_by_name.get(name)?;
+        let candidates = self.nodes_by_name.get(&name)?;
         for idx in candidates.iter().copied() {
             if self.node_parents[idx.as_usize()] == target {
                 return Some(idx);
@@ -3486,7 +3627,12 @@ impl<S: HexSource> Interpreter<S> {
     /// current scope has no enclosing struct -- ImHex treats the
     /// implicit "program" scope as a parent for top-level fields.
     fn find_top_level_idx(&self, name: &str) -> Option<NodeIdx> {
-        let candidates = self.nodes_by_name.get(name)?;
+        let id = self.intern.lookup(name)?;
+        self.find_top_level_idx_by_id(id)
+    }
+
+    fn find_top_level_idx_by_id(&self, name: NameId) -> Option<NodeIdx> {
+        let candidates = self.nodes_by_name.get(&name)?;
         candidates.iter().copied().rev().find(|idx| self.nodes[idx.as_usize()].parent.is_none())
     }
 
@@ -3500,14 +3646,35 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn store_ident(&mut self, name: &str, value: Value) {
+        let id = self.intern.intern(name);
         for scope in self.scopes.iter_mut().rev() {
-            if scope.vars.contains_key(name) {
-                scope.vars.insert(name.to_owned(), value);
+            if scope.vars.contains_key(&id) {
+                scope.vars.insert(id, value);
                 return;
             }
         }
         // Auto-declare in the current scope.
-        self.current_scope_mut().vars.insert(name.to_owned(), value);
+        self.current_scope_mut().vars.insert(id, value);
+    }
+
+    /// Bind a name to a value in the current (innermost) scope.
+    /// Centralises the intern-then-insert pattern so per-call sites
+    /// don't repeat it (and don't accidentally key by the raw
+    /// `String`, which would silently regress the lookup).
+    fn bind_var(&mut self, name: &str, value: Value) {
+        let id = self.intern.intern(name);
+        self.current_scope_mut().vars.insert(id, value);
+    }
+
+    /// Variant for callers that already hold the interned id
+    /// (BC ops walk `bc_to_name` to skip the per-op intern lookup).
+    fn bind_var_id(&mut self, id: NameId, value: Value) {
+        self.current_scope_mut().vars.insert(id, value);
+    }
+
+    fn bind_node_alias(&mut self, name: &str, idx: NodeIdx) {
+        let id = self.intern.intern(name);
+        self.current_scope_mut().node_aliases.insert(id, idx);
     }
 
     fn call_named_with_aliases(
@@ -3542,9 +3709,9 @@ impl<S: HexSource> Interpreter<S> {
         self.scopes.push(Scope::default());
         for (i, p) in func.params.iter().enumerate() {
             let v = args.get(i).cloned().unwrap_or(Value::Void);
-            self.current_scope_mut().vars.insert(p.name.clone(), v);
+            self.bind_var(&p.name, v);
             if let Some(Some(node_idx)) = node_aliases.get(i) {
-                self.current_scope_mut().node_aliases.insert(p.name.clone(), *node_idx);
+                self.bind_node_alias(&p.name, *node_idx);
             }
         }
         // Inside the fn, `parent` should resolve to the struct
