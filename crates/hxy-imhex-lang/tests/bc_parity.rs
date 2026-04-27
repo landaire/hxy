@@ -256,3 +256,54 @@ DoubleSet d;
     let (ast, bc_run) = run_both(src, bytes);
     assert_node_parity(&ast, &bc_run);
 }
+
+#[test]
+fn top_level_placement_primitive_matches_ast() {
+    // `Type x @ N` at top level seeks the cursor and reads from
+    // there; the cursor stays at the read end. The emitted node
+    // gets an `hxy_placement` attribute carrying the offset.
+    let src = "u32 magic @ 0x04;\n";
+    let mut bytes = vec![0xFF; 4];
+    bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert_eq!(bc_run.nodes.len(), 1);
+    assert_eq!(bc_run.nodes[0].offset, 4);
+    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "hxy_placement" && v == "4"));
+}
+
+#[test]
+fn top_level_placement_char_array_matches_ast() {
+    // Real-world shape from n64.hexpat: `char name[20] @ 0x20;`.
+    let src = "char name[20] @ 0x20;\n";
+    let mut bytes = vec![0xAA; 0x20];
+    bytes.extend_from_slice(b"NINTENDO 64 ROM TXTX");
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    assert_eq!(bc_run.nodes[0].offset, 0x20);
+    assert_eq!(bc_run.nodes[0].length, 20);
+}
+
+#[test]
+fn top_level_placement_struct_matches_ast() {
+    // Real-world shape from cda.hexpat: two top-level placed structs.
+    let src = "\
+struct Header {
+    u32 RIFF;
+    s32 size;
+};
+struct DataInfo {
+    u32 range;
+    u32 duration;
+};
+Header header @ 0;
+DataInfo data @ 0x10;
+";
+    let mut bytes = vec![0u8; 0x20];
+    bytes[0..4].copy_from_slice(&0x46464952u32.to_le_bytes()); // "RIFF"
+    bytes[4..8].copy_from_slice(&42i32.to_le_bytes());
+    bytes[0x10..0x14].copy_from_slice(&7u32.to_le_bytes());
+    bytes[0x14..0x18].copy_from_slice(&100u32.to_le_bytes());
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+}

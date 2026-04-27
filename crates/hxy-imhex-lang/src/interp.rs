@@ -374,7 +374,15 @@ impl<S: HexSource> Interpreter<S> {
         // tolerance applies here: a top-level read past EOF becomes
         // a diagnostic, mirroring `exec_program`'s behaviour.
         let mut stack: Vec<Value> = Vec::new();
-        self.exec_bytecode_body(program, &program.ops, None, true, &mut stack)
+        let mut pending_attrs: Vec<(String, String)> = Vec::new();
+        self.exec_bytecode_body(
+            program,
+            &program.ops,
+            None,
+            true,
+            &mut stack,
+            &mut pending_attrs,
+        )
     }
 
     fn exec_bytecode_body(
@@ -384,6 +392,7 @@ impl<S: HexSource> Interpreter<S> {
         parent: Option<NodeIdx>,
         eof_tolerant_top_level: bool,
         stack: &mut Vec<Value>,
+        pending_attrs: &mut Vec<(String, String)>,
     ) -> Result<(), RuntimeError> {
         use crate::bc::Op;
         let mut pc: usize = 0;
@@ -400,7 +409,8 @@ impl<S: HexSource> Interpreter<S> {
                 Op::ReadPrim { ty, name } => {
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
-                    let res = self.read_scalar(name_str, ty_ref, parent, &[], None);
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_scalar(name_str, ty_ref, parent, &attrs, None);
                     if let Err(e) = res {
                         if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
@@ -417,7 +427,8 @@ impl<S: HexSource> Interpreter<S> {
                 Op::ReadArrayFixed { ty, name, count } => {
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
-                    let res = self.read_array(name_str, ty_ref, count, parent, &[]);
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_array(name_str, ty_ref, count, parent, &attrs);
                     if let Err(e) = res {
                         if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
@@ -434,7 +445,27 @@ impl<S: HexSource> Interpreter<S> {
                 Op::EnterStruct { body, name, display_name } => {
                     let name_str = program.idents.get(name.0).to_owned();
                     let display = program.idents.get(display_name.0).to_owned();
-                    self.exec_bytecode_struct(program, body, &name_str, &display, parent, stack)?;
+                    let attrs = std::mem::take(pending_attrs);
+                    self.exec_bytecode_struct(
+                        program, body, &name_str, &display, parent, stack, pending_attrs, &attrs,
+                    )?;
+                }
+                Op::PlacementSeek => {
+                    let offset_val = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "PlacementSeek" })?;
+                    let offset = offset_val
+                        .to_i128()
+                        .ok_or_else(|| {
+                            RuntimeError::Type(format!(
+                                "placement offset not numeric: {offset_val}"
+                            ))
+                        })?
+                        .max(0) as u64;
+                    self.cursor_seek(offset);
+                    // Mirror exec_field_decl's
+                    // `all_attrs.push(("hxy_placement", ...))`.
+                    pending_attrs.push(("hxy_placement".into(), offset.to_string()));
                 }
                 Op::PushInt(v) => {
                     // Mirror `eval(Expr::IntLit)`: literals widen to
@@ -475,7 +506,8 @@ impl<S: HexSource> Interpreter<S> {
                         .max(0) as u64;
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
-                    let res = self.read_array(name_str, ty_ref, count, parent, &[]);
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_array(name_str, ty_ref, count, parent, &attrs);
                     if let Err(e) = res {
                         if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
                             self.diagnostics.push(Diagnostic {
@@ -505,6 +537,7 @@ impl<S: HexSource> Interpreter<S> {
     /// cursor delta). Templates, parent inheritance, attrs,
     /// `[[transform]]`, and unions are all out of scope; the
     /// compile pass refuses to register any decl that uses them.
+    #[allow(clippy::too_many_arguments)]
     fn exec_bytecode_struct(
         &mut self,
         program: &crate::bc::Program,
@@ -513,6 +546,8 @@ impl<S: HexSource> Interpreter<S> {
         display_name: &str,
         parent: Option<NodeIdx>,
         stack: &mut Vec<Value>,
+        pending_attrs: &mut Vec<(String, String)>,
+        attrs: &[(String, String)],
     ) -> Result<(), RuntimeError> {
         let offset = self.cursor_tell();
         let idx = NodeIdx::new(self.nodes.len() as u32);
@@ -523,7 +558,7 @@ impl<S: HexSource> Interpreter<S> {
             length: 0,
             value: None,
             parent,
-            attrs: Vec::new(),
+            attrs: attrs.to_vec(),
         });
         let prev_parent = self.current_parent;
         self.current_parent = parent;
@@ -531,7 +566,8 @@ impl<S: HexSource> Interpreter<S> {
         self.this_stack.push(idx);
 
         let body_ops = &program.struct_bodies[body.0 as usize].ops;
-        let result = self.exec_bytecode_body(program, body_ops, Some(idx), false, stack);
+        let result =
+            self.exec_bytecode_body(program, body_ops, Some(idx), false, stack, pending_attrs);
 
         self.this_stack.pop();
         self.scopes.pop();

@@ -177,6 +177,16 @@ pub enum Op {
     RestoreCursor,
     SeekTo, // offset on stack
 
+    /// Top-level placement (`Type x @ offset;`). Pops one [`Value`]
+    /// from the operand stack, seeks the cursor there, AND attaches
+    /// an `hxy_placement` attribute to the next read so the renderer
+    /// can show "this field was placed at N". Mirrors the AST's
+    /// `all_attrs.push(("hxy_placement", offset.to_string()))` from
+    /// `exec_field_decl`. Inside-struct placement (which save+
+    /// restores the cursor) is a separate op the compile pass does
+    /// not yet emit.
+    PlacementSeek,
+
     // ---- struct/scope frames ----
     /// Read a compiled struct body. The VM pushes a struct node,
     /// pushes a fresh scope and `this_stack` entry, executes the
@@ -237,6 +247,7 @@ impl Op {
             Op::SaveCursor => "SaveCursor",
             Op::RestoreCursor => "RestoreCursor",
             Op::SeekTo => "SeekTo",
+            Op::PlacementSeek => "PlacementSeek",
             Op::EnterStruct { .. } => "EnterStruct",
             Op::ExitStruct => "ExitStruct",
             Op::PushScope => "PushScope",
@@ -431,14 +442,21 @@ fn compile_struct_body_stmt(
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain_array_ok(
+            field_decl_must_be_plain_array_and_placement_ok(
                 *is_const,
                 *is_io_var,
                 pointer_width,
-                placement,
                 init,
                 attrs,
             )?;
+            // In-struct placement saves+restores the surrounding
+            // cursor; the VM does not yet model that. Only the
+            // top-level form (which is a plain seek) is lowered.
+            if placement.is_some() {
+                return Err(CompileError::UnsupportedFieldDecl {
+                    reason: "in-struct `@ offset` placement (save+restore) not yet lowered",
+                });
+            }
             compile_field_decl(p, ctx, out, ty, name, array.as_ref())
         }
         _ => Err(CompileError::UnsupportedStmt("non-field-decl in struct body")),
@@ -459,11 +477,10 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             pointer_width,
             ..
         } => {
-            field_decl_must_be_plain_array_ok(
+            field_decl_must_be_plain_array_and_placement_ok(
                 *is_const,
                 *is_io_var,
                 pointer_width,
-                placement,
                 init,
                 attrs,
             )?;
@@ -471,7 +488,17 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             // restoring -- avoids fighting the borrow checker over
             // an `&mut Vec<Op>` aliased with `&mut Program`.
             let mut top_ops = std::mem::take(&mut p.ops);
-            let res = compile_field_decl(p, ctx, &mut top_ops, ty, name, array.as_ref());
+            let res = (|| -> Result<(), CompileError> {
+                if let Some(offset_expr) = placement {
+                    // Top-level placement is a plain seek (no
+                    // save+restore); lower the offset, push the
+                    // PlacementSeek op which seeks AND queues the
+                    // `hxy_placement` attr for the next read.
+                    compile_expr(p, &mut top_ops, offset_expr)?;
+                    top_ops.push(Op::PlacementSeek);
+                }
+                compile_field_decl(p, ctx, &mut top_ops, ty, name, array.as_ref())
+            })();
             p.ops = top_ops;
             res
         }
@@ -496,16 +523,14 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
     }
 }
 
-/// Reject every `FieldDecl` modifier the Phase C VM does not yet
-/// implement. The array shape is *not* checked here -- callers may
-/// accept a fixed-size array of a primitive (see
-/// [`compile_field_decl`]) but every other modifier (const,
-/// io_var, pointer, placement, init, attrs) still bails out.
-fn field_decl_must_be_plain_array_ok(
+/// Reject every `FieldDecl` modifier outside the small subset the
+/// VM currently implements. Placement (`@ offset`) and the array
+/// shape are *not* checked here -- the per-context compile callers
+/// validate them (top-level vs in-struct rules differ).
+fn field_decl_must_be_plain_array_and_placement_ok(
     is_const: bool,
     is_io_var: bool,
     pointer_width: &Option<TypeRef>,
-    placement: &Option<crate::ast::Expr>,
     init: &Option<crate::ast::Expr>,
     attrs: &crate::ast::Attrs,
 ) -> Result<(), CompileError> {
@@ -517,9 +542,6 @@ fn field_decl_must_be_plain_array_ok(
     }
     if pointer_width.is_some() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "pointer" });
-    }
-    if placement.is_some() {
-        return Err(CompileError::UnsupportedFieldDecl { reason: "placement" });
     }
     if init.is_some() {
         return Err(CompileError::UnsupportedFieldDecl { reason: "init" });
