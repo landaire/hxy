@@ -765,6 +765,14 @@ impl<'r> Compiler<'r> {
                     decl: decl.clone(),
                 });
                 self.p.decl_order.push(DeclRef::Enum(idx));
+                // Record under every spelling the AST registers
+                // so `compile_expr`'s path-folding can resolve
+                // `Type::X` and `bencode::Type::X` alike.
+                let shared = std::sync::Arc::new(decl.clone());
+                self.ctx.enum_decls_by_name.insert(decl.name.clone(), std::sync::Arc::clone(&shared));
+                for q in self.qualified_name(&decl.name) {
+                    self.ctx.enum_decls_by_name.insert(q, std::sync::Arc::clone(&shared));
+                }
                 if enum_is_simple(decl) && !self.ctx.enums.contains_key(&decl.name) {
                     let id = EnumId(self.p.enum_decls.len() as u32);
                     self.p.enum_decls.push(decl.clone());
@@ -1026,6 +1034,13 @@ struct CompileCtx {
     /// so the post-processing actually fires -- the bytecode
     /// VM's fast-path read ops don't model these attrs.
     structs_with_transform: rustc_hash::FxHashSet<String>,
+    /// All enum decls reached during pass 1, indexed by every
+    /// name they're registered under (bare and namespace-
+    /// qualified). Used by `compile_expr` to fold
+    /// `EnumName::Variant` paths to literal ints at compile
+    /// time -- on bencode-shaped inputs the AST eval path was
+    /// resolving these millions of times via `EvalAstExpr`.
+    enum_decls_by_name: rustc_hash::FxHashMap<String, std::sync::Arc<crate::ast::EnumDecl>>,
 }
 
 impl CompileCtx {
@@ -1088,7 +1103,7 @@ fn compile_struct_body_stmt(
             // binding.
             if placement.is_none() && pointer_width.is_none() {
                 if let Some(e) = compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref()) {
-                    compile_expr(p, out, e)?;
+                    compile_expr(p, ctx, out, e)?;
                     push_attr_list_op(p, out, attrs);
                     let name_id = p.intern_ident(name);
                     let ty_label = p.intern_ident(ty.leaf());
@@ -1140,7 +1155,7 @@ fn compile_struct_body_stmt(
             // effects (`std::print(...)`, `$ -= 1`, function
             // calls). Compile to a value-producing expression
             // sequence + Pop to discard the value.
-            compile_expr(p, out, expr)?;
+            compile_expr(p, ctx, out, expr)?;
             out.push(Op::Pop);
             Ok(())
         }
@@ -1202,7 +1217,7 @@ fn compile_if_inline(
     then_branch: &Stmt,
     else_branch: Option<&Stmt>,
 ) -> Result<(), CompileError> {
-    compile_expr(p, out, cond)?;
+    compile_expr(p, ctx, out, cond)?;
     let jmp_to_else = emit_placeholder(out, JumpKind::IfFalse);
     compile_inline_stmt(p, ctx, out, then_branch)?;
     if let Some(else_b) = else_branch {
@@ -1228,7 +1243,7 @@ fn compile_while_inline(
     body: &Stmt,
 ) -> Result<(), CompileError> {
     let loop_top = out.len();
-    compile_expr(p, out, cond)?;
+    compile_expr(p, ctx, out, cond)?;
     let jmp_exit = emit_placeholder(out, JumpKind::IfFalse);
     compile_inline_stmt(p, ctx, out, body)?;
     out.push(Op::Jump(Pc(loop_top as u32)));
@@ -1367,7 +1382,7 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
                 if let Some(e) =
                     compute_local_init(*is_const, *is_io_var, init.as_ref(), array.as_ref())
                 {
-                    compile_expr(p, &mut try_buf, e)?;
+                    compile_expr(p, ctx, &mut try_buf, e)?;
                     let name_id = p.intern_ident(name);
                     let ty_id = p.push_type(ty.clone());
                     try_buf.push(Op::StoreIdentCoerce { name: name_id, ty: ty_id });
@@ -1388,7 +1403,7 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
                     // save+restore); lower the offset, push the
                     // PlacementSeek op which seeks AND queues the
                     // `hxy_placement` attr for the next read.
-                    compile_expr(p, &mut try_buf, offset_expr)?;
+                    compile_expr(p, ctx, &mut try_buf, offset_expr)?;
                     try_buf.push(Op::PlacementSeek);
                 }
                 compile_field_decl(p, ctx, &mut try_buf, ty, name, array.as_ref())
@@ -1430,7 +1445,7 @@ fn compile_top_stmt(p: &mut Program, ctx: &CompileCtx, stmt: &Stmt) -> Result<()
             // Top-level expression statement -- compile + pop.
             let mut top_ops = std::mem::take(&mut p.ops);
             let res = (|| -> Result<(), CompileError> {
-                compile_expr(p, &mut top_ops, expr)?;
+                compile_expr(p, ctx, &mut top_ops, expr)?;
                 top_ops.push(Op::Pop);
                 Ok(())
             })();
@@ -1674,7 +1689,7 @@ fn compile_field_decl(
         }
         Some(crate::ast::ArraySize::Fixed(size_expr)) => {
             if array_element_type_is_lowerable(resolved_ty, ctx) {
-                compile_expr(p, out, size_expr)?;
+                compile_expr(p, ctx, out, size_expr)?;
                 let name_id = p.intern_ident(name);
                 let ty_id = p.push_type(ty.clone());
                 out.push(Op::ReadArrayDyn { ty: ty_id, name: name_id });
@@ -1694,7 +1709,7 @@ fn compile_field_decl(
             // surrounding control flow. The stream pushes one
             // boolean (or numeric truthy value) on success.
             let mut pred_ops = Vec::new();
-            compile_expr(p, &mut pred_ops, cond)?;
+            compile_expr(p, ctx, &mut pred_ops, cond)?;
             let pred_id = p.push_pred(pred_ops);
             let name_id = p.intern_ident(name);
             // Element-type fast path: if the type resolves (after
@@ -1726,7 +1741,7 @@ fn compile_field_decl(
 /// (`Logical &&` / `||`, ternary), calls, or member chains is
 /// out of scope here -- the corresponding `CompileError` lets
 /// the caller fall back.
-fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> Result<(), CompileError> {
+fn compile_expr(p: &mut Program, ctx: &CompileCtx, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> Result<(), CompileError> {
     match expr {
         crate::ast::Expr::IntLit { value, .. } => {
             // The AST `eval` produces `Value::UInt { kind: u64 }`
@@ -1762,6 +1777,26 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             out.push(Op::LoadIdent(id));
             Ok(())
         }
+        crate::ast::Expr::Path { segments, .. } => {
+            // Try to fold `EnumName::Variant` (or
+            // `ns::EnumName::Variant`) to a literal int at
+            // compile time. The AST `eval(Path)` walks every
+            // registered enum prefix and iterates variants per
+            // dispatch -- on bencode-shaped inputs this fires
+            // millions of times via the EvalAstExpr fallback.
+            // Resolving here turns it into a single PushInt op.
+            if let Some(value) = resolve_path_to_const(ctx, segments) {
+                out.push(Op::PushInt(value));
+                return Ok(());
+            }
+            // Couldn't resolve at compile time -- the AST eval
+            // will sort it out (sometimes the path is a function
+            // name that the AST resolves through a different
+            // route, e.g. `std::print`).
+            let id = p.push_expr(expr.clone());
+            out.push(Op::EvalAstExpr(id));
+            Ok(())
+        }
         crate::ast::Expr::Binary { op, lhs, rhs, .. } => {
             // Mirror `eval(Expr::Binary)`: lhs first, then rhs,
             // then the BinOp pops both. Short-circuit && and ||
@@ -1770,8 +1805,8 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             if matches!(op, crate::ast::BinOp::LogicalAnd | crate::ast::BinOp::LogicalOr) {
                 return Err(CompileError::UnsupportedExpr("logical && / || (need jumps)"));
             }
-            compile_expr(p, out, lhs)?;
-            compile_expr(p, out, rhs)?;
+            compile_expr(p, ctx, out, lhs)?;
+            compile_expr(p, ctx, out, rhs)?;
             out.push(Op::BinOp(*op));
             Ok(())
         }
@@ -1788,7 +1823,7 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             ) {
                 return Err(CompileError::UnsupportedExpr("inc/dec unary op (l-value required)"));
             }
-            compile_expr(p, out, operand)?;
+            compile_expr(p, ctx, out, operand)?;
             out.push(Op::UnOp(*op));
             Ok(())
         }
@@ -1803,6 +1838,90 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
             out.push(Op::EvalAstExpr(id));
             Ok(())
         }
+    }
+}
+
+/// Try to resolve `EnumName::Variant` (or
+/// `ns::EnumName::Variant`) to the variant's integer value at
+/// compile time. Returns `None` for paths the bytecode VM can't
+/// fold -- the caller falls back to `Op::EvalAstExpr` which
+/// dispatches into AST eval.
+///
+/// Mirrors the AST's `eval(Expr::Path)` strategy: try every
+/// prefix length to match an enum name; for the matched enum,
+/// walk variants honouring an auto-incrementing counter and
+/// `=expr` overrides (only int- or char-literal overrides are
+/// foldable here -- richer expressions still need the AST).
+fn resolve_path_to_const(ctx: &CompileCtx, segments: &[String]) -> Option<i128> {
+    if segments.len() < 2 {
+        return None;
+    }
+    let variant_name = segments.last()?;
+    for prefix_len in (1..segments.len()).rev() {
+        let key: String = segments[..prefix_len].join("::");
+        if let Some(decl) = ctx.enum_decls_by_name.get(&key) {
+            let mut running: i128 = 0;
+            for variant in &decl.variants {
+                if let Some(value_expr) = variant.value.as_ref() {
+                    if let Some(v) = const_int_of_expr(value_expr) {
+                        running = v;
+                    } else {
+                        // Hit a non-foldable variant value; bail
+                        // so the AST handles the whole path. Could
+                        // resume with an auto-counter that matches
+                        // the AST's behaviour but that's brittle
+                        // (the AST itself uses the eval'd value).
+                        return None;
+                    }
+                }
+                if &variant.name == variant_name {
+                    return Some(running);
+                }
+                running = running.wrapping_add(1);
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort fold of an expression to an integer constant.
+/// Returns `None` for anything that needs scope context to
+/// evaluate (idents, member access, arithmetic over
+/// non-literal operands, ...).
+fn const_int_of_expr(e: &crate::ast::Expr) -> Option<i128> {
+    match e {
+        crate::ast::Expr::IntLit { value, .. } => Some(*value as i128),
+        crate::ast::Expr::CharLit { value, .. } => Some(*value as i128),
+        crate::ast::Expr::BoolLit { value, .. } => Some(if *value { 1 } else { 0 }),
+        crate::ast::Expr::NullLit { .. } => Some(0),
+        crate::ast::Expr::Unary { op, operand, .. } => {
+            let v = const_int_of_expr(operand)?;
+            match op {
+                crate::ast::UnaryOp::Neg => Some(-v),
+                crate::ast::UnaryOp::Pos => Some(v),
+                crate::ast::UnaryOp::BitNot => Some(!v),
+                crate::ast::UnaryOp::Not => Some(if v == 0 { 1 } else { 0 }),
+                _ => None,
+            }
+        }
+        crate::ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let l = const_int_of_expr(lhs)?;
+            let r = const_int_of_expr(rhs)?;
+            Some(match op {
+                crate::ast::BinOp::Add => l.wrapping_add(r),
+                crate::ast::BinOp::Sub => l.wrapping_sub(r),
+                crate::ast::BinOp::Mul => l.wrapping_mul(r),
+                crate::ast::BinOp::Div => l.checked_div(r).unwrap_or(0),
+                crate::ast::BinOp::Rem => l.checked_rem(r).unwrap_or(0),
+                crate::ast::BinOp::BitAnd => l & r,
+                crate::ast::BinOp::BitOr => l | r,
+                crate::ast::BinOp::BitXor => l ^ r,
+                crate::ast::BinOp::Shl => l.wrapping_shl((r as u32) & 127),
+                crate::ast::BinOp::Shr => l.wrapping_shr((r as u32) & 127),
+                _ => return None,
+            })
+        }
+        _ => None,
     }
 }
 
