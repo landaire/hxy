@@ -2070,12 +2070,26 @@ impl<S: HexSource> Interpreter<S> {
                     }
                     return Err(RuntimeError::Type(format!("unresolved member `.{field}`")));
                 }
-                if let Some(idx) = self.resolve_node_chain(target)?
-                    && let Some(v) = self.lookup_member_under(idx, field)
-                {
-                    return Ok(v);
+                if let Some(idx) = self.resolve_node_chain(target)? {
+                    if let Some(v) = self.lookup_member_under(idx, field) {
+                        return Ok(v);
+                    }
+                    // Target struct exists but the field wasn't
+                    // emitted -- usually because a truncated read at
+                    // EOF broke the inner struct's body before this
+                    // field. Returning `Void` instead of erroring
+                    // lets the surrounding template continue (e.g.
+                    // veado.hexpat's `varint num_X; T x[num_X.value]`
+                    // pattern when num_X was started but its inner
+                    // `value` child never emitted).
+                    return Ok(Value::Void);
                 }
-                Err(RuntimeError::Type(format!("unresolved member `.{field}`")))
+                let target_desc = match target.as_ref() {
+                    Expr::Ident { name, .. } => name.clone(),
+                    Expr::Member { field: f, .. } => format!("...{f}"),
+                    _ => "<expr>".into(),
+                };
+                Err(RuntimeError::Type(format!("unresolved member `{target_desc}.{field}`")))
             }
             Expr::Index { target, index, .. } => {
                 // Resolve `arr[i]` against the emitted node tree
