@@ -1865,6 +1865,16 @@ impl<S: HexSource> Interpreter<S> {
                     Err(RuntimeError::Source(_)) => break,
                     Err(e) => return Err(e),
                 }
+                // Honour `break` inside the element body. terminfo's
+                // `terminal_name terminal_names[1000]` reads names
+                // until a NUL terminator and breaks out -- without
+                // this the array slogs through 999 spurious empty
+                // reads and trips the surrounding ByteSizedArray
+                // assert when the cursor lands at the wrong spot.
+                if self.break_pending {
+                    self.break_pending = false;
+                    break;
+                }
             }
             Ok(())
         })();
