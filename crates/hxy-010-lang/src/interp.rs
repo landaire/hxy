@@ -818,7 +818,7 @@ impl<S: HexSource> Interpreter<S> {
             (None, None) => None,
         };
         let array_size = array_size.as_ref();
-        let count = match array_size {
+        let mut count = match array_size {
             Some(expr) => {
                 let v = self.eval(expr)?;
                 let n = v.to_i128().ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {v:?}")))?;
@@ -832,6 +832,26 @@ impl<S: HexSource> Interpreter<S> {
             }
             None => 0,
         };
+        // Empty `[]` on a single-byte type means "read until NUL or
+        // EOF" (010's flex-array convention -- COFF.bt's
+        // `BYTE Name[]` is the canonical case). Compute the run
+        // length here so the array path advances the cursor instead
+        // of looping at zero progress.
+        let is_flex_byte_array = matches!(array_size, Some(Expr::IntLit { value: 0, .. }))
+            && matches!(
+                ty.name.as_str(),
+                "char" | "CHAR" | "uchar" | "UCHAR" | "byte" | "BYTE" | "ubyte" | "UBYTE"
+            );
+        if is_flex_byte_array && count == 0 {
+            let off = self.cursor.tell();
+            let avail = self.cursor.len().saturating_sub(off);
+            let probe = self.cursor.read_at(off, avail)?;
+            count = probe
+                .iter()
+                .position(|&b| b == 0)
+                .map(|i| (i + 1) as u64)
+                .unwrap_or(avail);
+        }
 
         // Evaluate struct args once; the parameterised-struct read
         // binds them to the declared parameter names inside the
@@ -1232,13 +1252,9 @@ impl<S: HexSource> Interpreter<S> {
             let offset = self.cursor.tell();
             let total_bytes = count.saturating_mul(p.width as u64);
             let bytes = self.cursor.read_advance(total_bytes)?;
-            let value = if (matches!(p.class, PrimClass::Char) || (matches!(p.class, PrimClass::Int) && p.width == 1))
+            let value = if matches!(p.class, PrimClass::Char)
                 && let Ok(_) = str::from_utf8(&bytes)
             {
-                // Treat single-byte arrays (char/uchar/BYTE/byte) as
-                // Str-valued when the bytes are UTF-8. Templates pass
-                // them around as buffers (`BYTE Name[8]` in COFF /
-                // PE-style headers) and read them as strings.
                 Value::Str(String::from_utf8(bytes).expect("string should be UTF-8"))
             } else {
                 // No Value variant for raw byte arrays yet -- emit
@@ -1685,6 +1701,22 @@ impl<S: HexSource> Interpreter<S> {
                     for candidate in lookup_candidates(&path, &self.path_prefix()) {
                         if let Some(v) = self.field_storage.get(&candidate).cloned() {
                             return Ok(v);
+                        }
+                    }
+                    // Member access on a primitive-array path that
+                    // wasn't stored as a scalar (`SecHeader.Name`
+                    // when Name is `BYTE Name[8]`). Decode the whole
+                    // span as a UTF-8 string so equality and
+                    // string-comparison expressions see meaningful
+                    // bytes instead of falling through to the
+                    // bare-name fallback.
+                    if matches!(expr, Expr::Member { .. }) {
+                        for candidate in lookup_candidates(&path, &self.path_prefix()) {
+                            if let Some(span) = self.array_storage.get(&candidate).cloned() {
+                                let total = span.count.saturating_mul(span.prim.width as u64);
+                                let bytes = self.cursor.read_at(span.source_offset, total)?;
+                                return Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()));
+                            }
                         }
                     }
                     // The path resolves to a struct -- no scalar
@@ -3055,6 +3087,42 @@ fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
             Some(idx) => current.truncate(idx),
             None => current.clear(),
         }
+    }
+    out
+}
+
+/// Drop the `[N]` suffix from each segment that's still followed by
+/// another segment (`.`). Templates that walk loop-built records via
+/// the bare name (`patch.pOffset.bOffset` after a few `PATCHCHUNK
+/// patch;` iterations) expect to see the latest record, matching
+/// 010's "single slot, last write wins" model. We keep the trailing
+/// bracket -- `arr[2]` at the leaf is an explicit element index, not
+/// a struct counter -- so explicit `arr[N]` queries still hit the
+/// per-element decode.
+fn strip_indexed_segments(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'['
+            && let Some(rel) = path[i..].find(']')
+        {
+            let inner = &path[i + 1..i + rel];
+            let close = i + rel;
+            let after_close = close + 1;
+            // Strip only when the bracket is followed by another
+            // path segment (`.`), and the contents look like an
+            // unsigned integer.
+            if inner.bytes().all(|b| b.is_ascii_digit())
+                && after_close < bytes.len()
+                && bytes[after_close] == b'.'
+            {
+                i = after_close;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
     }
     out
 }
