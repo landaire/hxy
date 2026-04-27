@@ -25,7 +25,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
         Action::InvokeCommand(id) => {
             app.palette.close();
             match id {
-                PaletteCommand::NewFile => crate::app::handle_new_file(app),
+                PaletteCommand::NewFile => crate::files::new::handle_new_file(app),
                 PaletteCommand::OpenFile => crate::app::apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
                 PaletteCommand::BrowseVfs => {
                     crate::app::apply_command_effect(ctx, app, CommandEffect::MountActiveFile)

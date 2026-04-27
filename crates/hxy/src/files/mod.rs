@@ -9,9 +9,15 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod copy;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod new;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod patch_persist;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod save;
 
 use std::path::PathBuf;
 use std::sync::Arc;

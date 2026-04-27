@@ -871,7 +871,7 @@ impl HxyApp {
         // after the modal returns; this just stages the prompt.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(TabSource::Filesystem(path)) = source_kind.as_ref()
-            && let Some(dir) = unsaved_edits_dir()
+            && let Some(dir) = crate::files::save::unsaved_edits_dir()
         {
             match crate::files::patch_persist::load(&dir, path) {
                 Ok(Some(sidecar)) => {
@@ -1109,10 +1109,10 @@ impl HxyApp {
                     return if self.parent_mount_pending(parent.as_ref()) {
                         Ok(())
                     } else {
-                        Err(parent_missing(parent.as_ref()))
+                        Err(crate::files::open::parent_missing(parent.as_ref()))
                     };
                 };
-                let bytes = read_vfs_entry(&*parent_mount.fs, entry_path)
+                let bytes = crate::files::open::read_vfs_entry(&*parent_mount.fs, entry_path)
                     .map_err(|e| crate::files::FileOpenError::Read { path: entry_path.into(), source: e })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 let target = self
@@ -1130,7 +1130,7 @@ impl HxyApp {
                 Ok(())
             }
             TabSource::Anonymous { id, title } => {
-                let path = anonymous_file_path(*id).ok_or_else(|| crate::files::FileOpenError::Read {
+                let path = crate::files::new::anonymous_file_path(*id).ok_or_else(|| crate::files::FileOpenError::Read {
                     path: std::path::PathBuf::from(format!("anonymous/{}", id.get())),
                     source: std::io::Error::other("no data dir"),
                 })?;
@@ -1240,7 +1240,7 @@ impl HxyApp {
     /// wasm-side runtime can't host wasmtime), but workspaces work
     /// everywhere -- so the function itself is universal and the
     /// `PluginMount` arm is the only desktop-only piece.
-    fn find_mount_for_source(&self, source: &TabSource) -> Option<Arc<MountedVfs>> {
+    pub(crate) fn find_mount_for_source(&self, source: &TabSource) -> Option<Arc<MountedVfs>> {
         match source {
             #[cfg(not(target_arch = "wasm32"))]
             TabSource::PluginMount { plugin_name, token, .. } => self
@@ -1495,7 +1495,7 @@ impl HxyApp {
                 let mount = self
                     .find_mount_for_source(parent.as_ref())
                     .ok_or_else(|| crate::compare::picker::CompareSpawnError::ReadOpenFile("parent VFS mount missing".to_owned()))?;
-                let bytes = read_vfs_entry(&*mount.fs, entry_path)
+                let bytes = crate::files::open::read_vfs_entry(&*mount.fs, entry_path)
                     .map_err(|e| crate::compare::picker::CompareSpawnError::ReadOpenFile(e.to_string()))?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 Ok(RestoredCompareSide { name, bytes })
@@ -1714,7 +1714,7 @@ impl eframe::App for HxyApp {
     fn on_exit(&mut self) {
         // Persist every dirty tab's patch to a sidecar so restart
         // can offer to restore it. Best-effort: errors only log.
-        if let Some(dir) = unsaved_edits_dir() {
+        if let Some(dir) = crate::files::save::unsaved_edits_dir() {
             for file in self.files.values() {
                 let Some(path) = file.root_path().cloned() else { continue };
                 if !file.editor.is_dirty() {
@@ -1747,7 +1747,7 @@ impl eframe::App for HxyApp {
         // AnonymousId.
         for file in self.files.values() {
             let Some(TabSource::Anonymous { id, .. }) = file.source_kind.as_ref() else { continue };
-            let Some(path) = anonymous_file_path(*id) else { continue };
+            let Some(path) = crate::files::new::anonymous_file_path(*id) else { continue };
             let len = file.editor.source().len().get();
             let bytes = if len == 0 {
                 Vec::new()
@@ -2050,7 +2050,7 @@ fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
     let pending = app.pending_patch_restore.take().unwrap();
     let path = pending.sidecar.source_path.clone();
-    let dir = unsaved_edits_dir();
+    let dir = crate::files::save::unsaved_edits_dir();
     match action {
         RestoreAction::Restore => {
             let ctx_label = format!("Restore {}", path.display());
@@ -2160,12 +2160,12 @@ fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
         )
     });
     if new_file {
-        handle_new_file(app);
+        crate::files::new::handle_new_file(app);
     }
     if save_as {
-        save_active_file(app, true);
+        crate::files::save::save_active_file(app, true);
     } else if save {
-        save_active_file(app, false);
+        crate::files::save::save_active_file(app, false);
     }
     if toggle {
         toggle_active_edit_mode(app);
@@ -2522,7 +2522,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                     Some(s) => s,
                     None => continue,
                 };
-                let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
+                let bytes = match crate::files::open::read_vfs_entry(&*mount.fs, &entry_path) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
@@ -2544,7 +2544,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                     tracing::warn!(entry = %entry_path, "plugin mount not ready -- ignoring entry open");
                     continue;
                 };
-                let bytes = match read_vfs_entry(&*mount.fs, &entry_path) {
+                let bytes = match crate::files::open::read_vfs_entry(&*mount.fs, &entry_path) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
@@ -2569,7 +2569,7 @@ fn drain_pending_vfs_opens(_ctx: &egui::Context, _app: &mut HxyApp) {}
 pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
     use crate::commands::CommandEffect;
     match effect {
-        CommandEffect::OpenFileDialog => handle_open_file(app),
+        CommandEffect::OpenFileDialog => crate::files::open::handle_open_file(app),
         CommandEffect::MountActiveFile => mount_active_file(app),
         CommandEffect::RunTemplateDialog => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -4178,23 +4178,6 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn parent_missing(parent: &TabSource) -> crate::files::FileOpenError {
-    crate::files::FileOpenError::Read {
-        path: std::path::PathBuf::from(format!("{parent:?}")),
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "parent tab / mount not available"),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn read_vfs_entry(fs: &dyn hxy_vfs::vfs::FileSystem, path: &str) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut file = fs.open_file(path).map_err(|e| std::io::Error::other(format!("open {path}: {e}")))?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn register_user_plugins(
     registry: &mut VfsRegistry,
     grants: &hxy_plugin_host::PluginGrants,
@@ -4256,29 +4239,6 @@ fn load_template_library_dirs() -> crate::templates::library::TemplateLibrary {
     crate::templates::library::TemplateLibrary::load_from_dirs(dirs)
 }
 
-/// Per-tab unsaved-patch sidecars live here; one JSON file per
-/// source path, named by BLAKE3 of the canonical path. Read on
-/// open, written on quit, removed on successful save.
-#[cfg(not(target_arch = "wasm32"))]
-fn unsaved_edits_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::data_dir()?;
-    Some(base.join(APP_NAME).join("edits"))
-}
-
-/// Per-install storage for anonymous / scratch tabs. One file per
-/// tab named after the [`hxy_vfs::AnonymousId`], created on first
-/// `New file` and removed when the tab is saved to a real path or
-/// closed without saving.
-#[cfg(not(target_arch = "wasm32"))]
-fn anonymous_files_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::data_dir()?;
-    Some(base.join(APP_NAME).join("anonymous"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn anonymous_file_path(id: hxy_vfs::AnonymousId) -> Option<std::path::PathBuf> {
-    anonymous_files_dir().map(|d| d.join(format!("{:016x}.bin", id.get())))
-}
 
 /// Default byte count for a fresh anonymous tab. Writes are
 /// length-preserving right now, so this also caps how much the
@@ -4330,10 +4290,10 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
     let actions = menu.drain_actions();
     for action in actions {
         match action {
-            crate::menu::MenuAction::NewFile => handle_new_file(app),
-            crate::menu::MenuAction::OpenFile => handle_open_file(app),
-            crate::menu::MenuAction::Save => save_active_file(app, false),
-            crate::menu::MenuAction::SaveAs => save_active_file(app, true),
+            crate::menu::MenuAction::NewFile => crate::files::new::handle_new_file(app),
+            crate::menu::MenuAction::OpenFile => crate::files::open::handle_open_file(app),
+            crate::menu::MenuAction::Save => crate::files::save::save_active_file(app, false),
+            crate::menu::MenuAction::SaveAs => crate::files::save::save_active_file(app, true),
             crate::menu::MenuAction::CloseTab => request_close_active_tab(app),
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::Undo => undo_active_file(app),
@@ -4478,11 +4438,11 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 let new_text = ui.ctx().format_shortcut(&NEW_FILE);
                 if ui.add(egui::Button::new(hxy_i18n::t("menu-file-new")).shortcut_text(new_text)).clicked() {
                     ui.close();
-                    handle_new_file(app);
+                    crate::files::new::handle_new_file(app);
                 }
                 if ui.button(hxy_i18n::t("menu-file-open")).clicked() {
                     ui.close();
-                    handle_open_file(app);
+                    crate::files::open::handle_open_file(app);
                 }
                 let active = active_file_id(app);
                 let can_save = active
@@ -4493,14 +4453,14 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 ui.add_enabled_ui(can_save, |ui| {
                     if ui.add(egui::Button::new(hxy_i18n::t("menu-file-save")).shortcut_text(save_text)).clicked() {
                         ui.close();
-                        save_active_file(app, false);
+                        crate::files::save::save_active_file(app, false);
                     }
                 });
                 ui.add_enabled_ui(active.is_some(), |ui| {
                     if ui.add(egui::Button::new(hxy_i18n::t("menu-file-save-as")).shortcut_text(save_as_text)).clicked()
                     {
                         ui.close();
-                        save_active_file(app, true);
+                        crate::files::save::save_active_file(app, true);
                     }
                 });
                 ui.separator();
@@ -5002,7 +4962,7 @@ fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     app.pending_close_tab = None;
     match action {
         CloseTabAction::Save => {
-            if save_file_by_id(app, pending.file_id, false) {
+            if crate::files::save::save_file_by_id(app, pending.file_id, false) {
                 close_file_tab_by_id(app, pending.file_id);
             }
         }
@@ -5362,27 +5322,6 @@ pub(crate) fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     None
 }
 
-fn handle_open_file(app: &mut HxyApp) {
-    #[cfg(not(target_arch = "wasm32"))]
-    match pick_and_read_file() {
-        Ok((name, path, bytes)) => {
-            app.request_open_filesystem(name, path, bytes);
-        }
-        Err(crate::files::FileOpenError::Cancelled) => {}
-        Err(e) => {
-            tracing::warn!(error = %e, "open file");
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = app;
-    }
-}
-
-/// Create a fresh anonymous ("Untitled") tab with a small zero-filled
-/// buffer. Picks the next free `AnonymousId` and a "Untitled N" title
-/// that doesn't collide with any already-open or persisted tab.
-#[cfg(not(target_arch = "wasm32"))]
 /// Drive the side effect for whatever outcome a plugin returned
 /// from `invoke` or `respond_to_prompt`. Centralized so both
 /// initial command activation and prompt answers fan out through
@@ -5492,311 +5431,7 @@ fn install_mount_tab(
     tracing::info!(plugin = %plugin_name, title = %title, id = %mount_id.get(), "mount tab installed");
 }
 
-pub(crate) fn handle_new_file(app: &mut HxyApp) {
-    let mut used_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    for file in app.files.values() {
-        if let Some(TabSource::Anonymous { id, .. }) = &file.source_kind {
-            used_ids.insert(id.get());
-        }
-    }
-    for tab in &app.state.read().open_tabs {
-        if let TabSource::Anonymous { id, .. } = &tab.source {
-            used_ids.insert(id.get());
-        }
-    }
-    let next_id = (0u64..).find(|i| !used_ids.contains(i)).expect("u64 id space");
 
-    let mut used_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for file in app.files.values() {
-        used_titles.insert(file.display_name.clone());
-    }
-    let title = (1u64..)
-        .map(|n| if n == 1 { "Untitled".to_owned() } else { format!("Untitled {n}") })
-        .find(|t| !used_titles.contains(t))
-        .expect("nonzero range of titles");
-
-    let id = hxy_vfs::AnonymousId(next_id);
-    // Zero-length buffer: writes past EOF grow the file via
-    // HexEditor::insert_at, so the user can just start typing.
-    let bytes: Vec<u8> = Vec::new();
-    // Touch the persistent sidecar so a crash before the next
-    // save_if_dirty cycle still restores this tab (empty, but
-    // present). Best-effort.
-    if let Some(path) = anonymous_file_path(id) {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&path, &bytes) {
-            tracing::warn!(error = %e, path = %path.display(), "write anonymous tab seed");
-        }
-    }
-    let source = TabSource::Anonymous { id, title: title.clone() };
-    let initial_caret = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
-    let file_id = app.open(title, Some(source), bytes, initial_caret, None, false);
-    app.focus_file_tab(file_id);
-}
-
-/// Save the active tab. `force_dialog` always asks for a destination
-/// (Save As); otherwise the tab's existing filesystem path is used
-/// when present, falling back to the dialog when there isn't one.
-#[cfg(not(target_arch = "wasm32"))]
-fn save_active_file(app: &mut HxyApp, force_dialog: bool) {
-    let Some(id) = active_file_id(app) else { return };
-    let _ = save_file_by_id(app, id, force_dialog);
-}
-
-/// Save a specific file tab by id. Returns `true` when the bytes
-/// actually hit disk; `false` when the user dismissed the dialog or
-/// the write itself failed (the latter is also surfaced via the
-/// console log). Used by [`save_active_file`] for the Save / Save
-/// As shortcut path and by the close-tab-with-unsaved-changes
-/// modal, which conditions the tab close on the save succeeding.
-#[cfg(not(target_arch = "wasm32"))]
-/// In-place writeback for a VFS-backed tab. Walks the editor's
-/// patch ops and pushes each in-place write through the mount's
-/// `VfsWriter`. Pure inserts / deletes are rejected because the
-/// only writeback target today is xbox-neighborhood's `/memory/`
-/// + `/modules/` namespaces, neither of which can grow or shrink.
-///
-/// On success the patch is cleared (the mount is now the source
-/// of truth) and the file's byte source is swapped to the post-
-/// write contents so the editor doesn't keep showing the patch
-/// overlay against stale base bytes.
-#[cfg(not(target_arch = "wasm32"))]
-fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
-    let Some(file) = app.files.get(&id) else { return false };
-    let TabSource::VfsEntry { parent, entry_path } = file.source_kind.as_ref().expect("checked") else {
-        return false;
-    };
-    let entry_path = entry_path.clone();
-    let parent_source = (**parent).clone();
-    let display = file.display_name.clone();
-    let ctx = format!("Save {display}");
-
-    // Resolve the parent's mount: file-rooted parents live in
-    // `app.workspaces`, plugin parents in `app.mounts`. Both paths
-    // are unified by `find_mount_for_source`.
-    let mount = match app.find_mount_for_source(&parent_source) {
-        Some(m) => m,
-        None => {
-            app.console_log(ConsoleSeverity::Error, &ctx, "parent VFS tab is gone -- close + reopen this tab");
-            return false;
-        }
-    };
-    let writer = match mount.writer.clone() {
-        Some(w) => w,
-        None => {
-            app.console_log(ConsoleSeverity::Error, &ctx, "this VFS handler doesn't support writeback");
-            return false;
-        }
-    };
-
-    // Snapshot the patch ops + total byte length so we can rebuild
-    // the post-write source after dispatching.
-    let (patch_ops, total_len, post_write_bytes) = {
-        let file = app.files.get(&id).expect("just looked up");
-        let editor = &file.editor;
-        let total_len = editor.source().len().get();
-        let patch = editor.patch().read().unwrap();
-        let mut ops: Vec<(u64, Vec<u8>)> = Vec::with_capacity(patch.ops().len());
-        let mut bad_op: Option<(u64, u64, usize)> = None;
-        for op in patch.ops() {
-            if op.old_len != op.new_bytes.len() as u64 {
-                bad_op = Some((op.offset, op.old_len, op.new_bytes.len()));
-                break;
-            }
-            ops.push((op.offset, op.new_bytes.clone()));
-        }
-        drop(patch);
-        if let Some((offset, old_len, new_len)) = bad_op {
-            app.console_log(
-                ConsoleSeverity::Error,
-                &ctx,
-                format!(
-                    "can't poke insert/delete (offset={offset}, old_len={old_len}, new_len={new_len}); only in-place writes"
-                ),
-            );
-            return false;
-        }
-        // Read the patched view (base + patch) so we can swap the
-        // editor's source afterwards.
-        let bytes = editor.source().read(
-            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(total_len))
-                .expect("valid range"),
-        );
-        let bytes_result = bytes.map_err(|e| e.to_string());
-        (ops, total_len, bytes_result)
-    };
-
-    if patch_ops.is_empty() {
-        app.console_log(ConsoleSeverity::Info, &ctx, "no changes to save");
-        return true;
-    }
-
-    let mut total_written: u64 = 0;
-    let mut total_requested: u64 = 0;
-    for (offset, bytes) in &patch_ops {
-        let n = bytes.len() as u64;
-        total_requested += n;
-        match writer.write_range(&entry_path, *offset, bytes) {
-            Ok(written) => {
-                total_written += written;
-                if written < n {
-                    app.console_log(
-                        ConsoleSeverity::Warning,
-                        &ctx,
-                        format!("partial write at offset {offset}: requested {n}, wrote {written}"),
-                    );
-                }
-            }
-            Err(e) => {
-                app.console_log(ConsoleSeverity::Error, &ctx, format!("write @ offset {offset}: {e}"));
-                return false;
-            }
-        }
-    }
-
-    // Swap the editor's source to the post-write bytes so the
-    // patch overlay can be cleared without losing the user's
-    // current view. If reading the patched view failed we leave
-    // the patch in place (the user's changes are already on the
-    // device but the local view would otherwise lie).
-    match post_write_bytes {
-        Ok(bytes) => {
-            if let Some(file) = app.files.get_mut(&id) {
-                let base: std::sync::Arc<dyn hxy_core::HexSource> =
-                    std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
-                file.editor.swap_source(base);
-            }
-        }
-        Err(e) => {
-            app.console_log(
-                ConsoleSeverity::Warning,
-                &ctx,
-                format!("post-write source rebuild: {e} (patch overlay still present)"),
-            );
-        }
-    }
-
-    let _ = total_len;
-    app.console_log(
-        ConsoleSeverity::Info,
-        &ctx,
-        format!("wrote {total_written}/{total_requested} bytes via plugin writer"),
-    );
-    true
-}
-
-fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool {
-    let Some(file) = app.files.get(&id) else { return false };
-    // VFS-entry tabs (e.g. xbox-neighborhood `/memory/<addr>`)
-    // have no filesystem path -- the save flow walks each patch
-    // op back through the parent mount's `VfsWriter` instead.
-    // `force_dialog` (Save As) still falls through to the
-    // filesystem path so the user can spill VFS bytes to disk.
-    if !force_dialog && let Some(TabSource::VfsEntry { .. }) = file.source_kind.as_ref() {
-        return save_vfs_entry_in_place(app, id);
-    }
-    let display = file.display_name.clone();
-    let target = if force_dialog {
-        let mut dialog = rfd::FileDialog::new().set_file_name(&display);
-        if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
-            dialog = dialog.set_directory(parent);
-        }
-        dialog.save_file()
-    } else {
-        match file.root_path().cloned() {
-            Some(p) => Some(p),
-            None => rfd::FileDialog::new().set_file_name(&display).save_file(),
-        }
-    };
-    let Some(path) = target else { return false };
-
-    let ctx = format!("Save {}", path.display());
-    let len = file.editor.source().len().get();
-    let bytes = match file.editor.source().read(
-        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).expect("valid range"),
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            app.console_log(ConsoleSeverity::Error, &ctx, format!("read patched bytes: {e}"));
-            return false;
-        }
-    };
-    if let Err(e) = write_atomic(&path, &bytes) {
-        app.console_log(ConsoleSeverity::Error, &ctx, format!("write: {e}"));
-        return false;
-    }
-
-    // Successful write -- swap the tab's byte source over to the
-    // just-saved bytes so the view reflects on-disk state instead
-    // of the stale pre-edit buffer. Reverting the patch alone would
-    // leave `file.editor.source()` wrapping the original pre-edit bytes and
-    // reads would show the wrong content.
-    // Stash the previous source_kind before replacing so we can
-    // clean up anonymous sidecars and persisted entries after the
-    // tab re-anchors to Filesystem.
-    let previous_source = app.files.get(&id).and_then(|f| f.source_kind.clone());
-    if let Some(file) = app.files.get_mut(&id) {
-        let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
-        file.editor.swap_source(base);
-        file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
-        if let Some(name) = path.file_name() {
-            file.display_name = name.to_string_lossy().into_owned();
-        }
-    }
-    // Drop any sidecar patch from a previous session; the file on
-    // disk is now the source of truth and re-prompting on next
-    // launch would be confusing.
-    if let Some(dir) = unsaved_edits_dir() {
-        let _ = crate::files::patch_persist::discard(&dir, &path);
-    }
-    // If we just saved an anonymous tab, remove its backing file
-    // and swap the persisted entry from Anonymous to Filesystem.
-    if let Some(TabSource::Anonymous { id: anon_id, .. }) = previous_source.as_ref() {
-        if let Some(anon_path) = anonymous_file_path(*anon_id) {
-            let _ = std::fs::remove_file(&anon_path);
-        }
-        let new_source = TabSource::Filesystem(path.clone());
-        let mut state = app.state.write();
-        state.open_tabs.retain(|t| !matches!(&t.source, TabSource::Anonymous { id, .. } if id == anon_id));
-        if !state.open_tabs.iter().any(|t| t.source == new_source) {
-            state.open_tabs.push(crate::state::OpenTabState {
-                source: new_source,
-                selection: None,
-                scroll_offset: 0.0,
-                as_workspace: false,
-            });
-        }
-    }
-    app.console_log(ConsoleSeverity::Info, &ctx, "saved");
-    true
-}
-
-/// Write `bytes` to `path` atomically: stage in a sibling tempfile,
-/// fsync, then rename. Avoids leaving a half-written file if the
-/// process crashes mid-write.
-#[cfg(not(target_arch = "wasm32"))]
-fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.as_file_mut().write_all(bytes)?;
-    tmp.as_file_mut().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn pick_and_read_file() -> Result<(String, std::path::PathBuf, Vec<u8>), crate::files::FileOpenError> {
-    let Some(path) = rfd::FileDialog::new().pick_file() else {
-        return Err(crate::files::FileOpenError::Cancelled);
-    };
-    let bytes =
-        std::fs::read(&path).map_err(|source| crate::files::FileOpenError::Read { path: path.clone(), source })?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-    Ok((name, path, bytes))
-}
 
 struct HxyTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
