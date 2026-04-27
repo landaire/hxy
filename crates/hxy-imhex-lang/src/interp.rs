@@ -370,13 +370,19 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
-        // Pre-register every enum decl into `self.types` so
-        // `read_enum` (which looks up the backing type by name and
-        // evaluates variant value expressions) can resolve. The
-        // AST walker does this in `collect_decl`; the bytecode
-        // path needs the same setup.
+        // Pre-register every enum / struct decl into `self.types`
+        // so AST-style helpers can resolve them by name:
+        // - `read_enum` looks up the backing type and may eval
+        //   variant value expressions that reference other names.
+        // - `read_array` element-by-element calls `read_scalar`,
+        //   which dispatches to `read_struct` for struct elements;
+        //   it needs the struct decl in the type table.
+        // The AST walker does the same in `collect_decl`.
         for decl in &program.enum_decls {
             self.types.insert(decl.name.clone(), TypeDef::Enum(decl.clone()));
+        }
+        for body in &program.struct_bodies {
+            self.types.insert(body.ast_decl.name.clone(), TypeDef::Struct(body.ast_decl.clone()));
         }
         // Top-level statements run with no enclosing parent. EOF
         // tolerance applies here: a top-level read past EOF becomes

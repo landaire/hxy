@@ -304,6 +304,29 @@ S s;
 }
 
 #[test]
+fn fixed_struct_array_matches_ast() {
+    let src = "\
+struct Color {
+    u8 r;
+    u8 g;
+    u8 b;
+};
+struct Palette {
+    Color colors[4];
+};
+Palette pal;
+";
+    let mut bytes = Vec::new();
+    for i in 0..4u8 {
+        bytes.extend_from_slice(&[i, i + 1, i + 2]);
+    }
+    let (ast, bc_run) = run_both(src, bytes);
+    assert_node_parity(&ast, &bc_run);
+    // Palette + colors-array + 4 Color structs + 12 primitive children = 18.
+    assert_eq!(bc_run.nodes.len(), 18);
+}
+
+#[test]
 fn decorative_attrs_pass_through_matches_ast() {
     // `[[name(...), comment(...)]]` are pure pass-through to the
     // emitted node's attr list -- the renderer reads them but the

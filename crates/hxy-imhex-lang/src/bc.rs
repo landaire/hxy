@@ -338,6 +338,13 @@ pub struct StructBody {
     /// so [`crate::value::NodeType::StructType`] carries the
     /// human-readable name the renderer expects.
     pub display_name: IdentId,
+    /// The original AST decl. Pre-registered into
+    /// `Interpreter::types` at VM entry so AST-style helpers
+    /// (`read_array` for a struct element type, etc.) can resolve
+    /// the struct by name. The bytecode `EnterStruct` op continues
+    /// to dispatch through `Self::ops` -- this clone exists only
+    /// for the AST-side fallback paths.
+    pub ast_decl: crate::ast::StructDecl,
 }
 
 impl Program {
@@ -423,7 +430,11 @@ pub fn compile(ast: &AstProgram) -> Result<Program, CompileError> {
             TopItem::Stmt(Stmt::StructDecl(decl)) if struct_is_simple(decl) => {
                 let display_name = p.intern_ident(&decl.name);
                 let body_id = BodyId(p.struct_bodies.len() as u32);
-                p.struct_bodies.push(StructBody { ops: Vec::new(), display_name });
+                p.struct_bodies.push(StructBody {
+                    ops: Vec::new(),
+                    display_name,
+                    ast_decl: decl.clone(),
+                });
                 ctx.struct_bodies.insert(decl.name.clone(), body_id);
             }
             TopItem::Stmt(Stmt::EnumDecl(decl)) if enum_is_simple(decl) => {
@@ -771,9 +782,9 @@ fn compile_field_decl(
             }
         }
         Some(crate::ast::ArraySize::Fixed(crate::ast::Expr::IntLit { value, .. })) => {
-            if !is_known_primitive(ty) {
+            if !array_element_type_is_lowerable(ty, ctx) {
                 return Err(CompileError::UnsupportedFieldDecl {
-                    reason: "fixed-size arrays of non-primitive types not yet lowered",
+                    reason: "fixed-size array element type is not a primitive, registered struct, or registered enum",
                 });
             }
             let name_id = p.intern_ident(name);
@@ -782,9 +793,9 @@ fn compile_field_decl(
             Ok(())
         }
         Some(crate::ast::ArraySize::Fixed(size_expr)) => {
-            if !is_known_primitive(ty) {
+            if !array_element_type_is_lowerable(ty, ctx) {
                 return Err(CompileError::UnsupportedFieldDecl {
-                    reason: "non-literal-size arrays of non-primitive types not yet lowered",
+                    reason: "dyn-size array element type is not a primitive, registered struct, or registered enum",
                 });
             }
             compile_expr(p, out, size_expr)?;
@@ -850,6 +861,26 @@ fn compile_expr(p: &mut Program, out: &mut Vec<Op>, expr: &crate::ast::Expr) -> 
         crate::ast::Expr::Reflect { .. } => Err(CompileError::UnsupportedExpr("reflect")),
         crate::ast::Expr::TypeRefExpr { .. } => Err(CompileError::UnsupportedExpr("type-ref expr")),
     }
+}
+
+/// True when `ty` is a type the bytecode VM can dispatch through
+/// `read_array`'s per-element loop. Primitives go through the
+/// AST's existing primitive read path; struct / enum names are
+/// resolved to the AST decl that we pre-register into
+/// `Interpreter::types` at VM entry.
+fn array_element_type_is_lowerable(ty: &TypeRef, ctx: &CompileCtx) -> bool {
+    if is_known_primitive(ty) {
+        return true;
+    }
+    if ty.template_args.is_empty() && ty.path.len() == 1 {
+        if ctx.struct_bodies.contains_key(&ty.path[0]) {
+            return true;
+        }
+        if ctx.enums.contains_key(&ty.path[0]) {
+            return true;
+        }
+    }
+    false
 }
 
 /// True when `ty` names a built-in primitive that the AST interpreter

@@ -53,6 +53,20 @@ fn corpus_n64_compiles_and_matches_ast() {
 }
 
 #[test]
+fn corpus_ccpal_compiles_and_matches_ast() {
+    let Some(src) = read_template("ccpal.hexpat") else {
+        eprintln!("skip: ccpal.hexpat not present in {CORPUS_ROOT}");
+        return;
+    };
+    // 256 colors of 3 bytes each = 768 bytes.
+    let bytes: Vec<u8> = (0..768).map(|i| (i % 256) as u8).collect();
+    let (ast, bc_run) = run_both(&src, bytes);
+    assert!(ast.terminal_error.is_none(), "AST: {:?}", ast.terminal_error);
+    assert!(bc_run.terminal_error.is_none(), "BC: {:?}", bc_run.terminal_error);
+    assert_eq!(ast.nodes, bc_run.nodes);
+}
+
+#[test]
 fn corpus_pkm_compiles_and_matches_ast() {
     let Some(src) = read_template("pkm.hexpat") else {
         eprintln!("skip: pkm.hexpat not present in {CORPUS_ROOT}");
