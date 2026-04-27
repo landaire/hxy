@@ -2113,20 +2113,41 @@ impl<S: HexSource> Interpreter<S> {
                         eval_binary(compound_to_bin(*other), &cur, &rhs)?
                     }
                 };
-                if let Expr::Ident { name, .. } = target.as_ref() {
-                    if name == "$" {
-                        // `$ = expr;` / `$ += n;` -- the magic cursor.
-                        // Move the runtime cursor to the new offset
-                        // instead of just updating a scope variable.
-                        // terminfo.hexpat advances the cursor past
-                        // a NUL terminator with `$ += 1;` and the
-                        // surrounding read flow assumes the cursor
-                        // actually moved.
-                        let off = new_val.to_i128().unwrap_or(0).max(0) as u64;
-                        self.cursor_seek(off);
-                    } else {
-                        self.store_ident(name, new_val.clone());
+                match target.as_ref() {
+                    Expr::Ident { name, .. } => {
+                        if name == "$" {
+                            // `$ = expr;` / `$ += n;` -- the magic cursor.
+                            // Move the runtime cursor to the new offset
+                            // instead of just updating a scope variable.
+                            // terminfo.hexpat advances the cursor past
+                            // a NUL terminator with `$ += 1;` and the
+                            // surrounding read flow assumes the cursor
+                            // actually moved.
+                            let off = new_val.to_i128().unwrap_or(0).max(0) as u64;
+                            self.cursor_seek(off);
+                        } else {
+                            self.store_ident(name, new_val.clone());
+                        }
                     }
+                    Expr::Member { target: inner, field, .. } => {
+                        // `obj.field = value;` -- mutate the field's
+                        // emitted-node value in place. lznt1.hexpat's
+                        // `value.value = data;` (where `value` is a
+                        // Value struct local) needs this to land on
+                        // the child node, otherwise the surrounding
+                        // `appendData(value)` sees an empty struct.
+                        if let Ok(Some(owner)) = self.resolve_node_chain(inner) {
+                            let candidates = self.nodes_by_name.get(field).cloned().unwrap_or_default();
+                            if let Some(idx) = candidates
+                                .into_iter()
+                                .rev()
+                                .find(|i| self.nodes[i.as_usize()].parent == Some(owner))
+                            {
+                                self.nodes[idx.as_usize()].value = Some(new_val.clone());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(new_val)
             }
@@ -2295,15 +2316,18 @@ impl<S: HexSource> Interpreter<S> {
             {
                 return Ok(Value::UInt { value: bytes as u128, kind: PrimKind::u64() });
             }
-            // Then look up the field by name.
-            for n in self.nodes.iter().rev() {
-                if n.name == *name {
-                    return Ok(match kind {
-                        ReflectKind::Sizeof => Value::UInt { value: n.length as u128, kind: PrimKind::u64() },
-                        ReflectKind::Addressof => Value::UInt { value: n.offset as u128, kind: PrimKind::u64() },
-                        ReflectKind::Typeof => Value::Str(format!("{:?}", n.ty)),
-                    });
-                }
+            // Function-param alias takes priority over name-only
+            // node search: `sizeof(data)` inside `fn appendData(ref
+            // auto data)` should report the *caller's* node size,
+            // not whatever trailing emission happens to share the
+            // bare name `data`.
+            if let Some(idx) = self.find_node_idx_for_ident(name) {
+                let n = &self.nodes[idx.as_usize()];
+                return Ok(match kind {
+                    ReflectKind::Sizeof => Value::UInt { value: n.length as u128, kind: PrimKind::u64() },
+                    ReflectKind::Addressof => Value::UInt { value: n.offset as u128, kind: PrimKind::u64() },
+                    ReflectKind::Typeof => Value::Str(format!("{:?}", n.ty)),
+                });
             }
             // Special case: `sizeof($)` -> file size. ImHex's
             // pattern reference uses this idiom for "is there enough
