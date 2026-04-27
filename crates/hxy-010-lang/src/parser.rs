@@ -1237,13 +1237,17 @@ impl Parser {
             return Ok(TypeRef { name: "void".into(), span });
         }
         // C-style sign modifier: `unsigned T` / `signed T`. 010
-        // doesn't have a true `unsigned` keyword; templates that
-        // write it expect us to look at `T`. Drop the modifier and
-        // trust the underlying type name.
+        // doesn't have a true `unsigned` keyword; consume the
+        // modifier and rewrite the following type name to its
+        // unsigned/signed counterpart so bitfield extraction (and
+        // any other code that branches on `prim.signed`) sees the
+        // right signedness.
+        let mut sign_override: Option<bool> = None; // Some(false)=unsigned, Some(true)=signed
         if let Some(TokenKind::Ident(name)) = self.peek_kind()
             && (name == "unsigned" || name == "signed")
             && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
+            sign_override = Some(name == "signed");
             self.bump();
         }
         // `struct NAME` / `union NAME` as a type reference to a
@@ -1259,7 +1263,10 @@ impl Parser {
             let (name, span) = self.expect_ident()?;
             return Ok(TypeRef { name, span });
         }
-        let (name, span) = self.expect_ident()?;
+        let (mut name, span) = self.expect_ident()?;
+        if let Some(signed) = sign_override {
+            name = rename_signedness(&name, signed);
+        }
         Ok(TypeRef { name, span })
     }
 
@@ -1528,6 +1535,43 @@ const PREFIX_BP: u8 = 30;
 /// binary operators. Postfix operators (call, index, member access)
 /// still bind because they bypass the `min_bp` check entirely.
 const ATTR_VALUE_BP: u8 = 40;
+
+/// Rewrite a primitive type name to its unsigned (or signed)
+/// counterpart when the source had an `unsigned` / `signed` modifier.
+/// Names not recognised pass through untouched -- the interpreter's
+/// type registry handles aliases without further help here.
+fn rename_signedness(name: &str, signed: bool) -> String {
+    let target = if signed {
+        match name {
+            "char" => Some("char"),
+            "uchar" => Some("char"),
+            "byte" => Some("byte"),
+            "ubyte" => Some("byte"),
+            "short" | "int16" => Some("int16"),
+            "ushort" | "uint16" | "WORD" => Some("int16"),
+            "int" | "int32" | "long" | "LONG" => Some("int32"),
+            "uint" | "uint32" | "ulong" | "ULONG" | "DWORD" => Some("int32"),
+            "int64" | "QUAD" | "__int64" => Some("int64"),
+            "uint64" | "UQUAD" | "ULONG64" | "QWORD" => Some("int64"),
+            _ => None,
+        }
+    } else {
+        match name {
+            "char" => Some("uchar"),
+            "uchar" => Some("uchar"),
+            "byte" => Some("ubyte"),
+            "ubyte" => Some("ubyte"),
+            "short" | "int16" => Some("uint16"),
+            "ushort" | "uint16" | "WORD" => Some("uint16"),
+            "int" | "int32" | "long" | "LONG" => Some("uint32"),
+            "uint" | "uint32" | "ulong" | "ULONG" | "DWORD" => Some("uint32"),
+            "int64" | "QUAD" | "__int64" => Some("uint64"),
+            "uint64" | "UQUAD" | "ULONG64" | "QWORD" => Some("uint64"),
+            _ => None,
+        }
+    };
+    target.map(String::from).unwrap_or_else(|| name.to_owned())
+}
 
 /// Min binding power for parsing a bitfield width expression. Lower
 /// than `ATTR_VALUE_BP` so arithmetic like `: NumBits + 2` is folded

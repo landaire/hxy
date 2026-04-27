@@ -3308,6 +3308,13 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     if let (Value::Str(x), Value::Str(y)) = (a, b) {
         return x == y;
     }
+    // Compare integer-like operands by their masked bit pattern so a
+    // sign-extended SInt matches the same byte pattern stored as a
+    // UInt (`switch (idByte & ETMask)` with case ETInt = 0x10 should
+    // match a uchar `idByte` of 0x10).
+    if let (Some(x), Some(y)) = (int_bits(a), int_bits(b)) {
+        return x == y;
+    }
     match (a.to_i128(), b.to_i128()) {
         (Some(x), Some(y)) => x == y,
         _ => false,
