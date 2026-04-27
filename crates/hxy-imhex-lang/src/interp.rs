@@ -370,19 +370,39 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn exec_bytecode(&mut self, program: &crate::bc::Program) -> Result<(), RuntimeError> {
-        // Pre-register every enum / struct decl into `self.types`
-        // so AST-style helpers can resolve them by name:
-        // - `read_enum` looks up the backing type and may eval
-        //   variant value expressions that reference other names.
-        // - `read_array` element-by-element calls `read_scalar`,
-        //   which dispatches to `read_struct` for struct elements;
-        //   it needs the struct decl in the type table.
-        // The AST walker does the same in `collect_decl`.
-        for decl in &program.enum_decls {
-            self.types.insert(decl.name.clone(), TypeDef::Enum(decl.clone()));
+        // Pre-register every decl reachable through compile (main +
+        // imports + namespaces + nested) into `self.types` /
+        // `functions` so AST-fallback ops (`Op::ReadAny`,
+        // `Op::ReadAnyArray*`) and helpers called from the
+        // bytecode-fast-path ops (`read_enum` looking up its
+        // backing type, `read_array` looping per-element through
+        // `read_scalar`, ...) all resolve names exactly the way
+        // the AST walker would.
+        for entry in &program.ast_decls.structs {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(entry.decl.clone()));
         }
-        for body in &program.struct_bodies {
-            self.types.insert(body.ast_decl.name.clone(), TypeDef::Struct(body.ast_decl.clone()));
+        for entry in &program.ast_decls.enums {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(entry.decl.clone()));
+        }
+        for entry in &program.ast_decls.bitfields {
+            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(entry.decl.clone()));
+        }
+        for entry in &program.ast_decls.aliases {
+            self.register_decl(
+                &entry.bare,
+                &entry.qualified,
+                TypeDef::Alias {
+                    params: entry.decl.template_params.clone(),
+                    target: entry.decl.target.clone(),
+                },
+            );
+        }
+        for entry in &program.ast_decls.functions {
+            let shared = Arc::new(entry.decl.clone());
+            self.functions.insert(entry.bare.clone(), Arc::clone(&shared));
+            for q in &entry.qualified {
+                self.functions.insert(q.clone(), Arc::clone(&shared));
+            }
         }
         // Top-level statements run with no enclosing parent. EOF
         // tolerance applies here: a top-level read past EOF becomes
@@ -485,6 +505,69 @@ impl<S: HexSource> Interpreter<S> {
                 Op::PushAttrs(id) => {
                     pending_attrs.extend_from_slice(&program.attr_lists[id.0 as usize]);
                 }
+                Op::ReadAny { ty, name } => {
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_scalar(name_str, ty_ref, parent, &attrs, None);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+                Op::ReadAnyArrayFixed { ty, name, count } => {
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_array(name_str, ty_ref, count, parent, &attrs);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+                Op::ReadAnyArrayDyn { ty, name } => {
+                    let count_val = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadAnyArrayDyn" })?;
+                    let count = count_val
+                        .to_i128()
+                        .ok_or_else(|| RuntimeError::Type(format!(
+                            "array size is not numeric: {count_val}"
+                        )))?
+                        .max(0) as u64;
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let attrs = std::mem::take(pending_attrs);
+                    let res = self.read_array(name_str, ty_ref, count, parent, &attrs);
+                    if let Err(e) = res {
+                        if eof_tolerant_top_level && matches!(e, RuntimeError::Source(_)) {
+                            self.diagnostics.push(Diagnostic {
+                                message: format!("read past EOF at top level: {e:?}"),
+                                severity: Severity::Warning,
+                                file_offset: None,
+                                template_line: None,
+                            });
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
                 Op::PlacementSeek => {
                     let offset_val = stack
                         .pop()
@@ -508,6 +591,36 @@ impl<S: HexSource> Interpreter<S> {
                     // literals are not lexed -- a unary minus would
                     // emit `UnOp(Neg)` over a positive PushInt.
                     stack.push(Value::UInt { value: v as u128, kind: PrimKind::u64() });
+                }
+                Op::PushVoid => {
+                    stack.push(Value::Void);
+                }
+                Op::StoreIdent(name) => {
+                    let value = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "StoreIdent" })?;
+                    let name_str = program.idents.get(name.0).to_owned();
+                    self.current_scope_mut().vars.insert(name_str, value);
+                }
+                Op::EmitComputedLocal { name, ty_label } => {
+                    let value = stack
+                        .pop()
+                        .ok_or(RuntimeError::BytecodeStackUnderflow { op: "EmitComputedLocal" })?;
+                    let name_str = program.idents.get(name.0).to_owned();
+                    let ty_str = program.idents.get(ty_label.0).to_owned();
+                    self.current_scope_mut().vars.insert(name_str.clone(), value.clone());
+                    if let Some(parent_idx) = parent {
+                        let attrs = std::mem::take(pending_attrs);
+                        self.push_node(NodeOut {
+                            name: name_str,
+                            ty: NodeType::Unknown(ty_str),
+                            offset: self.cursor_tell(),
+                            length: 0,
+                            value: Some(value),
+                            parent: Some(parent_idx),
+                            attrs,
+                        });
+                    }
                 }
                 Op::LoadIdent(name) => {
                     let name_str = program.idents.get(name.0);
@@ -740,6 +853,18 @@ impl<S: HexSource> Interpreter<S> {
         if !self.namespace_stack.is_empty() {
             let qualified = format!("{}::{}", self.namespace_stack.join("::"), name);
             self.types.insert(qualified, def);
+        }
+    }
+
+    /// Insert `def` under `bare` and every entry in `qualified`.
+    /// Mirrors what `Interpreter::register_type` does inside
+    /// `collect_stmt_decl`, but takes pre-computed names so the
+    /// bytecode VM doesn't need to know about `namespace_stack`
+    /// state at register time.
+    fn register_decl(&mut self, bare: &str, qualified: &[String], def: TypeDef) {
+        self.types.insert(bare.to_owned(), def.clone());
+        for q in qualified {
+            self.types.insert(q.clone(), def.clone());
         }
     }
 
