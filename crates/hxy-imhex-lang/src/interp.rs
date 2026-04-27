@@ -1249,8 +1249,13 @@ impl<S: HexSource> Interpreter<S> {
         // `std::mem::Bytes<N>` -- an N-byte read with no internal
         // structure. Surfaces as a single bytes-typed leaf. Match
         // either the qualified spelling or the bare `Bytes` leaf
-        // (the corpus uses both).
-        if matches!(ty.leaf(), "Bytes")
+        // (the corpus uses both). `hex::type::Json<N>` (an
+        // ImHex-specific JSON visualisation type) reads the same
+        // way -- N bytes consumed, no structural decode -- so the
+        // surrounding chunk-style template (`gltf.hexpat`) keeps
+        // its cursor in step with the file even though we don't
+        // model the JSON contents.
+        if (matches!(ty.leaf(), "Bytes" | "Json"))
             && let Some(arg) = ty.template_args.first()
         {
             let v = self.eval(arg)?;
