@@ -236,6 +236,15 @@ pub enum Stmt {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// `try { ... }` (catch arm dropped at parse time). Runtime
+    /// evaluates the body but swallows any [`RuntimeError`] from
+    /// inside, so the surrounding statement walk keeps going. Used
+    /// by tiff.hexpat to attempt-and-skip optional sections like
+    /// strip-vs-tile image data.
+    TryBlock {
+        body: Box<Stmt>,
+        span: Span,
+    },
     Return {
         value: Option<Expr>,
         span: Span,

@@ -900,10 +900,14 @@ impl Parser {
         Ok(MatchPattern::Value(lo))
     }
 
-    /// `try { body } catch { handler }`. The interpreter doesn't
-    /// model exceptions yet, so we run the try body straight
-    /// through and discard the catch arm.
+    /// `try { body } catch { handler }`. We wrap the body in
+    /// [`Stmt::TryBlock`] so the interpreter swallows any runtime
+    /// error thrown from inside (matching ImHex's exception
+    /// behaviour); the catch arm is parsed for syntax validation
+    /// then discarded -- our error type doesn't carry the metadata
+    /// the bind expects.
     fn parse_try(&mut self) -> Result<Stmt, ParseError> {
+        let start = self.peek().map(|t| t.span.start).unwrap_or(0);
         self.bump(); // `try`
         let body = self.parse_block()?;
         // Optional catch with ignored bind name + body.
@@ -917,7 +921,8 @@ impl Parser {
             }
             let _catch_body = self.parse_block()?;
         }
-        Ok(body)
+        let end = self.last_span().end;
+        Ok(Stmt::TryBlock { body: Box::new(body), span: Span::new(start, end) })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
@@ -1781,6 +1786,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::While { span, .. }
         | Stmt::For { span, .. }
         | Stmt::Match { span, .. }
+        | Stmt::TryBlock { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::Break { span }
         | Stmt::Continue { span }

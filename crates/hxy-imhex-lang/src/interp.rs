@@ -777,6 +777,26 @@ impl<S: HexSource> Interpreter<S> {
             return Err(RuntimeError::TimedOut { timeout_ms: 0 });
         }
         match stmt {
+            Stmt::TryBlock { body, .. } => {
+                // ImHex's `try { ... } catch { ... }` swallows any
+                // runtime error thrown from inside the body. Save
+                // and restore the cursor so a partial read inside
+                // the try doesn't leave the surrounding template
+                // cursor in a half-advanced state. Tiff's IFD body
+                // attempts strip-vs-tile decoding via twin try
+                // blocks; without this, the first block's failure
+                // aborts the run.
+                let saved_pos = self.cursor_tell();
+                let saved_break = self.break_pending;
+                match self.exec_stmt(body, parent) {
+                    Ok(flow) => Ok(flow),
+                    Err(_) => {
+                        self.cursor_seek(saved_pos);
+                        self.break_pending = saved_break;
+                        Ok(Flow::Next)
+                    }
+                }
+            }
             Stmt::Block { stmts, .. } => {
                 self.scopes.push(Scope::default());
                 let mut flow = Flow::Next;
@@ -2216,11 +2236,16 @@ impl<S: HexSource> Interpreter<S> {
                     // `value` child never emitted).
                     return Ok(Value::Void);
                 }
-                let target_desc = match target.as_ref() {
-                    Expr::Ident { name, .. } => name.clone(),
-                    Expr::Member { field: f, .. } => format!("...{f}"),
-                    _ => "<expr>".into(),
-                };
+                fn describe(e: &Expr) -> String {
+                    match e {
+                        Expr::Ident { name, .. } => name.clone(),
+                        Expr::Member { target, field, .. } => format!("{}.{}", describe(target), field),
+                        Expr::Index { target, .. } => format!("{}[..]", describe(target)),
+                        Expr::Path { segments, .. } => segments.join("::"),
+                        _ => "<expr>".into(),
+                    }
+                }
+                let target_desc = describe(target.as_ref());
                 Err(RuntimeError::Type(format!("unresolved member `{target_desc}.{field}`")))
             }
             Expr::Index { target, index, .. } => {
