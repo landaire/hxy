@@ -909,10 +909,34 @@ impl<S: HexSource> Interpreter<S> {
             })
             .collect();
 
-        let value = if array_size.is_some() {
-            self.read_array(name, ty, count, parent, attrs, &evaluated_args, &arg_paths)?
+        let read_result = if array_size.is_some() {
+            self.read_array(name, ty, count, parent, attrs, &evaluated_args, &arg_paths)
         } else {
-            self.read_scalar(name, ty, parent, attrs, &evaluated_args, &arg_paths)?
+            self.read_scalar(name, ty, parent, attrs, &evaluated_args, &arg_paths)
+        };
+        // Past-EOF reads at the end of a long while/do-while loop
+        // (templates that exit on `!FEof()` after the body already
+        // overshot by one field) get downgraded to a Warning so the
+        // overall run still produces output. The cursor is advanced
+        // to len so the surrounding loop sees FEof() == true on its
+        // next iteration.
+        let value = match read_result {
+            Ok(v) => v,
+            Err(RuntimeError::Source(SourceError::OutOfBounds { offset, end, len }))
+                if offset >= len =>
+            {
+                self.diagnostics.push(Diagnostic {
+                    message: format!(
+                        "field `{name}` read [{offset}..{end}) past EOF (file is {len} bytes); skipped"
+                    ),
+                    severity: Severity::Warning,
+                    file_offset: Some(offset),
+                    template_line: None,
+                });
+                self.cursor.seek(len);
+                Value::Void
+            }
+            Err(e) => return Err(e),
         };
 
         self.current_scope_mut().vars.insert(name.clone(), value);
@@ -1290,8 +1314,26 @@ impl<S: HexSource> Interpreter<S> {
         // thousands of outlined cells per chunk.
         if let TypeDef::Primitive(p) = def.clone() {
             let offset = self.cursor.tell();
-            let total_bytes = count.saturating_mul(p.width as u64);
+            let mut total_bytes = count.saturating_mul(p.width as u64);
+            // Clamp the request at EOF -- corrupt or speculative
+            // template reads (off-by-one loops, header fields
+            // pointing past the end of a small fixture) shouldn't
+            // hard-fail the whole template. Surface a Warning so the
+            // overshoot is visible.
+            let avail = self.cursor.len().saturating_sub(offset);
+            if total_bytes > avail {
+                self.diagnostics.push(Diagnostic {
+                    message: format!(
+                        "array `{name}` requested {total_bytes} bytes at offset {offset}, only {avail} available; clamped to fit"
+                    ),
+                    severity: Severity::Warning,
+                    file_offset: Some(offset),
+                    template_line: None,
+                });
+                total_bytes = avail;
+            }
             let bytes = self.cursor.read_advance(total_bytes)?;
+            let count = if p.width == 0 { 0 } else { total_bytes / p.width as u64 };
             let value = if matches!(p.class, PrimClass::Char)
                 && let Ok(_) = str::from_utf8(&bytes)
             {
@@ -2973,8 +3015,14 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
             }
         });
     }
-    let li = l.to_i128().ok_or_else(|| RuntimeError::Type(format!("not numeric: {l:?}")))?;
-    let ri = r.to_i128().ok_or_else(|| RuntimeError::Type(format!("not numeric: {r:?}")))?;
+    // Past-EOF reads return Void (we'd otherwise hard-fail the
+    // run); treating Void as 0 in numeric ops lets the surrounding
+    // `if (status & 0x80) ...` branches degrade gracefully so the
+    // template can finish whatever loop hit the clamp.
+    let li = l.to_i128().or_else(|| matches!(l, Value::Void).then_some(0))
+        .ok_or_else(|| RuntimeError::Type(format!("not numeric: {l:?}")))?;
+    let ri = r.to_i128().or_else(|| matches!(r, Value::Void).then_some(0))
+        .ok_or_else(|| RuntimeError::Type(format!("not numeric: {r:?}")))?;
     // 010 templates routinely mix signed and unsigned integer reads
     // (e.g. `local uint32 magic = ReadInt();` paired with
     // `if (magic == MACHO_64)` against an unsigned enum constant).
@@ -3304,7 +3352,7 @@ fn split_trailing_index(path: &str) -> Option<(&str, u64)> {
 /// didn't move. High enough to let counter loops run unmolested,
 /// low enough to surface a clearer diagnostic well before the
 /// wall-clock timeout fires.
-const LOOP_STALL_LIMIT: u32 = 100_000;
+const LOOP_STALL_LIMIT: u32 = 1_000;
 
 /// Tracks how many consecutive iterations of a loop have failed to
 /// advance the source cursor. Lives on the Rust call stack of the

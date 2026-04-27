@@ -157,7 +157,7 @@ fn timeout_surfaces_structured_terminal_error() {
     // Either error is acceptable evidence that callers can match.
     match result.terminal_error {
         Some(RuntimeError::LoopStalled { iterations }) => {
-            assert!(iterations >= 100_000, "stall count looked wrong: {iterations}");
+            assert!(iterations >= 1_000, "stall count looked wrong: {iterations}");
         }
         Some(RuntimeError::TimedOut { timeout_ms }) => {
             assert_eq!(timeout_ms, 50);
