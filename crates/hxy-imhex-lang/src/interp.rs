@@ -212,6 +212,16 @@ pub struct Interpreter<S: HexSource> {
     /// The big device-tree-shaped corpus templates (fdt, pck, ...)
     /// time out without this index.
     nodes_by_name: FxHashMap<String, Vec<NodeIdx>>,
+    /// Companion to [`Self::nodes_by_name`]: parallel `Vec` of
+    /// each node's parent index (or `NodeIdx::default()` for
+    /// roots, distinguishable from real entries via a side
+    /// `Option`-like sentinel). Lets `find_first_child_idx` /
+    /// `lookup_member_under` filter candidates by parent without
+    /// touching `self.nodes` (random-access into a 2.4M-entry
+    /// `Vec<NodeOut>` blew the cache hard enough to dominate the
+    /// linear scan's cost). Stored as a flat `Vec<u32>` so the
+    /// scan stays in a contiguous cache line.
+    node_parents: Vec<u32>,
     diagnostics: Vec<Diagnostic>,
     endian: Endian,
     steps: u64,
@@ -278,6 +288,7 @@ impl<S: HexSource> Interpreter<S> {
             scopes: vec![Scope::default()],
             nodes: Vec::new(),
             nodes_by_name: FxHashMap::default(),
+            node_parents: Vec::new(),
             diagnostics: Vec::new(),
             endian: Endian::Little,
             steps: 0,
@@ -1828,6 +1839,13 @@ impl<S: HexSource> Interpreter<S> {
     fn push_node(&mut self, node: NodeOut) -> NodeIdx {
         let idx = NodeIdx::new(self.nodes.len() as u32);
         self.nodes_by_name.entry(node.name.clone()).or_default().push(idx);
+        // Mirror the parent index into a flat parallel `Vec<u32>`
+        // so the per-name scan in `find_first_child_idx` /
+        // `lookup_member_under` doesn't have to touch the
+        // 200-byte-per-entry `self.nodes` `Vec` (random access on
+        // a 2.4M-entry struct vec causes ~80% of the scan cost
+        // to be cache misses; a flat u32 vec stays hot in L1).
+        self.node_parents.push(node.parent.map(|p| p.as_u32()).unwrap_or(u32::MAX));
         self.nodes.push(node);
         idx
     }
@@ -3086,11 +3104,16 @@ impl<S: HexSource> Interpreter<S> {
     /// the *node* is still the right answer for chained accesses
     /// (`a.b.c.field`) even though `b` itself has no value.
     fn lookup_member_under(&self, owner_idx: NodeIdx, field: &str) -> Option<Value> {
+        // Walks right-to-left so the most-recently-emitted match
+        // wins (matters for repeated names inside a long-lived
+        // parent like an array). Uses the flat
+        // `node_parents: Vec<u32>` for the parent check -- same
+        // cache-friendliness trick as `find_first_child_idx`.
+        let target = owner_idx.as_u32();
         let candidates = self.nodes_by_name.get(field)?;
         for &idx in candidates.iter().rev() {
-            let n = &self.nodes[idx.as_usize()];
-            if n.parent == Some(owner_idx) {
-                return Some(n.value.clone().unwrap_or(Value::Void));
+            if self.node_parents[idx.as_usize()] == target {
+                return Some(self.nodes[idx.as_usize()].value.clone().unwrap_or(Value::Void));
             }
         }
         None
@@ -3201,8 +3224,20 @@ impl<S: HexSource> Interpreter<S> {
     }
 
     fn find_first_child_idx(&self, parent_idx: NodeIdx, name: &str) -> Option<NodeIdx> {
+        // Linear scan over `nodes_by_name[name]` filtered by
+        // parent. The hot trick: read the parent through the
+        // flat `node_parents: Vec<u32>` instead of dereferencing
+        // `self.nodes[i].parent` -- the latter touches a
+        // ~200-byte `NodeOut` per check, whereas the former
+        // streams 4 bytes per check and stays cache-resident.
+        let target = parent_idx.as_u32();
         let candidates = self.nodes_by_name.get(name)?;
-        candidates.iter().copied().find(|idx| self.nodes[idx.as_usize()].parent == Some(parent_idx))
+        for idx in candidates.iter().copied() {
+            if self.node_parents[idx.as_usize()] == target {
+                return Some(idx);
+            }
+        }
+        None
     }
 
     /// Find the most recent top-level node (parent is `None`) with
