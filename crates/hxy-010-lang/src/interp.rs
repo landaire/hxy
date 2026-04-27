@@ -2819,13 +2819,24 @@ fn eval_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, RuntimeError> {
     // types fall through to the numeric path and blow up, which
     // matches 010's "types must match" semantics.
     if let (Value::Str(a), Value::Str(b)) = (l, r) {
+        // Trim at the first NUL before comparison so a fixed-width
+        // `char buf[N]` with a shorter NUL-terminated payload still
+        // compares equal to its literal counterpart -- 010 templates
+        // routinely write `magic != \"Kaydara FBX Binary  \"` against
+        // a `char[23]` field whose tail is `\\0\\x1a\\0`. Mirrors C
+        // strcmp / 010's own char-array semantics.
+        let trim = |s: &str| match s.find('\0') {
+            Some(idx) => s[..idx].to_owned(),
+            None => s.to_owned(),
+        };
+        let (ta, tb) = (trim(a), trim(b));
         return Ok(match op {
-            BinOp::Eq => Value::Bool(a == b),
-            BinOp::NotEq => Value::Bool(a != b),
-            BinOp::Lt => Value::Bool(a < b),
-            BinOp::Gt => Value::Bool(a > b),
-            BinOp::LtEq => Value::Bool(a <= b),
-            BinOp::GtEq => Value::Bool(a >= b),
+            BinOp::Eq => Value::Bool(ta == tb),
+            BinOp::NotEq => Value::Bool(ta != tb),
+            BinOp::Lt => Value::Bool(ta < tb),
+            BinOp::Gt => Value::Bool(ta > tb),
+            BinOp::LtEq => Value::Bool(ta <= tb),
+            BinOp::GtEq => Value::Bool(ta >= tb),
             BinOp::Add => Value::Str(format!("{a}{b}")),
             _ => return Err(RuntimeError::Type(format!("string operand not supported for {op:?}"))),
         });
