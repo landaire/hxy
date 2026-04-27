@@ -81,6 +81,15 @@ pub fn extract_pragmas(source: &str) -> Pragmas {
 
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
     let defines = collect_defines(source)?;
+    // Rewrite preprocessor `#include <path/to/file.pat>` directives
+    // into language-level `import path.to.file;` statements so the
+    // interpreter's import resolver picks up types declared in the
+    // included file. ImHex's official corpus mixes both forms; the
+    // bare `#include` line was previously skipped as trivia, which
+    // made any `using ul = type::uLEB128;` alias declared in
+    // type/leb128.pat invisible (notepadwindowstate.hexpat).
+    let rewritten = rewrite_preprocessor_includes(source);
+    let source: &str = &rewritten;
     let mut input: &str = source;
     let mut tokens = Vec::new();
     loop {
@@ -101,6 +110,39 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
         tokens = expand_defines(tokens, &defines);
     }
     Ok(tokens)
+}
+
+/// Rewrite `#include <path/to/file.pat>` and `#include "path/to/
+/// file.pat"` directives into `import path.to.file;` statements.
+/// The trailing `.pat` extension is dropped before joining segments
+/// with dots; everything else falls back to the original source so
+/// preprocessor-style `#include "macros.pat"` keeps working too.
+fn rewrite_preprocessor_includes(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for raw_line in source.split_inclusive('\n') {
+        let trimmed = raw_line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#include") else {
+            out.push_str(raw_line);
+            continue;
+        };
+        let body = rest.trim_start_matches([' ', '\t']);
+        let inner = body
+            .strip_prefix('<')
+            .and_then(|s| s.split_once('>').map(|(p, _)| p))
+            .or_else(|| body.strip_prefix('"').and_then(|s| s.split_once('"').map(|(p, _)| p)));
+        let Some(path) = inner else {
+            out.push_str(raw_line);
+            continue;
+        };
+        let trimmed_path = path.trim().strip_suffix(".pat").unwrap_or(path.trim());
+        let dotted: String = trimmed_path.replace('/', ".");
+        let leading_ws = &raw_line[..raw_line.len() - trimmed.len()];
+        out.push_str(leading_ws);
+        out.push_str("import ");
+        out.push_str(&dotted);
+        out.push_str(";\n");
+    }
+    out
 }
 
 /// Walk the source line-by-line and pull `#define NAME body` entries
@@ -532,12 +574,26 @@ mod tests {
     }
 
     #[test]
-    fn skips_pragma_and_import_directives() {
+    fn skips_pragma_directives_and_rewrites_includes() {
+        // `#pragma` lines are skipped entirely; `#include <path/to/
+        // file.pat>` is rewritten to `import path.to.file;` so the
+        // import resolver picks up types declared in the included
+        // file (notepadwindowstate.hexpat's `using ul = ...` chain).
         let src = "#pragma description Foo\n#pragma endian little\n#include <std/sys.pat>\nu32 magic;";
         let toks = lex(src);
-        assert!(
-            matches!(toks.as_slice(), [TokenKind::Ident(t1), TokenKind::Ident(t2), TokenKind::Semi] if t1 == "u32" && t2 == "magic")
-        );
+        assert!(matches!(
+            toks.as_slice(),
+            [
+                TokenKind::Keyword(Keyword::Import),
+                TokenKind::Ident(t_std),
+                TokenKind::Dot,
+                TokenKind::Ident(t_sys),
+                TokenKind::Semi,
+                TokenKind::Ident(t_u32),
+                TokenKind::Ident(t_magic),
+                TokenKind::Semi,
+            ] if t_std == "std" && t_sys == "sys" && t_u32 == "u32" && t_magic == "magic"
+        ));
     }
 
     #[test]

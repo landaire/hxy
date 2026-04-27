@@ -22,9 +22,11 @@ fn empty_program_parses() {
 }
 
 #[test]
-fn pragma_lines_are_trivia() {
-    // Lexer drops `#pragma`, `#include`, `#ifdef`, etc. so the parser
-    // never sees them. Only the trailing decl should land in the AST.
+fn pragma_lines_are_trivia_includes_become_imports() {
+    // `#pragma` and `#ifdef` lines are still dropped by the lexer.
+    // `#include <path/to/file.pat>` is rewritten into a real
+    // `import path.to.file;` statement so the import resolver can
+    // pick up types declared inside the included file.
     let ast = parse_str(
         "\
 #pragma description Foo
@@ -33,8 +35,9 @@ fn pragma_lines_are_trivia() {
 struct S { u8 b; };
 ",
     );
-    assert_eq!(ast.items.len(), 1);
-    matches!(&ast.items[0], TopItem::Stmt(Stmt::StructDecl(_)));
+    assert_eq!(ast.items.len(), 2);
+    assert!(matches!(&ast.items[0], TopItem::Stmt(Stmt::Import { .. })));
+    assert!(matches!(&ast.items[1], TopItem::Stmt(Stmt::StructDecl(_))));
 }
 
 #[test]
