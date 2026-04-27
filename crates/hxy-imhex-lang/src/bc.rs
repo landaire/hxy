@@ -105,6 +105,13 @@ pub struct ExprId(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StmtId(pub u32);
 
+/// Index into [`Program::pred_streams`]. Each `[while(...)]`
+/// array's predicate compiles to its own little op stream that
+/// pushes one boolean onto the operand stack; the `Op::ReadArrayWhile`
+/// dispatcher runs it once per iteration.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PredId(pub u32);
+
 /// Intern table for identifiers (or string literals -- two of these
 /// live on a [`Program`], one per kind). Insertion is O(1) hashed;
 /// lookup is `u32 -> &str`.
@@ -200,6 +207,28 @@ pub enum Op {
     ReadArrayDyn { ty: TypeId, name: IdentId },
     ReadCharArr { name: IdentId }, // count on stack
     ReadDynArr { ty: TypeId, name: IdentId, pred: Pc, end: Pc },
+
+    /// `Type x[while(cond)]` -- predicate-driven array. Per
+    /// iteration the VM runs the predicate sub-stream
+    /// (`pred_streams[pred]`) which leaves a boolean on the
+    /// operand stack; if true, read one element via the AST
+    /// `read_scalar` (works for any element type registered in
+    /// `Interpreter::types`); if false, stop. Mirrors the AST
+    /// `read_dynamic_array`'s loop semantics including the
+    /// stall-detection cap and per-element EOF tolerance.
+    ReadArrayWhile { ty: TypeId, name: IdentId, pred: PredId },
+    /// Same as [`Op::ReadArrayWhile`] but the per-element read
+    /// dispatches directly into a compiled BC struct body --
+    /// avoids a `read_scalar` -> `read_struct` -> AST-walked
+    /// body trip per element. Used when the array's element
+    /// type is a registered simple struct (the common
+    /// recursive-walker shape: bencode's `Value entry[while(...)]`).
+    ReadArrayWhileBody {
+        body: BodyId,
+        display_name: IdentId,
+        name: IdentId,
+        pred: PredId,
+    },
 
     /// Append a pre-baked attribute list (key/value pairs) to the
     /// VM's pending-attrs buffer so the next read op picks them up.
@@ -335,6 +364,8 @@ impl Op {
             Op::ReadAny { .. } => "ReadAny",
             Op::ReadAnyArrayDyn { .. } => "ReadAnyArrayDyn",
             Op::ReadAnyArrayFixed { .. } => "ReadAnyArrayFixed",
+            Op::ReadArrayWhile { .. } => "ReadArrayWhile",
+            Op::ReadArrayWhileBody { .. } => "ReadArrayWhileBody",
             Op::EmitComputedLocal { .. } => "EmitComputedLocal",
             Op::StoreIdentCoerce { .. } => "StoreIdentCoerce",
             Op::EvalAstExpr(_) => "EvalAstExpr",
@@ -408,6 +439,14 @@ pub struct Program {
     /// a subset of these -- the compile pass populates both for
     /// the names it could lower.
     pub ast_decls: AstDecls,
+    /// Type-registration order in source order. The AST walker's
+    /// `register_type` is last-write-wins, and for cpio.hexpat
+    /// (and others) the source has `import std.time;` first
+    /// (which defines `struct Time`) followed by `using Time =
+    /// u32`. The alias must win at lookup time. By replaying
+    /// type registration in source order at VM entry, the
+    /// bytecode VM matches the AST's overwrite semantics.
+    pub decl_order: Vec<DeclRef>,
     /// AST expression nodes referenced by [`Op::EvalAstExpr`].
     /// Stored verbatim so the VM can dispatch into
     /// `Interpreter::eval` for shapes the bytecode compile pass
@@ -415,6 +454,10 @@ pub struct Program {
     pub ast_exprs: Vec<crate::ast::Expr>,
     /// AST statement nodes referenced by [`Op::ExecAstStmt`].
     pub ast_stmts: Vec<crate::ast::Stmt>,
+    /// Per-`[while(...)]`-array predicate op streams. Each
+    /// stream pushes one boolean onto the operand stack when
+    /// run. Indexed by [`PredId`].
+    pub pred_streams: Vec<Vec<Op>>,
 }
 
 /// AST-shaped decl bundle pre-collected for the AST fallback paths
@@ -444,6 +487,18 @@ pub struct NamedDecl<T> {
     pub bare: String,
     pub qualified: Vec<String>,
     pub decl: T,
+}
+
+/// One entry in [`Program::decl_order`] -- a pointer into the
+/// per-kind AST decl tables. The VM walks `decl_order` in order
+/// and dispatches to the right registration kind, preserving
+/// source-order last-write-wins semantics across kinds.
+#[derive(Debug, Clone, Copy)]
+pub enum DeclRef {
+    Struct(u32),
+    Enum(u32),
+    Bitfield(u32),
+    Alias(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -523,6 +578,13 @@ impl Program {
         self.ast_stmts.push(s);
         StmtId(id)
     }
+
+    /// Append a predicate op stream and return its [`PredId`].
+    pub fn push_pred(&mut self, ops: Vec<Op>) -> PredId {
+        let id = self.pred_streams.len() as u32;
+        self.pred_streams.push(ops);
+        PredId(id)
+    }
 }
 
 /// Reasons the compile pass could not lower an AST [`AstProgram`] to
@@ -587,6 +649,25 @@ pub fn compile_with_resolver(
     // Pass 1: collect decls from the main AST and every transitively
     // imported AST.
     builder.collect_decls(&ast.items)?;
+    // Propagate transform-bearing struct names through using aliases
+    // so a templated indirection (`using Foo = NullStringBase<char>`,
+    // where NullStringBase has [[transform]]) also forces the AST
+    // fallback path. Walk the alias list to a fixpoint -- chains
+    // are short in practice so this is cheap.
+    loop {
+        let before = builder.ctx.structs_with_transform.len();
+        for entry in &builder.p.ast_decls.aliases {
+            let target_leaf = entry.decl.target.leaf();
+            if builder.ctx.structs_with_transform.contains(target_leaf)
+                && !builder.ctx.structs_with_transform.contains(&entry.bare)
+            {
+                builder.ctx.structs_with_transform.insert(entry.bare.clone());
+            }
+        }
+        if builder.ctx.structs_with_transform.len() == before {
+            break;
+        }
+    }
 
     // Reset the seen-imports set so pass 2 walks the same imports
     // again to find their struct bodies. Imports are deduped by
@@ -650,11 +731,20 @@ impl<'r> Compiler<'r> {
     fn collect_decls_from_stmt(&mut self, s: &Stmt) -> Result<(), CompileError> {
         match s {
             Stmt::StructDecl(decl) => {
+                let idx = self.p.ast_decls.structs.len() as u32;
                 self.p.ast_decls.structs.push(NamedDecl {
                     bare: decl.name.clone(),
                     qualified: self.qualified_name(&decl.name),
                     decl: decl.clone(),
                 });
+                self.p.decl_order.push(DeclRef::Struct(idx));
+                // Record the type-level `[[transform]]` flag so
+                // any field decl referencing this struct can bail
+                // to ExecAstStmt and let exec_field_decl run the
+                // transform fn after the read.
+                if decl.attrs.0.iter().any(|a| a.name == "transform") {
+                    self.ctx.structs_with_transform.insert(decl.name.clone());
+                }
                 if struct_is_simple(decl) && !self.ctx.struct_bodies.contains_key(&decl.name) {
                     let display_name = self.p.intern_ident(&decl.name);
                     let body_id = BodyId(self.p.struct_bodies.len() as u32);
@@ -668,11 +758,13 @@ impl<'r> Compiler<'r> {
                 Ok(())
             }
             Stmt::EnumDecl(decl) => {
+                let idx = self.p.ast_decls.enums.len() as u32;
                 self.p.ast_decls.enums.push(NamedDecl {
                     bare: decl.name.clone(),
                     qualified: self.qualified_name(&decl.name),
                     decl: decl.clone(),
                 });
+                self.p.decl_order.push(DeclRef::Enum(idx));
                 if enum_is_simple(decl) && !self.ctx.enums.contains_key(&decl.name) {
                     let id = EnumId(self.p.enum_decls.len() as u32);
                     self.p.enum_decls.push(decl.clone());
@@ -681,11 +773,13 @@ impl<'r> Compiler<'r> {
                 Ok(())
             }
             Stmt::BitfieldDecl(decl) => {
+                let idx = self.p.ast_decls.bitfields.len() as u32;
                 self.p.ast_decls.bitfields.push(NamedDecl {
                     bare: decl.name.clone(),
                     qualified: self.qualified_name(&decl.name),
                     decl: decl.clone(),
                 });
+                self.p.decl_order.push(DeclRef::Bitfield(idx));
                 Ok(())
             }
             Stmt::UsingAlias { new_name, template_params, source, .. } => {
@@ -704,6 +798,7 @@ impl<'r> Compiler<'r> {
                 if is_self_forward {
                     return Ok(());
                 }
+                let idx = self.p.ast_decls.aliases.len() as u32;
                 self.p.ast_decls.aliases.push(NamedDecl {
                     bare: new_name.clone(),
                     qualified: self.qualified_name(new_name),
@@ -712,6 +807,7 @@ impl<'r> Compiler<'r> {
                         target: source.clone(),
                     },
                 });
+                self.p.decl_order.push(DeclRef::Alias(idx));
                 // Bytecode-fast-path alias chase only handles the
                 // bare `using A = B;` form. Templated aliases
                 // (`using Foo<T> = Bar<T>;`) still register into
@@ -923,6 +1019,13 @@ struct CompileCtx {
     /// chase recursively in [`Self::resolve_alias`] so `using A =
     /// B; using B = u32; A x;` lowers to a u32 read.
     aliases: rustc_hash::FxHashMap<String, TypeRef>,
+    /// Struct names whose decl carries a behaviour-changing attr
+    /// (`[[transform(...)]]`, `[[no_unique_address]]`) that
+    /// `exec_field_decl` applies after the read. Field decls
+    /// whose type leaf appears here MUST go through ExecAstStmt
+    /// so the post-processing actually fires -- the bytecode
+    /// VM's fast-path read ops don't model these attrs.
+    structs_with_transform: rustc_hash::FxHashSet<String>,
 }
 
 impl CompileCtx {
@@ -1042,15 +1145,9 @@ fn compile_struct_body_stmt(
             Ok(())
         }
         Stmt::If { cond, then_branch, else_branch, .. } => {
-            // Try the bytecode lowering directly into `out`,
-            // remembering the start position so we can rewind on
-            // failure (a sub-stmt we can't lower). Emitting into
-            // `out` directly means the `Pc` targets we patch are
-            // absolute against the final op stream -- the
-            // intuitive try_buf approach broke because patched
-            // `Pc` indices were relative to the local buffer and
-            // pointed at the wrong op once the buffer got
-            // appended to a non-empty stream.
+            // Lower directly into `out` so `Pc` targets are
+            // absolute against the final stream. Rewind via
+            // `out.truncate` on failure, fall back to ExecAstStmt.
             let snapshot = out.len();
             let res = compile_if_inline(
                 p, ctx, out, cond, then_branch.as_ref(), else_branch.as_deref(),
@@ -1506,6 +1603,25 @@ fn compile_field_decl(
     // even when `lookup_type` chases through aliases.
     let resolved = ctx.resolve_alias(ty);
     let resolved_ty = resolved.as_ref();
+    // If the type (or any alias along the chase) names a struct
+    // that has a behaviour-changing `[[transform(...)]]` attr,
+    // bail out -- the AST applies the transform in
+    // `exec_field_decl` after the read, but my fast-path read
+    // ops don't model that. ExecAstStmt routes the whole field
+    // through the AST so the transform actually fires. (NB:
+    // `resolve_alias` only chases bare-name aliases; if the
+    // user-facing type is `using Foo = TransformingStruct;`,
+    // we catch it; if it's `using Foo = TBase<...>;` and TBase
+    // has the transform, the alias chase doesn't see it -- we
+    // also probe the unresolved leaf so most of those cases
+    // still bail out.)
+    if ctx.structs_with_transform.contains(resolved_ty.leaf())
+        || ctx.structs_with_transform.contains(ty.leaf())
+    {
+        return Err(CompileError::UnsupportedFieldDecl {
+            reason: "type carries a [[transform]] attr; use AST fallback so post-read fn fires",
+        });
+    }
     // `padding[N];` is a builtin handled inline by the AST's
     // `exec_field_decl` -- there is no `TypeDef` for it, so any
     // attempt to lower through `ReadAny` (-> `read_scalar` ->
@@ -1572,9 +1688,35 @@ fn compile_field_decl(
         Some(crate::ast::ArraySize::Open) => Err(CompileError::UnsupportedFieldDecl {
             reason: "open `[]` arrays not yet lowered",
         }),
-        Some(crate::ast::ArraySize::While(_)) => Err(CompileError::UnsupportedFieldDecl {
-            reason: "`[while(...)]` arrays not yet lowered",
-        }),
+        Some(crate::ast::ArraySize::While(cond)) => {
+            // Compile the predicate into its own op stream so the
+            // VM can re-run it per iteration without touching the
+            // surrounding control flow. The stream pushes one
+            // boolean (or numeric truthy value) on success.
+            let mut pred_ops = Vec::new();
+            compile_expr(p, &mut pred_ops, cond)?;
+            let pred_id = p.push_pred(pred_ops);
+            let name_id = p.intern_ident(name);
+            // Element-type fast path: if the type resolves (after
+            // alias chase) to a registered simple struct, dispatch
+            // each iteration into its compiled BC body via
+            // `Op::ReadArrayWhileBody`. Otherwise fall back to
+            // the generic `Op::ReadArrayWhile` which calls the
+            // AST `read_scalar` per element.
+            if let Some(body_id) = ctx.struct_bodies.get(resolved_ty.leaf()) {
+                let display = p.struct_bodies[body_id.0 as usize].display_name;
+                out.push(Op::ReadArrayWhileBody {
+                    body: *body_id,
+                    display_name: display,
+                    name: name_id,
+                    pred: pred_id,
+                });
+            } else {
+                let ty_id = p.push_type(ty.clone());
+                out.push(Op::ReadArrayWhile { ty: ty_id, name: name_id, pred: pred_id });
+            }
+            Ok(())
+        }
     }
 }
 

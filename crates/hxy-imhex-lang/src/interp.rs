@@ -395,32 +395,43 @@ impl<S: HexSource> Interpreter<S> {
         // backing type, `read_array` looping per-element through
         // `read_scalar`, ...) all resolve names exactly the way
         // the AST walker would.
-        // Register aliases first so a later struct/enum/bitfield
-        // decl with the same name wins (matches the AST walker's
-        // source-order register: a real type decl that follows a
-        // `using Name = ...;` overwrites the alias). Self-forward
-        // aliases are filtered out entirely in the compile pass.
-        for entry in &program.ast_decls.aliases {
-            self.register_decl(
-                &entry.bare,
-                &entry.qualified,
-                TypeDef::Alias {
-                    params: entry.decl.template_params.clone(),
-                    target: entry.decl.target.clone(),
-                },
-            );
-        }
-        for entry in &program.ast_decls.structs {
-            let shared = Arc::new(entry.decl.clone());
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Struct(shared));
-        }
-        for entry in &program.ast_decls.enums {
-            let shared = Arc::new(entry.decl.clone());
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Enum(shared));
-        }
-        for entry in &program.ast_decls.bitfields {
-            let shared = Arc::new(entry.decl.clone());
-            self.register_decl(&entry.bare, &entry.qualified, TypeDef::Bitfield(shared));
+        // Walk `decl_order` in source order so the same
+        // last-write-wins overwriting the AST walker's
+        // `register_type` does naturally falls out: a `using Time
+        // = u32;` after `import std.time;` (which defined `struct
+        // Time`) correctly overwrites the struct mapping with
+        // the alias. Iterating per-kind would lose the cross-kind
+        // ordering and break templates that re-define imported
+        // names (cpio.hexpat is the canonical example).
+        for entry in &program.decl_order {
+            match *entry {
+                crate::bc::DeclRef::Struct(i) => {
+                    let e = &program.ast_decls.structs[i as usize];
+                    let shared = Arc::new(e.decl.clone());
+                    self.register_decl(&e.bare, &e.qualified, TypeDef::Struct(shared));
+                }
+                crate::bc::DeclRef::Enum(i) => {
+                    let e = &program.ast_decls.enums[i as usize];
+                    let shared = Arc::new(e.decl.clone());
+                    self.register_decl(&e.bare, &e.qualified, TypeDef::Enum(shared));
+                }
+                crate::bc::DeclRef::Bitfield(i) => {
+                    let e = &program.ast_decls.bitfields[i as usize];
+                    let shared = Arc::new(e.decl.clone());
+                    self.register_decl(&e.bare, &e.qualified, TypeDef::Bitfield(shared));
+                }
+                crate::bc::DeclRef::Alias(i) => {
+                    let e = &program.ast_decls.aliases[i as usize];
+                    self.register_decl(
+                        &e.bare,
+                        &e.qualified,
+                        TypeDef::Alias {
+                            params: e.decl.template_params.clone(),
+                            target: e.decl.target.clone(),
+                        },
+                    );
+                }
+            }
         }
         for entry in &program.ast_decls.functions {
             let shared = Arc::new(entry.decl.clone());
@@ -647,16 +658,56 @@ impl<S: HexSource> Interpreter<S> {
                         }
                     }
                 }
+                Op::ReadArrayWhile { ty, name, pred } => {
+                    let name_str = program.idents.get(name.0);
+                    let ty_ref = &program.types[ty.0 as usize];
+                    let attrs = std::mem::take(pending_attrs);
+                    self.exec_bytecode_array_while(
+                        program,
+                        Some(ty_ref),
+                        name_str,
+                        &attrs,
+                        parent,
+                        pred,
+                        stack,
+                        pending_attrs,
+                        None,
+                        ty_ref.leaf(),
+                    )?;
+                }
+                Op::ReadArrayWhileBody { body, display_name, name, pred } => {
+                    let name_str = program.idents.get(name.0);
+                    let display = program.idents.get(display_name.0);
+                    let attrs = std::mem::take(pending_attrs);
+                    self.exec_bytecode_array_while(
+                        program,
+                        None,
+                        name_str,
+                        &attrs,
+                        parent,
+                        pred,
+                        stack,
+                        pending_attrs,
+                        Some((body, display)),
+                        display,
+                    )?;
+                }
                 Op::ReadAnyArrayDyn { ty, name } => {
                     let count_val = stack
                         .pop()
                         .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadAnyArrayDyn" })?;
+                    // Match the AST's `exec_field_decl` cast: i128
+                    // -> u64 via plain `as`, which wraps negatives
+                    // to a huge positive (later clamped by
+                    // `read_array` against the source size). The
+                    // earlier `.max(0)` here clamped to 0, which
+                    // disagreed with the AST when an expression
+                    // like `c_namesize - 1` underflowed.
                     let count = count_val
                         .to_i128()
                         .ok_or_else(|| RuntimeError::Type(format!(
                             "array size is not numeric: {count_val}"
-                        )))?
-                        .max(0) as u64;
+                        )))? as u64;
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
                     let attrs = std::mem::take(pending_attrs);
@@ -807,12 +858,18 @@ impl<S: HexSource> Interpreter<S> {
                     let count_val = stack
                         .pop()
                         .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayDyn" })?;
+                    // Match the AST's `exec_field_decl` cast: i128
+                    // -> u64 via plain `as`, which wraps negatives
+                    // to a huge positive (later clamped by
+                    // `read_array` against the source size). The
+                    // earlier `.max(0)` here clamped to 0, which
+                    // disagreed with the AST when an expression
+                    // like `c_namesize - 1` underflowed.
                     let count = count_val
                         .to_i128()
                         .ok_or_else(|| RuntimeError::Type(format!(
                             "array size is not numeric: {count_val}"
-                        )))?
-                        .max(0) as u64;
+                        )))? as u64;
                     let name_str = program.idents.get(name.0);
                     let ty_ref = &program.types[ty.0 as usize];
                     let attrs = std::mem::take(pending_attrs);
@@ -836,6 +893,119 @@ impl<S: HexSource> Interpreter<S> {
             }
             pc += 1;
         }
+        Ok(())
+    }
+
+    /// Predicate-driven array (`Type x[while(cond)]`) executed
+    /// entirely inside the bytecode VM. Mirrors the AST's
+    /// `read_dynamic_array` loop semantics: per-element EOF
+    /// tolerance, `break_pending` propagation, stall-detection
+    /// cap, and the `LOOP_STALL_LIMIT` element-count cap.
+    ///
+    /// Two element-dispatch modes are folded into the same loop:
+    /// - `body == None`: per element calls AST `read_scalar` with
+    ///   `ty.unwrap()` -- works for any registered type.
+    /// - `body == Some((body_id, display))`: per element calls
+    ///   `exec_bytecode_struct` directly so a fast-path BC body
+    ///   handles the recursive walk without an AST hop. This is
+    ///   the bencode `Value entry[while(...)]` shape.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_bytecode_array_while(
+        &mut self,
+        program: &crate::bc::Program,
+        ty: Option<&TypeRef>,
+        name: &str,
+        attrs: &[(String, String)],
+        parent: Option<NodeIdx>,
+        pred: crate::bc::PredId,
+        stack: &mut Vec<Value>,
+        pending_attrs: &mut Vec<(String, String)>,
+        body_dispatch: Option<(crate::bc::BodyId, &str)>,
+        ty_label_leaf: &str,
+    ) -> Result<(), RuntimeError> {
+        let offset = self.cursor_tell();
+        let parent_idx = self.push_node(NodeOut {
+            name: name.to_owned(),
+            ty: NodeType::Unknown(format!("{ty_label_leaf}[]")),
+            offset,
+            length: 0,
+            value: None,
+            parent,
+            attrs: attrs.to_vec(),
+        });
+        let pred_ops = &program.pred_streams[pred.0 as usize];
+        let mut count = 0u64;
+        let mut last_pos = self.cursor_tell();
+        let mut stalls = 0u32;
+        self.array_index_stack.push(0);
+        let result = (|| -> Result<(), RuntimeError> {
+            loop {
+                *self.array_index_stack.last_mut().unwrap() = count;
+                if self.cursor_tell() >= self.source.len() {
+                    break;
+                }
+                // Run the predicate sub-stream; it pushes one
+                // boolean (or numeric) value on the operand stack.
+                self.exec_bytecode_body(program, pred_ops, parent, false, stack, pending_attrs)?;
+                let v = stack
+                    .pop()
+                    .ok_or(RuntimeError::BytecodeStackUnderflow { op: "ReadArrayWhile/pred" })?;
+                if !v.is_truthy() {
+                    break;
+                }
+                let elem_name = format!("[{count}]");
+                let read_res = match body_dispatch {
+                    Some((body_id, display)) => self.exec_bytecode_struct(
+                        program,
+                        body_id,
+                        &elem_name,
+                        display,
+                        Some(parent_idx),
+                        stack,
+                        pending_attrs,
+                        &[],
+                    ),
+                    None => self
+                        .read_scalar(&elem_name, ty.expect("ty for read_scalar dispatch"), Some(parent_idx), &[], None)
+                        .map(|_| ()),
+                };
+                match read_res {
+                    Ok(()) => {}
+                    Err(RuntimeError::Source(_)) => break,
+                    Err(e) => return Err(e),
+                }
+                count += 1;
+                if self.break_pending {
+                    self.break_pending = false;
+                    break;
+                }
+                let now = self.cursor_tell();
+                if now == last_pos {
+                    stalls += 1;
+                    if stalls > 4 {
+                        self.diagnostics.push(Diagnostic {
+                            message: format!(
+                                "dynamic array `{name}` stalled at offset {now} after {count} reads"
+                            ),
+                            severity: Severity::Warning,
+                            file_offset: Some(now),
+                            template_line: None,
+                        });
+                        break;
+                    }
+                } else {
+                    stalls = 0;
+                    last_pos = now;
+                }
+                if count >= LOOP_STALL_LIMIT as u64 {
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        self.array_index_stack.pop();
+        result?;
+        self.nodes[parent_idx.as_usize()].length = self.cursor_tell().saturating_sub(offset);
         Ok(())
     }
 
