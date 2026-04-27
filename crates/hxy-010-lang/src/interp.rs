@@ -1855,6 +1855,16 @@ impl<S: HexSource> Interpreter<S> {
                 match expr {
                     Expr::Member { target, field, .. } => {
                         if let Expr::Ident { name, .. } = &**target {
+                            // If the base ident resolves to Void
+                            // (a struct field that was clamped at
+                            // EOF, or a placeholder for an
+                            // unread struct), member access drops
+                            // to Void as well -- a switch on
+                            // `Header.TagType` then takes the
+                            // default arm instead of hard-erroring.
+                            if matches!(self.lookup_ident(name), Ok(Value::Void)) {
+                                return Ok(Value::Void);
+                            }
                             let composite = format!("{name}.{field}");
                             self.lookup_ident(&composite).or_else(|_| self.lookup_ident(field))
                         } else {
