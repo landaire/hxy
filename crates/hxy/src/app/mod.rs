@@ -60,7 +60,7 @@ pub struct HxyApp {
     /// `Tab::PluginMount` and supplies the byte source for child VFS
     /// entry tabs the user opens from the tree.
     #[cfg(not(target_arch = "wasm32"))]
-    mounts: std::collections::BTreeMap<crate::files::MountId, crate::files::MountedPlugin>,
+    pub(crate) mounts: std::collections::BTreeMap<crate::files::MountId, crate::files::MountedPlugin>,
     #[cfg(not(target_arch = "wasm32"))]
     next_mount_id: u64,
     /// Live compare sessions, keyed by the same id their
@@ -154,13 +154,13 @@ pub struct HxyApp {
     /// so panels like the Inspector (which take keyboard focus when
     /// clicked) keep showing data from the file the user was last
     /// reading, not from themselves.
-    last_active_file: Option<FileId>,
+    pub(crate) last_active_file: Option<FileId>,
     /// Same idea as `last_active_file` but for workspace context:
     /// remembers which workspace was most recently focused so
     /// "Toggle VFS panel" / "Browse VFS" don't silently no-op when
     /// the user happens to have clicked into the inspector or
     /// console. Cleared when the corresponding workspace closes.
-    last_active_workspace: Option<crate::files::WorkspaceId>,
+    pub(crate) last_active_workspace: Option<crate::files::WorkspaceId>,
     /// Native macOS menu bar. `None` until the app is constructed on
     /// the main thread. Dropping it tears the NSMenu down.
     #[cfg(target_os = "macos")]
@@ -205,13 +205,13 @@ pub struct HxyApp {
     /// no longer exists) are evicted by `pane_pick::tick` so the
     /// freed letter is available for the next new leaf.
     #[cfg(not(target_arch = "wasm32"))]
-    pane_pick_letters: std::collections::BTreeMap<u64, char>,
+    pub(crate) pane_pick_letters: std::collections::BTreeMap<u64, char>,
     /// Set when the user tries to close a tab that has unsaved
     /// edits -- via Cmd+W or by clicking the tab's X. The modal
     /// renders next frame and asks Save / Don't Save / Cancel;
     /// only `Save`-then-success or `Don't Save` actually close the
     /// tab, the third does nothing.
-    pub(crate) pending_close_tab: Option<PendingCloseTab>,
+    pub(crate) pending_close_tab: Option<crate::tabs::close::PendingCloseTab>,
     /// Tracks which dock the user's last tab-bar interaction was in,
     /// so `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the correct surface
     /// (outer dock vs a specific workspace's inner dock). Toggled
@@ -221,7 +221,7 @@ pub struct HxyApp {
     /// Same shape as `pending_close_tab` but written from the inner
     /// workspace dock's `on_close`. Drained alongside the regular
     /// pending-close slot; the modal treats them identically.
-    pub(crate) pending_close_workspace_entry: Option<PendingCloseTab>,
+    pub(crate) pending_close_workspace_entry: Option<crate::tabs::close::PendingCloseTab>,
     /// `WorkspaceId`s the inner dock drained to "no tabs left except
     /// the editor". Drained post-dock to collapse the workspace back
     /// to a plain `Tab::File` in the outer dock.
@@ -241,7 +241,7 @@ pub struct HxyApp {
     /// dock tab; lives on the app so query / matches survive the user
     /// closing and reopening the tab.
     #[cfg(not(target_arch = "wasm32"))]
-    global_search: crate::search::global::GlobalSearchState,
+    pub(crate) global_search: crate::search::global::GlobalSearchState,
     /// Events the global search tab emitted this frame. Drained at the
     /// end of `ui()` so we can mutate `files` (focus / jump) after the
     /// dock has released its borrow.
@@ -253,7 +253,7 @@ pub struct HxyApp {
     /// `Tab::PluginMount`) back into the user's main editing area
     /// instead of the tool panel itself. Refreshed each frame.
     #[cfg(not(target_arch = "wasm32"))]
-    last_content_leaf: Option<egui_dock::NodePath>,
+    pub(crate) last_content_leaf: Option<egui_dock::NodePath>,
     /// File paths from the launch's command line. Drained on the
     /// first frame and turned into open-file requests, so a
     /// `hxy a.bin b.bin` invocation lands two tabs as soon as the
@@ -297,15 +297,6 @@ pub struct HxyApp {
     pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
 }
 
-/// One tab the user has asked to close, gated on its dirty buffer.
-/// Carries enough metadata to render the prompt without re-reading
-/// `app.files` (which would force the modal to re-borrow during
-/// rendering).
-#[derive(Clone, Debug)]
-pub struct PendingCloseTab {
-    pub file_id: FileId,
-    pub display_name: String,
-}
 
 /// One entry in the Console tab. `context` identifies the plugin run
 /// that produced the message -- typically `<data-file> / <template-file>`.
@@ -539,7 +530,7 @@ impl HxyApp {
             self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        let node_path = push_tool_tab(&mut self.dock, Tab::Plugins);
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Plugins);
         self.dock.set_focused_node_and_surface(node_path);
     }
 
@@ -862,7 +853,7 @@ impl HxyApp {
         if !pushed_workspace {
             self.dock.push_to_focused_leaf(Tab::File(id));
             if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
-                remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+                crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
             }
         }
 
@@ -1019,7 +1010,7 @@ impl HxyApp {
         let workspace_id = self.spawn_workspace(id, mount);
         self.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
         if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
-            remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+            crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
         }
         true
     }
@@ -1186,9 +1177,9 @@ impl HxyApp {
                     },
                 );
                 let _ = as_workspace; // plugin mount tabs always show the tree
-                let _ = push_tool_tab(&mut self.dock, Tab::PluginMount(mount_id));
+                let _ = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::PluginMount(mount_id));
                 if let Some(path) = self.dock.find_tab(&Tab::PluginMount(mount_id)) {
-                    remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+                    crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
                 }
                 Ok(())
             }
@@ -1290,7 +1281,7 @@ impl HxyApp {
                     self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
                 self.apply_readonly_for_source(id);
                 if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
-                    push_workspace_entry(workspace, id);
+                    crate::tabs::dock_ops::push_workspace_entry(workspace, id);
                 } else {
                     // Workspace vanished between schedule and apply.
                     // Fall back to a top-level tab so the user doesn't
@@ -1605,7 +1596,7 @@ impl eframe::App for HxyApp {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        track_content_leaf(self);
+        crate::tabs::dock_ops::track_content_leaf(self);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(mount_id) = self.pending_close_mount.take()
             && let Some(removed) = self.mounts.remove(&mount_id)
@@ -1632,7 +1623,7 @@ impl eframe::App for HxyApp {
         // only the Editor sub-tab gets unwrapped to a plain Tab::File.
         let to_collapse = std::mem::take(&mut self.pending_collapse_workspace);
         for workspace_id in to_collapse {
-            collapse_workspace_to_file(self, workspace_id);
+            crate::tabs::close::collapse_workspace_to_file(self, workspace_id);
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1666,7 +1657,7 @@ impl eframe::App for HxyApp {
         // after the dock has rendered so leaf rects are this
         // frame's, not last frame's.
         #[cfg(not(target_arch = "wasm32"))]
-        handle_pane_pick(ui.ctx(), self);
+        crate::tabs::focus::handle_pane_pick(ui.ctx(), self);
         // Palette runs first so it gets first crack at keyboard
         // events. egui clears focus on plain Escape during its own
         // event preprocessing, so egui_wants_keyboard_input() reads
@@ -1679,21 +1670,21 @@ impl eframe::App for HxyApp {
         dispatch_copy_shortcut(ui.ctx(), self);
         dispatch_save_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        dispatch_close_shortcut(ui.ctx(), self);
+        crate::tabs::close::dispatch_close_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_paste_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         dispatch_find_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        dispatch_focus_pane_shortcut(ui.ctx(), self);
-        dispatch_tab_focus_toggle(ui.ctx(), self);
-        dispatch_tab_cycle(ui.ctx(), self);
+        crate::tabs::focus::dispatch_focus_pane_shortcut(ui.ctx(), self);
+        crate::tabs::focus::dispatch_tab_focus_toggle(ui.ctx(), self);
+        crate::tabs::focus::dispatch_tab_cycle(ui.ctx(), self);
         dispatch_hex_edit_keys(ui.ctx(), self);
         render_duplicate_open_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         render_patch_restore_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
-        render_close_tab_dialog(ui.ctx(), self);
+        crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         {
             crate::search::modal::drain_search_effects(self);
@@ -2556,7 +2547,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 // The click happened in the tool panel, so focus is
                 // there too. Move focus back to the editing area
                 // before `open` -- it routes via push_to_focused_leaf.
-                focus_content_leaf(app);
+                crate::tabs::dock_ops::focus_content_leaf(app);
                 app.open(name, Some(source), bytes, None, None, false);
             }
         }
@@ -2606,392 +2597,12 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
             #[cfg(not(target_arch = "wasm32"))]
             redo_active_file(app);
         }
-        CommandEffect::DockSplit(dir) => dock_split_focused(app, dir),
-        CommandEffect::DockMerge(dir) => dock_merge_focused(app, dir),
-        CommandEffect::DockMoveTab(dir) => dock_move_focused_tab(app, dir),
+        CommandEffect::DockSplit(dir) => crate::tabs::dock_ops::dock_split_focused(app, dir),
+        CommandEffect::DockMerge(dir) => crate::tabs::dock_ops::dock_merge_focused(app, dir),
+        CommandEffect::DockMoveTab(dir) => crate::tabs::dock_ops::dock_move_focused_tab(app, dir),
     }
 }
 
-/// Resolve which dock leaf a split / merge command should act on.
-/// Prefers the focused leaf; falls back to the leaf containing the
-/// active file so the user doesn't have to click into a tab first.
-fn resolve_target_leaf(app: &mut HxyApp) -> Option<egui_dock::NodePath> {
-    if let Some(path) = app.dock.focused_leaf() {
-        return Some(path);
-    }
-    let id = active_file_id(app)?;
-    let tab = app.dock.find_tab(&Tab::File(id))?;
-    Some(egui_dock::NodePath { surface: tab.surface, node: tab.node })
-}
-
-/// Split the target leaf in `dir` and seed the new pane with a
-/// fresh Welcome placeholder. The new leaf becomes focused so the
-/// next file the user opens (or tab they drag in) lands there and
-/// replaces the placeholder. Duplicating the focused tab instead
-/// would clone its identity (e.g. two `Tab::File(id)` pointing at
-/// the same underlying file) and break close-tab semantics.
-fn dock_split_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
-    use crate::commands::DockDir;
-    let Some(path) = resolve_target_leaf(app) else { return };
-    let tree = &mut app.dock[path.surface];
-    let [_, new_node] = match dir {
-        DockDir::Right => tree.split_right(path.node, 0.5, vec![Tab::Welcome]),
-        DockDir::Left => tree.split_left(path.node, 0.5, vec![Tab::Welcome]),
-        DockDir::Up => tree.split_above(path.node, 0.5, vec![Tab::Welcome]),
-        DockDir::Down => tree.split_below(path.node, 0.5, vec![Tab::Welcome]),
-    };
-    app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: path.surface, node: new_node });
-}
-
-/// Collapse the target leaf into its neighbour on `dir`: move every
-/// tab into the neighbour's leaf and let egui_dock drop the now-
-/// empty leaf + collapse the parent split. No-op when there's no
-/// neighbour on that side (e.g. merge-left from the leftmost pane).
-fn dock_merge_focused(app: &mut HxyApp, dir: crate::commands::DockDir) {
-    let Some(path) = resolve_target_leaf(app) else { return };
-    let tree = &app.dock[path.surface];
-    let Some(neighbor_node) = find_neighbor_leaf(tree, path.node, dir) else { return };
-    let target = egui_dock::NodePath { surface: path.surface, node: neighbor_node };
-    dock_merge_to(app, path, target);
-}
-
-/// Pour every tab from `source` into `target`, then remove `source`
-/// so the parent split collapses. Operations across surfaces are
-/// supported -- each surface's tree is mutated independently. No-op
-/// when source equals target or source has no tabs.
-fn dock_merge_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_dock::NodePath) {
-    if source == target {
-        return;
-    }
-    let tabs: Vec<_> = match &mut app.dock[source.surface][source.node] {
-        egui_dock::Node::Leaf(leaf) => std::mem::take(&mut leaf.tabs),
-        _ => return,
-    };
-    if tabs.is_empty() {
-        return;
-    }
-    let moved_real_tab = tabs.iter().any(|t| !matches!(t, Tab::Welcome));
-    // Stash one of the tabs we're about to move so we can find the
-    // destination leaf again after remove_leaf -- it rewires node
-    // indices, so `target` is not safe to index into the tree
-    // after the remove. Looking it up by tab is robust.
-    let refocus_tab = tabs[0];
-    for tab in tabs {
-        app.dock[target.surface][target.node].append_tab(tab);
-    }
-    if moved_real_tab {
-        remove_welcome_from_leaf(&mut app.dock, target.surface, target.node);
-    }
-    app.dock[source.surface].remove_leaf(source.node);
-    if let Some(found) = app.dock.find_tab(&refocus_tab) {
-        app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
-    }
-}
-
-/// Pop just the focused tab from its leaf and append it to the
-/// neighbour leaf in `dir`. Sibling tabs stay where they are -- this
-/// is the single-tab counterpart to [`dock_merge_focused`]. If the
-/// source leaf ends up empty after the move it gets removed the same
-/// way merge does so the parent split collapses.
-fn dock_move_focused_tab(app: &mut HxyApp, dir: crate::commands::DockDir) {
-    let Some(path) = resolve_target_leaf(app) else { return };
-    let tree = &app.dock[path.surface];
-    let Some(neighbor_node) = find_neighbor_leaf(tree, path.node, dir) else { return };
-    let target = egui_dock::NodePath { surface: path.surface, node: neighbor_node };
-    dock_move_tab_to(app, path, target);
-}
-
-/// Move just the source leaf's active tab into `target`. Sibling
-/// tabs stay put. If the source leaf ends up empty it's removed so
-/// the parent split collapses, the same way [`dock_merge_to`] does
-/// when the merge drains the leaf. Cross-surface moves are supported.
-fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: egui_dock::NodePath) {
-    if source == target {
-        return;
-    }
-    let moved_tab = match &mut app.dock[source.surface][source.node] {
-        egui_dock::Node::Leaf(leaf) => {
-            if leaf.tabs.is_empty() {
-                return;
-            }
-            let idx = leaf.active.0.min(leaf.tabs.len().saturating_sub(1));
-            let tab = leaf.tabs.remove(idx);
-            // Keep the source leaf's active selection sane after the
-            // remove: clamp to the new last index, falling back to 0
-            // when the leaf is now empty (it'll be removed below).
-            if !leaf.tabs.is_empty() {
-                let new_active = idx.min(leaf.tabs.len() - 1);
-                leaf.active = egui_dock::TabIndex(new_active);
-            }
-            tab
-        }
-        _ => return,
-    };
-    let refocus_tab = moved_tab;
-    let moved_real_tab = !matches!(moved_tab, Tab::Welcome);
-    app.dock[target.surface][target.node].append_tab(moved_tab);
-    if moved_real_tab {
-        remove_welcome_from_leaf(&mut app.dock, target.surface, target.node);
-    }
-    let source_empty =
-        matches!(&app.dock[source.surface][source.node], egui_dock::Node::Leaf(leaf) if leaf.tabs.is_empty());
-    if source_empty {
-        app.dock[source.surface].remove_leaf(source.node);
-    }
-    // Refocus on the moved tab. `target` may have been rewired by
-    // remove_leaf, so look it up by the moved tab itself.
-    if let Some(found) = app.dock.find_tab(&refocus_tab) {
-        app.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: found.surface, node: found.node });
-    }
-}
-
-/// Remove any [`Tab::Welcome`] entry from the given leaf. Used by
-/// the file-open and tab-move paths so the Welcome placeholder
-/// quietly steps aside whenever a real tab takes over its pane.
-/// Toggle visibility of the right-hand tool panel (the Plugins
-/// manager and any plugin mount tabs). When visible, drains every
-/// tool-class tab out of the dock into `hidden_tool_tabs`. The
-/// now-empty leaf is removed by egui_dock and adjacent panes reflow
-/// to take the space. When hidden, recreates the right-split leaf
-/// at the standard 28% width and refills it from the stash.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn toggle_tool_panel(app: &mut HxyApp) {
-    if !app.hidden_tool_tabs.is_empty() {
-        // Restore.
-        let to_restore = std::mem::take(&mut app.hidden_tool_tabs);
-        let mut iter = to_restore.into_iter();
-        let Some(first) = iter.next() else { return };
-        app.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![first]);
-        if let Some(path) = app.dock.find_tab(&first) {
-            for tab in iter {
-                if let Ok(leaf) = app.dock.leaf_mut(path.node_path()) {
-                    leaf.append_tab(tab);
-                }
-            }
-        }
-        return;
-    }
-    // Hide. Walk every tool-class tab; collect them in dock order so
-    // restore preserves the visual sequence the user had. Remove
-    // from highest tab index per leaf first to avoid index shifts
-    // invalidating subsequent paths.
-    let mut to_hide: Vec<(egui_dock::TabPath, Tab)> = Vec::new();
-    for (path, tab) in app.dock.iter_all_tabs() {
-        if is_tool_tab(tab) {
-            to_hide.push((path, *tab));
-        }
-    }
-    if to_hide.is_empty() {
-        return;
-    }
-    // Sort descending so removing earlier indices doesn't shift later ones.
-    to_hide.sort_by(|a, b| b.0.tab.0.cmp(&a.0.tab.0));
-    let stash: Vec<Tab> = to_hide.iter().rev().map(|(_, t)| *t).collect();
-    for (path, _) in to_hide {
-        let _ = app.dock.remove_tab(path);
-    }
-    app.hidden_tool_tabs = stash;
-}
-
-/// Toggle visibility of the workspace VFS tree sub-tab. Hide just
-/// removes `WorkspaceTab::VfsTree` from the workspace's inner dock
-/// (the leaf that hosted it auto-cleans if it was the only tab,
-/// returning that horizontal slice to the editor + entries leaf).
-/// Show re-adds the tree as a fresh left split at the same default
-/// fraction we use for new workspaces.
-pub(crate) fn toggle_workspace_vfs(app: &mut HxyApp) {
-    let Some(workspace_id) = active_workspace_id(app) else { return };
-    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
-    if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::VfsTree) {
-        let _ = workspace.dock.remove_tab(path);
-    } else {
-        workspace.dock.main_surface_mut().split_left(
-            egui_dock::NodeIndex::root(),
-            0.3,
-            vec![crate::files::WorkspaceTab::VfsTree],
-        );
-    }
-}
-
-/// Push a freshly-opened VFS entry into the leaf that holds the
-/// workspace's `Editor` sub-tab so the entry stacks alongside the
-/// parent file rather than landing wherever the user was last
-/// clicking (typically the VFS-tree leaf, since the click that
-/// triggered the open came from there). The tree stays in its own
-/// dedicated leaf as a tool panel.
-#[cfg(not(target_arch = "wasm32"))]
-fn push_workspace_entry(workspace: &mut crate::files::Workspace, file_id: FileId) {
-    let entry = crate::files::WorkspaceTab::Entry(file_id);
-    if let Some(editor_path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::Editor)
-        && let Ok(leaf) = workspace.dock.leaf_mut(editor_path.node_path())
-    {
-        leaf.append_tab(entry);
-        return;
-    }
-    // Editor's gone (shouldn't happen during normal use). Fall back
-    // to focused leaf so the file isn't lost.
-    workspace.dock.push_to_focused_leaf(entry);
-}
-
-/// Tabs that belong in the right-hand "tool" panel: the plugin manager
-/// and any live plugin VFS browser. Adding a new tool-class tab type
-/// (e.g. a hypothetical `Tab::Workspace`) means listing it here so the
-/// dock router knows to keep it out of the file editing area.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn is_tool_tab(t: &Tab) -> bool {
-    matches!(t, Tab::Plugins | Tab::PluginMount(_))
-}
-
-/// Tabs that hold the user's main editing surface -- File buffers and
-/// the two static placeholders (Welcome, Settings) that share the same
-/// leaf with them. Console / Inspector / SearchResults are *neither*
-/// content nor tool: they have their own placement logic and never
-/// receive routed File tabs.
-#[cfg(not(target_arch = "wasm32"))]
-fn is_content_tab(t: &Tab) -> bool {
-    matches!(t, Tab::File(_) | Tab::Welcome | Tab::Settings)
-}
-
-/// First leaf in the dock whose tabs are all tool-class. Used as the
-/// destination for plugin tab opens; if no such leaf exists, the
-/// caller splits a new one off the right side.
-#[cfg(not(target_arch = "wasm32"))]
-fn find_tool_leaf(dock: &egui_dock::DockState<Tab>) -> Option<egui_dock::NodePath> {
-    for (path, _tab) in dock.iter_all_tabs() {
-        let node_path = path.node_path();
-        let Ok(leaf) = dock.leaf(node_path) else { continue };
-        if !leaf.tabs.is_empty() && leaf.tabs.iter().all(is_tool_tab) {
-            return Some(node_path);
-        }
-    }
-    None
-}
-
-/// First leaf whose tabs include any content-class entry. Used as the
-/// fallback target for File opens originating from inside a tool
-/// panel when `HxyApp::last_content_leaf` is stale or unset.
-#[cfg(not(target_arch = "wasm32"))]
-fn find_content_leaf(dock: &egui_dock::DockState<Tab>) -> Option<egui_dock::NodePath> {
-    for (path, _tab) in dock.iter_all_tabs() {
-        let node_path = path.node_path();
-        let Ok(leaf) = dock.leaf(node_path) else { continue };
-        if leaf.tabs.iter().any(is_content_tab) {
-            return Some(node_path);
-        }
-    }
-    None
-}
-
-/// Append `tab` to the dock's tool leaf, creating one with a right
-/// split off the main surface root if none exists yet. Activates the
-/// new tab in its leaf but does not move keyboard focus -- callers
-/// that want focus follow this with `set_focused_node_and_surface`.
-#[cfg(not(target_arch = "wasm32"))]
-fn push_tool_tab(dock: &mut egui_dock::DockState<Tab>, tab: Tab) -> egui_dock::NodePath {
-    if let Some(node_path) = find_tool_leaf(dock)
-        && let Ok(leaf) = dock.leaf_mut(node_path)
-    {
-        leaf.append_tab(tab);
-        return node_path;
-    }
-    dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![tab]);
-    // After split_right the new leaf is the second one returned, but
-    // we don't need the index here -- the caller can re-find it via
-    // `dock.find_tab` if it needs the path.
-    find_tool_leaf(dock).expect("split_right just created a tool leaf")
-}
-
-/// Snapshot the currently-focused leaf if it counts as a content
-/// leaf. Called after each dock pass so file opens routed via
-/// `last_content_leaf` land where the user was last editing.
-#[cfg(not(target_arch = "wasm32"))]
-fn track_content_leaf(app: &mut HxyApp) {
-    let Some(node_path) = app.dock.focused_leaf() else { return };
-    let Ok(leaf) = app.dock.leaf(node_path) else { return };
-    if leaf.tabs.iter().any(is_content_tab) {
-        app.last_content_leaf = Some(node_path);
-    }
-}
-
-/// Move dock focus onto the saved `last_content_leaf`, falling back
-/// to the first content-bearing leaf in the dock. Used right before
-/// `app.open()` from a plugin VFS click so `push_to_focused_leaf`
-/// inside `open` lands the new File tab in the editing area.
-#[cfg(not(target_arch = "wasm32"))]
-fn focus_content_leaf(app: &mut HxyApp) {
-    if let Some(node_path) = app.last_content_leaf
-        && app.dock.leaf(node_path).is_ok()
-    {
-        app.dock.set_focused_node_and_surface(node_path);
-        return;
-    }
-    if let Some(node_path) = find_content_leaf(&app.dock) {
-        app.last_content_leaf = Some(node_path);
-        app.dock.set_focused_node_and_surface(node_path);
-    }
-}
-
-pub(crate) fn remove_welcome_from_leaf(
-    dock: &mut egui_dock::DockState<Tab>,
-    surface: egui_dock::SurfaceIndex,
-    node: egui_dock::NodeIndex,
-) {
-    let welcome_idx = match &dock[surface][node] {
-        egui_dock::Node::Leaf(leaf) => leaf.tabs.iter().position(|t| matches!(t, Tab::Welcome)),
-        _ => None,
-    };
-    if let Some(idx) = welcome_idx {
-        let _ = dock.remove_tab(egui_dock::TabPath { surface, node, tab: egui_dock::TabIndex(idx) });
-    }
-}
-
-/// Walk up the tree from `current` looking for the nearest ancestor
-/// split oriented so `dir` steps across it; then descend the sibling
-/// subtree to find a concrete leaf. Returns `None` when no such
-/// neighbour exists (current is on the outer edge in `dir`).
-fn find_neighbor_leaf(
-    tree: &egui_dock::Tree<Tab>,
-    current: egui_dock::NodeIndex,
-    dir: crate::commands::DockDir,
-) -> Option<egui_dock::NodeIndex> {
-    use crate::commands::DockDir;
-    use egui_dock::Node;
-    let mut node = current;
-    loop {
-        let parent = node.parent()?;
-        let was_left = node == parent.left();
-        if parent.0 >= tree.len() {
-            return None;
-        }
-        let takes_us_across = match (&tree[parent], dir) {
-            (Node::Horizontal(_), DockDir::Right) if was_left => true,
-            (Node::Horizontal(_), DockDir::Left) if !was_left => true,
-            (Node::Vertical(_), DockDir::Down) if was_left => true,
-            (Node::Vertical(_), DockDir::Up) if !was_left => true,
-            _ => false,
-        };
-        if takes_us_across {
-            let sibling = if was_left { parent.right() } else { parent.left() };
-            return first_leaf_in(tree, sibling);
-        }
-        node = parent;
-    }
-}
-
-fn first_leaf_in(tree: &egui_dock::Tree<Tab>, start: egui_dock::NodeIndex) -> Option<egui_dock::NodeIndex> {
-    use egui_dock::Node;
-    let mut cur = start;
-    loop {
-        if cur.0 >= tree.len() {
-            return None;
-        }
-        match &tree[cur] {
-            Node::Leaf(_) => return Some(cur),
-            Node::Empty => return None,
-            Node::Horizontal(_) | Node::Vertical(_) => cur = cur.left(),
-        }
-    }
-}
 
 /// Invoke the active tab's detected handler to mount its source into a
 /// browsable VFS. On success, the tree panel picks it up automatically
@@ -3392,7 +3003,7 @@ fn mount_active_file(app: &mut HxyApp) {
 /// `Toggle VFS panel` and friends evaporate), and finally -- when
 /// only one workspace is open -- that sole workspace. Returns
 /// `None` only when no workspace exists.
-fn active_workspace_id(app: &mut HxyApp) -> Option<crate::files::WorkspaceId> {
+pub(crate) fn active_workspace_id(app: &mut HxyApp) -> Option<crate::files::WorkspaceId> {
     if let Some((_, tab)) = app.dock.find_active_focused()
         && let Tab::Workspace(id) = *tab
     {
@@ -4144,7 +3755,7 @@ fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persisted
         .show(ui);
     file.editor.on_response(&response, columns);
     file.hovered = response.hovered_offset;
-    sync_tab_state(state, file);
+    crate::tabs::close::sync_tab_state(state, file);
 
     // If a template is active and the user is hovering a byte it
     // covers, pop a breadcrumb tooltip next to the pointer showing
@@ -4294,7 +3905,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::OpenFile => crate::files::open::handle_open_file(app),
             crate::menu::MenuAction::Save => crate::files::save::save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => crate::files::save::save_active_file(app, true),
-            crate::menu::MenuAction::CloseTab => request_close_active_tab(app),
+            crate::menu::MenuAction::CloseTab => crate::tabs::close::request_close_active_tab(app),
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::Undo => undo_active_file(app),
             crate::menu::MenuAction::Redo => redo_active_file(app),
@@ -4467,7 +4078,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                 let close_text = ui.ctx().format_shortcut(&CLOSE_TAB);
                 if ui.add(egui::Button::new(hxy_i18n::t("menu-file-close")).shortcut_text(close_text)).clicked() {
                     ui.close();
-                    request_close_active_tab(app);
+                    crate::tabs::close::request_close_active_tab(app);
                 }
                 ui.separator();
                 if ui.button(hxy_i18n::t("menu-file-quit")).clicked() {
@@ -4597,193 +4208,11 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     });
 }
 
-/// Close a specific File tab by id, no questions asked. Removes
-/// the tab from the dock, drops the `OpenFile` from `app.files`,
-/// and clears the matching persisted `OpenTabState` so the tab
-/// doesn't reappear on next launch. Callers responsible for
-/// gating on dirtiness -- this helper is the unconditional path
-/// the modal's "Don't Save" branch uses.
-fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
-    // Top-level Tab::File case: the simple path -- remove the dock
-    // tab and drop the file.
-    if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
-        let _ = app.dock.remove_tab(path);
-    }
-    // Workspace-entry case: scan every workspace's inner dock for
-    // a `WorkspaceTab::Entry(id)` and remove it. The workspace
-    // editor itself never closes through this path -- it goes
-    // through `close_workspace_by_id`.
-    for workspace in app.workspaces.values_mut() {
-        if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::Entry(id)) {
-            let _ = workspace.dock.remove_tab(path);
-            break;
-        }
-    }
-    if let Some(removed) = app.files.remove(&id)
-        && let Some(source) = removed.source_kind
-    {
-        let mut state = app.state.write();
-        state.open_tabs.retain(|t| t.source != source);
-    }
-    if app.last_active_file == Some(id) {
-        app.last_active_file = None;
-    }
-    // Drop any template-prompt toasts targeting this tab so they
-    // don't trigger a no-op run against a freed FileId.
-    app.toasts.dismiss_for_file(id);
-}
 
-/// Cmd+W entry point. Closes the currently focused tab. For File
-/// tabs the dirty-check is the same one `on_close` uses: when the
-/// editor has uncommitted edits the modal is staged instead of
-/// dropping. Non-File tabs (Console, Inspector, Plugins, ...)
-/// close immediately -- they have no save state.
-#[cfg(not(target_arch = "wasm32"))]
-fn request_close_active_tab(app: &mut HxyApp) {
-    let Some((_, tab)) = app.dock.find_active_focused() else { return };
-    let tab = *tab;
-    match tab {
-        Tab::File(id) => {
-            if let Some(file) = app.files.get(&id)
-                && file.editor.is_dirty()
-            {
-                app.pending_close_tab = Some(PendingCloseTab { file_id: id, display_name: file.display_name.clone() });
-                return;
-            }
-            close_file_tab_by_id(app, id);
-        }
-        Tab::Welcome | Tab::Settings => {
-            // These two are non-closeable in the TabViewer
-            // (`closeable` returns false), so Cmd+W matches.
-        }
-        Tab::Console | Tab::Inspector | Tab::Plugins => {
-            if let Some(path) = app.dock.find_tab(&tab) {
-                let _ = app.dock.remove_tab(path);
-            }
-        }
-        Tab::PluginMount(mount_id) => {
-            if let Some(path) = app.dock.find_tab(&tab) {
-                let _ = app.dock.remove_tab(path);
-            }
-            if let Some(removed) = app.mounts.remove(&mount_id) {
-                let target = TabSource::PluginMount {
-                    plugin_name: removed.plugin_name,
-                    token: removed.token,
-                    title: removed.display_name,
-                };
-                app.state.write().open_tabs.retain(|t| t.source != target);
-            }
-        }
-        Tab::SearchResults => {
-            if let Some(path) = app.dock.find_tab(&tab) {
-                let _ = app.dock.remove_tab(path);
-            }
-            app.global_search.open = false;
-        }
-        Tab::Workspace(workspace_id) => {
-            close_workspace_by_id(app, workspace_id);
-        }
-        Tab::Compare(compare_id) => {
-            if let Some(path) = app.dock.find_tab(&tab) {
-                let _ = app.dock.remove_tab(path);
-            }
-            app.compares.remove(&compare_id);
-        }
-    }
-}
 
-/// Collapse a workspace whose inner dock has been emptied of
-/// everything except the Editor sub-tab back to a plain `Tab::File`
-/// in the outer dock. The workspace entry is dropped from
-/// `app.workspaces` and the persisted `as_workspace` flag is cleared.
-fn collapse_workspace_to_file(app: &mut HxyApp, workspace_id: crate::files::WorkspaceId) {
-    let Some(workspace) = app.workspaces.remove(&workspace_id) else { return };
-    if app.last_active_workspace == Some(workspace_id) {
-        app.last_active_workspace = None;
-    }
-    let editor_id = workspace.editor_id;
 
-    // Replace the outer Tab::Workspace with Tab::File(editor_id) in
-    // the same leaf so the user's pane layout doesn't shift.
-    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
-        let _ = app.dock.remove_tab(path);
-    }
-    app.dock.push_to_focused_leaf(Tab::File(editor_id));
-    if let Some(path) = app.dock.find_tab(&Tab::File(editor_id)) {
-        let _ = app.dock.set_active_tab(path);
-    }
 
-    // Clear the persisted as_workspace flag so the next launch
-    // restores the file as a plain tab rather than spawning an
-    // empty workspace.
-    if let Some(source) = app.files.get(&editor_id).and_then(|f| f.source_kind.clone()) {
-        let mut g = app.state.write();
-        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
-            entry.as_workspace = false;
-        }
-    }
-}
 
-/// Close the entire `Tab::Workspace(workspace_id)` -- the editor
-/// itself plus any open VFS entries inside the inner dock. Each
-/// closing file is dirty-checked against `pending_close_tab` the
-/// same way single-file closes are; if any sub-file is dirty the
-/// close stalls until the modal returns.
-#[cfg(not(target_arch = "wasm32"))]
-fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::files::WorkspaceId) {
-    let workspace = match app.workspaces.remove(&workspace_id) {
-        Some(w) => w,
-        None => return,
-    };
-    if app.last_active_workspace == Some(workspace_id) {
-        app.last_active_workspace = None;
-    }
-    if let Some(path) = app.dock.find_tab(&Tab::Workspace(workspace_id)) {
-        let _ = app.dock.remove_tab(path);
-    }
-
-    // Remove the editor file + any entry files. Also drop their
-    // persistence rows so the next launch doesn't try to restore them
-    // into a vanished workspace.
-    let mut to_drop: Vec<FileId> = vec![workspace.editor_id];
-    for (_, t) in workspace.dock.iter_all_tabs() {
-        if let crate::files::WorkspaceTab::Entry(file_id) = t {
-            to_drop.push(*file_id);
-        }
-    }
-    let mut state = app.state.write();
-    for file_id in &to_drop {
-        if let Some(removed) = app.files.remove(file_id)
-            && let Some(source) = removed.source_kind
-        {
-            state.open_tabs.retain(|t| t.source != source);
-        }
-    }
-}
-
-/// Cmd+W shortcut dispatcher. Sits next to the other shortcut
-/// dispatchers in [`HxyApp::ui`]; runs after the palette/picker so
-/// they can claim the keypress first if either is open.
-#[cfg(not(target_arch = "wasm32"))]
-fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    if ctx.input_mut(|i| i.consume_shortcut(&CLOSE_TAB)) {
-        request_close_active_tab(app);
-    }
-}
-
-/// Cmd+K stages the visual pane-focus picker. No-op when a picker
-/// session is already active so a double-press doesn't rebind state
-/// mid-pick.
-#[cfg(not(target_arch = "wasm32"))]
-fn dispatch_focus_pane_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    if !ctx.input_mut(|i| i.consume_shortcut(&FOCUS_PANE)) {
-        return;
-    }
-    if app.pending_pane_pick.is_some() {
-        return;
-    }
-    start_pane_focus(app);
-}
 
 /// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
 /// opens the cross-file search results tab. The shortcut runs after
@@ -4835,148 +4264,11 @@ fn toggle_global_search(app: &mut HxyApp) {
     app.global_search.open = true;
 }
 
-/// Ctrl+Tab / Ctrl+Shift+Tab cycle tabs in the surface implied by
-/// `app.tab_focus`: the outer dock's focused leaf when focus is on
-/// the outer dock, or the workspace's inner dock when focus is on
-/// a workspace. Wraps at the ends of the leaf's tab list. Never
-/// crosses dock leaves.
-fn dispatch_tab_cycle(ctx: &egui::Context, app: &mut HxyApp) {
-    // Drain Ctrl+Shift+Tab first; otherwise Ctrl+Tab's
-    // `consume_shortcut` swallows it (egui ignores extra Shift).
-    let backward = ctx.input_mut(|i| i.consume_shortcut(&PREV_TAB));
-    let forward = !backward && ctx.input_mut(|i| i.consume_shortcut(&NEXT_TAB));
-    if !forward && !backward {
-        return;
-    }
-    match app.tab_focus {
-        TabFocus::Outer => cycle_outer_focused_leaf(app, forward),
-        TabFocus::Workspace(workspace_id) => {
-            // If the workspace was closed since we last focused, fall
-            // back to the outer dock so the keystroke still does
-            // something useful.
-            if !app.workspaces.contains_key(&workspace_id) {
-                app.tab_focus = TabFocus::Outer;
-                cycle_outer_focused_leaf(app, forward);
-                return;
-            }
-            cycle_workspace_focused_leaf(app, workspace_id, forward);
-        }
-    }
-}
 
-fn cycle_outer_focused_leaf(app: &mut HxyApp, forward: bool) {
-    let Some(node_path) = app.dock.focused_leaf() else { return };
-    let Ok(leaf) = app.dock.leaf(node_path) else { return };
-    let count = leaf.tabs().len();
-    if count < 2 {
-        return;
-    }
-    let current = leaf.active.0.min(count - 1);
-    let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
-    let tab_path = egui_dock::TabPath::from((node_path, egui_dock::TabIndex(next)));
-    let _ = app.dock.set_active_tab(tab_path);
-}
 
-fn cycle_workspace_focused_leaf(app: &mut HxyApp, workspace_id: crate::files::WorkspaceId, forward: bool) {
-    let Some(workspace) = app.workspaces.get_mut(&workspace_id) else { return };
-    // The workspace's inner dock has its own focused-leaf concept;
-    // when nothing is focused (e.g. immediately after restore) we
-    // default to the main surface root so cycling still works.
-    let node_path = workspace.dock.focused_leaf().unwrap_or(egui_dock::NodePath {
-        surface: egui_dock::SurfaceIndex::main(),
-        node: egui_dock::NodeIndex::root(),
-    });
-    let Ok(leaf) = workspace.dock.leaf(node_path) else { return };
-    let count = leaf.tabs().len();
-    if count < 2 {
-        return;
-    }
-    let current = leaf.active.0.min(count - 1);
-    let next = if forward { (current + 1) % count } else { (current + count - 1) % count };
-    let tab_path = egui_dock::TabPath::from((node_path, egui_dock::TabIndex(next)));
-    let _ = workspace.dock.set_active_tab(tab_path);
-}
 
-/// Alt+Tab toggles `tab_focus` between the outer dock and the
-/// workspace currently active in the outer dock. If the active outer
-/// tab isn't a workspace, the toggle is a no-op (there's nothing to
-/// switch to).
-fn dispatch_tab_focus_toggle(ctx: &egui::Context, app: &mut HxyApp) {
-    if !ctx.input_mut(|i| i.consume_shortcut(&TOGGLE_TAB_FOCUS)) {
-        return;
-    }
-    match app.tab_focus {
-        TabFocus::Outer => {
-            // Only switch into a workspace if the active outer tab
-            // *is* one. Otherwise there's no inner dock to cycle.
-            if let Some((_, tab)) = app.dock.find_active_focused()
-                && let Tab::Workspace(workspace_id) = *tab
-            {
-                app.tab_focus = TabFocus::Workspace(workspace_id);
-            }
-        }
-        TabFocus::Workspace(_) => {
-            app.tab_focus = TabFocus::Outer;
-        }
-    }
-}
 
-/// Render the "Save before closing?" modal when a close request
-/// is staged in `pending_close_tab`. Three terminal actions: Save
-/// -> save then close (only if save actually wrote bytes; a
-/// cancelled save dialog leaves the tab open and the staged
-/// request is cleared so the user starts fresh next press),
-/// Don't Save -> close immediately, Cancel -> do nothing.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
-    let Some(pending) = app.pending_close_tab.as_ref().cloned() else { return };
 
-    let mut action: Option<CloseTabAction> = None;
-    let mut open = true;
-    egui::Window::new(hxy_i18n::t("close-prompt-title"))
-        .id(egui::Id::new("hxy_close_tab_dialog"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label(hxy_i18n::t_args("close-prompt-body", &[("name", &pending.display_name)]));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(hxy_i18n::t("close-prompt-save")).clicked() {
-                    action = Some(CloseTabAction::Save);
-                }
-                if ui.button(hxy_i18n::t("close-prompt-discard")).clicked() {
-                    action = Some(CloseTabAction::Discard);
-                }
-                if ui.button(hxy_i18n::t("close-prompt-cancel")).clicked() {
-                    action = Some(CloseTabAction::Cancel);
-                }
-            });
-        });
-    if !open && action.is_none() {
-        action = Some(CloseTabAction::Cancel);
-    }
-
-    let Some(action) = action else { return };
-    app.pending_close_tab = None;
-    match action {
-        CloseTabAction::Save => {
-            if crate::files::save::save_file_by_id(app, pending.file_id, false) {
-                close_file_tab_by_id(app, pending.file_id);
-            }
-        }
-        CloseTabAction::Discard => close_file_tab_by_id(app, pending.file_id),
-        CloseTabAction::Cancel => {}
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-enum CloseTabAction {
-    Save,
-    Discard,
-    Cancel,
-}
 
 /// Stage a visual pane-pick session. Resolves the source leaf the
 /// same way the directional commands do (focused leaf, falling back
@@ -4985,7 +4277,7 @@ enum CloseTabAction {
 /// drive next frame. No-op when there's no resolvable source.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::PaneOp) {
-    let Some(source) = resolve_target_leaf(app) else { return };
+    let Some(source) = crate::tabs::dock_ops::resolve_target_leaf(app) else { return };
     app.palette.close();
     app.pending_pane_pick = Some(crate::tabs::pane_pick::PendingPanePick { op, source: Some(source) });
 }
@@ -5021,41 +4313,6 @@ pub(crate) fn start_pane_focus(app: &mut HxyApp) {
 /// side effect of entering the pick (handled at command dispatch);
 /// here we just consume input and execute when a target is hit.
 #[cfg(not(target_arch = "wasm32"))]
-fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
-    let Some(pending) = app.pending_pane_pick else { return };
-    let outcome = crate::tabs::pane_pick::tick(ctx, &app.dock, pending, &mut app.pane_pick_letters);
-    match outcome {
-        crate::tabs::pane_pick::TickOutcome::Continue => {}
-        crate::tabs::pane_pick::TickOutcome::Cancel => {
-            app.pending_pane_pick = None;
-        }
-        crate::tabs::pane_pick::TickOutcome::Picked { source, target, op } => {
-            app.pending_pane_pick = None;
-            match op {
-                crate::tabs::pane_pick::PaneOp::MoveTab => {
-                    if let Some(source) = source {
-                        dock_move_tab_to(app, source, target);
-                    }
-                }
-                crate::tabs::pane_pick::PaneOp::Merge => {
-                    if let Some(source) = source {
-                        dock_merge_to(app, source, target);
-                    }
-                }
-                crate::tabs::pane_pick::PaneOp::Focus => {
-                    // Move keyboard focus + active tab into the
-                    // picked leaf. Snap TabFocus back to Outer so the
-                    // next Ctrl+Tab cycles top-level tabs in the
-                    // newly focused pane (rather than continuing to
-                    // cycle the previously-active workspace's inner
-                    // dock).
-                    app.dock.set_focused_node_and_surface(target);
-                    app.tab_focus = TabFocus::Outer;
-                }
-            }
-        }
-    }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
@@ -5420,9 +4677,9 @@ fn install_mount_tab(
         }
     }
 
-    let tool_leaf = push_tool_tab(&mut app.dock, Tab::PluginMount(mount_id));
+    let tool_leaf = crate::tabs::dock_ops::push_tool_tab(&mut app.dock, Tab::PluginMount(mount_id));
     if let Some(path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
-        remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
+        crate::tabs::dock_ops::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
         if let Some(fresh_path) = app.dock.find_tab(&Tab::PluginMount(mount_id)) {
             let _ = app.dock.set_active_tab(fresh_path);
         }
@@ -5491,7 +4748,7 @@ struct HxyTabViewer<'a> {
     /// Slot the dock's `on_close` handler writes to when the user
     /// X-clicks a dirty File tab. The app drains this after the
     /// dock pass and renders the save-prompt modal next frame.
-    pending_close_tab: &'a mut Option<PendingCloseTab>,
+    pending_close_tab: &'a mut Option<crate::tabs::close::PendingCloseTab>,
     /// Mutated whenever the user clicks an outer tab button so
     /// `Ctrl+Tab` knows to cycle the outer dock next, or hands off
     /// to a workspace inner dock when the user clicks into one.
@@ -5503,7 +4760,7 @@ struct HxyTabViewer<'a> {
     /// Slot the inner workspace dock writes to when the user closes a
     /// `WorkspaceTab::Entry` whose file is dirty. Same shape as
     /// `pending_close_tab` (the modal handler treats them identically).
-    pending_close_workspace_entry: &'a mut Option<PendingCloseTab>,
+    pending_close_workspace_entry: &'a mut Option<crate::tabs::close::PendingCloseTab>,
     /// `WorkspaceId`s the viewer drained to "no tabs left except the
     /// editor." The post-dock pass collapses these back to plain
     /// `Tab::File` entries in the outer dock.
@@ -5726,7 +4983,7 @@ impl TabViewer for HxyTabViewer<'_> {
                 && file.editor.is_dirty()
             {
                 *self.pending_close_tab =
-                    Some(PendingCloseTab { file_id: *id, display_name: file.display_name.clone() });
+                    Some(crate::tabs::close::PendingCloseTab { file_id: *id, display_name: file.display_name.clone() });
                 return OnCloseResponse::Ignore;
             }
             if let Some(removed) = self.files.remove(id)
@@ -5768,7 +5025,7 @@ impl TabViewer for HxyTabViewer<'_> {
                 }
             }
             if let Some((file_id, display_name)) = dirty {
-                *self.pending_close_tab = Some(PendingCloseTab { file_id, display_name });
+                *self.pending_close_tab = Some(crate::tabs::close::PendingCloseTab { file_id, display_name });
                 return OnCloseResponse::Ignore;
             }
             // Drain workspace contents from `app.files` + persistence;
@@ -5803,7 +5060,7 @@ fn render_workspace_tab(
     workspaces: &mut std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
     files: &mut HashMap<FileId, OpenFile>,
     state: &mut PersistedState,
-    pending_close_workspace_entry: &mut Option<PendingCloseTab>,
+    pending_close_workspace_entry: &mut Option<crate::tabs::close::PendingCloseTab>,
     pending_collapse_workspace: &mut Vec<crate::files::WorkspaceId>,
     tab_focus: &mut TabFocus,
 ) {
@@ -5852,7 +5109,7 @@ struct WorkspaceTabViewer<'a> {
     editor_id: FileId,
     workspace_id: crate::files::WorkspaceId,
     mount: &'a Arc<MountedVfs>,
-    pending_close_workspace_entry: &'a mut Option<PendingCloseTab>,
+    pending_close_workspace_entry: &'a mut Option<crate::tabs::close::PendingCloseTab>,
     /// Updated by `on_tab_button` when the user clicks an inner tab,
     /// so subsequent `Ctrl+Tab` cycles cycle this workspace's dock.
     tab_focus: &'a mut TabFocus,
@@ -5983,7 +5240,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 && f.editor.is_dirty()
             {
                 *self.pending_close_workspace_entry =
-                    Some(PendingCloseTab { file_id: *file_id, display_name: f.display_name.clone() });
+                    Some(crate::tabs::close::PendingCloseTab { file_id: *file_id, display_name: f.display_name.clone() });
                 return OnCloseResponse::Ignore;
             }
             if let Some(removed) = self.files.remove(file_id)
@@ -5996,17 +5253,6 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
     }
 }
 
-/// Mirror the tab's in-memory selection + scroll into
-/// [`PersistedState::open_tabs`] so the save-on-dirty path picks it up.
-/// `as_workspace` is set elsewhere (when a workspace is created or
-/// torn down) and not touched here.
-fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
-    let Some(source) = &file.source_kind else { return };
-    if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
-        entry.selection = file.editor.selection();
-        entry.scroll_offset = file.editor.scroll_offset();
-    }
-}
 
 fn build_palette(
     dark: bool,
@@ -6188,22 +5434,17 @@ pub(crate) fn format_offset(value: u64, base: crate::settings::OffsetBase) -> St
 }
 
 use crate::files::copy::CopyKind;
-use crate::commands::shortcuts::CLOSE_TAB;
 use crate::commands::shortcuts::COPY_BYTES;
 use crate::commands::shortcuts::COPY_HEX;
 use crate::commands::shortcuts::FIND_GLOBAL;
 use crate::commands::shortcuts::FIND_LOCAL;
-use crate::commands::shortcuts::FOCUS_PANE;
 use crate::commands::shortcuts::NEW_FILE;
-use crate::commands::shortcuts::NEXT_TAB;
 use crate::commands::shortcuts::PASTE;
 use crate::commands::shortcuts::PASTE_AS_HEX;
-use crate::commands::shortcuts::PREV_TAB;
 use crate::commands::shortcuts::REDO;
 use crate::commands::shortcuts::SAVE_FILE;
 use crate::commands::shortcuts::SAVE_FILE_AS;
 use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
-use crate::commands::shortcuts::TOGGLE_TAB_FOCUS;
 use crate::commands::shortcuts::UNDO;
 
 /// Background tint for patched bytes when the user's highlight mode

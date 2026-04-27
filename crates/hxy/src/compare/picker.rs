@@ -191,7 +191,7 @@ fn spawn_compare_from_picker(
     app.compares.insert(id, session);
     app.dock.push_to_focused_leaf(Tab::Compare(id));
     if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
-        crate::app::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
+        crate::tabs::dock_ops::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
     }
     Ok(())
 }
@@ -236,7 +236,7 @@ pub fn spawn_compare_from_palette(app: &mut HxyApp, ctx: &egui::Context, a: TabS
             }
             app.dock.push_to_focused_leaf(Tab::Compare(id));
             if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
-                crate::app::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
+                crate::tabs::dock_ops::remove_welcome_from_leaf(&mut app.dock, path.surface, path.node);
             }
         }
         Err(e) => {

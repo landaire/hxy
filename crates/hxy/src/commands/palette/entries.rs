@@ -210,7 +210,7 @@ pub fn build_palette_entries(
             );
 
             let tool_panel_visible =
-                app.hidden_tool_tabs.is_empty() && app.dock.iter_all_tabs().any(|(_, t)| crate::app::is_tool_tab(t));
+                app.hidden_tool_tabs.is_empty() && app.dock.iter_all_tabs().any(|(_, t)| crate::tabs::dock_ops::is_tool_tab(t));
             out.push(
                 egui_palette::Entry::new(
                     "Toggle tool panel",

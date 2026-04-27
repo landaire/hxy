@@ -1,6 +1,12 @@
 //! Dock tab identifiers and rendering.
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod close;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dock_ops;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod focus;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pane_pick;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persisted_dock;
