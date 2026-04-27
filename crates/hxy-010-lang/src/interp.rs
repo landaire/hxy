@@ -1304,8 +1304,15 @@ impl<S: HexSource> Interpreter<S> {
             // HashMap inserts per array, multiplied across every
             // record in a multi-megabyte file.
             let storage_key = self.storage_key(name);
-            self.array_storage
-                .insert(storage_key, ArraySpan { source_offset: offset, count, prim: p, endian: self.endian });
+            let span = ArraySpan { source_offset: offset, count, prim: p, endian: self.endian };
+            // Mirror under the bare-name path so loop iterations
+            // can be referenced as `arr.X` (latest wins) in addition
+            // to the explicit `arr[N].X` indexed form.
+            let bare = strip_indexed_segments(&storage_key);
+            if bare != storage_key {
+                self.array_storage.insert(bare, span.clone());
+            }
+            self.array_storage.insert(storage_key, span);
             return Ok(value);
         }
         let array_ty = match &def {
@@ -1490,6 +1497,13 @@ impl<S: HexSource> Interpreter<S> {
                     && let Some(off) = self.field_byte_offset(arg_name)
                 {
                     return Ok(Value::UInt { value: off as u128, kind: PrimKind::u64() });
+                }
+                // `parentof(X)` returns a path placeholder. The path
+                // is what callers actually use (build_path picks it
+                // up); the returned value is just a marker so the
+                // call expression doesn't trip a type error.
+                if name == "parentof" && args.len() == 1 {
+                    return Ok(Value::Void);
                 }
                 // `exists(field)`: probe whether the named field was
                 // ever stored. Has to run before generic arg eval so
@@ -1867,6 +1881,17 @@ impl<S: HexSource> Interpreter<S> {
                 let iv = self.eval(index)?;
                 let Some(i) = iv.to_i128() else { return Ok(None) };
                 Ok(Some(format!("{base}[{i}]")))
+            }
+            // `parentof(X)` returns the storage path of X's parent
+            // struct -- one segment shorter than X's own path.
+            // bplist.bt walks back to the trailer offset with
+            // `parentof(this).offsetTableOffset` and similar.
+            Expr::Call { callee, args, .. }
+                if matches!(&**callee, Expr::Ident { name, .. } if name == "parentof")
+                    && args.len() == 1 =>
+            {
+                let Some(child) = self.build_path(&args[0])? else { return Ok(None) };
+                Ok(Some(parent_path(&child)))
             }
             _ => Ok(None),
         }
@@ -3099,6 +3124,17 @@ fn lookup_candidates(path: &str, prefix: &str) -> Vec<String> {
 /// bracket -- `arr[2]` at the leaf is an explicit element index, not
 /// a struct counter -- so explicit `arr[N]` queries still hit the
 /// per-element decode.
+/// Drop the last `.segment` of a path. `parentof(this)` resolves to
+/// the enclosing struct's storage key by trimming the leaf segment
+/// from the current path. Returns an empty string for top-level
+/// records that have no parent.
+fn parent_path(path: &str) -> String {
+    match path.rfind('.') {
+        Some(idx) => path[..idx].to_owned(),
+        None => String::new(),
+    }
+}
+
 fn strip_indexed_segments(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     let bytes = path.as_bytes();
