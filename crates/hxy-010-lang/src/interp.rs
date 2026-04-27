@@ -821,20 +821,54 @@ impl<S: HexSource> Interpreter<S> {
         let count = match array_size {
             Some(expr) => {
                 let v = self.eval(expr)?;
-                v.to_i128().ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {v:?}")))? as u64
+                let n = v.to_i128().ok_or_else(|| RuntimeError::Type(format!("array size is not numeric: {v:?}")))?;
+                // Negative sizes happen when a corrupt header field
+                // is sign-extended through arithmetic
+                // (`byte data[ChunkSize - read_size]` where ChunkSize
+                // came in negative). Clamp to zero so the read
+                // surfaces a clean EOF instead of asking for
+                // ~2^64 bytes.
+                if n < 0 { 0 } else { n as u64 }
             }
             None => 0,
         };
 
         // Evaluate struct args once; the parameterised-struct read
         // binds them to the declared parameter names inside the
-        // struct's own scope.
-        let evaluated_args: Vec<Value> = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?;
+        // struct's own scope. Capture each arg's storage path
+        // alongside its value so ref-typed parameters resolve back
+        // to the caller's record (`Section(SectionHeaders[i])` lets
+        // the body access `SecHeader.Name` instead of seeing Void).
+        let mut evaluated_args: Vec<Value> = Vec::with_capacity(args.len());
+        let mut arg_paths: Vec<Option<String>> = Vec::with_capacity(args.len());
+        for a in args.iter() {
+            let path = self.build_path(a)?;
+            arg_paths.push(path);
+            evaluated_args.push(self.eval(a)?);
+        }
+        // Resolve each path against the current prefix; we want a
+        // fully qualified storage key the function body can read.
+        let prefix = self.path_prefix();
+        let arg_paths: Vec<Option<String>> = arg_paths
+            .into_iter()
+            .map(|p| {
+                let p = p?;
+                lookup_candidates(&p, &prefix)
+                    .into_iter()
+                    .find(|c| {
+                        self.field_storage.contains_key(c)
+                            || self.array_storage.contains_key(c)
+                            || self.field_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                            || self.array_storage.keys().any(|k| k.starts_with(&format!("{c}.")))
+                    })
+                    .or(Some(p))
+            })
+            .collect();
 
         let value = if array_size.is_some() {
-            self.read_array(name, ty, count, parent, attrs, &evaluated_args)?
+            self.read_array(name, ty, count, parent, attrs, &evaluated_args, &arg_paths)?
         } else {
-            self.read_scalar(name, ty, parent, attrs, &evaluated_args)?
+            self.read_scalar(name, ty, parent, attrs, &evaluated_args, &arg_paths)?
         };
 
         self.current_scope_mut().vars.insert(name.clone(), value);
@@ -977,6 +1011,7 @@ impl<S: HexSource> Interpreter<S> {
         parent: Option<NodeIdx>,
         attrs: &Attrs,
         args: &[Value],
+        arg_paths: &[Option<String>],
     ) -> Result<Value, RuntimeError> {
         // 010's `string` / `wstring` types read a NUL-terminated
         // sequence (not a single character). Handle them here before
@@ -1103,12 +1138,30 @@ impl<S: HexSource> Interpreter<S> {
                 let segment = self.next_struct_segment(name);
                 self.path.push(segment);
                 self.scopes.push(Scope::default());
+                // `this` magic ident resolves to the current struct's
+                // own storage path. Templates use it to pass `this`
+                // into helper functions (`findTable(this, "cmap")` in
+                // TTF.bt) without naming the outer record explicitly.
+                let self_path = self.path_prefix();
+                self.current_scope_mut().path_aliases.insert("this".to_owned(), self_path);
                 // Bind parameterised-struct args to their declared
                 // param names inside the struct's own scope. Extra /
                 // missing args fall through silently; 010 itself is
-                // forgiving here.
-                for (param, value) in s.params.iter().zip(args.iter()) {
-                    self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+                // forgiving here. Ref-typed (or struct-typed) params
+                // also get a path alias so member lookups inside the
+                // body resolve back to the caller's record.
+                for (i, param) in s.params.iter().enumerate() {
+                    if let Some(value) = args.get(i) {
+                        self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+                    }
+                    let is_struct_ty = matches!(self.types.get(&param.ty.name), Some(TypeDef::Struct(_)));
+                    if (param.is_ref || is_struct_ty)
+                        && let Some(Some(path)) = arg_paths.get(i)
+                    {
+                        self.current_scope_mut()
+                            .path_aliases
+                            .insert(param.name.clone(), path.clone());
+                    }
                 }
                 let result = self.exec_struct_body(&s, offset, idx);
                 self.scopes.pop();
@@ -1166,6 +1219,7 @@ impl<S: HexSource> Interpreter<S> {
         parent: Option<NodeIdx>,
         attrs: &Attrs,
         args: &[Value],
+        arg_paths: &[Option<String>],
     ) -> Result<Value, RuntimeError> {
         let def = self.resolve_type(ty)?;
         // Primitive arrays are emitted as a single contiguous node --
@@ -1178,9 +1232,13 @@ impl<S: HexSource> Interpreter<S> {
             let offset = self.cursor.tell();
             let total_bytes = count.saturating_mul(p.width as u64);
             let bytes = self.cursor.read_advance(total_bytes)?;
-            let value = if matches!(p.class, PrimClass::Char)
+            let value = if (matches!(p.class, PrimClass::Char) || (matches!(p.class, PrimClass::Int) && p.width == 1))
                 && let Ok(_) = str::from_utf8(&bytes)
             {
+                // Treat single-byte arrays (char/uchar/BYTE/byte) as
+                // Str-valued when the bytes are UTF-8. Templates pass
+                // them around as buffers (`BYTE Name[8]` in COFF /
+                // PE-style headers) and read them as strings.
                 Value::Str(String::from_utf8(bytes).expect("string should be UTF-8"))
             } else {
                 // No Value variant for raw byte arrays yet -- emit
@@ -1261,9 +1319,9 @@ impl<S: HexSource> Interpreter<S> {
             self.path.push(indexed);
             let saved_scope = self.scopes.len();
             let r = match &def {
-                TypeDef::Struct(_) => self.read_scalar_struct_elem(&elem_name, &elem_ty, Some(idx), args),
+                TypeDef::Struct(_) => self.read_scalar_struct_elem(&elem_name, &elem_ty, Some(idx), args, arg_paths),
                 TypeDef::Enum(_) => {
-                    self.read_scalar(&elem_name, &elem_ty, Some(idx), &Attrs::default(), &[]).map(|_| ())
+                    self.read_scalar(&elem_name, &elem_ty, Some(idx), &Attrs::default(), &[], &[]).map(|_| ())
                 }
                 _ => Ok(()),
             };
@@ -1287,6 +1345,7 @@ impl<S: HexSource> Interpreter<S> {
         ty: &TypeRef,
         parent: Option<NodeIdx>,
         args: &[Value],
+        arg_paths: &[Option<String>],
     ) -> Result<(), RuntimeError> {
         let def = self.resolve_type(ty)?;
         let TypeDef::Struct(s) = def else {
@@ -1309,8 +1368,20 @@ impl<S: HexSource> Interpreter<S> {
             attrs: Vec::new(),
         });
         self.scopes.push(Scope::default());
-        for (param, value) in s.params.iter().zip(args.iter()) {
-            self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+        let self_path = self.path_prefix();
+        self.current_scope_mut().path_aliases.insert("this".to_owned(), self_path);
+        for (i, param) in s.params.iter().enumerate() {
+            if let Some(value) = args.get(i) {
+                self.current_scope_mut().vars.insert(param.name.clone(), value.clone());
+            }
+            let is_struct_ty = matches!(self.types.get(&param.ty.name), Some(TypeDef::Struct(_)));
+            if (param.is_ref || is_struct_ty)
+                && let Some(Some(path)) = arg_paths.get(i)
+            {
+                self.current_scope_mut()
+                    .path_aliases
+                    .insert(param.name.clone(), path.clone());
+            }
         }
         let r = self.exec_struct_body(&s, offset, idx);
         self.scopes.pop();
@@ -1595,17 +1666,13 @@ impl<S: HexSource> Interpreter<S> {
                 // sibling field lookups: `type.cname` inside that
                 // body resolves to `chunk[0].type.cname` in storage.
                 if let Some(path) = self.build_path(expr)? {
-                    for candidate in lookup_candidates(&path, &self.path_prefix()) {
-                        if let Some(v) = self.field_storage.get(&candidate).cloned() {
-                            return Ok(v);
-                        }
-                    }
-                    // Lazy primitive-array indexing: if the path
-                    // looks like `base[N]`, see whether `base` is a
-                    // registered array span and decode element `N`
-                    // from the source on demand. Skipped for Member
-                    // expressions -- those don't have a trailing
-                    // `[N]`, so the split would always fail.
+                    // For Index expressions, decode the array element
+                    // first. The zero-stripped fallback used for
+                    // single-occurrence struct counters (`chunks[0]`
+                    // stored as `chunks`) would otherwise return the
+                    // whole `Str` payload of an array under the bare
+                    // path -- so `magic.ver[0]` would give the
+                    // 3-char string instead of the first char.
                     if matches!(expr, Expr::Index { .. })
                         && let Some((base, idx)) = split_trailing_index(&path)
                     {
@@ -1613,6 +1680,11 @@ impl<S: HexSource> Interpreter<S> {
                             if let Some(span) = self.array_storage.get(&candidate).cloned() {
                                 return self.decode_array_element(&span, idx);
                             }
+                        }
+                    }
+                    for candidate in lookup_candidates(&path, &self.path_prefix()) {
+                        if let Some(v) = self.field_storage.get(&candidate).cloned() {
+                            return Ok(v);
                         }
                     }
                     // The path resolves to a struct -- no scalar
@@ -1703,6 +1775,14 @@ impl<S: HexSource> Interpreter<S> {
             if let Some(v) = scope.vars.get(name) {
                 return Ok(v.clone());
             }
+        }
+        // Path aliases (`this`, ref params bound at call entry) have
+        // no scalar value of their own; the path itself is what
+        // matters for member lookups. Return Void so callers that
+        // pass them through expressions (e.g. `findTable(this, "...")`)
+        // don't trip an UndefinedName here.
+        if self.resolve_path_alias(name).is_some() {
+            return Ok(Value::Void);
         }
         // Fall back to persistent field storage. Walk the current
         // path prefix from the leaf upward so a bare reference
