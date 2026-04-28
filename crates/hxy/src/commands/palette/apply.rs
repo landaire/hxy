@@ -45,7 +45,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::OpenFile => crate::app::apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
                 PaletteCommand::BrowseVfs => crate::app::apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
                 PaletteCommand::ToggleWorkspaceVfs => crate::tabs::dock_ops::toggle_workspace_vfs(app),
-                PaletteCommand::ToggleToolPanel => crate::tabs::dock_ops::toggle_tool_panel(app),
+                PaletteCommand::CloseToolPane => crate::app::close_tool_pane(app),
                 PaletteCommand::ToggleConsole => app.toggle_console(),
                 PaletteCommand::ToggleInspector => app.toggle_inspector(),
                 PaletteCommand::TogglePlugins => app.toggle_plugins(),

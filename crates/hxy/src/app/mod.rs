@@ -234,12 +234,14 @@ pub struct HxyApp {
     /// matching record from `state.open_tabs`.
     #[cfg(not(target_arch = "wasm32"))]
     pending_close_mount: Option<crate::files::MountId>,
-    /// Tool tabs the user has stashed via `toggle_tool_panel`. While
-    /// non-empty, the right-hand tool panel is hidden -- the dock has
-    /// no leaf for these tabs at all, so the surrounding panes get
-    /// their horizontal space back. Toggling again recreates the
-    /// right-split leaf and pushes these tabs into it.
-    pub(crate) hidden_tool_tabs: Vec<Tab>,
+    /// When set, the next pane-picker session ignores every
+    /// leaf whose `NodePath` isn't in this list. Used by the
+    /// `Close tool pane` action so the visual picker only
+    /// highlights tool-class leaves rather than every leaf in
+    /// the dock. Cleared automatically when the picker
+    /// finishes (success or cancel).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pane_pick_target_paths: Option<Vec<egui_dock::NodePath>>,
     /// Shared cross-file search state. Backs the `Tab::SearchResults`
     /// dock tab; lives on the app so query / matches survive the user
     /// closing and reopening the tab.
@@ -511,7 +513,8 @@ impl HxyApp {
             pending_collapse_workspace: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_close_mount: None,
-            hidden_tool_tabs: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pane_pick_target_paths: None,
             #[cfg(not(target_arch = "wasm32"))]
             global_search: crate::search::global::GlobalSearchState::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -2361,6 +2364,28 @@ pub fn take_snapshot_active_file(app: &mut HxyApp) {
             format!("Snapshot {display}"),
             hxy_i18n::t_args("snapshot-capture-toast", &[("id", &new_id.get().to_string())]),
         );
+    }
+}
+
+/// Close one tool pane. Auto-picks the only candidate when
+/// just one tool-only leaf exists; opens the visual pane
+/// picker (filtered to tool-only leaves) when several do; is
+/// a no-op when there are zero. The picker callback in
+/// `handle_pane_pick` calls back into `close_tool_leaf` once
+/// the user presses a target letter.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn close_tool_pane(app: &mut HxyApp) {
+    let leaves = crate::tabs::dock_ops::tool_only_leaves(&app.dock);
+    match leaves.len() {
+        0 => {}
+        1 => crate::tabs::dock_ops::close_tool_leaf(app, leaves[0]),
+        _ => {
+            app.pane_pick_target_paths = Some(leaves);
+            app.pending_pane_pick = Some(crate::tabs::pane_pick::PendingPanePick {
+                op: crate::tabs::pane_pick::PaneOp::CloseToolLeaf,
+                source: None,
+            });
+        }
     }
 }
 

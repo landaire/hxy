@@ -276,10 +276,13 @@ pub enum PaletteCommand {
     /// workspace itself. When the active tab isn't a workspace, the
     /// command is a no-op.
     ToggleWorkspaceVfs,
-    /// Toggle the right-hand tool panel (Plugins manager + plugin
-    /// mount tabs). Hides every tool-class tab into a stash; toggling
-    /// again re-creates the panel and restores them.
-    ToggleToolPanel,
+    /// Close one tool pane -- a leaf made up entirely of
+    /// tool-class tabs. When a single such leaf exists, its
+    /// tabs are removed in one shot. When several exist, the
+    /// visual pane picker is shown so the user picks which to
+    /// close. The action is hidden from the palette when
+    /// there are no tool-only leaves.
+    CloseToolPane,
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,

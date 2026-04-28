@@ -47,6 +47,11 @@ pub enum PaneOp {
     /// leaf in the dock is a target, including the currently
     /// focused one (a no-op pick).
     Focus,
+    /// Close every tool-class tab in the picked leaf. Sourceless;
+    /// the host pre-filters the candidate target list to leaves
+    /// that are entirely tool tabs so the picker letters only
+    /// appear on closeable panes.
+    CloseToolLeaf,
 }
 
 /// State of a picker session. The app stores `Option<PendingPanePick>`
@@ -97,6 +102,7 @@ pub fn tick<Tab>(
     dock: &egui_dock::DockState<Tab>,
     pending: PendingPanePick,
     assignments: &mut BTreeMap<u64, char>,
+    target_whitelist: Option<&[NodePath]>,
 ) -> TickOutcome
 where
     Tab: Clone + Hash,
@@ -111,10 +117,13 @@ where
     // hash of each leaf so the assignment table can survive other
     // leaves opening / closing. The visit order matches dock
     // iteration so newly-opened leaves get the lowest free letter
-    // available at their position.
+    // available at their position. The optional whitelist
+    // restricts the picker to a host-supplied subset (e.g. the
+    // tool-only leaves for `Close tool pane`).
     let targets: Vec<(NodePath, Rect, u64)> = dock
         .iter_leaves()
         .filter(|(p, _)| pending.source.is_none_or(|s| *p != s))
+        .filter(|(p, _)| target_whitelist.is_none_or(|allowed| allowed.contains(p)))
         .map(|(p, l)| (p, l.rect, leaf_identity(l)))
         .filter(|(_, r, _)| r.is_finite() && r.width() > 1.0 && r.height() > 1.0)
         .collect();
@@ -283,9 +292,10 @@ fn paint_source_badge(ctx: &egui::Context, leaf_rect: Rect, op: PaneOp, visuals:
     let label = match op {
         PaneOp::MoveTab => "MOVE FROM",
         PaneOp::Merge => "MERGE FROM",
-        // Focus is sourceless; the caller doesn't paint a badge for
-        // it. Match arm exists for exhaustiveness only.
-        PaneOp::Focus => return,
+        // Focus and CloseToolLeaf are sourceless; the caller
+        // doesn't paint a badge for them. Match arms exist for
+        // exhaustiveness only.
+        PaneOp::Focus | PaneOp::CloseToolLeaf => return,
     };
     let centre = leaf_rect.center();
     let id = Id::new("hxy-pane-pick-source");

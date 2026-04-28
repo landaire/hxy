@@ -129,42 +129,40 @@ pub fn dock_move_tab_to(app: &mut HxyApp, source: egui_dock::NodePath, target: e
     }
 }
 
-/// Toggle visibility of the right-hand tool panel (the Plugins
-/// manager and any plugin mount tabs). When visible, drains every
-/// tool-class tab out of the dock into `hidden_tool_tabs`. The
-/// now-empty leaf is removed by egui_dock and adjacent panes reflow
-/// to take the space. When hidden, recreates the right-split leaf
-/// at the standard 28% width and refills it from the stash.
-pub fn toggle_tool_panel(app: &mut HxyApp) {
-    if !app.hidden_tool_tabs.is_empty() {
-        let to_restore = std::mem::take(&mut app.hidden_tool_tabs);
-        let mut iter = to_restore.into_iter();
-        let Some(first) = iter.next() else { return };
-        app.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![first]);
-        if let Some(path) = app.dock.find_tab(&first) {
-            for tab in iter {
-                if let Ok(leaf) = app.dock.leaf_mut(path.node_path()) {
-                    leaf.append_tab(tab);
-                }
-            }
-        }
-        return;
-    }
-    let mut to_hide: Vec<(egui_dock::TabPath, Tab)> = Vec::new();
-    for (path, tab) in app.dock.iter_all_tabs() {
-        if is_tool_tab(tab) {
-            to_hide.push((path, *tab));
+/// Find every leaf whose tabs are all tool-class. These are
+/// the candidate targets for `Close tool pane` -- a single
+/// click closes one of them outright (auto-picks when there's
+/// only one, opens the visual pane picker when there are
+/// several). Mixed leaves (a tool tab next to a File) aren't
+/// included; closing a mixed leaf would also drop the user's
+/// editing tab, which is never the intent.
+pub fn tool_only_leaves(dock: &egui_dock::DockState<Tab>) -> Vec<egui_dock::NodePath> {
+    let mut out = Vec::new();
+    for (path, _tab) in dock.iter_all_tabs() {
+        let node_path = path.node_path();
+        let Ok(leaf) = dock.leaf(node_path) else { continue };
+        if !leaf.tabs.is_empty() && leaf.tabs.iter().all(is_tool_tab) && !out.contains(&node_path) {
+            out.push(node_path);
         }
     }
-    if to_hide.is_empty() {
-        return;
+    out
+}
+
+/// Remove every tool-class tab from a single leaf. The leaf
+/// itself collapses naturally once the last tab leaves so
+/// adjacent panes reflow to take the space. Used by the
+/// `Close tool pane` action and the visual pane picker's
+/// `CloseToolLeaf` op once the user has chosen the target.
+pub fn close_tool_leaf(app: &mut HxyApp, node_path: egui_dock::NodePath) {
+    let tool_tabs: Vec<Tab> = match app.dock.leaf(node_path) {
+        Ok(leaf) => leaf.tabs.iter().filter(|t| is_tool_tab(t)).copied().collect(),
+        Err(_) => return,
+    };
+    for tab in tool_tabs {
+        if let Some(path) = app.dock.find_tab(&tab) {
+            let _ = app.dock.remove_tab(path);
+        }
     }
-    to_hide.sort_by(|a, b| b.0.tab.0.cmp(&a.0.tab.0));
-    let stash: Vec<Tab> = to_hide.iter().rev().map(|(_, t)| *t).collect();
-    for (path, _) in to_hide {
-        let _ = app.dock.remove_tab(path);
-    }
-    app.hidden_tool_tabs = stash;
 }
 
 /// Toggle visibility of the workspace VFS tree sub-tab. Hide just

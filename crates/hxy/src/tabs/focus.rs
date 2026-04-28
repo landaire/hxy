@@ -105,14 +105,23 @@ pub fn dispatch_tab_focus_toggle(ctx: &egui::Context, app: &mut HxyApp) {
 /// helpers the directional commands use.
 pub fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(pending) = app.pending_pane_pick else { return };
-    let outcome = crate::tabs::pane_pick::tick(ctx, &app.dock, pending, &mut app.pane_pick_letters);
+    let whitelist = app.pane_pick_target_paths.clone();
+    let outcome = crate::tabs::pane_pick::tick(
+        ctx,
+        &app.dock,
+        pending,
+        &mut app.pane_pick_letters,
+        whitelist.as_deref(),
+    );
     match outcome {
         crate::tabs::pane_pick::TickOutcome::Continue => {}
         crate::tabs::pane_pick::TickOutcome::Cancel => {
             app.pending_pane_pick = None;
+            app.pane_pick_target_paths = None;
         }
         crate::tabs::pane_pick::TickOutcome::Picked { source, target, op } => {
             app.pending_pane_pick = None;
+            app.pane_pick_target_paths = None;
             match op {
                 crate::tabs::pane_pick::PaneOp::MoveTab => {
                     if let Some(source) = source {
@@ -127,6 +136,9 @@ pub fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
                 crate::tabs::pane_pick::PaneOp::Focus => {
                     app.dock.set_focused_node_and_surface(target);
                     app.tab_focus = TabFocus::Outer;
+                }
+                crate::tabs::pane_pick::PaneOp::CloseToolLeaf => {
+                    crate::tabs::dock_ops::close_tool_leaf(app, target);
                 }
             }
         }
