@@ -43,7 +43,12 @@ fn main() {
         .with_pixels_per_point(1.0)
         .build_ui_state(
             |ui, st: &mut State| {
-                HexView::new(st.source.as_ref(), &mut st.selection).show(ui);
+                // Byte-value highlighting on so the tint-batching path is
+                // exercised; default-off would emit zero `rect_filled`s
+                // and hide the optimization we're measuring.
+                HexView::new(st.source.as_ref(), &mut st.selection)
+                    .value_highlight(Some(hxy_view::ValueHighlight::Background))
+                    .show(ui);
             },
             state,
         );

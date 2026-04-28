@@ -1358,20 +1358,24 @@ impl RowLayout {
         }
     }
 
-    /// Background-tint rect for hex cell `col` that bleeds halfway into
-    /// each side-gap so adjacent tints touch with no visible seam. The
-    /// first/last columns clamp to the pane edges.
-    fn hex_tint_rect(&self, row_origin: Pos2, col: usize, total_cols: usize, row_height: f32) -> Rect {
-        let cell = self.hex_cell_rect(row_origin, col, row_height);
-        let left = if col == 0 { cell.left() } else { cell.left() - self.hex_gap / 2.0 };
-        let right = if col + 1 >= total_cols { cell.right() } else { cell.right() + self.hex_gap / 2.0 };
-        Rect::from_min_max(Pos2::new(left, cell.top()), Pos2::new(right, cell.bottom()))
-    }
-
-    /// ASCII tint rect: ASCII cells already sit edge-to-edge, so this is
-    /// just the cell rect with no rounding.
-    fn ascii_tint_rect(&self, row_origin: Pos2, col: usize, _total_cols: usize, row_height: f32) -> Rect {
-        self.ascii_cell_rect(row_origin, col, row_height)
+    /// Hex tint covering an inclusive `from..=to` run of cells. Same
+    /// half-gap bleed at the outer edges as [`Self::hex_tint_rect`]
+    /// so adjacent runs of different colors meet without a seam, but
+    /// the internal gaps between cells in the span fall inside the
+    /// single rect rather than each painting their own bleed.
+    fn hex_tint_span_rect(
+        &self,
+        row_origin: Pos2,
+        from: usize,
+        to: usize,
+        total_cols: usize,
+        row_height: f32,
+    ) -> Rect {
+        let from_cell = self.hex_cell_rect(row_origin, from, row_height);
+        let to_cell = self.hex_cell_rect(row_origin, to, row_height);
+        let left = if from == 0 { from_cell.left() } else { from_cell.left() - self.hex_gap / 2.0 };
+        let right = if to + 1 >= total_cols { to_cell.right() } else { to_cell.right() + self.hex_gap / 2.0 };
+        Rect::from_min_max(Pos2::new(left, from_cell.top()), Pos2::new(right, from_cell.bottom()))
     }
 
     fn hex_cell_rect(&self, row_origin: Pos2, col: usize, row_height: f32) -> Rect {
@@ -1894,13 +1898,23 @@ fn paint_row_backs_and_glyphs(
         );
     }
 
-    for (i, byte) in chunk.iter().enumerate() {
+    // First pass: resolve per-cell tint backgrounds and foregrounds
+    // without painting yet. We rip through every cell once because
+    // the styler / palette closures are non-trivial and we want each
+    // byte to see them exactly once. The resolved data feeds two
+    // downstream passes -- batched tint paint, then per-cell glyph
+    // paint -- which between them cut the per-frame `Shape::Rect`
+    // count from `2 * cols` per row to one rect per same-color run
+    // per pane.
+    debug_assert!(
+        cols <= MAX_COLS_PER_ROW,
+        "hex view column count {cols} exceeds the {MAX_COLS_PER_ROW}-cell stack scratch",
+    );
+    let mut resolved: [CellPaint; MAX_COLS_PER_ROW] = [CellPaint::default(); MAX_COLS_PER_ROW];
+    for (i, byte) in chunk.iter().enumerate().take(MAX_COLS_PER_ROW) {
         let byte_offset = ByteOffset::new(row_first_offset.get() + i as u64);
-        let hex_rect = ctx.layout.hex_cell_rect(row_origin, i, ctx.row_height);
-        let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, i, ctx.row_height);
         let is_sel = ctx.selected_range.is_some_and(|r| r.contains(byte_offset));
 
-        // Palette-derived defaults for this byte.
         let class_color = ctx.palette.as_ref().map(|(_, p)| p.color_for(*byte));
         let (palette_bg, palette_fg) = match ctx.palette.as_ref().map(|(m, _)| *m) {
             Some(ValueHighlight::Background) => {
@@ -1912,29 +1926,55 @@ fn paint_row_backs_and_glyphs(
             None => (None, ctx.colors.text),
         };
 
-        // Per-byte styler overrides; `None` fields fall back to palette.
         let user_style = ctx.byte_styler.map(|f| f(*byte, byte_offset));
         let bg = user_style.and_then(|s| s.bg).or(palette_bg);
         let fg_override = user_style.and_then(|s| s.fg);
 
-        if let Some(color) = bg.filter(|_| !is_sel) {
-            let hex_tint = ctx.layout.hex_tint_rect(row_origin, i, cols, ctx.row_height);
-            let ascii_tint = ctx.layout.ascii_tint_rect(row_origin, i, cols, ctx.row_height);
-            painter.rect_filled(hex_tint, 0.0, color);
-            painter.rect_filled(ascii_tint, 0.0, color);
-        }
-
+        let tint = bg.filter(|_| !is_sel);
         let fg = if is_sel {
             ctx.colors.selection_fg
         } else if let Some(f) = fg_override {
             f
         } else if let Some(color) = bg {
-            // Styler supplied a bg but no fg -- pick a contrast color.
             contrast_text_color(color, ctx.colors.text)
         } else {
             palette_fg
         };
 
+        resolved[i] = CellPaint { tint, fg };
+    }
+    let row_cells = chunk.len().min(cols).min(MAX_COLS_PER_ROW);
+
+    // Second pass: collapse adjacent cells with the same tint color
+    // into single horizontal strips. Hot data has long runs of the
+    // same byte-class color, so this drops thousands of egui
+    // `Shape::Rect` shapes per frame down to a handful of strips
+    // per row. Random / encrypted regions degrade gracefully to
+    // length-1 runs (i.e. equivalent to the old per-cell paint).
+    let mut start = 0usize;
+    while start < row_cells {
+        let Some(color) = resolved[start].tint else {
+            start += 1;
+            continue;
+        };
+        let mut end = start + 1;
+        while end < row_cells && resolved[end].tint == Some(color) {
+            end += 1;
+        }
+        let hex_rect = ctx.layout.hex_tint_span_rect(row_origin, start, end - 1, cols, ctx.row_height);
+        let ascii_rect = ctx.layout.ascii_span_rect(row_origin, start, end - 1, ctx.row_height);
+        painter.rect_filled(hex_rect, 0.0, color);
+        painter.rect_filled(ascii_rect, 0.0, color);
+        start = end;
+    }
+
+    // Third pass: glyphs, one per cell. The galleys are cached
+    // across frames (see `GlyphCache`); each call is an Arc clone +
+    // a `Shape::Galley` push.
+    for (i, byte) in chunk.iter().enumerate() {
+        let hex_rect = ctx.layout.hex_cell_rect(row_origin, i, ctx.row_height);
+        let ascii_rect = ctx.layout.ascii_cell_rect(row_origin, i, ctx.row_height);
+        let fg = resolved[i].fg;
         let hex_galley = ctx.glyphs.hex[*byte as usize].clone();
         let hex_pos = Align2::CENTER_CENTER.anchor_size(hex_rect.center(), hex_galley.size()).min;
         painter.galley_with_override_text_color(hex_pos, hex_galley, fg);
@@ -1942,6 +1982,22 @@ fn paint_row_backs_and_glyphs(
         let ascii_pos = Align2::CENTER_CENTER.anchor_size(ascii_rect.center(), ascii_galley.size()).min;
         painter.galley_with_override_text_color(ascii_pos, ascii_galley, fg);
     }
+}
+
+/// Upper bound on the per-row scratch buffer used for batched tint
+/// resolution. Matches [`ColumnCount`]'s domain (`NonZeroU16`) but in
+/// practice the user picks 1..=64; 256 leaves enough headroom for
+/// future bumps without resorting to a heap allocation per row.
+const MAX_COLS_PER_ROW: usize = 256;
+
+/// Per-cell paint plan resolved during the first pass and consumed
+/// by the batched tint + glyph passes. `tint = None` means the cell
+/// inherits the row background (selection / hover / panel fill); a
+/// `Some(color)` enters the run-length collapse.
+#[derive(Clone, Copy, Default)]
+struct CellPaint {
+    tint: Option<Color32>,
+    fg: Color32,
 }
 
 fn paint_row_marks(
