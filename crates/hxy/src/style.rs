@@ -203,6 +203,18 @@ pub fn hxy_dock_style(egui_style: &egui::Style) -> egui_dock::Style {
     style.tab.hovered.bg_fill = CARD_BRIGHT;
     style.tab.hline_below_active_tab_name = true;
     style.tab_bar.bg_fill = SURFACE;
+    // egui_dock's `from_egui` mapping wires the *hovered* tab to
+    // the bright violet `widgets.hovered.bg_stroke.color` while
+    // the active tab inherits the dim `widgets.noninteractive`
+    // border -- so a hovered-but-inactive tab visually dominates
+    // the actually-active tab. Flip the prominence: active tabs
+    // get the brand violet outline, focused (kb-focus) tabs get
+    // the brighter lavender, and hover/inactive get muted
+    // borders that read as a passive shape change.
+    style.tab.active.outline_color = VIOLET;
+    style.tab.focused.outline_color = LAVENDER;
+    style.tab.hovered.outline_color = BORDER_BRIGHT;
+    style.tab.inactive.outline_color = BORDER;
     // The body stroke would draw a box around the tab content area;
     // we want the tab and its panel to read as one shape, so kill
     // it. The panel's own fill provides the boundary.
