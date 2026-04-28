@@ -19,6 +19,8 @@ pub mod patch_persist;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod save;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod snapshot;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 
 use std::path::PathBuf;
@@ -241,6 +243,14 @@ pub struct OpenFile {
     /// state itself rather than a separate boolean so reopening the
     /// bar restores the user's last query.
     pub search: crate::search::SearchState,
+    /// User-captured byte snapshots for this tab. Each entry is
+    /// mirrored to a sidecar file under `$DATA_DIR/hxy/snapshots/`
+    /// so the list survives restarts; small payloads are also
+    /// cached in memory for fast comparison. `None` only when the
+    /// tab has no stable identity (in-memory scratch buffers
+    /// without a persistent path).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub snapshots: Option<crate::files::snapshot::SnapshotStore>,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -373,6 +383,20 @@ impl OpenFile {
             _ => EditMode::Mutable,
         };
         editor.set_edit_mode(edit_mode);
+        // Build the snapshot store under the file's stable
+        // identity so a previous session's captures are
+        // restored. VFS entries / plugin mounts get a key
+        // derived from their TabSource string -- different
+        // entries inside the same parent get distinct dirs
+        // because the entry path is part of the source string.
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshots = source_kind.as_ref().map(|src| {
+            let key = match src.root_path() {
+                Some(p) => p.clone(),
+                None => std::path::PathBuf::from(format!("{src:?}")),
+            };
+            crate::files::snapshot::SnapshotStore::restore(&key)
+        });
         Self {
             id,
             display_name: display_name.into(),
@@ -391,6 +415,8 @@ impl OpenFile {
             hex_columns_override: None,
             read_only_reason: None,
             search: crate::search::SearchState::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshots,
         }
     }
 
