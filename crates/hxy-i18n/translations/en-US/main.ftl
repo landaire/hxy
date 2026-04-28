@@ -360,7 +360,7 @@ status-watch-tooltip-prefix = File watcher
 status-watch-tooltip-anonymous = This buffer has no persistent identity, so change detection doesn't apply.
 
 # Tabs
-tab-entropy = Entropy
+tab-entropy = Entropy: { $name }
 
 # Entropy panel
 entropy-heading = Shannon entropy

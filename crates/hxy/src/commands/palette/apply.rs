@@ -117,7 +117,11 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                     crate::app::set_active_file_watch_pref(app, crate::settings::AutoReloadMode::Never);
                 }
                 PaletteCommand::ComputeEntropy => crate::app::compute_entropy_active_file(ctx, app),
-                PaletteCommand::ShowEntropy => app.show_entropy(),
+                PaletteCommand::ShowEntropy => {
+                    if let Some(id) = crate::app::active_file_id(app) {
+                        app.show_entropy_for(id);
+                    }
+                }
             }
         }
         Action::FocusFile(id) => {

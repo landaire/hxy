@@ -37,6 +37,13 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
     if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
         let _ = app.dock.remove_tab(path);
     }
+    // The entropy panel is keyed by FileId, so a closing file
+    // takes its panel with it -- otherwise the panel would
+    // render an empty "no active file" placeholder against a
+    // FileId that no longer exists.
+    if let Some(path) = app.dock.find_tab(&Tab::Entropy(id)) {
+        let _ = app.dock.remove_tab(path);
+    }
     for workspace in app.workspaces.values_mut() {
         if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::Entry(id)) {
             let _ = workspace.dock.remove_tab(path);
@@ -91,7 +98,7 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
         Tab::Welcome | Tab::Settings => {
             // Non-closeable in the TabViewer; Cmd+W matches.
         }
-        Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Entropy => {
+        Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Entropy(_) => {
             if let Some(path) = app.dock.find_tab(&tab) {
                 let _ = app.dock.remove_tab(path);
             }

@@ -266,12 +266,43 @@ pub fn show(
         .collect();
     let line = Line::new("entropy", plot_points).color(line_color);
 
+    // Hex offset formatters: `0x...` on the x-axis ticks plus
+    // a cursor-follow label that shows `offset = 0x... ; H = N
+    // bits/byte`. Hex lines up with the address column in the
+    // hex view so the user can mentally jump from a peak in
+    // the plot to a row in the editor without converting bases.
+    let format_hex_offset = |value: f64| -> String {
+        if !value.is_finite() || value < 0.0 {
+            return format!("{value:.0}");
+        }
+        let raw = value.max(0.0) as u64;
+        format!("0x{raw:X}")
+    };
+    let x_axis_fmt = {
+        let format_hex_offset = format_hex_offset.clone();
+        move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
+            format_hex_offset(mark.value)
+        }
+    };
+    let label_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
+        format!("offset {}\nH = {:.2} bits/byte", format_hex_offset(point.x), point.y)
+    };
+
     Plot::new("hxy-entropy-plot")
         .height(ui.available_height() - 4.0)
         .x_axis_label("offset")
         .y_axis_label("bits/byte")
-        .y_axis_min_width(30.0)
-        .allow_scroll(false)
+        .y_axis_min_width(40.0)
+        // egui_plot's defaults already enable wheel-zoom, drag-
+        // pan, and box-zoom (Ctrl+drag) -- we just need to make
+        // sure none of them are disabled here. Setting them
+        // explicitly documents the user-visible behaviour.
+        .allow_zoom(true)
+        .allow_drag(true)
+        .allow_scroll(true)
+        .allow_boxed_zoom(true)
+        .x_axis_formatter(x_axis_fmt)
+        .label_formatter(label_fmt)
         .show(ui, |plot_ui| {
             plot_ui.set_plot_bounds(PlotBounds::from_min_max([0.0, 0.0], [max_offset.max(1.0), MAX_ENTROPY]));
             plot_ui.line(line);
