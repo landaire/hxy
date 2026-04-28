@@ -2204,13 +2204,18 @@ impl BytePalette {
         }
     }
 
+    // Background tints are *meant* to be muted -- they lay underneath
+    // the byte glyphs and want to suggest the byte class without
+    // grabbing the eye on its own. Picked so a wall of 0xFF (the old
+    // amber alarm) settles instead of glares on a dark theme, and so
+    // saturated reds/purples don't vibrate against the surface.
     pub const BG_DARK: Self = Self {
         null: Color32::from_rgb(60, 60, 64),
-        all_bits: Color32::from_rgb(200, 150, 40),
-        whitespace: Color32::from_rgb(50, 90, 140),
-        printable: Color32::from_rgb(40, 120, 60),
-        control: Color32::from_rgb(150, 60, 60),
-        extended: Color32::from_rgb(120, 60, 140),
+        all_bits: Color32::from_rgb(140, 110, 42),
+        whitespace: Color32::from_rgb(46, 78, 120),
+        printable: Color32::from_rgb(46, 104, 64),
+        control: Color32::from_rgb(122, 62, 62),
+        extended: Color32::from_rgb(102, 60, 122),
     };
 
     pub const BG_LIGHT: Self = Self {
@@ -2222,13 +2227,18 @@ impl BytePalette {
         extended: Color32::from_rgb(225, 195, 240),
     };
 
+    // Text-mode colors have to read against the dark surface but
+    // shouldn't burn the eye in long bytes blobs at night. Each of
+    // these caps perceived luminance ~145-160 (vs. the previous 170-
+    // 207 spike on amber / vivid green / sky-blue), keeps the hue
+    // separation between classes, and de-saturates noticeably.
     pub const TEXT_DARK: Self = Self {
-        null: Color32::from_rgb(140, 140, 140),
-        all_bits: Color32::from_rgb(255, 200, 80),
-        whitespace: Color32::from_rgb(120, 180, 240),
-        printable: Color32::from_rgb(120, 220, 140),
-        control: Color32::from_rgb(240, 130, 130),
-        extended: Color32::from_rgb(210, 140, 230),
+        null: Color32::from_rgb(144, 144, 148),
+        all_bits: Color32::from_rgb(214, 174, 96),
+        whitespace: Color32::from_rgb(128, 176, 218),
+        printable: Color32::from_rgb(136, 200, 152),
+        control: Color32::from_rgb(218, 138, 138),
+        extended: Color32::from_rgb(188, 149, 210),
     };
 
     pub const TEXT_LIGHT: Self = Self {
