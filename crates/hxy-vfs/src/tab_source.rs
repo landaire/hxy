@@ -62,6 +62,27 @@ impl TabSource {
         }
     }
 
+    /// Lowercased extension of the leaf entry the tab actually shows.
+    /// Differs from `root_path().extension()` for VFS-nested entries:
+    /// opening `image.png` from inside `assets.zip` reports `png`
+    /// here, but the root path's extension is `zip`. Used by the
+    /// template suggester so an extension-matched `.bt` / `.hexpat`
+    /// fires for the inner format, not the container.
+    pub fn leaf_extension(&self) -> Option<String> {
+        match self {
+            Self::Filesystem(p) => p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()),
+            Self::VfsEntry { entry_path, .. } => {
+                let leaf = entry_path.rsplit('/').find(|s| !s.is_empty())?;
+                let dot = leaf.rfind('.')?;
+                Some(leaf[dot + 1..].to_ascii_lowercase())
+            }
+            Self::Anonymous { title, .. } | Self::PluginMount { title, .. } => {
+                let dot = title.rfind('.')?;
+                Some(title[dot + 1..].to_ascii_lowercase())
+            }
+        }
+    }
+
     /// A short human label: for `Filesystem` it's the file name; for
     /// `VfsEntry` it's the last segment of `entry_path`; for
     /// `Anonymous` and `PluginMount` it's the stored title.

@@ -63,6 +63,7 @@ welcome-recent-empty = No recent files yet.
 
 toolbar-open-file = Open file...
 toolbar-browse-vfs = Browse VFS
+palette-browse-vfs-unavailable = no VFS handler for this file
 toolbar-run-template = Run template...
 settings-offset-base = Offset base
 settings-address-separator = Group hex digits in address column

@@ -44,6 +44,14 @@ pub struct HistoryPaletteContext {
     /// True when an active file tab exists, regardless of edit mode.
     /// Gates toggle-read-only and other tab-level actions.
     pub has_active_file: bool,
+    /// True when the active file has a detected VFS handler -- gates
+    /// the "Browse VFS" entry. Disabled (greyed) when false so the
+    /// entry stays discoverable even on plain files.
+    pub can_browse_vfs: bool,
+    /// True when at least one workspace exists in the dock. Gates
+    /// the "Toggle VFS panel" entry, which is meaningless without a
+    /// workspace to toggle in.
+    pub has_workspace: bool,
 }
 
 /// Snapshot of the active tab used for ranking `Run Template`
@@ -68,21 +76,27 @@ pub fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
 }
 
 pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
-    let Some(id) = crate::app::active_file_id(app) else { return HistoryPaletteContext::default() };
-    let Some(file) = app.files.get(&id) else { return HistoryPaletteContext::default() };
+    let has_workspace = !app.workspaces.is_empty();
+    let Some(id) = crate::app::active_file_id(app) else {
+        return HistoryPaletteContext { has_workspace, ..HistoryPaletteContext::default() };
+    };
+    let Some(file) = app.files.get(&id) else {
+        return HistoryPaletteContext { has_workspace, ..HistoryPaletteContext::default() };
+    };
     HistoryPaletteContext {
         can_undo: file.editor.can_undo(),
         can_redo: file.editor.can_redo(),
         can_paste: file.editor.edit_mode() == crate::files::EditMode::Mutable,
         has_active_file: true,
+        can_browse_vfs: file.detected_handler.is_some(),
+        has_workspace,
     }
 }
 
 pub fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
     let Some(id) = crate::app::active_file_id(app) else { return TemplatePaletteContext::default() };
     let Some(file) = app.files.get(&id) else { return TemplatePaletteContext::default() };
-    let extension =
-        file.root_path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
+    let extension = file.source_kind.as_ref().and_then(|s| s.leaf_extension());
     let source_len = file.editor.source().len().get();
     let window = source_len.min(crate::templates::library::DETECTION_WINDOW as u64);
     let head_bytes = if window == 0 {
@@ -146,13 +160,20 @@ pub fn build_palette_entries(
                     .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
                 );
             }
-            out.push(
-                egui_palette::Entry::new(
-                    hxy_i18n::t("toolbar-browse-vfs"),
-                    Action::InvokeCommand(PaletteCommand::BrowseVfs),
-                )
-                .with_icon(icon::TREE_STRUCTURE),
-            );
+            // BrowseVfs only does something when the active file has
+            // a detected VFS handler. Surface the entry either way so
+            // the user can find it, but disable it (and add a
+            // "no handler for this file" subtitle) when it'd no-op.
+            let mut browse_vfs = egui_palette::Entry::new(
+                hxy_i18n::t("toolbar-browse-vfs"),
+                Action::InvokeCommand(PaletteCommand::BrowseVfs),
+            )
+            .with_icon(icon::TREE_STRUCTURE)
+            .with_disabled(!history_ctx.can_browse_vfs);
+            if !history_ctx.can_browse_vfs {
+                browse_vfs = browse_vfs.with_subtitle(hxy_i18n::t("palette-browse-vfs-unavailable"));
+            }
+            out.push(browse_vfs);
             let panel_subtitle = |visible: bool| -> String {
                 hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" })
             };
@@ -184,24 +205,32 @@ pub fn build_palette_entries(
                 .with_subtitle(panel_subtitle(plugins_visible)),
             );
 
-            let workspace_tree_visible = app
-                .dock
-                .focused_leaf()
-                .and_then(|p| app.dock.leaf(p).ok())
-                .and_then(|leaf| leaf.tabs().get(leaf.active.0))
-                .and_then(|tab| match tab {
-                    Tab::Workspace(workspace_id) => app
-                        .workspaces
-                        .get(workspace_id)
-                        .map(|w| w.dock.find_tab(&crate::files::WorkspaceTab::VfsTree).is_some()),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            out.push(
-                egui_palette::Entry::new("Toggle VFS panel", Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs))
+            // Skip the "Toggle VFS panel" entry entirely when no
+            // workspace is open -- it'd toggle nothing in that case
+            // and just clutters the list.
+            if history_ctx.has_workspace {
+                let workspace_tree_visible = app
+                    .dock
+                    .focused_leaf()
+                    .and_then(|p| app.dock.leaf(p).ok())
+                    .and_then(|leaf| leaf.tabs().get(leaf.active.0))
+                    .and_then(|tab| match tab {
+                        Tab::Workspace(workspace_id) => app
+                            .workspaces
+                            .get(workspace_id)
+                            .map(|w| w.dock.find_tab(&crate::files::WorkspaceTab::VfsTree).is_some()),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                out.push(
+                    egui_palette::Entry::new(
+                        "Toggle VFS panel",
+                        Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs),
+                    )
                     .with_icon(icon::TREE_STRUCTURE)
                     .with_subtitle(panel_subtitle(workspace_tree_visible)),
-            );
+                );
+            }
 
             let tool_panel_visible = app.hidden_tool_tabs.is_empty()
                 && app.dock.iter_all_tabs().any(|(_, t)| crate::tabs::dock_ops::is_tool_tab(t));

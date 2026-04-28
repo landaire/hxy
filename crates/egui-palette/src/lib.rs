@@ -107,12 +107,18 @@ pub struct Entry<A> {
     /// here so the palette advertises the same keys that trigger the
     /// action outside the palette.
     pub shortcut: Option<String>,
+    /// `true` greys out the row and silently ignores Enter / clicks
+    /// on it. Use for actions whose preconditions aren't met (e.g.
+    /// "Browse VFS" on a file with no detected handler) so the user
+    /// can see *why* the option exists without being able to invoke
+    /// it into a no-op.
+    pub disabled: bool,
     pub data: A,
 }
 
 impl<A> Entry<A> {
     pub fn new(title: impl Into<String>, data: A) -> Self {
-        Self { title: title.into(), subtitle: None, icon: None, shortcut: None, data }
+        Self { title: title.into(), subtitle: None, icon: None, shortcut: None, disabled: false, data }
     }
 
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
@@ -127,6 +133,11 @@ impl<A> Entry<A> {
 
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -601,6 +612,7 @@ pub fn show_with_style<A: Clone>(
     // the same input batch (rare in practice but cheap to specify).
     if let Some(row) = picked_idx
         && let Some(hit) = filtered.get(row)
+        && !entries[hit.index].disabled
     {
         return Some(Outcome::Picked(entries[hit.index].data.clone()));
     }
@@ -633,6 +645,15 @@ fn render_row<A>(
     let icon_color = style.icon_color.unwrap_or(text_color);
     let sub_color = style.subtitle_color.unwrap_or_else(|| ui.visuals().weak_text_color());
     let match_color = style.match_color.unwrap_or_else(|| ui.visuals().selection.stroke.color);
+    // Dim every painted color uniformly when the row is disabled so
+    // the disabled state is visually obvious without re-themeing
+    // each text run individually.
+    let (text_color, icon_color, sub_color, match_color) = if entry.disabled {
+        let dim = |c: Color32| c.gamma_multiply(0.45);
+        (dim(text_color), dim(icon_color), dim(sub_color), dim(match_color))
+    } else {
+        (text_color, icon_color, sub_color, match_color)
+    };
 
     // Split the fuzzy-matcher's char indices (into the combined
     // "title subtitle" haystack) into title-local and subtitle-local

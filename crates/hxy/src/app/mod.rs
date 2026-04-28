@@ -918,8 +918,7 @@ impl HxyApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn suggest_templates_for(&mut self, id: FileId) {
         let Some(file) = self.files.get(&id) else { return };
-        let extension =
-            file.root_path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
+        let extension = file.source_kind.as_ref().and_then(|s| s.leaf_extension());
         let source_len = file.editor.source().len().get();
         let window = source_len.min(crate::templates::library::DETECTION_WINDOW as u64);
         let head_bytes: Vec<u8> = if window == 0 {
@@ -1314,6 +1313,8 @@ impl HxyApp {
                         });
                     }
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                self.suggest_templates_for(id);
                 id
             }
         }
@@ -1604,6 +1605,10 @@ impl eframe::App for HxyApp {
                 workspaces: &mut self.workspaces,
                 pending_close_workspace_entry: &mut self.pending_close_workspace_entry,
                 pending_collapse_workspace: &mut self.pending_collapse_workspace,
+                #[cfg(not(target_arch = "wasm32"))]
+                toasts: &mut self.toasts,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_template_runs: &mut self.pending_template_runs,
             };
             let style = Style::from_egui(ui.style());
             DockArea::new(&mut self.dock).style(style).show_leaf_collapse_buttons(false).show_inside(ui, &mut viewer);
@@ -1713,7 +1718,7 @@ impl eframe::App for HxyApp {
             crate::compare::picker::render_compare_picker(ui.ctx(), self);
             crate::app::dialogs::render_imhex_patterns_first_run(ui.ctx(), self);
             crate::app::dialogs::pump_pattern_fetch(ui.ctx(), self);
-            self.toasts.show(ui.ctx(), &mut self.pending_template_runs);
+            self.toasts.show_toasts(ui.ctx());
             crate::templates::runner::drain_pending_template_runs(ui.ctx(), self);
         }
 
@@ -2310,6 +2315,8 @@ fn render_file_tab(
     file: &mut OpenFile,
     state: &mut PersistedState,
     tab_focus: TabFocus,
+    #[cfg(not(target_arch = "wasm32"))] toasts: &mut crate::toasts::ToastCenter,
+    #[cfg(not(target_arch = "wasm32"))] pending_template_runs: &mut Vec<crate::toasts::PendingTemplateRun>,
 ) {
     let settings_base = state.app.offset_base;
     let mut new_base = settings_base;
@@ -2357,6 +2364,13 @@ fn render_file_tab(
     if let Some(kind) = copy_request {
         do_copy(ui.ctx(), file, kind);
     }
+
+    // Render template-prompt toasts scoped to this tab. The full
+    // tab rect (captured before the panels carved into it) is the
+    // anchor target so the prompts ride along with the tab when the
+    // dock layout changes.
+    #[cfg(not(target_arch = "wasm32"))]
+    toasts.show_template_prompts_for(ui.ctx(), tab_rect, id, pending_template_runs);
 
     if new_base != settings_base {
         state.app.offset_base = new_base;
@@ -3540,6 +3554,15 @@ struct HxyTabViewer<'a> {
     /// editor." The post-dock pass collapses these back to plain
     /// `Tab::File` entries in the outer dock.
     pending_collapse_workspace: &'a mut Vec<crate::files::WorkspaceId>,
+    /// Toast / template-prompt center, plumbed in so `render_file_tab`
+    /// can render its prompts scoped to the tab's content rect rather
+    /// than the app-global corner.
+    #[cfg(not(target_arch = "wasm32"))]
+    toasts: &'a mut crate::toasts::ToastCenter,
+    /// Sink for "Run X.bt" toast accepts. Drained by the host loop
+    /// after the dock pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_template_runs: &'a mut Vec<crate::toasts::PendingTemplateRun>,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -3666,7 +3689,17 @@ impl TabViewer for HxyTabViewer<'_> {
             }
             Tab::File(id) => match self.files.get_mut(id) {
                 Some(file) => {
-                    render_file_tab(ui, *id, file, self.state, *self.tab_focus);
+                    render_file_tab(
+                        ui,
+                        *id,
+                        file,
+                        self.state,
+                        *self.tab_focus,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.toasts,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.pending_template_runs,
+                    );
                 }
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
@@ -3704,6 +3737,8 @@ impl TabViewer for HxyTabViewer<'_> {
                     self.pending_close_workspace_entry,
                     self.pending_collapse_workspace,
                     self.tab_focus,
+                    self.toasts,
+                    self.pending_template_runs,
                 );
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -3828,6 +3863,7 @@ impl TabViewer for HxyTabViewer<'_> {
 /// the workspace's `dock` and dispatch to `WorkspaceTabViewer` for
 /// each sub-tab (Editor, VfsTree, Entry).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn render_workspace_tab(
     ui: &mut egui::Ui,
     workspace_id: crate::files::WorkspaceId,
@@ -3837,6 +3873,8 @@ fn render_workspace_tab(
     pending_close_workspace_entry: &mut Option<crate::tabs::close::PendingCloseTab>,
     pending_collapse_workspace: &mut Vec<crate::files::WorkspaceId>,
     tab_focus: &mut TabFocus,
+    toasts: &mut crate::toasts::ToastCenter,
+    pending_template_runs: &mut Vec<crate::toasts::PendingTemplateRun>,
 ) {
     let Some(workspace) = workspaces.get_mut(&workspace_id) else {
         ui.colored_label(egui::Color32::RED, format!("missing workspace {workspace_id:?}"));
@@ -3854,6 +3892,8 @@ fn render_workspace_tab(
         mount: &mount,
         pending_close_workspace_entry,
         tab_focus,
+        toasts,
+        pending_template_runs,
     };
     let style = egui_dock::Style::from_egui(ui.style());
     egui_dock::DockArea::new(inner_dock)
@@ -3887,6 +3927,10 @@ struct WorkspaceTabViewer<'a> {
     /// Updated by `on_tab_button` when the user clicks an inner tab,
     /// so subsequent `Ctrl+Tab` cycles cycle this workspace's dock.
     tab_focus: &'a mut TabFocus,
+    /// Plumbed through so the workspace's inner File-tabs can render
+    /// their template prompts scoped to the tab body.
+    toasts: &'a mut crate::toasts::ToastCenter,
+    pending_template_runs: &'a mut Vec<crate::toasts::PendingTemplateRun>,
 }
 
 impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
@@ -3942,7 +3986,15 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             crate::files::WorkspaceTab::Editor => match self.files.get_mut(&self.editor_id) {
-                Some(file) => render_file_tab(ui, self.editor_id, file, self.state, *self.tab_focus),
+                Some(file) => render_file_tab(
+                    ui,
+                    self.editor_id,
+                    file,
+                    self.state,
+                    *self.tab_focus,
+                    self.toasts,
+                    self.pending_template_runs,
+                ),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing editor {:?}", self.editor_id));
                 }
@@ -3980,7 +4032,15 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 }
             }
             crate::files::WorkspaceTab::Entry(file_id) => match self.files.get_mut(file_id) {
-                Some(file) => render_file_tab(ui, *file_id, file, self.state, *self.tab_focus),
+                Some(file) => render_file_tab(
+                    ui,
+                    *file_id,
+                    file,
+                    self.state,
+                    *self.tab_focus,
+                    self.toasts,
+                    self.pending_template_runs,
+                ),
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing entry {file_id:?}"));
                 }

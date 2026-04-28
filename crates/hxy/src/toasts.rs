@@ -141,10 +141,12 @@ impl ToastCenter {
         self.prompts.retain(|p| p.file_id != file_id);
     }
 
-    /// Dispatch all toasts and prompts. Drains accepted prompts into
-    /// `pending_runs`; the host loop then routes those through the
-    /// same code path the palette's `Run Template` action uses.
-    pub fn show(&mut self, ctx: &egui::Context, pending_runs: &mut Vec<PendingTemplateRun>) {
+    /// Render the simple info / success / warning / error bubbles
+    /// (the egui_toast cluster). Called once per frame at the app
+    /// level so these stay app-global; template prompts are routed
+    /// separately through [`Self::show_template_prompts_for`] so each
+    /// prompt can render scoped to the file tab it targets.
+    pub fn show_toasts(&mut self, ctx: &egui::Context) {
         // egui_toast wants a `&mut Ui`; we don't have one in this
         // late stage of the frame, so spin up a transparent
         // foreground Area as a host. The library's own Areas anchor
@@ -158,23 +160,52 @@ impl ToastCenter {
                 self.inner.show(ui);
             });
 
-        // Decay TTLs and surface prompts. A pre-pass clears any
-        // group the previous frame marked dismissed.
+        // TTL bookkeeping and group-dismiss housekeeping happens here
+        // even though the actual prompt widgets are drawn elsewhere:
+        // we want a prompt to expire even if its targeted tab isn't
+        // currently focused (otherwise it'd survive forever waiting
+        // to be rendered).
         if !self.dismissed_groups.is_empty() {
             let dismissed = std::mem::take(&mut self.dismissed_groups);
             self.prompts.retain(|p| !dismissed.contains(&p.group));
         }
+        self.prompts.retain(|p| p.remaining > 0.0);
+    }
+
+    /// Render every template prompt targeting `file_id`, anchored to
+    /// the top-right of `tab_rect`. Drains accepted prompts into
+    /// `pending_runs`; the host loop then routes those through the
+    /// same code path the palette's `Run Template` action uses.
+    ///
+    /// Called from inside the file tab's body so the prompt visually
+    /// lives in the tab's space rather than the app-global corner.
+    /// `tab_rect` should be the tab's content area in screen
+    /// coordinates (typically `ui.max_rect()` from the tab body).
+    pub fn show_template_prompts_for(
+        &mut self,
+        ctx: &egui::Context,
+        tab_rect: egui::Rect,
+        file_id: FileId,
+        pending_runs: &mut Vec<PendingTemplateRun>,
+    ) {
         let dt = ctx.input(|i| i.unstable_dt);
         let mut accepted_groups: HashSet<u64> = HashSet::new();
-        // Stack prompts below the egui_toast cluster. We anchor each
-        // one individually so reflow stays O(1) per prompt and a
-        // dismissed entry doesn't shift its neighbours.
         let mut y_offset = 12.0_f32;
         for (idx, prompt) in self.prompts.iter_mut().enumerate() {
-            let area_id = Id::new("hxy_template_prompt").with(idx);
+            if prompt.file_id != file_id {
+                continue;
+            }
+            // Anchor each prompt individually with a screen-relative
+            // fixed_pos derived from the tab rect, so the prompts
+            // ride along when the dock layout shifts and stack
+            // O(1) per row instead of reflowing the whole list.
+            let area_id = Id::new("hxy_template_prompt").with((file_id.get(), idx));
+            let pos = egui::pos2(tab_rect.right() - 12.0, tab_rect.top() + y_offset);
             let response = egui::Area::new(area_id)
                 .order(Order::Foreground)
-                .anchor(Align2::RIGHT_TOP, vec2(-12.0, y_offset))
+                .pivot(Align2::RIGHT_TOP)
+                .fixed_pos(pos)
+                .constrain_to(tab_rect)
                 .show(ctx, |ui| {
                     Frame::window(ui.style()).stroke(Stroke::new(1.0, Color32::from_gray(80))).show(ui, |ui| {
                         ui.set_max_width(280.0);
@@ -207,8 +238,5 @@ impl ToastCenter {
         if !accepted_groups.is_empty() {
             self.prompts.retain(|p| !accepted_groups.contains(&p.group));
         }
-        // Drop expired prompts (the timer counts down only when not
-        // hovered, mirroring the rest of egui_toast).
-        self.prompts.retain(|p| p.remaining > 0.0);
     }
 }
