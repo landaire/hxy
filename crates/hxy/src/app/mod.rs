@@ -446,13 +446,17 @@ impl HxyApp {
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
-        // Plugins load with empty grants + no state store at
-        // construction time. The runtime-owned `with_plugin_persistence`
-        // builder reloads them once the SQLite-backed grants and
-        // state store are available; without that call (e.g. db open
-        // failed at startup) every requested permission stays denied.
+        // Plugin loading is deferred to [`Self::reload_plugins`], which
+        // the host calls exactly once after [`Self::with_plugin_persistence`]
+        // has wired the SQLite-backed grants and state store. Compiling
+        // every WASM plugin twice (once with default grants here, then
+        // again with real grants from `reload_plugins`) is wasted
+        // wasmtime work -- a single failing plugin probe alone is tens
+        // of MB of cranelift allocator churn. The wasm32 build never
+        // calls `with_plugin_persistence`; it gets plugin loading via
+        // the explicit `reload_plugins()` call right after construction.
         #[cfg(not(target_arch = "wasm32"))]
-        let plugin_handlers = register_user_plugins(&mut registry, &hxy_plugin_host::PluginGrants::default(), None);
+        let plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>> = Vec::new();
         #[cfg(not(target_arch = "wasm32"))]
         let template_plugins = load_user_template_plugins();
         Self {

@@ -22,18 +22,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use fskit::ReadAt;
-use fskit::cache::CachingReader;
 use hxy_core::ByteLen;
 use hxy_core::HexSource;
 use hxy_core::ReadAtSource;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::vfs::SeekAndRead;
-
-/// Per-source memory budget for the byte-range cache. Sized so
-/// 100 open tabs stay well under a GiB in aggregate while still
-/// keeping the hex view's per-row reads (16-byte chunks) hot
-/// for the visible window.
-pub const STREAM_CACHE_BUDGET: usize = 4 * 1024 * 1024;
 
 /// Disk-backed [`ReadAt`] over a single open `File`. Holds the
 /// FD inside a `Mutex` so concurrent `read_at` calls serialise
@@ -71,11 +64,15 @@ impl ReadAt for FilePread {
 /// captured length. Returns the length separately so callers
 /// can stash it in tab-restoration state without paying for
 /// another `metadata()` round-trip.
+///
+/// No caching layer here -- the `ByteCache` that `OpenFile` wraps
+/// every source in already memoises chunk reads, so the previous
+/// `fskit::cache::CachingReader` wrapper was double-caching the same
+/// bytes (a fixed 4 MiB per source on top of the global cache).
 pub fn open_filesystem(path: &Path) -> std::io::Result<(Arc<dyn HexSource>, u64)> {
     let len = std::fs::metadata(path)?.len();
     let pread = FilePread::open(path)?;
-    let cached = CachingReader::with_mem_limit(pread, STREAM_CACHE_BUDGET);
-    let source: Arc<dyn HexSource> = Arc::new(ReadAtSource::new(cached, ByteLen::new(len)));
+    let source: Arc<dyn HexSource> = Arc::new(ReadAtSource::new(pread, ByteLen::new(len)));
     Ok((source, len))
 }
 
@@ -141,8 +138,7 @@ pub fn open_vfs(mount: Arc<MountedVfs>, entry_path: String) -> std::io::Result<(
         .map_err(|e| std::io::Error::other(format!("vfs metadata for {entry_path}: {e}")))?;
     let len = metadata.len;
     let pread = VfsPread::open(mount, entry_path);
-    let cached = CachingReader::with_mem_limit(pread, STREAM_CACHE_BUDGET);
-    let source: Arc<dyn HexSource> = Arc::new(ReadAtSource::new(cached, ByteLen::new(len)));
+    let source: Arc<dyn HexSource> = Arc::new(ReadAtSource::new(pread, ByteLen::new(len)));
     Ok((source, len))
 }
 

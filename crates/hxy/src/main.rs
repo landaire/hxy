@@ -95,14 +95,39 @@ fn main() -> eframe::Result<()> {
         hxy_lib::APP_NAME,
         options,
         Box::new(move |cc| {
+            // Honour `HXY_EXIT_AFTER_SEC=N` by spawning a timer
+            // thread that posts a viewport-close command once N
+            // seconds elapse. Used for dhat captures: the process
+            // returns through `eframe::run_native`, `_dhat` falls
+            // out of scope, and `dhat::Profiler::Drop` flushes the
+            // profile. SIGTERM doesn't run Drop, so a timer beats
+            // wrapping the binary in `timeout`.
+            if let Ok(secs) = std::env::var("HXY_EXIT_AFTER_SEC")
+                && let Ok(secs) = secs.parse::<u64>()
+                && secs > 0
+            {
+                let ctx = cc.egui_ctx.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    eprintln!("HXY_EXIT_AFTER_SEC: requesting viewport close after {secs}s");
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                });
+            }
             let mut app = hxy_lib::HxyApp::new(cc, state_for_app);
             // Wire plugin persistence *before* the sink. The sink's
             // `restore_open_tabs` step may try to remount a plugin-
             // backed tab via `mount_by_token`; if the state store
             // isn't wired yet the plugin would see `denied` from
             // `state::load` and could misbehave.
+            // Plugin load is deferred until persistence is wired (see
+            // `HxyApp::new` for why we don't compile plugins twice).
+            // When the SQLite store failed to open, fall back to a one-
+            // shot `reload_plugins` so the user still gets unregistered
+            // plugins instead of an empty list.
             if let Some(state_store) = plugin_state_store {
                 app = app.with_plugin_persistence(state_store);
+            } else {
+                app.reload_plugins();
             }
             if let Some(sink) = sink {
                 app = app.with_sink(sink);
