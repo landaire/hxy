@@ -139,6 +139,56 @@ pub fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
     TemplatePaletteContext { extension, head_bytes }
 }
 
+/// Build the single argument-style row for the
+/// [`Mode::SetPollInterval`] mode: parses `query` as a
+/// non-negative integer of milliseconds, clamps it to the
+/// supported window, and emits an [`Action::SetPollInterval`].
+/// `0` is preserved as the "disable polling" sentinel and
+/// labeled distinctly so the user knows what they're picking.
+fn build_poll_interval_entries(out: &mut Vec<egui_palette::Entry<Action>>, query: &str) {
+    use crate::files::watch::PollingPrefs;
+    use egui_phosphor::regular as icon;
+    if query.is_empty() {
+        return;
+    }
+    let parsed = match crate::commands::goto::parse_number(query) {
+        Ok(crate::commands::goto::Number::Absolute(n)) => n,
+        Ok(crate::commands::goto::Number::Relative(_)) => {
+            invalid_entry(out, query, "interval must be absolute (no + / - prefix)");
+            return;
+        }
+        Err(e) => {
+            invalid_entry(out, query, &e.to_string());
+            return;
+        }
+    };
+    let ms = match u32::try_from(parsed) {
+        Ok(n) => n,
+        Err(_) => {
+            invalid_entry(out, query, "interval too large");
+            return;
+        }
+    };
+    let entry = if ms == 0 {
+        egui_palette::Entry::new(hxy_i18n::t("palette-set-poll-interval-off"), Action::SetPollInterval(0))
+            .with_icon(icon::TIMER)
+    } else {
+        let min_ms = PollingPrefs::MIN_INTERVAL.as_millis() as u32;
+        let max_ms = PollingPrefs::MAX_INTERVAL.as_millis() as u32;
+        let clamped = ms.clamp(min_ms, max_ms);
+        let label = if clamped == ms {
+            hxy_i18n::t_args("palette-set-poll-interval-fmt", &[("ms", &ms.to_string())])
+        } else {
+            hxy_i18n::t_args(
+                "palette-set-poll-interval-clamped",
+                &[("ms", &ms.to_string()), ("clamped", &clamped.to_string())],
+            )
+        };
+        egui_palette::Entry::new(label, Action::SetPollInterval(clamped)).with_icon(icon::TIMER)
+    };
+    out.push(entry);
+}
+
 /// Push a non-actionable "Invalid: {reason}" row. Activating it
 /// falls through to `apply_palette_action`'s existing Invalid arm
 /// which just closes the palette -- keeps a visible indication
@@ -347,6 +397,17 @@ pub fn build_palette_entries(
                     Action::SwitchMode(Mode::SetColumnsGlobal),
                 )
                 .with_icon(icon::COLUMNS_PLUS_RIGHT),
+            );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-set-poll-interval-entry"),
+                    Action::SwitchMode(Mode::SetPollInterval),
+                )
+                .with_icon(icon::TIMER)
+                .with_subtitle(hxy_i18n::t_args(
+                    "palette-set-poll-interval-current",
+                    &[("ms", &app.state.read().app.file_poll_interval_ms.to_string())],
+                )),
             );
             if history_ctx.can_undo {
                 out.push(
@@ -903,6 +964,10 @@ pub fn build_palette_entries(
             } else {
                 super::columns::build_columns_entries(&mut out, app.palette.mode, query);
             }
+        }
+        Mode::SetPollInterval => {
+            let query = app.palette.inner.query.trim();
+            build_poll_interval_entries(&mut out, query);
         }
         Mode::PluginCascade => {
             if let Some(cascade) = app.palette.plugin_cascade.as_ref() {

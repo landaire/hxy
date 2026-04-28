@@ -2950,13 +2950,17 @@ fn render_file_tab(
     let text_h = ui.text_style_height(&egui::TextStyle::Body);
     let status_h = text_h + 2.0;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let watch_chip = compute_watch_chip(file, &state.app);
+    #[cfg(target_arch = "wasm32")]
+    let watch_chip: Option<WatchStatusChip> = None;
     egui::Panel::bottom(egui::Id::new(("hxy-status-panel", id.get())))
         .resizable(false)
         .exact_size(status_h)
         .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }))
         .show_inside(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                status_bar_ui(ui, file, settings_base, &mut new_base, tab_focus);
+                status_bar_ui(ui, file, settings_base, &mut new_base, tab_focus, watch_chip.as_ref());
             });
         });
 
@@ -4740,12 +4744,81 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
     }
 }
 
+/// Snapshot the host computes per-frame for the file's watch
+/// state and hands to the status bar. Empty for tabs the
+/// watcher can't track (anonymous in-memory buffers); when
+/// present the renderer paints an eye / eye-slash icon and
+/// uses `tooltip` as the hover text.
+pub(crate) struct WatchStatusChip {
+    pub watching: bool,
+    pub tooltip: String,
+}
+
+/// Build the per-frame watch-status chip for `file` given the
+/// current `settings`. Returns `None` for purely in-memory
+/// tabs (anonymous scratch buffers without a stable identity)
+/// since the watcher has nothing to track for those.
+#[cfg(not(target_arch = "wasm32"))]
+fn compute_watch_chip(file: &OpenFile, settings: &crate::settings::AppSettings) -> Option<WatchStatusChip> {
+    let source = file.source_kind.as_ref()?;
+    if matches!(source, TabSource::Anonymous { .. }) {
+        return Some(WatchStatusChip {
+            watching: false,
+            tooltip: format!(
+                "{}: {}",
+                hxy_i18n::t("status-watch-tooltip-prefix"),
+                hxy_i18n::t("status-watch-tooltip-anonymous"),
+            ),
+        });
+    }
+    let key = match file.root_path() {
+        Some(p) => p.clone(),
+        None => vfs_pref_key_for(source),
+    };
+    let mode = settings.auto_reload_for(&key);
+    let interval_ms = settings.file_poll_interval_ms;
+    let watching = !matches!(mode, crate::settings::AutoReloadMode::Never);
+
+    let mode_label = hxy_i18n::t(mode.label_key());
+    let mode_line = hxy_i18n::t_args("status-watch-mode", &[("mode", &mode_label)]);
+
+    let cadence_line = if !watching {
+        String::new()
+    } else if file.root_path().is_some() {
+        // Filesystem-backed: kernel events with optional poll.
+        if interval_ms == 0 {
+            hxy_i18n::t("status-watch-cadence-fs-notify-only")
+        } else if settings.file_poll_all {
+            hxy_i18n::t_args("status-watch-cadence-fs-poll", &[("ms", &interval_ms.to_string())])
+        } else {
+            hxy_i18n::t_args("status-watch-cadence-fs-notify", &[("ms", &interval_ms.to_string())])
+        }
+    } else {
+        // VFS-only: the only signal we have is sample-hash polling.
+        if interval_ms == 0 {
+            hxy_i18n::t("status-watch-cadence-off")
+        } else {
+            hxy_i18n::t_args("status-watch-cadence-vfs-poll", &[("ms", &interval_ms.to_string())])
+        }
+    };
+
+    let header = hxy_i18n::t("status-watch-tooltip-prefix");
+    let body = if watching { hxy_i18n::t("status-watch-watching") } else { hxy_i18n::t("status-watch-not-watching") };
+    let mut tooltip = format!("{header}\n{body}\n{mode_line}");
+    if !cadence_line.is_empty() {
+        tooltip.push('\n');
+        tooltip.push_str(&cadence_line);
+    }
+    Some(WatchStatusChip { watching, tooltip })
+}
+
 fn status_bar_ui(
     ui: &mut egui::Ui,
     file: &mut OpenFile,
     base: crate::settings::OffsetBase,
     new_base: &mut crate::settings::OffsetBase,
     tab_focus: TabFocus,
+    watch_chip: Option<&WatchStatusChip>,
 ) {
     ui.horizontal(|ui| {
         // Vim-mode chip first so the modal state is the most
@@ -4781,6 +4854,20 @@ fn status_bar_ui(
         };
         ui.label(format!("{icon} {label}")).on_hover_text(tooltip);
         ui.separator();
+
+        if let Some(chip) = watch_chip {
+            let icon = if chip.watching { egui_phosphor::regular::EYE } else { egui_phosphor::regular::EYE_SLASH };
+            // Dim the icon when watching is off so the user has
+            // a passive at-a-glance signal rather than a flat
+            // foreground tone for both states.
+            let response = if chip.watching {
+                ui.label(icon)
+            } else {
+                ui.label(egui::RichText::new(icon).color(ui.visuals().weak_text_color()))
+            };
+            response.on_hover_text(&chip.tooltip);
+            ui.separator();
+        }
 
         if let Some(hov) = file.hovered {
             let value = crate::view::format::format_offset(hov.get(), base);

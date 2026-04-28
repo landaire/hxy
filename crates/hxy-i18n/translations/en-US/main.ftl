@@ -338,3 +338,23 @@ palette-watch-ask = Watch this file: Ask before reloading
 palette-watch-never = Watch this file: Disable change detection
 palette-watch-subtitle = { $mode }{ $marker }
 watch-pref-applied = Set to { $mode } for this file
+
+# Poll-interval palette mode
+palette-set-poll-interval-entry = Set poll interval...
+palette-set-poll-interval-current = Currently { $ms } ms (0 disables polling)
+palette-hint-set-poll-interval = Poll interval in milliseconds (0 to disable)
+palette-set-poll-interval-fmt = Use { $ms } ms poll interval
+palette-set-poll-interval-clamped = Use { $clamped } ms poll interval ({ $ms } clamped to range)
+palette-set-poll-interval-off = Disable polling
+
+# Status-bar watch indicator
+status-watch-watching = Monitoring this file for external changes
+status-watch-not-watching = Change detection disabled for this file
+status-watch-cadence-fs-notify = Kernel notifications + polling fallback every { $ms } ms
+status-watch-cadence-fs-notify-only = Kernel notifications only (polling off)
+status-watch-cadence-fs-poll = Polling every { $ms } ms
+status-watch-cadence-vfs-poll = Polling VFS bytes (sample-hash) every { $ms } ms
+status-watch-cadence-off = Polling disabled in settings
+status-watch-mode = Mode: { $mode }
+status-watch-tooltip-prefix = File watcher
+status-watch-tooltip-anonymous = This buffer has no persistent identity, so change detection doesn't apply.

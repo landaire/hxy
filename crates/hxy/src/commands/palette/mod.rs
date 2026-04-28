@@ -200,6 +200,12 @@ pub enum Mode {
     CompareSideB,
     /// Recent-files cascade for the B pick.
     CompareSideBRecent,
+    /// Argument-style mode that takes a number of milliseconds
+    /// and applies it as the global filesystem-watcher poll
+    /// interval (`0` disables polling). The hint reflects the
+    /// current value so the user can tweak from a known
+    /// baseline.
+    SetPollInterval,
 }
 
 /// State carried while the palette is walking the user through
@@ -248,6 +254,7 @@ impl Mode {
             Mode::CompareSideARecent => Some(Mode::CompareSideA),
             Mode::CompareSideB => Some(Mode::CompareSideA),
             Mode::CompareSideBRecent => Some(Mode::CompareSideB),
+            Mode::SetPollInterval => Some(Mode::Main),
         }
     }
 }
@@ -439,6 +446,12 @@ pub enum Action {
     /// the user picks routes back through
     /// `Action::CompareSelectSource`.
     CompareBrowse(CompareSide),
+    /// Apply a parsed poll-interval value (in milliseconds; `0`
+    /// disables polling). Emitted by the [`Mode::SetPollInterval`]
+    /// argument-style mode and dispatched by writing
+    /// `AppSettings::file_poll_interval_ms`. The next frame's
+    /// `set_polling` call picks the new value up.
+    SetPollInterval(u32),
 }
 
 /// Which side of a compare pick a palette entry contributes to.
@@ -478,6 +491,7 @@ pub fn show(
         Mode::PluginPrompt => {
             state.plugin_prompt.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| hxy_i18n::t("palette-hint-main"))
         }
+        Mode::SetPollInterval => hxy_i18n::t("palette-hint-set-poll-interval"),
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw
@@ -493,6 +507,7 @@ pub fn show(
             | Mode::SetColumnsLocal
             | Mode::SetColumnsGlobal
             | Mode::PluginPrompt
+            | Mode::SetPollInterval
     );
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),

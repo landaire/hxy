@@ -16,6 +16,22 @@ use crate::commands::palette::ComparePickState;
 use crate::commands::palette::CompareSide;
 use crate::commands::palette::Mode;
 use crate::commands::palette::PaletteCommand;
+use crate::files::watch::PollingPrefs;
+
+/// Clamp a user-typed poll interval to the supported window.
+/// `0` is preserved as the "disable polling" sentinel; other
+/// values are pulled into [`PollingPrefs::MIN_INTERVAL`] ..=
+/// [`PollingPrefs::MAX_INTERVAL`] in milliseconds so the
+/// worker doesn't spin or sleep for so long that the user
+/// thinks watching is broken.
+fn clamp_poll_interval_ms(ms: u32) -> u32 {
+    if ms == 0 {
+        return 0;
+    }
+    let min_ms = PollingPrefs::MIN_INTERVAL.as_millis() as u32;
+    let max_ms = PollingPrefs::MAX_INTERVAL.as_millis() as u32;
+    ms.clamp(min_ms, max_ms)
+}
 
 use super::offset::OffsetCopy;
 use super::offset::copy_formatted_offset;
@@ -234,6 +250,11 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 crate::compare::picker::spawn_compare_from_palette(app, ctx, a, source);
             }
         },
+        Action::SetPollInterval(ms) => {
+            app.palette.close();
+            let clamped = clamp_poll_interval_ms(ms);
+            app.state.write().app.file_poll_interval_ms = clamped;
+        }
         Action::CompareBrowse(side) => {
             let Some(path) = rfd::FileDialog::new().pick_file() else {
                 return;
