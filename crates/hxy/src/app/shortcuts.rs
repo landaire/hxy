@@ -180,6 +180,21 @@ pub(crate) fn paste_bytes_at_cursor(file: &mut crate::files::OpenFile, bytes: Ve
 /// to consume the event. Whatever's left dispatches to the currently
 /// active file tab.
 pub fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    // egui's selectable Labels and TextEdits handle Cmd+C through
+    // [`egui::Event::Copy`] and queue an [`egui::OutputCommand::CopyText`]
+    // for the integration to ship to the system clipboard. They
+    // don't bother consuming the matching key-press from
+    // [`egui::InputState::events`], so the hex view's dispatcher
+    // would happily grab it next and overwrite the clipboard with
+    // bytes from the active file. Bail out when egui already
+    // queued a clipboard write so the user's selected label / row
+    // text is what actually lands.
+    let already_copying = ctx.output(|o| {
+        o.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_) | egui::OutputCommand::CopyImage(_)))
+    });
+    if already_copying {
+        return;
+    }
     let kind = ctx.input_mut(|i| {
         if i.consume_shortcut(&COPY_HEX) {
             Some(CopyKind::BytesHexSpaced)
