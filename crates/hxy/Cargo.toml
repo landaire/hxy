@@ -30,6 +30,10 @@ crate-type = ["cdylib", "rlib"]
 default = ["desktop"]
 desktop = ["dep:tokio", "dep:sqlx", "dep:tracing-subscriber", "eframe/wayland"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys", "dep:tracing-wasm", "dep:tracing-subscriber"]
+# dhat heap profiling. Off by default; build with
+# `cargo run --features dhat --release` and set `HXY_DHAT_OUTPUT=/tmp/hxy.json`
+# to record a heap profile that the dhat-rs viewer can load.
+dhat = ["dep:dhat"]
 
 [dependencies]
 # Internal crates
@@ -75,6 +79,7 @@ rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "byt
 egui-toast = "0.20.0"
 fskit = { version = "0.2", features = ["vfs"] }
 egui_plot = "0.35"
+dhat = { version = "0.3.3", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pattern-corpus download flow: blocking reqwest + rustls keeps

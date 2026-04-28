@@ -1,5 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(all(feature = "dhat", not(target_arch = "wasm32")))]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     use std::sync::Arc;
@@ -11,6 +15,21 @@ fn main() -> eframe::Result<()> {
     use hxy_lib::state::shared;
     use tokio::runtime::Runtime;
     use tracing_subscriber::EnvFilter;
+
+    // Heap profiler kept alive for the whole process; its `Drop`
+    // flushes the `dhat-heap.json` (or `HXY_DHAT_OUTPUT`) file.
+    // Build with `cargo run --features dhat --release` to enable.
+    #[cfg(feature = "dhat")]
+    let _dhat = std::env::var("HXY_DHAT_OUTPUT").ok().map_or_else(
+        || {
+            eprintln!("dhat: writing heap profile to dhat-heap.json (set HXY_DHAT_OUTPUT to override)");
+            dhat::Profiler::new_heap()
+        },
+        |path| {
+            eprintln!("dhat: writing heap profile to {path}");
+            dhat::Profiler::builder().file_name(&path).build()
+        },
+    );
 
     let filter = match EnvFilter::try_from_default_env() {
         Ok(f) => f,
