@@ -51,10 +51,11 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
         }
     }
     let removed_root: Option<std::path::PathBuf> = app.files.remove(&id).and_then(|removed| {
+        removed.release_cache();
         let root = removed.root_path().cloned();
-        if let Some(source) = removed.source_kind {
+        if let Some(source) = &removed.source_kind {
             let mut state = app.state.write();
-            state.open_tabs.retain(|t| t.source != source);
+            state.open_tabs.retain(|t| &t.source != source);
         }
         root
     });
@@ -222,11 +223,12 @@ pub fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::files::Works
         let mut state = app.state.write();
         for file_id in &to_drop {
             if let Some(removed) = app.files.remove(file_id) {
+                removed.release_cache();
                 if let Some(p) = removed.root_path().cloned() {
                     paths_to_recheck.push(p);
                 }
-                if let Some(source) = removed.source_kind {
-                    state.open_tabs.retain(|t| t.source != source);
+                if let Some(source) = &removed.source_kind {
+                    state.open_tabs.retain(|t| &t.source != source);
                 }
             }
         }

@@ -223,6 +223,20 @@ pub struct AppSettings {
     /// filesystems (network drives, FUSE) flip this on.
     #[serde(default)]
     pub file_poll_all: bool,
+
+    /// Upper bound on the shared hex-view byte cache, expressed in
+    /// MiB. Default 500 MiB, minimum 20 MiB; no upper cap. The cache
+    /// is consulted by every hex view and template run, so a larger
+    /// budget trades RAM for fewer disk reads on big files.
+    #[serde(default = "default_byte_cache_limit_mib")]
+    pub byte_cache_limit_mib: u32,
+
+    /// When true, the View menu and command palette expose a debug
+    /// "Memory" tool pane that shows byte-cache occupancy and the
+    /// per-view attribution breakdown. Off by default; flipped on by
+    /// the user from the Settings tab.
+    #[serde(default)]
+    pub debug_memory_panel_enabled: bool,
 }
 
 /// What to do when a file is being watched for external
@@ -267,6 +281,10 @@ pub struct FileWatchPref {
 
 fn default_poll_interval_ms() -> u32 {
     2000
+}
+
+fn default_byte_cache_limit_mib() -> u32 {
+    hxy_core::CacheLimit::DEFAULT_MIB
 }
 
 /// Persisted state for the bundled ImHex-Patterns corpus.
@@ -316,6 +334,8 @@ impl Default for AppSettings {
             file_watch_prefs: Vec::new(),
             file_poll_interval_ms: default_poll_interval_ms(),
             file_poll_all: false,
+            byte_cache_limit_mib: default_byte_cache_limit_mib(),
+            debug_memory_panel_enabled: false,
         }
     }
 }

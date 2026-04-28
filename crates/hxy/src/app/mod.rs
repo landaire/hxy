@@ -74,6 +74,12 @@ pub struct HxyApp {
     pub(crate) next_compare_id: u64,
     pub(crate) state: SharedPersistedState,
     next_file_id: u64,
+    /// Process-wide byte-range cache shared across hex views and
+    /// template runs. The host wires every [`OpenFile`] through here
+    /// so two tabs that read the same source share chunks; the
+    /// debug panel attributes outstanding bytes back to the
+    /// originating tab.
+    pub(crate) byte_cache: Arc<hxy_core::ByteCache>,
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
@@ -462,6 +468,7 @@ impl HxyApp {
             compares: std::collections::BTreeMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             next_compare_id: 1,
+            byte_cache: hxy_core::ByteCache::new(byte_cache_limit_from_state(&state)),
             state,
             next_file_id: 1,
             registry,
@@ -1202,9 +1209,14 @@ impl HxyApp {
             }
         };
         if let Some(file) = self.files.get_mut(&id) {
+            // Drop any chunks the cache held for this source: the
+            // disk content has changed under us, so a fresh read
+            // population must not return stale bytes.
+            file.byte_cache.drop_source(file.source_id);
+            let cached = file.rewrap_for_view(stream);
             match decision {
-                ReloadDecision::DiscardEdits => file.editor.swap_source(stream),
-                ReloadDecision::KeepEdits => file.editor.swap_source_keep_patch(stream),
+                ReloadDecision::DiscardEdits => file.editor.swap_source(cached),
+                ReloadDecision::KeepEdits => file.editor.swap_source_keep_patch(cached),
                 ReloadDecision::Ignore => unreachable!("handled above"),
             }
         }
@@ -1293,7 +1305,9 @@ impl HxyApp {
                 Ok((stream, _len)) => {
                     let stream_for_watch = stream.clone();
                     if let Some(file) = self.files.get_mut(&entry_id) {
-                        file.editor.swap_source(stream);
+                        file.byte_cache.drop_source(file.source_id);
+                        let cached = file.rewrap_for_view(stream);
+                        file.editor.swap_source(cached);
                     }
                     // Refresh the sample-hash fingerprint so
                     // the next poll tick measures against the
@@ -1392,7 +1406,7 @@ impl HxyApp {
         restore_scroll: Option<f32>,
     ) -> FileId {
         let id = self.fresh_file_id();
-        let mut file = OpenFile::from_source(id, display_name, source_kind, source);
+        let mut file = OpenFile::from_source(id, display_name, source_kind, source, &self.byte_cache);
         file.editor.set_selection(restore_selection);
         if let Some(s) = restore_scroll {
             file.editor.set_scroll_to(s);
@@ -2496,6 +2510,14 @@ pub fn set_active_file_watch_pref(app: &mut HxyApp, mode: crate::settings::AutoR
         format!("Watch {display}"),
         hxy_i18n::t_args("watch-pref-applied", &[("mode", &hxy_i18n::t(mode.label_key()))]),
     );
+}
+
+/// Materialise the persisted byte-cache budget into the typed
+/// [`hxy_core::CacheLimit`] the cache itself accepts. Reads under
+/// the persisted-state lock so the host can pass the result without
+/// holding the lock across the cache constructor.
+pub(crate) fn byte_cache_limit_from_state(state: &SharedPersistedState) -> hxy_core::CacheLimit {
+    hxy_core::CacheLimit::from_mib(state.read().app.byte_cache_limit_mib)
 }
 
 /// Translate persisted settings into the live polling prefs the
@@ -4636,10 +4658,11 @@ impl TabViewer for HxyTabViewer<'_> {
                     Some(crate::tabs::close::PendingCloseTab { file_id: *id, display_name: file.display_name.clone() });
                 return OnCloseResponse::Ignore;
             }
-            if let Some(removed) = self.files.remove(id)
-                && let Some(source) = removed.source_kind
-            {
-                self.state.open_tabs.retain(|t| t.source != source);
+            if let Some(removed) = self.files.remove(id) {
+                removed.release_cache();
+                if let Some(source) = &removed.source_kind {
+                    self.state.open_tabs.retain(|t| &t.source != source);
+                }
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -4688,10 +4711,11 @@ impl TabViewer for HxyTabViewer<'_> {
                 }
             }
             for file_id in &to_drop {
-                if let Some(removed) = self.files.remove(file_id)
-                    && let Some(source) = removed.source_kind
-                {
-                    self.state.open_tabs.retain(|t| t.source != source);
+                if let Some(removed) = self.files.remove(file_id) {
+                    removed.release_cache();
+                    if let Some(source) = &removed.source_kind {
+                        self.state.open_tabs.retain(|t| &t.source != source);
+                    }
                 }
             }
         }
@@ -4919,10 +4943,11 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 });
                 return OnCloseResponse::Ignore;
             }
-            if let Some(removed) = self.files.remove(file_id)
-                && let Some(source) = removed.source_kind
-            {
-                self.state.open_tabs.retain(|t| t.source != source);
+            if let Some(removed) = self.files.remove(file_id) {
+                removed.release_cache();
+                if let Some(source) = &removed.source_kind {
+                    self.state.open_tabs.retain(|t| &t.source != source);
+                }
             }
         }
         OnCloseResponse::Close

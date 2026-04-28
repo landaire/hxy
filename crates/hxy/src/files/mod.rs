@@ -30,9 +30,14 @@ pub mod watch;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hxy_core::Attribution;
+use hxy_core::ByteCache;
 use hxy_core::ByteOffset;
+use hxy_core::CachedSource;
 use hxy_core::HexSource;
+use hxy_core::HexViewKey;
 use hxy_core::MemorySource;
+use hxy_core::SourceId;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::TabSource;
 use hxy_vfs::VfsHandler;
@@ -267,6 +272,17 @@ pub struct OpenFile {
     /// panel renders the "computing..." placeholder cleanly.
     #[cfg(not(target_arch = "wasm32"))]
     pub entropy_running: Option<crate::panels::entropy::EntropyComputation>,
+    /// Identifier for this file's bytes inside the shared byte
+    /// cache. Allocated once on construction and reused for every
+    /// [`CachedSource`] handle the file or its template runs build.
+    /// Callers that remove an [`OpenFile`] from `app.files` must
+    /// release the matching cache entries via
+    /// [`OpenFile::release_cache`].
+    pub source_id: SourceId,
+    /// Shared cache reference held alongside [`Self::source_id`] so
+    /// reload / save paths can rebuild a [`CachedSource`] under the
+    /// same identity.
+    pub byte_cache: Arc<ByteCache>,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -362,9 +378,10 @@ impl OpenFile {
         display_name: impl Into<String>,
         source_kind: Option<TabSource>,
         bytes: Vec<u8>,
+        byte_cache: &Arc<ByteCache>,
     ) -> Self {
         let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-        Self::from_source(id, display_name, source_kind, base)
+        Self::from_source(id, display_name, source_kind, base, byte_cache)
     }
 
     /// Pick an appropriate default [`EditMode`] for a file-backed tab.
@@ -380,6 +397,31 @@ impl OpenFile {
         }
     }
 
+    fn cached_view_source(
+        cache: &Arc<ByteCache>,
+        source_id: SourceId,
+        view_key: HexViewKey,
+        base: Arc<dyn HexSource>,
+    ) -> Arc<dyn HexSource> {
+        CachedSource::new(cache.clone(), source_id, Attribution::HexView(view_key), base)
+    }
+
+    /// Wrap `base` in a fresh [`CachedSource`] that shares this
+    /// file's [`SourceId`] and hex-view attribution. Used by
+    /// reload / save paths that need to swap in new bytes while
+    /// keeping the cache identity stable.
+    pub fn rewrap_for_view(&self, base: Arc<dyn HexSource>) -> Arc<dyn HexSource> {
+        Self::cached_view_source(&self.byte_cache, self.source_id, HexViewKey(self.id.get()), base)
+    }
+
+    /// Release the cache chunks still attributed to this file.
+    /// Called by tab-close / file-removal helpers right before the
+    /// [`OpenFile`] is dropped so the cache doesn't keep stale
+    /// chunks around under a soon-to-be-reused id.
+    pub fn release_cache(&self) {
+        self.byte_cache.drop_source(self.source_id);
+    }
+
     /// Construct from any pre-built [`HexSource`]. Wraps it in a
     /// [`hxy_view::HexEditor`] whose patch overlay records future
     /// writes.
@@ -388,8 +430,12 @@ impl OpenFile {
         display_name: impl Into<String>,
         source_kind: Option<TabSource>,
         base: Arc<dyn HexSource>,
+        byte_cache: &Arc<ByteCache>,
     ) -> Self {
-        let mut editor = hxy_view::HexEditor::new(base);
+        let source_id = byte_cache.alloc_source_id();
+        let view_key = HexViewKey(id.get());
+        let cached = Self::cached_view_source(byte_cache, source_id, view_key, base);
+        let mut editor = hxy_view::HexEditor::new(cached);
         // Default to mutable whenever we can actually write: pure
         // in-memory buffers always can, filesystem-backed tabs only
         // when the permissions allow. Users who want to explore
@@ -437,6 +483,8 @@ impl OpenFile {
             entropy: None,
             #[cfg(not(target_arch = "wasm32"))]
             entropy_running: None,
+            source_id,
+            byte_cache: byte_cache.clone(),
         }
     }
 

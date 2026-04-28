@@ -87,7 +87,9 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
             }
         };
     if let Some(file) = app.files.get_mut(&id) {
-        file.editor.swap_source(post_save_source);
+        file.byte_cache.drop_source(file.source_id);
+        let cached = file.rewrap_for_view(post_save_source);
+        file.editor.swap_source(cached);
         file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();
@@ -232,7 +234,9 @@ pub fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
             if let Some(file) = app.files.get_mut(&id) {
                 let base: std::sync::Arc<dyn hxy_core::HexSource> =
                     std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
-                file.editor.swap_source(base);
+                file.byte_cache.drop_source(file.source_id);
+                let cached = file.rewrap_for_view(base);
+                file.editor.swap_source(cached);
             }
         }
         Err(e) => {
