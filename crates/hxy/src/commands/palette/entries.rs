@@ -52,6 +52,11 @@ pub struct HistoryPaletteContext {
     /// the "Toggle VFS panel" entry, which is meaningless without a
     /// workspace to toggle in.
     pub has_workspace: bool,
+    /// True when the active file has a filesystem-backed root
+    /// path -- the "Reload file..." entry needs one to read
+    /// fresh bytes from. False for in-memory scratch buffers
+    /// and plugin-mount tabs.
+    pub has_disk_source: bool,
     /// Snapshot of the active file's running template. `None` when no
     /// template has been run for that tab. Carries enough info to
     /// gate / preview template-relative entries (next-field jump,
@@ -104,6 +109,7 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         has_active_file: true,
         can_browse_vfs: file.detected_handler.is_some(),
         has_workspace,
+        has_disk_source: file.root_path().is_some(),
         template: file.template.as_ref().map(|t| TemplateCtx { field_count: t.leaf_boundaries.len() }),
     }
 }
@@ -369,6 +375,17 @@ pub fn build_palette_entries(
                     .with_icon(toggle_icon)
                     .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
                 );
+                let mut reload_entry = egui_palette::Entry::new(
+                    hxy_i18n::t("palette-reload-file"),
+                    Action::InvokeCommand(PaletteCommand::ReloadActiveFile),
+                )
+                .with_icon(icon::ARROWS_CLOCKWISE)
+                .with_subtitle(hxy_i18n::t("palette-reload-file-subtitle"))
+                .with_disabled(!history_ctx.has_disk_source);
+                if !history_ctx.has_disk_source {
+                    reload_entry = reload_entry.with_subtitle(hxy_i18n::t("palette-reload-no-disk-source"));
+                }
+                out.push(reload_entry);
             }
             if history_ctx.can_paste {
                 out.push(

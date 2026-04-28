@@ -336,6 +336,11 @@ pub enum PaletteCommand {
     /// before the current cursor. No-op when the active file has no
     /// template run.
     JumpPrevField,
+    /// Re-read the active tab's bytes from its filesystem-backed
+    /// root path. Routes through the same reload-prompt the
+    /// watcher fires when external changes are detected, so the
+    /// user picks Discard / Keep / Ignore.
+    ReloadActiveFile,
 }
 
 #[derive(Clone)]

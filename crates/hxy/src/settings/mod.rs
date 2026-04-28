@@ -196,6 +196,74 @@ pub struct AppSettings {
     /// first-launch dialog.
     #[serde(default)]
     pub imhex_patterns: ImhexPatternsState,
+
+    /// What to do when the watcher reports an open file changed on
+    /// disk. Per-path overrides on `file_watch_prefs` win when set.
+    #[serde(default)]
+    pub auto_reload: AutoReloadMode,
+
+    /// Per-path overrides for [`Self::auto_reload`]. Stored as a
+    /// flat Vec rather than a [`HashMap`] / [`BTreeMap`] so the
+    /// JSON form round-trips through serde without a custom map
+    /// key serializer. Lookups are linear; the list is bounded by
+    /// how many files the user has individually opted in / out of.
+    #[serde(default)]
+    pub file_watch_prefs: Vec<FileWatchPref>,
+
+    /// Polling cadence used both for paths the kernel watcher
+    /// rejected and (when `file_poll_all` is set) every watched
+    /// path. `0` disables the polling worker entirely. Stored as
+    /// milliseconds for human-readable JSON.
+    #[serde(default = "default_poll_interval_ms")]
+    pub file_poll_interval_ms: u32,
+
+    /// When true, every watched path is polled even when the
+    /// notify watcher accepted it. Off by default because the
+    /// kernel events are usually enough; users on flaky
+    /// filesystems (network drives, FUSE) flip this on.
+    #[serde(default)]
+    pub file_poll_all: bool,
+}
+
+/// What to do when the filesystem watcher reports a file changed
+/// on disk. Defaults to `Ask` so the user notices the divergence
+/// and chooses; `Always` auto-reloads silently, `Never` keeps the
+/// in-memory bytes regardless of disk drift.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutoReloadMode {
+    Always,
+    #[default]
+    Ask,
+    Never,
+}
+
+impl AutoReloadMode {
+    pub const ALL: [Self; 3] = [Self::Always, Self::Ask, Self::Never];
+
+    /// Human-readable label key for the settings dropdown / per-
+    /// file override picker. Resolved via `hxy_i18n::t` at the
+    /// call site so a locale change picks up fresh translations.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Always => "auto-reload-always",
+            Self::Ask => "auto-reload-ask",
+            Self::Never => "auto-reload-never",
+        }
+    }
+}
+
+/// Per-file override for [`AppSettings::auto_reload`]. Saved
+/// alongside the global setting so the user's "always reload
+/// this file" / "never bother me about this file" decisions
+/// survive restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FileWatchPref {
+    pub path: PathBuf,
+    pub auto_reload: AutoReloadMode,
+}
+
+fn default_poll_interval_ms() -> u32 {
+    2000
 }
 
 /// Persisted state for the bundled ImHex-Patterns corpus.
@@ -241,6 +309,10 @@ impl Default for AppSettings {
             input_mode: hxy_view::InputMode::default(),
             compare_recompute_deadline: RecomputeDeadline::default(),
             imhex_patterns: ImhexPatternsState::default(),
+            auto_reload: AutoReloadMode::default(),
+            file_watch_prefs: Vec::new(),
+            file_poll_interval_ms: default_poll_interval_ms(),
+            file_poll_all: false,
         }
     }
 }
@@ -252,5 +324,21 @@ impl AppSettings {
         self.recent_files.retain(|r| r.path != path);
         self.recent_files.insert(0, RecentFile { path, last_opened: jiff::Timestamp::now() });
         self.recent_files.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Auto-reload mode for a specific path: per-file override
+    /// when set, otherwise [`Self::auto_reload`].
+    pub fn auto_reload_for(&self, path: &std::path::Path) -> AutoReloadMode {
+        self.file_watch_prefs.iter().find(|p| p.path == path).map(|p| p.auto_reload).unwrap_or(self.auto_reload)
+    }
+
+    /// Set the per-file auto-reload override for `path`. Passing
+    /// `None` removes any override so the global setting takes
+    /// over again.
+    pub fn set_auto_reload_for(&mut self, path: PathBuf, mode: Option<AutoReloadMode>) {
+        self.file_watch_prefs.retain(|p| p.path != path);
+        if let Some(mode) = mode {
+            self.file_watch_prefs.push(FileWatchPref { path, auto_reload: mode });
+        }
     }
 }

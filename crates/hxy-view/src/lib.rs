@@ -285,6 +285,21 @@ impl HexEditor {
         self.source = self.edit.patched_source.clone();
     }
 
+    /// Swap in a fresh base source while preserving the current
+    /// patch. Undo / redo history is dropped because its
+    /// `old_bytes` entries reference the previous base and would
+    /// be inconsistent against the new one. Used by the
+    /// "reload from disk, keep my edits" flow after the file
+    /// changes externally -- the user's splices stay applied on
+    /// top of the new disk content.
+    #[cfg(feature = "editor")]
+    pub fn swap_source_keep_patch(&mut self, base: Arc<dyn HexSource>) {
+        let saved_patch = self.edit.patch.read().expect("patch lock poisoned").clone();
+        self.edit.swap_base(base);
+        *self.edit.patch.write().expect("patch lock poisoned") = saved_patch;
+        self.source = self.edit.patched_source.clone();
+    }
+
     /// Shared handle into the editor's patch. Callers can clone
     /// this to persist unsaved edits in their own storage layer.
     #[cfg(feature = "editor")]

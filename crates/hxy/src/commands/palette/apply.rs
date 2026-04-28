@@ -88,6 +88,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::CompareFilesDialog => crate::compare::picker::start_compare_picker(app),
                 PaletteCommand::JumpNextField => crate::app::jump_to_template_field(app, true),
                 PaletteCommand::JumpPrevField => crate::app::jump_to_template_field(app, false),
+                PaletteCommand::ReloadActiveFile => crate::app::request_reload_active_file(app),
             }
         }
         Action::FocusFile(id) => {

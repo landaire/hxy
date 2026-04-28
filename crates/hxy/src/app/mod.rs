@@ -305,6 +305,13 @@ pub struct HxyApp {
     /// must reload manually.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_watcher: Option<crate::files::watch::FileWatcher>,
+    /// One pending reload prompt at a time. The dialog renders
+    /// next frame and the user's choice (Reload, Keep edits,
+    /// Ignore) routes through `apply_reload_decision`. Set when
+    /// the watcher reports a change for a tab whose effective
+    /// auto-reload mode is `Ask`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_reload_prompt: Option<PendingReloadPrompt>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -346,19 +353,62 @@ pub(crate) struct PendingPatchRestore {
     pub(crate) integrity: crate::files::patch_persist::RestoreIntegrity,
 }
 
+/// Why the watcher fired. The reload prompt shows different
+/// wording for a content change vs. an outright removal so the
+/// user understands the choice they're making.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExternalChangeKind {
+    Modified,
+    Removed,
+}
+
+/// One pending reload prompt the per-frame dialog renderer is
+/// going to surface. Only one of these is queued at a time; if a
+/// second event lands for a different file before the user
+/// dismisses, it is dropped (the file is still being watched, so
+/// the next change re-fires).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PendingReloadPrompt {
+    pub(crate) file_id: FileId,
+    pub(crate) display_name: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) kind: ExternalChangeKind,
+    /// Whether the file has uncommitted edits at prompt time.
+    /// Drives the wording of the "discard local edits" warning
+    /// inside the dialog so the user knows what's at stake.
+    pub(crate) has_unsaved: bool,
+}
+
+/// One choice from the reload-prompt dialog. Routed back into
+/// `apply_reload_decision` after the user picks.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReloadDecision {
+    /// Re-read disk bytes; drop the current patch + undo / redo.
+    DiscardEdits,
+    /// Re-read disk bytes; keep the patch on top of the new
+    /// base. Undo / redo are dropped because their `old_bytes`
+    /// references no longer match the new base.
+    KeepEdits,
+    /// Do nothing. The file's in-memory state stays as it was.
+    Ignore,
+}
+
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         cc.egui_ctx.set_global_style(crate::style::hxy_style());
-        let (initial_zoom, initial_window, show_patterns_prompt) = {
+        let (initial_zoom, initial_window, show_patterns_prompt, initial_polling) = {
             let s = state.read();
             // First-launch download dialog when the corpus isn't on
             // disk and the user hasn't actively declined. Snapped
             // here so we can move `state` into the struct below.
             let show_patterns_prompt =
                 s.app.imhex_patterns.installed_hash.is_none() && !s.app.imhex_patterns.declined_prompt;
-            (s.app.zoom_factor, s.window, show_patterns_prompt)
+            let polling = polling_prefs_from_settings(&s.app);
+            (s.app.zoom_factor, s.window, show_patterns_prompt, polling)
         };
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let mut registry = VfsRegistry::new();
@@ -459,13 +509,15 @@ impl HxyApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_template_runs: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            file_watcher: match crate::files::watch::FileWatcher::new(&cc.egui_ctx) {
+            file_watcher: match crate::files::watch::FileWatcher::with_prefs(&cc.egui_ctx, initial_polling) {
                 Ok(w) => Some(w),
                 Err(e) => {
                     tracing::warn!(error = %e, "filesystem watcher unavailable; external changes will go undetected");
                     None
                 }
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_reload_prompt: None,
         }
     }
 
@@ -948,6 +1000,50 @@ impl HxyApp {
             return;
         }
         watcher.unwatch(path);
+    }
+
+    /// Reload `id` from its filesystem-backed root path. The
+    /// `decision` arm controls whether the user's patch + undo /
+    /// redo survive the swap. Returns `false` when the file isn't
+    /// reloadable (in-memory tab, vanished path, read failure);
+    /// the caller is expected to surface the diagnostic via the
+    /// console.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn apply_reload_decision(&mut self, id: FileId, decision: ReloadDecision) -> bool {
+        if matches!(decision, ReloadDecision::Ignore) {
+            return true;
+        }
+        let Some(file) = self.files.get(&id) else { return false };
+        let Some(path) = file.root_path().cloned() else { return false };
+        let display = file.display_name.clone();
+        let ctx_label = format!("Reload {}", path.display());
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.console_log(ConsoleSeverity::Error, &ctx_label, format!("re-read disk bytes: {e}"));
+                return false;
+            }
+        };
+        let len = bytes.len();
+        if let Some(file) = self.files.get_mut(&id) {
+            let base: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
+            match decision {
+                ReloadDecision::DiscardEdits => file.editor.swap_source(base),
+                ReloadDecision::KeepEdits => file.editor.swap_source_keep_patch(base),
+                ReloadDecision::Ignore => unreachable!("handled above"),
+            }
+        }
+        if let Some(watcher) = self.file_watcher.as_mut() {
+            watcher.mark_synced(&path);
+        }
+        let kept = matches!(decision, ReloadDecision::KeepEdits);
+        let summary = if kept {
+            format!("reloaded {len} byte(s); kept local edits on top of new base ({display})")
+        } else {
+            format!("reloaded {len} byte(s); local edits discarded ({display})")
+        };
+        self.console_log(ConsoleSeverity::Info, &ctx_label, summary);
+        true
     }
 
     /// Look at the just-opened file's extension + first bytes and
@@ -1587,10 +1683,18 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.drain_pending_plugin_ops(ui.ctx());
 
+        // Push the user's polling preferences into the watcher
+        // so any settings-tab nudge takes effect on the very
+        // next tick. Idempotent when nothing changed.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(watcher) = self.file_watcher.as_mut() {
+            let prefs = polling_prefs_from_settings(&self.state.read().app);
+            watcher.set_polling(prefs);
+        }
+
         // Pull queued filesystem-change notifications off the
-        // notify watcher + polling worker. Each event becomes a
-        // log entry today; later phases convert them into reload
-        // prompts and VFS workspace re-mounts.
+        // notify watcher + polling worker and route each one
+        // through the reload prompt / auto-reload paths.
         #[cfg(not(target_arch = "wasm32"))]
         drain_file_watch_events(self);
 
@@ -1759,6 +1863,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_patch_restore_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        crate::app::dialogs::render_reload_prompt_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1899,25 +2005,125 @@ fn paint_drop_overlay(ctx: &egui::Context) {
 /// land here so the open path is identical -- read bytes, hand the
 /// file off to the same `request_open_filesystem` the file dialog
 /// uses (which dedupes via the existing duplicate-open modal).
+/// Stage a reload prompt for whatever file is currently active,
+/// or surface a console hint when the active tab has no
+/// filesystem source the host can re-read. Routed to from the
+/// command palette's "Reload file..." entry.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_reload_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Reload", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    let Some(file) = app.files.get(&id) else { return };
+    let Some(path) = file.root_path().cloned() else {
+        app.console_log(ConsoleSeverity::Warning, "Reload", hxy_i18n::t("palette-reload-no-disk-source"));
+        return;
+    };
+    let display_name = file.display_name.clone();
+    let has_unsaved = file.editor.is_dirty();
+    app.pending_reload_prompt = Some(PendingReloadPrompt {
+        file_id: id,
+        display_name,
+        path,
+        kind: ExternalChangeKind::Modified,
+        has_unsaved,
+    });
+}
+
+/// Translate persisted settings into the live polling prefs the
+/// watcher worker thread expects. Used both at startup and every
+/// time the settings UI nudges the cadence / poll-all flag.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn polling_prefs_from_settings(s: &crate::settings::AppSettings) -> crate::files::watch::PollingPrefs {
+    let interval = if s.file_poll_interval_ms == 0 {
+        None
+    } else {
+        let dur = std::time::Duration::from_millis(s.file_poll_interval_ms as u64);
+        Some(dur.clamp(crate::files::watch::PollingPrefs::MIN_INTERVAL, crate::files::watch::PollingPrefs::MAX_INTERVAL))
+    };
+    crate::files::watch::PollingPrefs { interval, poll_all: s.file_poll_all }
+}
+
 /// Pull every event the filesystem watcher has buffered since the
-/// previous frame. Phase 1 only logs them to the console -- later
-/// phases route each one through the reload prompt and template /
-/// VFS re-mount paths.
+/// previous frame and react. Auto-reload paths swap their source
+/// in-place; ask-mode paths stage a reload prompt; never-mode
+/// paths are dropped silently.
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_file_watch_events(app: &mut HxyApp) {
     let Some(watcher) = app.file_watcher.as_mut() else { return };
     let events = watcher.drain();
+    if events.is_empty() {
+        return;
+    }
     for event in events {
-        let path = event.primary_path().display().to_string();
         match event {
-            crate::files::watch::WatchEvent::Modified(_) => {
-                tracing::debug!(path = %path, "file modified externally");
+            crate::files::watch::WatchEvent::Modified(path) => {
+                handle_external_change(app, &path, ExternalChangeKind::Modified);
             }
-            crate::files::watch::WatchEvent::Removed(_) => {
-                tracing::debug!(path = %path, "file removed externally");
+            crate::files::watch::WatchEvent::Removed(path) => {
+                handle_external_change(app, &path, ExternalChangeKind::Removed);
             }
             crate::files::watch::WatchEvent::Renamed { from, to } => {
-                tracing::debug!(from = %from.display(), to = %to.display(), "file renamed externally");
+                tracing::debug!(from = %from.display(), to = %to.display(), "watched file renamed externally");
+                handle_external_change(app, &from, ExternalChangeKind::Removed);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_external_change(app: &mut HxyApp, path: &std::path::Path, kind: ExternalChangeKind) {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let affected_ids: Vec<FileId> = app
+        .files
+        .iter()
+        .filter_map(|(id, f)| {
+            let root = f.root_path()?;
+            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            (root_canonical == canonical || root.as_path() == path).then_some(*id)
+        })
+        .collect();
+    if affected_ids.is_empty() {
+        return;
+    }
+    let mode_for_path = app.state.read().app.auto_reload_for(path);
+    for file_id in affected_ids {
+        let (display_name, has_unsaved) = match app.files.get(&file_id) {
+            Some(f) => (f.display_name.clone(), f.editor.is_dirty()),
+            None => continue,
+        };
+        if matches!(kind, ExternalChangeKind::Removed) {
+            // Removal can't be auto-reloaded -- there's nothing on
+            // disk to read. Surface a console line so the user
+            // notices and leaves the in-memory bytes alone.
+            app.console_log(
+                ConsoleSeverity::Warning,
+                format!("{display_name}"),
+                format!("file removed on disk ({})", path.display()),
+            );
+            continue;
+        }
+        match mode_for_path {
+            crate::settings::AutoReloadMode::Always => {
+                if !app.apply_reload_decision(file_id, ReloadDecision::DiscardEdits) {
+                    continue;
+                }
+            }
+            crate::settings::AutoReloadMode::Never => {
+                tracing::debug!(path = %path.display(), "auto-reload set to Never; ignoring change");
+            }
+            crate::settings::AutoReloadMode::Ask => {
+                if app.pending_reload_prompt.is_some() {
+                    continue;
+                }
+                app.pending_reload_prompt = Some(PendingReloadPrompt {
+                    file_id,
+                    display_name,
+                    path: path.to_path_buf(),
+                    kind,
+                    has_unsaved,
+                });
             }
         }
     }
@@ -4561,6 +4767,35 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings, f
         if ms != settings.compare_recompute_deadline.as_ms() {
             settings.compare_recompute_deadline = crate::settings::RecomputeDeadline::from_ms(ms);
         }
+        ui.end_row();
+    });
+
+    ui.add_space(12.0);
+    ui.heading(hxy_i18n::t("settings-watch-header"));
+    ui.separator();
+    egui::Grid::new("hxy-watch-settings").num_columns(2).striped(true).show(ui, |ui| {
+        ui.label(hxy_i18n::t("settings-auto-reload"));
+        egui::ComboBox::from_id_salt("hxy-auto-reload")
+            .selected_text(hxy_i18n::t(settings.auto_reload.label_key()))
+            .show_ui(ui, |ui| {
+                for mode in crate::settings::AutoReloadMode::ALL {
+                    ui.selectable_value(&mut settings.auto_reload, mode, hxy_i18n::t(mode.label_key()));
+                }
+            });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-poll-interval"));
+        let mut ms = settings.file_poll_interval_ms;
+        let response = ui.add(egui::DragValue::new(&mut ms).range(0..=600_000u32).speed(50.0).suffix(" ms"));
+        response.on_hover_text(hxy_i18n::t("settings-poll-interval-tooltip"));
+        if ms != settings.file_poll_interval_ms {
+            settings.file_poll_interval_ms = ms;
+        }
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-poll-all"));
+        let response = ui.checkbox(&mut settings.file_poll_all, "");
+        response.on_hover_text(hxy_i18n::t("settings-poll-all-tooltip"));
         ui.end_row();
     });
 }

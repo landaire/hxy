@@ -67,6 +67,7 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
     }
 
     let previous_source = app.files.get(&id).and_then(|f| f.source_kind.clone());
+    let previous_root = app.files.get(&id).and_then(|f| f.root_path().cloned());
     if let Some(file) = app.files.get_mut(&id) {
         let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
         file.editor.swap_source(base);
@@ -74,6 +75,21 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();
         }
+    }
+    // The just-saved bytes are now what's on disk -- bump the
+    // watcher's snapshot so the post-save mtime change doesn't
+    // boomerang back as a phantom external-change prompt. If
+    // Save As moved the tab to a new path, also re-aim the
+    // watcher there and unwatch the previous root if no other
+    // tab is still using it.
+    if let Some(prev) = previous_root.as_ref()
+        && prev != &path
+    {
+        app.unwatch_path_if_unused(prev);
+    }
+    app.watch_root_for_file(id);
+    if let Some(watcher) = app.file_watcher.as_mut() {
+        watcher.mark_synced(&path);
     }
     if let Some(dir) = unsaved_edits_dir() {
         let _ = crate::files::patch_persist::discard(&dir, &path);

@@ -5,7 +5,10 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use crate::app::ConsoleSeverity;
+use crate::app::ExternalChangeKind;
 use crate::app::HxyApp;
+use crate::app::ReloadDecision;
+use crate::settings::AutoReloadMode;
 
 enum DuplicateAction {
     Focus,
@@ -16,6 +19,11 @@ enum DuplicateAction {
 enum RestoreAction {
     Restore,
     Discard,
+}
+
+enum ReloadAction {
+    Reload(ReloadDecision),
+    Cancel,
 }
 
 /// Modal asking the user what to do when an open request collides
@@ -178,6 +186,124 @@ pub fn pump_pattern_fetch(ctx: &egui::Context, app: &mut HxyApp) {
             // future additions.
         }
     }
+}
+
+/// Modal asking the user how to react to a watched file changing
+/// on disk. Three terminal choices (Reload / Keep edits / Ignore)
+/// plus an "Always do this for this file" toggle that writes the
+/// per-file override into [`crate::settings::AppSettings::file_watch_prefs`].
+pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pending_reload_prompt.is_none() {
+        return;
+    }
+    let (display_name, path_display, kind, has_unsaved) = {
+        let p = app.pending_reload_prompt.as_ref().unwrap();
+        (p.display_name.clone(), p.path.display().to_string(), p.kind, p.has_unsaved)
+    };
+
+    // The "always do this for this file" checkbox carries the
+    // user's decision into a per-file pref; survives across the
+    // dialog only via this local mutable. Default off.
+    let id_for_pref = egui::Id::new("hxy_reload_prompt_remember");
+    let mut remember = ctx.data_mut(|d| d.get_temp::<bool>(id_for_pref).unwrap_or(false));
+
+    let mut action: Option<ReloadAction> = None;
+    let mut open = true;
+    egui::Window::new(hxy_i18n::t("reload-prompt-title"))
+        .id(egui::Id::new("hxy_reload_prompt_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            let body_key = match kind {
+                ExternalChangeKind::Modified => "reload-prompt-body-modified",
+                ExternalChangeKind::Removed => "reload-prompt-body-removed",
+            };
+            ui.label(hxy_i18n::t_args(body_key, &[("name", &display_name)]));
+            ui.label(egui::RichText::new(&path_display).weak());
+
+            if has_unsaved {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(hxy_i18n::t("reload-prompt-warn-unsaved"))
+                        .color(ui.visuals().warn_fg_color)
+                        .strong(),
+                );
+            }
+
+            ui.add_space(8.0);
+            ui.checkbox(&mut remember, hxy_i18n::t("reload-prompt-remember"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(hxy_i18n::t("reload-prompt-discard"))
+                    .on_hover_text(hxy_i18n::t("reload-prompt-discard-tooltip"))
+                    .clicked()
+                {
+                    action = Some(ReloadAction::Reload(ReloadDecision::DiscardEdits));
+                }
+                if ui
+                    .button(hxy_i18n::t("reload-prompt-keep"))
+                    .on_hover_text(hxy_i18n::t("reload-prompt-keep-tooltip"))
+                    .clicked()
+                {
+                    action = Some(ReloadAction::Reload(ReloadDecision::KeepEdits));
+                }
+                if ui
+                    .button(hxy_i18n::t("reload-prompt-ignore"))
+                    .on_hover_text(hxy_i18n::t("reload-prompt-ignore-tooltip"))
+                    .clicked()
+                {
+                    action = Some(ReloadAction::Reload(ReloadDecision::Ignore));
+                }
+                if ui.button(hxy_i18n::t("reload-prompt-cancel")).clicked() {
+                    action = Some(ReloadAction::Cancel);
+                }
+            });
+        });
+    ctx.data_mut(|d| d.insert_temp(id_for_pref, remember));
+
+    if !open && action.is_none() {
+        action = Some(ReloadAction::Cancel);
+    }
+    let Some(action) = action else { return };
+
+    let pending = app.pending_reload_prompt.take().expect("checked above");
+    ctx.data_mut(|d| d.remove::<bool>(id_for_pref));
+
+    let decision = match action {
+        ReloadAction::Reload(d) => d,
+        ReloadAction::Cancel => return,
+    };
+
+    if remember {
+        let mode = match decision {
+            ReloadDecision::DiscardEdits => Some(AutoReloadMode::Always),
+            ReloadDecision::Ignore => Some(AutoReloadMode::Never),
+            // "Keep edits" doesn't map to a global setting --
+            // reset to ask, so the user is prompted again next
+            // time and isn't silently locked into one branch.
+            ReloadDecision::KeepEdits => None,
+        };
+        let mut g = app.state.write();
+        g.app.set_auto_reload_for(pending.path.clone(), mode);
+    }
+    if matches!(decision, ReloadDecision::Ignore) {
+        // Bump the watcher's snapshot so it doesn't immediately
+        // re-fire on the same change.
+        if let Some(watcher) = app.file_watcher.as_mut() {
+            watcher.mark_synced(&pending.path);
+        }
+        app.console_log(
+            ConsoleSeverity::Info,
+            format!("Reload {}", pending.path.display()),
+            "ignored disk change; in-memory bytes unchanged",
+        );
+        return;
+    }
+    app.apply_reload_decision(pending.file_id, decision);
 }
 
 /// Modal asking the user whether to restore an unsaved-edits sidecar
