@@ -2079,6 +2079,7 @@ impl eframe::App for HxyApp {
                 pending_template_runs: &mut self.pending_template_runs,
                 #[cfg(not(target_arch = "wasm32"))]
                 entropy_recompute: &mut entropy_recompute,
+                byte_cache: &self.byte_cache,
             };
             let style = crate::style::hxy_dock_style(ui.style());
             DockArea::new(&mut self.dock).style(style).show_leaf_collapse_buttons(false).show_inside(ui, &mut viewer);
@@ -4405,6 +4406,10 @@ struct HxyTabViewer<'a> {
     /// recompute in the same frame.
     #[cfg(not(target_arch = "wasm32"))]
     entropy_recompute: &'a mut Vec<FileId>,
+    /// Shared byte cache, plumbed through so the Settings tab can
+    /// drive `set_limit` directly when the user changes the cache
+    /// budget and the Memory debug panel can call `stats()`.
+    byte_cache: &'a Arc<hxy_core::ByteCache>,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -4500,7 +4505,7 @@ impl TabViewer for HxyTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             Tab::Welcome => welcome_ui(ui, self.state),
-            Tab::Settings => settings_ui(ui, &mut self.state.app, self.files),
+            Tab::Settings => settings_ui(ui, &mut self.state.app, self.files, self.byte_cache),
             Tab::Console => console_ui(ui, self.console),
             Tab::Inspector => {
                 let (caret, bytes) = match &self.inspector_data {
@@ -5275,7 +5280,12 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     });
 }
 
-fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings, files: &mut HashMap<FileId, OpenFile>) {
+fn settings_ui(
+    ui: &mut egui::Ui,
+    settings: &mut crate::settings::AppSettings,
+    files: &mut HashMap<FileId, OpenFile>,
+    byte_cache: &Arc<hxy_core::ByteCache>,
+) {
     ui.heading(hxy_i18n::t("settings-general-header"));
     ui.separator();
     egui::Grid::new("hxy-general-settings").num_columns(2).striped(true).show(ui, |ui| {
@@ -5438,4 +5448,30 @@ fn settings_ui(ui: &mut egui::Ui, settings: &mut crate::settings::AppSettings, f
         response.on_hover_text(hxy_i18n::t("settings-poll-all-tooltip"));
         ui.end_row();
     });
+
+    ui.add_space(12.0);
+    ui.heading(hxy_i18n::t("settings-memory-header"));
+    ui.separator();
+    egui::Grid::new("hxy-memory-settings").num_columns(2).striped(true).show(ui, |ui| {
+        ui.label(hxy_i18n::t("settings-byte-cache-limit"));
+        let mut mib = settings.byte_cache_limit_mib.max(hxy_core::CacheLimit::MIN_MIB);
+        let response = ui.add(
+            egui::DragValue::new(&mut mib)
+                .range(hxy_core::CacheLimit::MIN_MIB..=u32::MAX)
+                .speed(8.0)
+                .suffix(" MiB"),
+        );
+        response.on_hover_text(hxy_i18n::t("settings-byte-cache-limit-tooltip"));
+        if mib != settings.byte_cache_limit_mib {
+            settings.byte_cache_limit_mib = mib;
+            byte_cache.set_limit(hxy_core::CacheLimit::from_mib(mib));
+        }
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-debug-memory-panel"));
+        let response = ui.checkbox(&mut settings.debug_memory_panel_enabled, "");
+        response.on_hover_text(hxy_i18n::t("settings-debug-memory-panel-tooltip"));
+        ui.end_row();
+    });
+    let _ = files;
 }

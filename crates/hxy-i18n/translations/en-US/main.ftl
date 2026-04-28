@@ -391,4 +391,22 @@ palette-tool-show-entropy = Show Entropy panel
 palette-tool-close-entropy = Close Entropy panel
 palette-tool-show-vfs = Show VFS panel
 palette-tool-close-vfs = Close VFS panel
+palette-tool-show-memory = Show Memory debug panel
+palette-tool-close-memory = Close Memory debug panel
 palette-close-tool-pane = Close tool pane
+
+# Memory / cache debug
+tab-memory = Memory
+settings-memory-header = Memory cache
+settings-byte-cache-limit = Hex view cache (MiB)
+settings-byte-cache-limit-tooltip = Upper bound on the shared byte cache for hex views and template runs. Larger budgets keep more bytes resident; minimum 20 MiB.
+settings-debug-memory-panel = Show Memory debug panel
+settings-debug-memory-panel-tooltip = Reveal the Memory tool pane and a palette entry to toggle it. The panel shows per-view byte cache occupancy (tracked bytes, not actual allocator pages).
+memory-panel-empty = No bytes cached yet.
+memory-panel-summary = { $used_mib } MiB of { $limit_mib } MiB cached across { $chunks } chunks ({ $hits } hits, { $misses } misses).
+memory-panel-disclaimer = Tracked-cache bytes -- not exact allocator pages.
+memory-panel-row-hex-view = Hex view: { $name }
+memory-panel-row-template = Template: { $name }
+memory-panel-row-plugin = Plugin: { $name }
+memory-panel-row-unknown = Source { $id }
+memory-panel-bytes-mib = { $mib } MiB
