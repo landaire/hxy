@@ -54,6 +54,7 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
     if let Some(path) = removed_root {
         app.unwatch_path_if_unused(&path);
     }
+    app.unwatch_vfs_for_file(id);
     if app.last_active_file == Some(id) {
         app.last_active_file = None;
     }

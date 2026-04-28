@@ -349,8 +349,18 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
             // time and isn't silently locked into one branch.
             ReloadDecision::KeepEdits => None,
         };
-        let mut g = app.state.write();
-        g.app.set_auto_reload_for(pending.path.clone(), mode);
+        match mode {
+            Some(m) => {
+                // Route through the watcher-aware setter so a
+                // Never decision actually unwatches and a
+                // switch back to Always re-enrols.
+                app.set_file_watch_pref(pending.file_id, m);
+            }
+            None => {
+                let mut g = app.state.write();
+                g.app.set_auto_reload_for(pending.path.clone(), None);
+            }
+        }
     }
     if matches!(decision, ReloadDecision::Ignore) {
         // Bump the watcher's snapshot so it doesn't immediately

@@ -57,6 +57,11 @@ pub struct HistoryPaletteContext {
     /// fresh bytes from. False for in-memory scratch buffers
     /// and plugin-mount tabs.
     pub has_disk_source: bool,
+    /// Effective auto-reload mode for the active file. Used by
+    /// the watch palette entries to mark the currently-active
+    /// option (`*`) so the user can see at a glance which mode
+    /// is in effect for this tab.
+    pub watch_mode: Option<crate::settings::AutoReloadMode>,
     /// Snapshot of the active file's running template. `None` when no
     /// template has been run for that tab. Carries enough info to
     /// gate / preview template-relative entries (next-field jump,
@@ -102,6 +107,8 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
     let Some(file) = app.files.get(&id) else {
         return HistoryPaletteContext { has_workspace, ..HistoryPaletteContext::default() };
     };
+    let watch_key = app.watch_key_for(id);
+    let watch_mode = watch_key.as_ref().map(|k| app.state.read().app.auto_reload_for(k));
     HistoryPaletteContext {
         can_undo: file.editor.can_undo(),
         can_redo: file.editor.can_redo(),
@@ -110,6 +117,7 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         can_browse_vfs: file.detected_handler.is_some(),
         has_workspace,
         has_disk_source: file.root_path().is_some(),
+        watch_mode,
         template: file.template.as_ref().map(|t| TemplateCtx { field_count: t.leaf_boundaries.len() }),
     }
 }
@@ -402,6 +410,49 @@ pub fn build_palette_entries(
                     )
                     .with_icon(icon::IMAGES)
                     .with_subtitle(hxy_i18n::t("palette-open-snapshots-subtitle")),
+                );
+
+                let active_subtitle = |label_key: &str, marker: &str| -> String {
+                    hxy_i18n::t_args(
+                        "palette-watch-subtitle",
+                        &[("mode", &hxy_i18n::t(label_key)), ("marker", marker)],
+                    )
+                };
+                let mark_for = |this_mode: crate::settings::AutoReloadMode| -> &'static str {
+                    if Some(this_mode) == history_ctx.watch_mode { "*" } else { "" }
+                };
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-watch-always"),
+                        Action::InvokeCommand(PaletteCommand::WatchAlways),
+                    )
+                    .with_icon(icon::EYE)
+                    .with_subtitle(active_subtitle(
+                        crate::settings::AutoReloadMode::Always.label_key(),
+                        mark_for(crate::settings::AutoReloadMode::Always),
+                    )),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-watch-ask"),
+                        Action::InvokeCommand(PaletteCommand::WatchAsk),
+                    )
+                    .with_icon(icon::EYE)
+                    .with_subtitle(active_subtitle(
+                        crate::settings::AutoReloadMode::Ask.label_key(),
+                        mark_for(crate::settings::AutoReloadMode::Ask),
+                    )),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-watch-never"),
+                        Action::InvokeCommand(PaletteCommand::WatchNever),
+                    )
+                    .with_icon(icon::EYE_SLASH)
+                    .with_subtitle(active_subtitle(
+                        crate::settings::AutoReloadMode::Never.label_key(),
+                        mark_for(crate::settings::AutoReloadMode::Never),
+                    )),
                 );
             }
             if history_ctx.can_paste {

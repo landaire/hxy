@@ -347,6 +347,19 @@ pub enum PaletteCommand {
     TakeSnapshot,
     /// Open the snapshot manager dialog for the active file.
     OpenSnapshots,
+    /// Set the per-file auto-reload pref for the active tab to
+    /// `Always` (auto-reload silently). Re-enrols the file with
+    /// the watcher if it was previously paused.
+    WatchAlways,
+    /// Set the per-file auto-reload pref for the active tab to
+    /// `Ask` (default behaviour: prompt on change).
+    WatchAsk,
+    /// Set the per-file auto-reload pref for the active tab to
+    /// `Never` -- disables watcher enrolment so the polling
+    /// worker stops re-reading and hashing this file's bytes
+    /// every tick. Useful for noisy sources like the xbox
+    /// memory plugin where contents churn.
+    WatchNever,
 }
 
 #[derive(Clone)]

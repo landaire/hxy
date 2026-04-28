@@ -1027,15 +1027,99 @@ impl HxyApp {
         id
     }
 
-    /// Register the watcher for whatever root path the just-opened
-    /// `OpenFile` ultimately derives from. No-op when the file is
-    /// in-memory (anonymous, plugin mount, etc) or when the watcher
-    /// failed to construct at startup.
+    /// Register the watcher for whatever the just-opened
+    /// `OpenFile` ultimately derives from -- a filesystem path
+    /// for disk-backed tabs, or a sample-hash poller for VFS-
+    /// entry tabs (xbox memory, plugin mounts, etc.). No-op for
+    /// purely in-memory anonymous tabs, when the watcher failed
+    /// to construct at startup, or when the per-file auto-reload
+    /// pref is `Never` (which means "don't even watch").
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn watch_root_for_file(&mut self, id: FileId) {
-        let Some(watcher) = self.file_watcher.as_mut() else { return };
-        let Some(path) = self.files.get(&id).and_then(|f| f.root_path().cloned()) else { return };
-        watcher.watch(path);
+        let Some(file) = self.files.get(&id) else { return };
+        // Skip enrolment entirely when the user marked this
+        // file's effective auto-reload mode as Never -- there's
+        // no point paying the kernel-watch / sample-hash cost
+        // for a file the user has explicitly silenced.
+        let watch_key = self.watch_key_for(id);
+        if let Some(key) = watch_key.as_ref()
+            && self.state.read().app.auto_reload_for(key) == crate::settings::AutoReloadMode::Never
+        {
+            return;
+        }
+        if let Some(path) = file.root_path().cloned() {
+            if let Some(watcher) = self.file_watcher.as_mut() {
+                watcher.watch(path);
+            }
+        }
+        let needs_vfs_poll = matches!(file.source_kind.as_ref(), Some(TabSource::VfsEntry { parent, .. })
+            if !matches!(parent.as_ref(), TabSource::Filesystem(_)));
+        if needs_vfs_poll {
+            let source = file.editor.source().clone();
+            if let Some(watcher) = self.file_watcher.as_mut() {
+                watcher.watch_vfs(id, source);
+            }
+        }
+    }
+
+    /// Resolve the per-file pref key the auto-reload table is
+    /// indexed by for `id` -- a real filesystem path for disk-
+    /// backed tabs, or a synthesised `vfs://...` key for VFS-
+    /// entry tabs. `None` for purely in-memory anonymous tabs
+    /// where there's nothing to remember across restarts.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn watch_key_for(&self, id: FileId) -> Option<std::path::PathBuf> {
+        let file = self.files.get(&id)?;
+        if let Some(p) = file.root_path() {
+            return Some(p.clone());
+        }
+        let source = file.source_kind.as_ref()?;
+        Some(vfs_pref_key_for(source))
+    }
+
+    /// Re-evaluate the watcher enrolment for `id` after the
+    /// per-file auto-reload pref or the source identity
+    /// changed. Idempotent: re-watching is a no-op for paths /
+    /// entries already watched.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn refresh_watch_for_file(&mut self, id: FileId) {
+        let Some(file) = self.files.get(&id) else { return };
+        let watch_key = self.watch_key_for(id);
+        let mode = match watch_key.as_ref() {
+            Some(k) => self.state.read().app.auto_reload_for(k),
+            None => crate::settings::AutoReloadMode::default(),
+        };
+        let path = file.root_path().cloned();
+        match mode {
+            crate::settings::AutoReloadMode::Never => {
+                if let Some(p) = path {
+                    self.unwatch_path_if_unused(&p);
+                }
+                self.unwatch_vfs_for_file(id);
+            }
+            crate::settings::AutoReloadMode::Always | crate::settings::AutoReloadMode::Ask => {
+                self.watch_root_for_file(id);
+            }
+        }
+    }
+
+    /// Set the per-file auto-reload pref for `id` and re-aim
+    /// the watcher. Used by the palette and the reload prompt's
+    /// "remember for this file" checkbox.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_file_watch_pref(&mut self, id: FileId, mode: crate::settings::AutoReloadMode) {
+        let Some(key) = self.watch_key_for(id) else { return };
+        let global = self.state.read().app.auto_reload;
+        {
+            let mut g = self.state.write();
+            // Clearing the override (passing the same mode as
+            // the global default) makes the file fall back to
+            // the global -- prevents accumulating redundant
+            // entries in file_watch_prefs.
+            let pref = if mode == global { None } else { Some(mode) };
+            g.app.set_auto_reload_for(key, pref);
+        }
+        self.refresh_watch_for_file(id);
     }
 
     /// Unregister the watcher for `path` if no remaining open file
@@ -1048,6 +1132,16 @@ impl HxyApp {
             return;
         }
         watcher.unwatch(path);
+    }
+
+    /// Drop the VFS sample-hash poller for `id`. Called from
+    /// the close path so the worker stops re-reading bytes
+    /// through a source the user already torn down.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn unwatch_vfs_for_file(&mut self, id: FileId) {
+        if let Some(watcher) = self.file_watcher.as_mut() {
+            watcher.unwatch_vfs(id);
+        }
     }
 
     /// Reload `id` from its filesystem-backed root path. The
@@ -1169,8 +1263,16 @@ impl HxyApp {
         for (entry_id, entry_path) in entry_specs {
             match crate::files::streaming::open_vfs(new_mount.clone(), entry_path.clone()) {
                 Ok((stream, _len)) => {
+                    let stream_for_watch = stream.clone();
                     if let Some(file) = self.files.get_mut(&entry_id) {
                         file.editor.swap_source(stream);
+                    }
+                    // Refresh the sample-hash fingerprint so
+                    // the next poll tick measures against the
+                    // post-remount bytes rather than the stale
+                    // pre-remount snapshot.
+                    if let Some(watcher) = self.file_watcher.as_mut() {
+                        watcher.mark_vfs_synced(entry_id, stream_for_watch);
                     }
                 }
                 Err(e) => {
@@ -2221,6 +2323,25 @@ pub fn open_snapshots_active_file(app: &mut HxyApp) {
     crate::files::snapshot_ui::open_for(app, id);
 }
 
+/// Set the per-file auto-reload pref for the active tab and
+/// re-aim the watcher accordingly. `Never` unwatches the file
+/// so neither notify nor the polling worker spends any cycles
+/// on it; the other modes (re-)enrol it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_active_file_watch_pref(app: &mut HxyApp, mode: crate::settings::AutoReloadMode) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Watch", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+    app.set_file_watch_pref(id, mode);
+    app.console_log(
+        ConsoleSeverity::Info,
+        format!("Watch {display}"),
+        hxy_i18n::t_args("watch-pref-applied", &[("mode", &hxy_i18n::t(mode.label_key()))]),
+    );
+}
+
 /// Translate persisted settings into the live polling prefs the
 /// watcher worker thread expects. Used both at startup and every
 /// time the settings UI nudges the cadence / poll-all flag.
@@ -2248,49 +2369,74 @@ fn drain_file_watch_events(ctx: &egui::Context, app: &mut HxyApp) {
     }
     for event in events {
         match event {
-            crate::files::watch::WatchEvent::Modified(path) => {
-                handle_external_change(ctx, app, &path, ExternalChangeKind::Modified);
+            crate::files::watch::WatchEvent::Modified(target) => {
+                handle_external_change(ctx, app, target, ExternalChangeKind::Modified);
             }
-            crate::files::watch::WatchEvent::Removed(path) => {
-                handle_external_change(ctx, app, &path, ExternalChangeKind::Removed);
+            crate::files::watch::WatchEvent::Removed(target) => {
+                handle_external_change(ctx, app, target, ExternalChangeKind::Removed);
             }
             crate::files::watch::WatchEvent::Renamed { from, to } => {
                 tracing::debug!(from = %from.display(), to = %to.display(), "watched file renamed externally");
-                handle_external_change(ctx, app, &from, ExternalChangeKind::Removed);
+                handle_external_change(
+                    ctx,
+                    app,
+                    crate::files::watch::WatchTarget::Filesystem(from),
+                    ExternalChangeKind::Removed,
+                );
             }
         }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn handle_external_change(ctx: &egui::Context, app: &mut HxyApp, path: &std::path::Path, kind: ExternalChangeKind) {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let affected_ids: Vec<FileId> = app
-        .files
-        .iter()
-        .filter_map(|(id, f)| {
-            let root = f.root_path()?;
-            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            (root_canonical == canonical || root.as_path() == path).then_some(*id)
-        })
-        .collect();
+fn handle_external_change(
+    ctx: &egui::Context,
+    app: &mut HxyApp,
+    target: crate::files::watch::WatchTarget,
+    kind: ExternalChangeKind,
+) {
+    use crate::files::watch::WatchTarget;
+    let (affected_ids, label_path, pref_key): (Vec<FileId>, std::path::PathBuf, std::path::PathBuf) = match &target
+    {
+        WatchTarget::Filesystem(path) => {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let ids: Vec<FileId> = app
+                .files
+                .iter()
+                .filter_map(|(id, f)| {
+                    let root = f.root_path()?;
+                    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                    (root_canonical == canonical || root.as_path() == path.as_path()).then_some(*id)
+                })
+                .collect();
+            (ids, path.clone(), path.clone())
+        }
+        WatchTarget::Vfs(file_id) => {
+            // VFS keys identify a single tab directly. The
+            // pref-key path is synthesised from the tab's
+            // source so per-file auto-reload remembers VFS
+            // entries the same way it remembers disk paths.
+            let key = match app.files.get(file_id).and_then(|f| f.source_kind.as_ref()).map(vfs_pref_key_for) {
+                Some(k) => k,
+                None => return,
+            };
+            (vec![*file_id], key.clone(), key)
+        }
+    };
     if affected_ids.is_empty() {
         return;
     }
-    let mode_for_path = app.state.read().app.auto_reload_for(path);
+    let mode_for_path = app.state.read().app.auto_reload_for(&pref_key);
     for file_id in affected_ids {
         let (display_name, has_unsaved) = match app.files.get(&file_id) {
             Some(f) => (f.display_name.clone(), f.editor.is_dirty()),
             None => continue,
         };
         if matches!(kind, ExternalChangeKind::Removed) {
-            // Removal can't be auto-reloaded -- there's nothing on
-            // disk to read. Surface a console line so the user
-            // notices and leaves the in-memory bytes alone.
             app.console_log(
                 ConsoleSeverity::Warning,
                 format!("{display_name}"),
-                format!("file removed on disk ({})", path.display()),
+                format!("source removed externally ({})", label_path.display()),
             );
             continue;
         }
@@ -2301,7 +2447,7 @@ fn handle_external_change(ctx: &egui::Context, app: &mut HxyApp, path: &std::pat
                 }
             }
             crate::settings::AutoReloadMode::Never => {
-                tracing::debug!(path = %path.display(), "auto-reload set to Never; ignoring change");
+                tracing::debug!(target = %label_path.display(), "auto-reload set to Never; ignoring change");
             }
             crate::settings::AutoReloadMode::Ask => {
                 if app.pending_reload_prompt.is_some() {
@@ -2310,12 +2456,36 @@ fn handle_external_change(ctx: &egui::Context, app: &mut HxyApp, path: &std::pat
                 app.pending_reload_prompt = Some(PendingReloadPrompt {
                     file_id,
                     display_name,
-                    path: path.to_path_buf(),
+                    path: label_path.clone(),
                     kind,
                     has_unsaved,
                 });
             }
         }
+    }
+}
+
+/// Stable per-file key used by the auto-reload preference list
+/// for VFS-entry tabs. We don't have a real path so we
+/// synthesise one from the source's parent + entry path. Two
+/// tabs of the same VFS entry share the same key.
+#[cfg(not(target_arch = "wasm32"))]
+fn vfs_pref_key_for(source: &TabSource) -> std::path::PathBuf {
+    match source {
+        TabSource::VfsEntry { parent, entry_path } => {
+            let parent_label = match parent.as_ref() {
+                TabSource::Filesystem(p) => p.display().to_string(),
+                TabSource::PluginMount { plugin_name, token, .. } => format!("plugin:{plugin_name}/{token}"),
+                TabSource::VfsEntry { entry_path, .. } => format!("vfs:{entry_path}"),
+                TabSource::Anonymous { id, .. } => format!("anon:{}", id.get()),
+            };
+            std::path::PathBuf::from(format!("vfs://{parent_label}{entry_path}"))
+        }
+        TabSource::Filesystem(p) => p.clone(),
+        TabSource::PluginMount { plugin_name, token, .. } => {
+            std::path::PathBuf::from(format!("plugin:{plugin_name}/{token}"))
+        }
+        TabSource::Anonymous { id, .. } => std::path::PathBuf::from(format!("anon:{}", id.get())),
     }
 }
 

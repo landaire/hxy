@@ -91,6 +91,15 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::ReloadActiveFile => crate::app::request_reload_active_file(app),
                 PaletteCommand::TakeSnapshot => crate::app::take_snapshot_active_file(app),
                 PaletteCommand::OpenSnapshots => crate::app::open_snapshots_active_file(app),
+                PaletteCommand::WatchAlways => {
+                    crate::app::set_active_file_watch_pref(app, crate::settings::AutoReloadMode::Always);
+                }
+                PaletteCommand::WatchAsk => {
+                    crate::app::set_active_file_watch_pref(app, crate::settings::AutoReloadMode::Ask);
+                }
+                PaletteCommand::WatchNever => {
+                    crate::app::set_active_file_watch_pref(app, crate::settings::AutoReloadMode::Never);
+                }
             }
         }
         Action::FocusFile(id) => {

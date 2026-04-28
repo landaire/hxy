@@ -294,7 +294,7 @@ settings-watch-header = Filesystem watcher
 settings-auto-reload = When a file changes on disk
 auto-reload-always = Reload automatically
 auto-reload-ask = Ask
-auto-reload-never = Ignore
+auto-reload-never = Disable watching
 settings-poll-interval = Poll fallback interval
 settings-poll-interval-tooltip = Cadence for the polling worker that handles paths the kernel watcher rejected. Set to 0 to disable polling entirely.
 settings-poll-all = Poll every watched file
@@ -331,3 +331,10 @@ snapshot-pick-current = Current bytes
 snapshot-size-cached = { $size } (cached)
 snapshot-size-disk = { $size } (on disk)
 snapshot-capture-toast = Captured snapshot { $id }
+
+# Per-file watch toggle
+palette-watch-always = Watch this file: Always reload
+palette-watch-ask = Watch this file: Ask before reloading
+palette-watch-never = Watch this file: Disable change detection
+palette-watch-subtitle = { $mode }{ $marker }
+watch-pref-applied = Set to { $mode } for this file

@@ -225,10 +225,13 @@ pub struct AppSettings {
     pub file_poll_all: bool,
 }
 
-/// What to do when the filesystem watcher reports a file changed
-/// on disk. Defaults to `Ask` so the user notices the divergence
-/// and chooses; `Always` auto-reloads silently, `Never` keeps the
-/// in-memory bytes regardless of disk drift.
+/// What to do when a file is being watched for external
+/// changes. Defaults to `Ask` so the user notices the
+/// divergence and chooses; `Always` auto-reloads silently;
+/// `Never` skips watcher enrollment entirely (no notify
+/// registration, no polling cost) -- distinct from "watch but
+/// always ignore", which would still pay the per-tick hashing
+/// work for VFS entries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutoReloadMode {
     Always,
