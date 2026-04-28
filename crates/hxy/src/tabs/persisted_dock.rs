@@ -54,6 +54,7 @@ pub enum PersistedTab {
     Inspector,
     Plugins,
     SearchResults,
+    Memory,
     /// Entropy panel, keyed by the underlying file's
     /// [`TabSource`]. The host re-resolves the source to a
     /// fresh [`FileId`] after the open-tabs restore so the
@@ -165,6 +166,7 @@ fn live_to_persisted_tab(
         Tab::Inspector => PersistedTab::Inspector,
         Tab::Plugins => PersistedTab::Plugins,
         Tab::SearchResults => PersistedTab::SearchResults,
+        Tab::Memory => PersistedTab::Memory,
         Tab::Entropy(id) => PersistedTab::Entropy(files.get(id)?.source_kind.clone()?),
         Tab::File(id) => PersistedTab::File(files.get(id)?.source_kind.clone()?),
         Tab::Workspace(id) => {
@@ -232,6 +234,7 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
         PersistedTab::Inspector => Tab::Inspector,
         PersistedTab::Plugins => Tab::Plugins,
         PersistedTab::SearchResults => Tab::SearchResults,
+        PersistedTab::Memory => Tab::Memory,
         PersistedTab::Entropy(source) => Tab::Entropy(*maps.files_by_source.get(source)?),
         PersistedTab::File(source) => Tab::File(*maps.files_by_source.get(source)?),
         PersistedTab::Workspace(parent) => Tab::Workspace(*maps.workspaces_by_parent.get(parent)?),

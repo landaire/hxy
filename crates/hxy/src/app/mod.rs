@@ -678,6 +678,30 @@ impl HxyApp {
         }
     }
 
+    /// Show (or focus) the Memory debug panel. Routes through the
+    /// shared tool leaf alongside the other debug panels.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_memory_panel(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Memory) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Memory);
+        self.dock.set_focused_node_and_surface(node_path);
+    }
+
+    /// Close the Memory tab if present; otherwise show it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn toggle_memory_panel(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Memory) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_memory_panel();
+        }
+    }
+
     /// Show (or focus) the Entropy panel for `file_id`. Each
     /// file gets its own tab so two panels can be docked
     /// side-by-side for visual comparison; opening entropy for
@@ -4442,6 +4466,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Console => hxy_i18n::t("tab-console").into(),
             Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
             Tab::Plugins => "Plugins".into(),
+            Tab::Memory => hxy_i18n::t("tab-memory").into(),
             Tab::Entropy(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-entropy", &[("name", name)]).into()
@@ -4525,6 +4550,10 @@ impl TabViewer for HxyTabViewer<'_> {
                 if clicked {
                     self.entropy_recompute.push(pinned);
                 }
+            }
+            Tab::Memory => {
+                let labels = crate::panels::memory::ViewLabels::from_files(self.files);
+                crate::panels::memory::memory_ui(ui, self.byte_cache, &labels);
             }
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
@@ -4624,7 +4653,7 @@ impl TabViewer for HxyTabViewer<'_> {
     }
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
         match tab {
-            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Workspace(_) => true,
+            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Workspace(_) | Tab::Memory => true,
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -4644,6 +4673,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::PluginMount(_) | Tab::SearchResults => [false, false],
             #[cfg(not(target_arch = "wasm32"))]
             Tab::Entropy(_) => [false, false],
+            Tab::Memory => [false, true],
             _ => [true, true],
         }
     }

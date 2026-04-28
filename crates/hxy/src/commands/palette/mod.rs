@@ -286,6 +286,10 @@ pub enum PaletteCommand {
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,
+    /// Toggle the byte-cache debug Memory panel. Listed in the
+    /// palette only when `AppSettings::debug_memory_panel_enabled`
+    /// is on.
+    ToggleMemory,
     Undo,
     Redo,
     Paste,

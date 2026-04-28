@@ -290,6 +290,23 @@ pub fn build_palette_entries(
                 )
                 .with_icon(icon::PUZZLE_PIECE),
             );
+            // Memory debug panel: gated by the explicit settings
+            // toggle so it stays out of the palette for users who
+            // aren't troubleshooting cache occupancy.
+            if app.state.read().app.debug_memory_panel_enabled {
+                let memory_visible = app.dock.find_tab(&Tab::Memory).is_some();
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t(if memory_visible {
+                            "palette-tool-close-memory"
+                        } else {
+                            "palette-tool-show-memory"
+                        }),
+                        Action::InvokeCommand(PaletteCommand::ToggleMemory),
+                    )
+                    .with_icon(icon::CHART_BAR),
+                );
+            }
             if history_ctx.has_active_file {
                 out.push(
                     egui_palette::Entry::new(

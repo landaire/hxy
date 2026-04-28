@@ -210,7 +210,7 @@ pub fn push_workspace_entry(workspace: &mut crate::files::Workspace, file_id: Fi
 /// holding only these should never receive a fresh file open.
 pub fn is_tool_tab(t: &Tab) -> bool {
     match t {
-        Tab::Plugins | Tab::Inspector | Tab::Console => true,
+        Tab::Plugins | Tab::Inspector | Tab::Console | Tab::Memory => true,
         #[cfg(not(target_arch = "wasm32"))]
         Tab::PluginMount(_) | Tab::SearchResults | Tab::Entropy(_) => true,
         _ => false,

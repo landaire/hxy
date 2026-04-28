@@ -66,6 +66,10 @@ pub enum Tab {
     /// has focus.
     #[cfg(not(target_arch = "wasm32"))]
     Entropy(FileId),
+    /// Byte-cache debug panel. Lists per-view tracked-cache byte
+    /// usage. Gated by `AppSettings::debug_memory_panel_enabled`
+    /// in the palette / view menu.
+    Memory,
 }
 
 impl Tab {
