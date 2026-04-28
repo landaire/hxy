@@ -312,6 +312,14 @@ pub struct HxyApp {
     /// auto-reload mode is `Ask`.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_reload_prompt: Option<PendingReloadPrompt>,
+    /// Workspace-entry tabs whose underlying VFS entry vanished
+    /// after a reload. Each one prompts the user with "close the
+    /// tab or keep its in-memory bytes?" -- the view may still
+    /// be useful (the entry's contents are cached on the tab's
+    /// editor) even though it can't be saved back through the
+    /// mount any more.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_orphan_entries: Vec<PendingOrphanEntry>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -393,6 +401,18 @@ pub enum ReloadDecision {
     KeepEdits,
     /// Do nothing. The file's in-memory state stays as it was.
     Ignore,
+}
+
+/// One workspace-entry tab whose underlying VFS path no longer
+/// resolves after a reload. The orphan-tab dialog renders these
+/// one at a time, asking the user to either close the tab or
+/// keep it open (the editor still holds the entry's last-known
+/// bytes; only writeback through the mount is broken).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PendingOrphanEntry {
+    pub(crate) file_id: FileId,
+    pub(crate) display_name: String,
+    pub(crate) entry_path: String,
 }
 
 impl HxyApp {
@@ -518,6 +538,8 @@ impl HxyApp {
             },
             #[cfg(not(target_arch = "wasm32"))]
             pending_reload_prompt: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_orphan_entries: Vec::new(),
         }
     }
 
@@ -1008,8 +1030,15 @@ impl HxyApp {
     /// reloadable (in-memory tab, vanished path, read failure);
     /// the caller is expected to surface the diagnostic via the
     /// console.
+    ///
+    /// On success the workspace mount (if any) is re-built so the
+    /// VFS tree reflects the new bytes, every workspace-entry tab
+    /// derived from it re-reads its bytes (or stages an orphan
+    /// prompt when the entry no longer exists in the new mount),
+    /// and any template that previously ran against the old bytes
+    /// is re-fired against the new ones.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn apply_reload_decision(&mut self, id: FileId, decision: ReloadDecision) -> bool {
+    pub fn apply_reload_decision(&mut self, ctx: &egui::Context, id: FileId, decision: ReloadDecision) -> bool {
         if matches!(decision, ReloadDecision::Ignore) {
             return true;
         }
@@ -1036,6 +1065,7 @@ impl HxyApp {
         if let Some(watcher) = self.file_watcher.as_mut() {
             watcher.mark_synced(&path);
         }
+        self.refresh_workspace_for_file(id);
         let kept = matches!(decision, ReloadDecision::KeepEdits);
         let summary = if kept {
             format!("reloaded {len} byte(s); kept local edits on top of new base ({display})")
@@ -1043,7 +1073,112 @@ impl HxyApp {
             format!("reloaded {len} byte(s); local edits discarded ({display})")
         };
         self.console_log(ConsoleSeverity::Info, &ctx_label, summary);
+        // Re-run the template, if any. Done last so the post-
+        // reload tree reflects the new bytes -- the runner
+        // takes a fresh source clone.
+        self.rerun_template_for_file(ctx, id);
         true
+    }
+
+    /// Re-mount the workspace whose editor is `file_id` (if any)
+    /// against the file's freshly-swapped byte source. Walks the
+    /// workspace's inner dock for `WorkspaceTab::Entry(_)` tabs;
+    /// each surviving entry's bytes get re-read, each vanished
+    /// entry stages an orphan-tab prompt the host renders next
+    /// frame. No-op when the file isn't the editor of any
+    /// workspace.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_workspace_for_file(&mut self, file_id: FileId) {
+        let Some(workspace_id) = self.workspaces.values().find(|w| w.editor_id == file_id).map(|w| w.id) else {
+            return;
+        };
+        let handler = match self.files.get(&file_id).and_then(|f| f.detected_handler.clone()) {
+            Some(h) => h,
+            None => {
+                tracing::debug!(file_id = file_id.get(), "workspace reload: no detected handler; skipping re-mount");
+                return;
+            }
+        };
+        let new_source = match self.files.get(&file_id) {
+            Some(f) => f.editor.source().clone(),
+            None => return,
+        };
+        let new_mount = match handler.mount(new_source) {
+            Ok(m) => Arc::new(m),
+            Err(e) => {
+                self.console_log(
+                    ConsoleSeverity::Warning,
+                    "Reload",
+                    format!("re-mount {} after reload failed: {e}", handler.name()),
+                );
+                return;
+            }
+        };
+        // Replace the workspace's mount; entry tabs still hold
+        // their own byte source, so we re-fetch each one against
+        // the new mount below.
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.mount = new_mount.clone();
+        }
+
+        // Snapshot every Entry tab inside the workspace so we
+        // don't hold a borrow into self.workspaces while mutating
+        // self.files / self.pending_orphan_entries below.
+        let entry_specs: Vec<(FileId, String)> = {
+            let workspace = self.workspaces.get(&workspace_id).expect("just refreshed");
+            workspace
+                .dock
+                .iter_all_tabs()
+                .filter_map(|(_, t)| match t {
+                    crate::files::WorkspaceTab::Entry(entry_id) => {
+                        let file = self.files.get(entry_id)?;
+                        let entry_path = match file.source_kind.as_ref()? {
+                            TabSource::VfsEntry { entry_path, .. } => entry_path.clone(),
+                            _ => return None,
+                        };
+                        Some((*entry_id, entry_path))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for (entry_id, entry_path) in entry_specs {
+            match crate::files::open::read_vfs_entry(new_mount.fs.as_ref(), &entry_path) {
+                Ok(bytes) => {
+                    if let Some(file) = self.files.get_mut(&entry_id) {
+                        let base: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
+                        file.editor.swap_source(base);
+                    }
+                }
+                Err(e) => {
+                    let display = self.files.get(&entry_id).map(|f| f.display_name.clone()).unwrap_or_default();
+                    tracing::debug!(error = %e, entry = %entry_path, "vfs entry vanished after reload");
+                    self.pending_orphan_entries.push(PendingOrphanEntry {
+                        file_id: entry_id,
+                        display_name: display,
+                        entry_path,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Re-fire the template that was last run against `file_id`,
+    /// if any. Called from the reload path so the parsed tree
+    /// stays in sync with the new bytes; if no template was ever
+    /// run, this is a no-op.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn rerun_template_for_file(&mut self, ctx: &egui::Context, file_id: FileId) {
+        // Only re-run when the previous run actually completed.
+        // Pending suggestions or in-flight runs aren't worth
+        // displacing -- the user hasn't committed to a template
+        // yet, or the worker is still computing the original.
+        let Some(file) = self.files.get(&file_id) else { return };
+        if file.template.is_none() || file.template_running.is_some() {
+            return;
+        }
+        let Some(path) = file.last_template_path.clone() else { return };
+        crate::templates::runner::run_template_from_path(ctx, self, file_id, path);
     }
 
     /// Look at the just-opened file's extension + first bytes and
@@ -1696,7 +1831,7 @@ impl eframe::App for HxyApp {
         // notify watcher + polling worker and route each one
         // through the reload prompt / auto-reload paths.
         #[cfg(not(target_arch = "wasm32"))]
-        drain_file_watch_events(self);
+        drain_file_watch_events(ui.ctx(), self);
 
         #[cfg(target_os = "macos")]
         drain_native_menu(ui.ctx(), self);
@@ -1864,6 +1999,8 @@ impl eframe::App for HxyApp {
         crate::app::dialogs::render_patch_restore_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_reload_prompt_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::app::dialogs::render_orphaned_entry_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2050,7 +2187,7 @@ pub(crate) fn polling_prefs_from_settings(s: &crate::settings::AppSettings) -> c
 /// in-place; ask-mode paths stage a reload prompt; never-mode
 /// paths are dropped silently.
 #[cfg(not(target_arch = "wasm32"))]
-fn drain_file_watch_events(app: &mut HxyApp) {
+fn drain_file_watch_events(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(watcher) = app.file_watcher.as_mut() else { return };
     let events = watcher.drain();
     if events.is_empty() {
@@ -2059,21 +2196,21 @@ fn drain_file_watch_events(app: &mut HxyApp) {
     for event in events {
         match event {
             crate::files::watch::WatchEvent::Modified(path) => {
-                handle_external_change(app, &path, ExternalChangeKind::Modified);
+                handle_external_change(ctx, app, &path, ExternalChangeKind::Modified);
             }
             crate::files::watch::WatchEvent::Removed(path) => {
-                handle_external_change(app, &path, ExternalChangeKind::Removed);
+                handle_external_change(ctx, app, &path, ExternalChangeKind::Removed);
             }
             crate::files::watch::WatchEvent::Renamed { from, to } => {
                 tracing::debug!(from = %from.display(), to = %to.display(), "watched file renamed externally");
-                handle_external_change(app, &from, ExternalChangeKind::Removed);
+                handle_external_change(ctx, app, &from, ExternalChangeKind::Removed);
             }
         }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn handle_external_change(app: &mut HxyApp, path: &std::path::Path, kind: ExternalChangeKind) {
+fn handle_external_change(ctx: &egui::Context, app: &mut HxyApp, path: &std::path::Path, kind: ExternalChangeKind) {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let affected_ids: Vec<FileId> = app
         .files
@@ -2106,7 +2243,7 @@ fn handle_external_change(app: &mut HxyApp, path: &std::path::Path, kind: Extern
         }
         match mode_for_path {
             crate::settings::AutoReloadMode::Always => {
-                if !app.apply_reload_decision(file_id, ReloadDecision::DiscardEdits) {
+                if !app.apply_reload_decision(ctx, file_id, ReloadDecision::DiscardEdits) {
                     continue;
                 }
             }

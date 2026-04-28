@@ -299,3 +299,11 @@ settings-poll-interval = Poll fallback interval
 settings-poll-interval-tooltip = Cadence for the polling worker that handles paths the kernel watcher rejected. Set to 0 to disable polling entirely.
 settings-poll-all = Poll every watched file
 settings-poll-all-tooltip = Poll every watched file in addition to kernel events. Useful on network drives or FUSE mounts where kernel notifications are unreliable.
+
+# Orphaned VFS entry dialog
+orphan-entry-title = VFS entry no longer exists
+orphan-entry-body = After the reload, { $name } can no longer be located inside its parent mount (path: { $path }). Close the tab, or keep it open with the last-known bytes still visible?
+orphan-entry-close = Close tab
+orphan-entry-close-tooltip = Drop the orphaned tab; its in-memory bytes are discarded.
+orphan-entry-keep = Keep open
+orphan-entry-keep-tooltip = Leave the tab open. Writeback through the mount is broken but the bytes can still be inspected and copied.

@@ -218,6 +218,13 @@ pub struct OpenFile {
     /// `None` when no library entry matches.
     #[cfg(not(target_arch = "wasm32"))]
     pub suggested_template: Option<SuggestedTemplate>,
+    /// Path to the template file most recently run against this
+    /// tab's bytes. Recorded by the template runner so an
+    /// external-change reload can re-fire the same template
+    /// without bothering the user. Cleared when the user
+    /// uninstalls / dismisses the template state.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub last_template_path: Option<PathBuf>,
     /// Per-tab override for the hex view's column count. `None` means
     /// follow the global `AppSettings::hex_columns` default; `Some`
     /// pins this buffer to a specific width regardless of the global
@@ -379,6 +386,8 @@ impl OpenFile {
             template_running: None,
             #[cfg(not(target_arch = "wasm32"))]
             suggested_template: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            last_template_path: None,
             hex_columns_override: None,
             read_only_reason: None,
             search: crate::search::SearchState::default(),

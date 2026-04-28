@@ -26,6 +26,11 @@ enum ReloadAction {
     Cancel,
 }
 
+enum OrphanAction {
+    Close,
+    Keep,
+}
+
 /// Modal asking the user what to do when an open request collides
 /// with an already-open tab pointing at the same path: focus the
 /// existing tab, open a second copy, or cancel.
@@ -188,6 +193,61 @@ pub fn pump_pattern_fetch(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Modal asking the user what to do with a workspace-entry tab
+/// whose backing VFS path no longer resolves after a reload.
+/// Renders one entry at a time; "Close" drops the tab through
+/// the regular close path, "Keep open" leaves the editor's
+/// last-known bytes available for inspection (writeback is
+/// already broken, so any save attempt will surface its own
+/// error).
+pub fn render_orphaned_entry_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(orphan) = app.pending_orphan_entries.first() else {
+        return;
+    };
+    let display_name = orphan.display_name.clone();
+    let entry_path = orphan.entry_path.clone();
+    let file_id = orphan.file_id;
+
+    let mut action: Option<OrphanAction> = None;
+    let mut open = true;
+    egui::Window::new(hxy_i18n::t("orphan-entry-title"))
+        .id(egui::Id::new("hxy_orphan_entry_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.label(hxy_i18n::t_args("orphan-entry-body", &[("name", &display_name), ("path", &entry_path)]));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(hxy_i18n::t("orphan-entry-close"))
+                    .on_hover_text(hxy_i18n::t("orphan-entry-close-tooltip"))
+                    .clicked()
+                {
+                    action = Some(OrphanAction::Close);
+                }
+                if ui
+                    .button(hxy_i18n::t("orphan-entry-keep"))
+                    .on_hover_text(hxy_i18n::t("orphan-entry-keep-tooltip"))
+                    .clicked()
+                {
+                    action = Some(OrphanAction::Keep);
+                }
+            });
+        });
+    if !open && action.is_none() {
+        action = Some(OrphanAction::Keep);
+    }
+    let Some(action) = action else { return };
+    app.pending_orphan_entries.remove(0);
+    match action {
+        OrphanAction::Close => crate::tabs::close::close_file_tab_by_id(app, file_id),
+        OrphanAction::Keep => {}
+    }
+}
+
 /// Modal asking the user how to react to a watched file changing
 /// on disk. Three terminal choices (Reload / Keep edits / Ignore)
 /// plus an "Always do this for this file" toggle that writes the
@@ -303,7 +363,7 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
         );
         return;
     }
-    app.apply_reload_decision(pending.file_id, decision);
+    app.apply_reload_decision(ctx, pending.file_id, decision);
 }
 
 /// Modal asking the user whether to restore an unsaved-edits sidecar

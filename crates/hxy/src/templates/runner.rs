@@ -78,6 +78,7 @@ pub fn run_template_from_path(ctx: &egui::Context, app: &mut HxyApp, id: FileId,
     let Some(file) = app.files.get_mut(&id) else { return };
     let source = file.editor.source().clone();
     file.template = None;
+    file.last_template_path = Some(path.clone());
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
     file.template_running =
         Some(crate::files::TemplateRun { inbox, template_name: tpl_name.clone(), started: jiff::Timestamp::now() });
