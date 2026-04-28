@@ -5497,11 +5497,6 @@ fn settings_ui(
             byte_cache.set_limit(hxy_core::CacheLimit::from_mib(mib));
         }
         ui.end_row();
-
-        ui.label(hxy_i18n::t("settings-debug-memory-panel"));
-        let response = ui.checkbox(&mut settings.debug_memory_panel_enabled, "");
-        response.on_hover_text(hxy_i18n::t("settings-debug-memory-panel-tooltip"));
-        ui.end_row();
     });
     let _ = files;
 }

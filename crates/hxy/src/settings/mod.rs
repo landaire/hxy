@@ -230,13 +230,6 @@ pub struct AppSettings {
     /// budget trades RAM for fewer disk reads on big files.
     #[serde(default = "default_byte_cache_limit_mib")]
     pub byte_cache_limit_mib: u32,
-
-    /// When true, the View menu and command palette expose a debug
-    /// "Memory" tool pane that shows byte-cache occupancy and the
-    /// per-view attribution breakdown. Off by default; flipped on by
-    /// the user from the Settings tab.
-    #[serde(default)]
-    pub debug_memory_panel_enabled: bool,
 }
 
 /// What to do when a file is being watched for external
@@ -335,7 +328,6 @@ impl Default for AppSettings {
             file_poll_interval_ms: default_poll_interval_ms(),
             file_poll_all: false,
             byte_cache_limit_mib: default_byte_cache_limit_mib(),
-            debug_memory_panel_enabled: false,
         }
     }
 }
