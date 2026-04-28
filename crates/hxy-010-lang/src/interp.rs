@@ -308,6 +308,15 @@ struct BitfieldSlot {
 /// second.
 pub const DEFAULT_STEP_LIMIT: u64 = 10_000_000;
 
+/// Cap on how big a `char[N]` array can get before we stop reading
+/// it inline as a [`Value::Str`]. Below this, the bytes are read
+/// once, UTF-8 validated, and surfaced as a string for templates
+/// that compare against string literals. Above it, the array's
+/// bytes are left on disk; element access falls back through the
+/// [`ArraySpan`] decode path which only fetches the bytes the
+/// caller actually inspects.
+pub const STR_INLINE_THRESHOLD_BYTES: u64 = 1024 * 1024;
+
 #[derive(Clone, Debug)]
 enum TypeDef {
     Primitive(PrimKind),
@@ -1446,17 +1455,20 @@ impl<S: HexSource> Interpreter<S> {
                 });
                 total_bytes = avail;
             }
-            let bytes = self.cursor.read_advance(total_bytes)?;
             let count = if p.width == 0 { 0 } else { total_bytes / p.width as u64 };
-            let value = if matches!(p.class, PrimClass::Char)
-                && let Ok(_) = str::from_utf8(&bytes)
-            {
-                Value::Str(String::from_utf8(bytes).expect("string should be UTF-8"))
+            let inline_str =
+                matches!(p.class, PrimClass::Char) && p.width == 1 && total_bytes <= STR_INLINE_THRESHOLD_BYTES;
+            let value = if inline_str {
+                let bytes = self.cursor.read_advance(total_bytes)?;
+                match String::from_utf8(bytes) {
+                    Ok(s) => Value::Str(s),
+                    // Bytes weren't UTF-8: drop them, the renderer
+                    // falls back to the hex dump for Void-valued
+                    // arrays just like the non-string branch below.
+                    Err(_) => Value::Void,
+                }
             } else {
-                // No Value variant for raw byte arrays yet -- emit
-                // Void so the UI knows the node has a span but no
-                // inline scalar value. The renderer already falls
-                // back to a hex dump for Void-valued arrays.
+                self.cursor.seek(offset.saturating_add(total_bytes));
                 Value::Void
             };
             // One tree node for the whole array so the hex view

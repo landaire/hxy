@@ -2094,6 +2094,15 @@ impl<S: HexSource> Interpreter<S> {
 
 const LOOP_STALL_LIMIT: u32 = 100_000;
 
+/// Threshold past which a primitive array's bytes are left on disk
+/// rather than read into a [`Value::Bytes`]. Below this, the bytes
+/// are inlined so legacy paths that consume the value directly keep
+/// working (small magic checks, length-prefixed strings, ...).
+/// Above, element access goes through the lazy `Expr::Index` decode
+/// path against the emitted ScalarArray node, fetching only the
+/// bytes the caller actually inspects.
+pub const ARRAY_INLINE_THRESHOLD_BYTES: u64 = 1024 * 1024;
+
 impl<S: HexSource> Interpreter<S> {
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope stack empty")
@@ -2700,25 +2709,34 @@ impl<S: HexSource> Interpreter<S> {
             // until a structural assertion fails.
             let available = self.source.len().saturating_sub(offset);
             let total = total.min(available);
-            let bytes = self.cursor_advance(total)?;
             let actual_count = if p.width == 0 { 0 } else { total / p.width as u64 };
             let kind = ScalarKind::from_prim(p);
-            // `char[N]` decodes to a String so subsequent string
-            // operations (`==`, `[i]` for chars, magic comparisons)
-            // see typed text. We map each byte 1:1 to its codepoint
-            // rather than running UTF-8 validation -- magic-byte
-            // comparisons (`type::Magic<"...\xBC\xAF...">`) need
-            // round-trip fidelity for high bytes that UTF-8-lossy
-            // would replace with U+FFFD.
-            let value = if matches!(p.class, PrimClass::Char) && p.width == 1 {
-                Value::Str(bytes.iter().map(|&b| char::from(b)).collect())
+            // Inline the bytes only when the array is small enough
+            // that the eager read pays for itself. Larger arrays
+            // advance the cursor virtually; element access falls
+            // back to `Expr::Index` which decodes from the source on
+            // demand against the emitted ScalarArray node. Char
+            // arrays are always inlined because templates compare
+            // them against magic strings.
+            let inline_bytes =
+                matches!(p.class, PrimClass::Char) || total <= ARRAY_INLINE_THRESHOLD_BYTES;
+            let value = if inline_bytes {
+                let bytes = self.cursor_advance(total)?;
+                if matches!(p.class, PrimClass::Char) && p.width == 1 {
+                    // `char[N]` decodes to a String so subsequent
+                    // string operations (`==`, `[i]` for chars,
+                    // magic comparisons) see typed text. Map each
+                    // byte 1:1 to its codepoint rather than running
+                    // UTF-8 validation -- magic-byte comparisons
+                    // need round-trip fidelity for high bytes that
+                    // UTF-8-lossy would replace with U+FFFD.
+                    Value::Str(bytes.iter().map(|&b| char::from(b)).collect())
+                } else {
+                    Value::Bytes(bytes)
+                }
             } else {
-                // Non-char primitives: keep the raw bytes available
-                // so byte-array indexing (`arr[i]` on `u8 arr[N]`)
-                // still resolves through the Value::Bytes fallback.
-                // Wider primitives go through the ScalarArray decode
-                // path added in Expr::Index.
-                Value::Bytes(bytes)
+                self.cursor_seek(offset.saturating_add(total));
+                Value::Bytes(Vec::new())
             };
             self.push_node(NodeOut {
                 name: name.to_owned(),
