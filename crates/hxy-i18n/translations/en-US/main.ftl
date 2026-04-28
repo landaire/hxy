@@ -275,17 +275,19 @@ toast-template-dismiss = Dismiss
 
 # Reload-on-disk-change dialog
 reload-prompt-title = File changed on disk
-reload-prompt-body-modified = { $name } was modified outside hxy. Reload from disk?
+reload-prompt-body-modified-clean = { $name } was modified outside hxy. Reload from disk?
+reload-prompt-body-modified-dirty = { $name } was modified outside hxy and you have unsaved edits in this buffer. Reload from disk?
 reload-prompt-body-removed = { $name } was removed from disk.
-reload-prompt-warn-unsaved = This buffer has unsaved edits. "Reload" discards them; "Keep edits" replays your patch on top of the new contents (undo history is dropped either way).
+reload-prompt-warn-unsaved = "Reload" discards your unsaved edits; "Keep edits" replays your patch on top of the new contents (undo history is dropped either way).
 reload-prompt-remember = Always do this for this file
+reload-prompt-reload = Reload
+reload-prompt-reload-tooltip = Replace the in-memory bytes with the new disk contents.
 reload-prompt-discard = Reload (discard edits)
 reload-prompt-discard-tooltip = Replace the in-memory bytes with the new disk contents. Drops the patch and undo history.
 reload-prompt-keep = Keep my edits
 reload-prompt-keep-tooltip = Refresh the base bytes from disk while keeping your splices applied on top. Undo history is cleared.
 reload-prompt-ignore = Ignore this change
 reload-prompt-ignore-tooltip = Leave the in-memory bytes as they are; the on-disk drift is acknowledged but not applied.
-reload-prompt-cancel = Decide later
 palette-reload-file = Reload file from disk...
 palette-reload-file-subtitle = Re-read the active tab's bytes from disk; choose whether to keep your edits.
 palette-reload-no-active-file = no active file

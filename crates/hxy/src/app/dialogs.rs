@@ -271,17 +271,24 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
     let mut action: Option<ReloadAction> = None;
     let mut open = true;
+    // Centre the prompt the first frame it appears, then let
+    // the user drag it. `default_pos` only seeds the initial
+    // position; subsequent frames respect the user's drag,
+    // unlike `anchor` which would re-pin every frame.
+    let screen_center = ctx.content_rect().center();
     egui::Window::new(hxy_i18n::t("reload-prompt-title"))
         .id(egui::Id::new("hxy_reload_prompt_dialog"))
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_pos(screen_center)
+        .pivot(egui::Align2::CENTER_CENTER)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.set_max_width(440.0);
-            let body_key = match kind {
-                ExternalChangeKind::Modified => "reload-prompt-body-modified",
-                ExternalChangeKind::Removed => "reload-prompt-body-removed",
+            let body_key = match (kind, has_unsaved) {
+                (ExternalChangeKind::Modified, true) => "reload-prompt-body-modified-dirty",
+                (ExternalChangeKind::Modified, false) => "reload-prompt-body-modified-clean",
+                (ExternalChangeKind::Removed, _) => "reload-prompt-body-removed",
             };
             ui.label(hxy_i18n::t_args(body_key, &[("name", &display_name)]));
             ui.label(egui::RichText::new(&path_display).weak());
@@ -299,17 +306,31 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
             ui.checkbox(&mut remember, hxy_i18n::t("reload-prompt-remember"));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
+                // Reload button label and tooltip change with
+                // edit state: a clean buffer's "reload" is
+                // just a re-read, no edits to discard, so the
+                // (discard) suffix would be misleading.
+                let (reload_label_key, reload_tooltip_key) = if has_unsaved {
+                    ("reload-prompt-discard", "reload-prompt-discard-tooltip")
+                } else {
+                    ("reload-prompt-reload", "reload-prompt-reload-tooltip")
+                };
                 if ui
-                    .button(hxy_i18n::t("reload-prompt-discard"))
-                    .on_hover_text(hxy_i18n::t("reload-prompt-discard-tooltip"))
+                    .button(hxy_i18n::t(reload_label_key))
+                    .on_hover_text(hxy_i18n::t(reload_tooltip_key))
                     .clicked()
                 {
                     action = Some(ReloadAction::Reload(ReloadDecision::DiscardEdits));
                 }
-                if ui
-                    .button(hxy_i18n::t("reload-prompt-keep"))
-                    .on_hover_text(hxy_i18n::t("reload-prompt-keep-tooltip"))
-                    .clicked()
+                // "Keep my edits" only makes sense when there
+                // are edits to keep; on a clean buffer the
+                // semantic collapses into "Ignore" so we hide
+                // it to keep the choice list focused.
+                if has_unsaved
+                    && ui
+                        .button(hxy_i18n::t("reload-prompt-keep"))
+                        .on_hover_text(hxy_i18n::t("reload-prompt-keep-tooltip"))
+                        .clicked()
                 {
                     action = Some(ReloadAction::Reload(ReloadDecision::KeepEdits));
                 }
@@ -319,9 +340,6 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                     .clicked()
                 {
                     action = Some(ReloadAction::Reload(ReloadDecision::Ignore));
-                }
-                if ui.button(hxy_i18n::t("reload-prompt-cancel")).clicked() {
-                    action = Some(ReloadAction::Cancel);
                 }
             });
         });

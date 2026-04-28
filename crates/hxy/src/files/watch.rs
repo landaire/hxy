@@ -424,9 +424,15 @@ fn translate_notify_event(event: &DebouncedEvent) -> Vec<WatchEvent> {
         | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
             paths.iter().map(|p| WatchEvent::Modified(WatchTarget::Filesystem(p.clone()))).collect()
         }
-        EventKind::Modify(ModifyKind::Metadata(_) | ModifyKind::Other) => {
-            paths.iter().map(|p| WatchEvent::Modified(WatchTarget::Filesystem(p.clone()))).collect()
-        }
+        // Metadata-only events (chmod, atime updates) and the
+        // catch-all Other variant are dropped: the user
+        // doesn't think of those as "the file changed", and
+        // macOS fsevent fires Modify::Metadata when our own
+        // process opens the file for read. The polling worker
+        // still catches actual content drift via
+        // (size, mtime) comparison, so a real edit that
+        // bypasses the kernel watcher doesn't go unnoticed.
+        EventKind::Modify(ModifyKind::Metadata(_) | ModifyKind::Other) => Vec::new(),
         _ => Vec::new(),
     }
 }
