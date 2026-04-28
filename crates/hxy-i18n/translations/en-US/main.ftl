@@ -358,3 +358,22 @@ status-watch-cadence-off = Polling disabled in settings
 status-watch-mode = Mode: { $mode }
 status-watch-tooltip-prefix = File watcher
 status-watch-tooltip-anonymous = This buffer has no persistent identity, so change detection doesn't apply.
+
+# Tabs
+tab-entropy = Entropy
+
+# Entropy panel
+entropy-heading = Shannon entropy
+entropy-no-active-file = No active file -- focus a file tab to compute entropy.
+entropy-empty = No entropy computed yet. Click Compute to scan the file.
+entropy-zero-bytes = This buffer is empty.
+entropy-compute = Compute
+entropy-recompute = Recompute
+entropy-computing = Computing...
+entropy-summary = mean { $mean } / max { $max } bits/byte over { $count } windows ({ $window } each)
+
+# Palette entries (entropy)
+palette-compute-entropy = Compute entropy
+palette-compute-entropy-subtitle = Run a Shannon-entropy scan across the active file's bytes.
+palette-show-entropy = Show entropy panel
+palette-show-entropy-subtitle = Open the entropy plot for the active file (no recompute).

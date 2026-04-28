@@ -668,6 +668,31 @@ impl HxyApp {
         }
     }
 
+    /// Show the Entropy panel as a tool tab. Mirrors how the
+    /// Inspector / Plugins tabs route -- adds it to the shared
+    /// tool leaf if no other tool tab exists, otherwise focuses
+    /// the existing one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_entropy(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Entropy) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Entropy);
+        self.dock.set_focused_node_and_surface(node_path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn toggle_entropy(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Entropy) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_entropy();
+        }
+    }
+
     /// Append a message to the Console tab. Caps the buffer at
     /// [`Self::CONSOLE_CAPACITY`] entries; older entries are dropped
     /// first so long-running sessions don't accumulate unbounded RAM.
@@ -1973,6 +1998,14 @@ impl eframe::App for HxyApp {
         // self.files while the dock is rendering.
         #[cfg(not(target_arch = "wasm32"))]
         let inspector_data = snapshot_inspector_bytes(self);
+        // Snapshot which file the Entropy panel should render
+        // before the dock pass, mirroring the Inspector. Drives
+        // the panel's heading + plot data without requiring the
+        // viewer to walk back through `app.dock` mid-render.
+        #[cfg(not(target_arch = "wasm32"))]
+        let entropy_active_file = active_file_id(self);
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut entropy_recompute = false;
 
         {
             // Snapshot fields that the viewer needs but that live on
@@ -2022,9 +2055,20 @@ impl eframe::App for HxyApp {
                 toasts: &mut self.toasts,
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_template_runs: &mut self.pending_template_runs,
+                #[cfg(not(target_arch = "wasm32"))]
+                entropy_active_file,
+                #[cfg(not(target_arch = "wasm32"))]
+                entropy_recompute: &mut entropy_recompute,
             };
             let style = crate::style::hxy_dock_style(ui.style());
             DockArea::new(&mut self.dock).style(style).show_leaf_collapse_buttons(false).show_inside(ui, &mut viewer);
+        }
+
+        // Drain the panel's recompute click. Done after the dock
+        // borrow releases so we can mutate `app.files` freely.
+        #[cfg(not(target_arch = "wasm32"))]
+        if entropy_recompute {
+            compute_entropy_active_file(ui.ctx(), self);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -2090,6 +2134,8 @@ impl eframe::App for HxyApp {
         drain_external_open_requests(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::templates::runner::drain_template_runs(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_entropy_runs(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -2321,6 +2367,76 @@ pub fn open_snapshots_active_file(app: &mut HxyApp) {
         return;
     };
     crate::files::snapshot_ui::open_for(app, id);
+}
+
+/// Kick off (or re-fire) an entropy compute for the active
+/// file's bytes and open the Entropy panel so the result is
+/// visible the moment the worker finishes. No-op when there's
+/// no active file or the buffer is empty.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn compute_entropy_active_file(ctx: &egui::Context, app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Entropy", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    app.show_entropy();
+    let Some(file) = app.files.get_mut(&id) else { return };
+    let len = file.editor.source().len().get();
+    if len == 0 {
+        app.console_log(ConsoleSeverity::Info, "Entropy", "buffer is empty");
+        return;
+    }
+    let window = crate::panels::entropy::pick_window_size(len);
+    let source = file.editor.source().clone();
+    let display = file.display_name.clone();
+    file.entropy = None;
+    file.entropy_running = Some(crate::panels::entropy::spawn_compute(ctx, id, source, window));
+    app.console_log(
+        ConsoleSeverity::Info,
+        format!("Entropy {display}"),
+        format!("computing entropy with {window}-byte windows over {len} byte(s)..."),
+    );
+}
+
+/// Drain any completed entropy computations into the file's
+/// `entropy` slot. Mirrors `drain_template_runs` -- runs once
+/// per frame, non-blocking inbox read.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drain_entropy_runs(ctx: &egui::Context, app: &mut HxyApp) {
+    let mut done: Vec<(FileId, crate::panels::entropy::EntropyOutcome, std::time::Duration)> = Vec::new();
+    for (id, file) in app.files.iter_mut() {
+        let Some(run) = file.entropy_running.as_ref() else { continue };
+        let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+        if outcomes.is_empty() {
+            continue;
+        }
+        let elapsed = run.started.elapsed();
+        file.entropy_running = None;
+        for outcome in outcomes {
+            done.push((*id, outcome, elapsed));
+        }
+    }
+    for (id, outcome, elapsed) in done {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        let ctx_label = format!("Entropy {display}");
+        match outcome {
+            crate::panels::entropy::EntropyOutcome::Ok(state) => {
+                let summary = format!(
+                    "computed {} entropy point(s) in {:.0} ms (mean {:.2} bits/byte)",
+                    state.points.len(),
+                    elapsed.as_secs_f64() * 1000.0,
+                    state.mean(),
+                );
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.entropy = Some(state);
+                }
+                app.console_log(ConsoleSeverity::Info, &ctx_label, summary);
+            }
+            crate::panels::entropy::EntropyOutcome::Err(msg) => {
+                app.console_log(ConsoleSeverity::Error, &ctx_label, msg);
+            }
+        }
+    }
 }
 
 /// Set the per-file auto-reload pref for the active tab and
@@ -4218,6 +4334,19 @@ struct HxyTabViewer<'a> {
     /// after the dock pass.
     #[cfg(not(target_arch = "wasm32"))]
     pending_template_runs: &'a mut Vec<crate::toasts::PendingTemplateRun>,
+    /// `FileId` whose entropy result the Entropy tab should
+    /// render. Captured before the dock pass so the panel
+    /// renders even when keyboard focus has drifted to the
+    /// panel itself (the active-file resolver returns `None`
+    /// when the focused tab is the Entropy tab itself).
+    #[cfg(not(target_arch = "wasm32"))]
+    entropy_active_file: Option<FileId>,
+    /// Set to `true` when the user clicks the panel's
+    /// "Compute" / "Recompute" button. Drained by the host
+    /// after the dock pass and routed through
+    /// [`compute_entropy_active_file`].
+    #[cfg(not(target_arch = "wasm32"))]
+    entropy_recompute: &'a mut bool,
 }
 
 /// Look up the caret offset and the bytes immediately after it for
@@ -4250,6 +4379,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Console => hxy_i18n::t("tab-console").into(),
             Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
             Tab::Plugins => "Plugins".into(),
+            Tab::Entropy => hxy_i18n::t("tab-entropy").into(),
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
                     // Both indicators sit to the left of the name:
@@ -4317,6 +4447,13 @@ impl TabViewer for HxyTabViewer<'_> {
                     None => (None, &[] as &[u8]),
                 };
                 crate::panels::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
+            }
+            Tab::Entropy => {
+                let (label, state, running) = match self.entropy_active_file.and_then(|id| self.files.get(&id)) {
+                    Some(f) => (Some(f.display_name.as_str()), f.entropy.as_ref(), f.entropy_running.is_some()),
+                    None => (None, None, false),
+                };
+                crate::panels::entropy::show(ui, label, state, running, self.entropy_recompute);
             }
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
@@ -4419,6 +4556,8 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Workspace(_) => true,
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => true,
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Entropy => true,
             _ => false,
         }
     }
@@ -4432,6 +4571,8 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Workspace(_) => [false, false],
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => [false, false],
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Entropy => [false, false],
             _ => [true, true],
         }
     }

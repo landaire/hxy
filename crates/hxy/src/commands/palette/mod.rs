@@ -367,6 +367,14 @@ pub enum PaletteCommand {
     /// every tick. Useful for noisy sources like the xbox
     /// memory plugin where contents churn.
     WatchNever,
+    /// Compute Shannon entropy across the active file's bytes
+    /// and open the entropy panel. Routes through a worker so
+    /// large files don't block the UI.
+    ComputeEntropy,
+    /// Open (or focus) the entropy panel without recomputing.
+    /// Useful when the user has already run a compute and just
+    /// wants to look at the plot again.
+    ShowEntropy,
 }
 
 #[derive(Clone)]

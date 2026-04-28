@@ -255,6 +255,18 @@ pub struct OpenFile {
     /// without a persistent path).
     #[cfg(not(target_arch = "wasm32"))]
     pub snapshots: Option<crate::files::snapshot::SnapshotStore>,
+    /// Most recent Shannon-entropy result for this tab's bytes.
+    /// `None` until the user invokes "Compute entropy" from the
+    /// command palette; cleared when an in-flight compute is
+    /// kicked off and replaced when it completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub entropy: Option<crate::panels::entropy::EntropyState>,
+    /// Worker handle for an in-flight entropy compute. Mutually
+    /// exclusive with the populated `entropy` slot in practice
+    /// -- starting a recompute clears the old result so the
+    /// panel renders the "computing..." placeholder cleanly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub entropy_running: Option<crate::panels::entropy::EntropyComputation>,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -421,6 +433,10 @@ impl OpenFile {
             search: crate::search::SearchState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             snapshots,
+            #[cfg(not(target_arch = "wasm32"))]
+            entropy: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            entropy_running: None,
         }
     }
 

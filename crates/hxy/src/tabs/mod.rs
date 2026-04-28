@@ -58,6 +58,13 @@ pub enum Tab {
     /// `HxyApp::compares` for the [`crate::compare::CompareSession`].
     #[cfg(not(target_arch = "wasm32"))]
     Compare(CompareId),
+    /// Shannon-entropy plot for the active file. The tab itself
+    /// is stateless -- it always renders the entropy result
+    /// stashed on whichever file is currently focused, falling
+    /// back to a "compute entropy" placeholder when nothing has
+    /// been computed yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    Entropy,
 }
 
 impl Tab {

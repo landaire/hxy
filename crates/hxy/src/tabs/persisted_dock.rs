@@ -54,6 +54,7 @@ pub enum PersistedTab {
     Inspector,
     Plugins,
     SearchResults,
+    Entropy,
     /// File tab, keyed by its [`TabSource`] -- the same identity used
     /// in [`crate::state::OpenTabState`], so we can look up whichever
     /// [`FileId`] was allocated for it during the open-tabs restore.
@@ -160,6 +161,7 @@ fn live_to_persisted_tab(
         Tab::Inspector => PersistedTab::Inspector,
         Tab::Plugins => PersistedTab::Plugins,
         Tab::SearchResults => PersistedTab::SearchResults,
+        Tab::Entropy => PersistedTab::Entropy,
         Tab::File(id) => PersistedTab::File(files.get(id)?.source_kind.clone()?),
         Tab::Workspace(id) => {
             let ws = workspaces.get(id)?;
@@ -226,6 +228,7 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
         PersistedTab::Inspector => Tab::Inspector,
         PersistedTab::Plugins => Tab::Plugins,
         PersistedTab::SearchResults => Tab::SearchResults,
+        PersistedTab::Entropy => Tab::Entropy,
         PersistedTab::File(source) => Tab::File(*maps.files_by_source.get(source)?),
         PersistedTab::Workspace(parent) => Tab::Workspace(*maps.workspaces_by_parent.get(parent)?),
         PersistedTab::PluginMount { plugin_name, token, .. } => {

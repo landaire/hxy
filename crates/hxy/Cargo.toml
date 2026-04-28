@@ -74,6 +74,7 @@ base64 = "0.22.1"
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
 egui-toast = "0.20.0"
 fskit = { version = "0.2", features = ["vfs"] }
+egui_plot = "0.35"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pattern-corpus download flow: blocking reqwest + rustls keeps

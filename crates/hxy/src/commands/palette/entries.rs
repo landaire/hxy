@@ -515,6 +515,22 @@ pub fn build_palette_entries(
                         mark_for(crate::settings::AutoReloadMode::Never),
                     )),
                 );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-compute-entropy"),
+                        Action::InvokeCommand(PaletteCommand::ComputeEntropy),
+                    )
+                    .with_icon(icon::CHART_LINE)
+                    .with_subtitle(hxy_i18n::t("palette-compute-entropy-subtitle")),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-show-entropy"),
+                        Action::InvokeCommand(PaletteCommand::ShowEntropy),
+                    )
+                    .with_icon(icon::CHART_LINE)
+                    .with_subtitle(hxy_i18n::t("palette-show-entropy-subtitle")),
+                );
             }
             if history_ctx.can_paste {
                 out.push(
