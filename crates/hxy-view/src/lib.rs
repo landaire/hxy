@@ -2434,20 +2434,74 @@ fn draw_minimap<S: HexSource + ?Sized>(
         );
     }
 
-    // Click/drag maps pointer y to a position in the *whole file* so a
-    // top->bottom drag on the minimap scrolls from file start to end in
-    // one motion, regardless of how much content the fixed-zoom window
-    // happens to be showing right now.
+    // Click vs. drag dispatch:
+    //
+    // * Click outside the indicator -> jump (cursor.y maps to a file
+    //   position fraction).
+    // * Click *inside* the indicator -> no-op. The user grabbed the
+    //   handle but didn't slide; teleporting on press would yank the
+    //   indicator out from under the cursor before any actual motion.
+    // * Drag started inside the indicator -> relative scroll. The
+    //   indicator follows the cursor 1:1 (each pixel of cursor motion
+    //   shifts scroll by `max_scroll / (minimap.height - indicator.h)`).
+    // * Drag started outside the indicator -> jump on the press, then
+    //   absolute mapping for the remainder of the drag (matches the
+    //   classic "click and drag" scrubbing behavior).
     let pointer = response
         .interact_pointer_pos()
         .or_else(|| response.hover_pos().filter(|_| response.is_pointer_button_down_on()));
-    if let Some(pos) = pointer.filter(|_| response.dragged() || response.clicked() || response.drag_started()) {
+    let drag_state_id = scroll_id.with("minimap_drag_start");
+    let absolute_target = |pos: Pos2| -> f32 {
         let y = (pos.y - minimap_rect.top()).clamp(0.0, minimap_rect.height());
         let frac = y / minimap_rect.height();
-        let target_scroll = (frac * max_scroll).clamp(0.0, max_scroll);
+        (frac * max_scroll).clamp(0.0, max_scroll)
+    };
+    if response.drag_started()
+        && let Some(pos) = pointer
+    {
+        let started_in_grab = indicator.contains(pos);
+        ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, MinimapDragStart {
+            pointer_y: pos.y,
+            scroll_offset: current_offset,
+            started_in_grab,
+        }));
+        if !started_in_grab {
+            ui.ctx().data_mut(|d| d.insert_temp(scroll_id, absolute_target(pos)));
+            ui.ctx().request_repaint();
+        }
+    } else if response.dragged()
+        && let Some(pos) = pointer
+    {
+        let start = ui.ctx().data(|d| d.get_temp::<MinimapDragStart>(drag_state_id));
+        let target_scroll = match start {
+            Some(start) if start.started_in_grab => {
+                let max_travel = (minimap_rect.height() - indicator.height()).max(1.0);
+                let scroll_per_pixel = max_scroll / max_travel;
+                let delta_scroll = (pos.y - start.pointer_y) * scroll_per_pixel;
+                (start.scroll_offset + delta_scroll).clamp(0.0, max_scroll)
+            }
+            _ => absolute_target(pos),
+        };
         ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target_scroll));
         ui.ctx().request_repaint();
+    } else if response.clicked()
+        && let Some(pos) = pointer
+        && !indicator.contains(pos)
+    {
+        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, absolute_target(pos)));
+        ui.ctx().request_repaint();
     }
+}
+
+/// Drag origin for a minimap interaction. Stashed on `drag_started`
+/// so subsequent `dragged` events can pick the right scroll model
+/// (relative when the press landed on the indicator, absolute when
+/// it landed on empty minimap area).
+#[derive(Clone, Copy)]
+struct MinimapDragStart {
+    pointer_y: f32,
+    scroll_offset: f32,
+    started_in_grab: bool,
 }
 
 /// Paint the template-panel's hover span on the minimap. Splits into
@@ -2687,7 +2741,15 @@ fn paint_column_header(
         let ascii_cell = layout.ascii_cell_rect(origin, col, header_height);
         painter.text(ascii_cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
     }
-    let divider_y = header_rect.bottom();
+    // Anchor the divider fully *above* the header / scroll-viewport
+    // boundary instead of straddling it. The scroll viewport's top
+    // edge is at `header_rect.bottom()`, so a stroke-1 line centered
+    // on that y would bleed 0.5px into the viewport and visibly clip
+    // the top of any row that scrolled flush to the top (most often
+    // seen after a programmatic `set_scroll_to_byte` jump). Drawing
+    // at `bottom() - 0.5` keeps the line's full 1px coverage inside
+    // header_rect; the row beneath stays untouched.
+    let divider_y = header_rect.bottom() - 0.5;
     painter.line_segment(
         [Pos2::new(header_rect.left(), divider_y), Pos2::new(header_rect.right(), divider_y)],
         Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)),
