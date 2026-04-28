@@ -1453,6 +1453,85 @@ struct PaintCtx<'a> {
     /// (the insertion point past the last byte, used by empty
     /// anonymous buffers and by `ctrl+end`-style navigation).
     source_len: ByteLen,
+    /// Per-frame glyph cache: pre-laid-out galleys for every
+    /// hex byte (`"00".."FF"`) and every printable ASCII codepoint
+    /// (`0x20..=0x7E`) plus a `.` fallback for unprintables. Built
+    /// once per render and reused across cells; without it every
+    /// painted cell would call `painter.text` -> `LayoutJob::simple`
+    /// -> a fresh String + Vec allocation, which dominated the
+    /// per-frame allocation profile (48 MB across 200 frames).
+    glyphs: &'a GlyphCache,
+}
+
+/// Pre-laid-out galleys for the hex view's per-cell glyph rendering.
+#[derive(Clone)]
+struct GlyphCache {
+    /// Cache key. Rebuilt when the font or pixels-per-point changes.
+    key: GlyphCacheKey,
+    /// `"00".."FF"`, indexed by byte value.
+    hex: std::sync::Arc<[std::sync::Arc<egui::Galley>; 256]>,
+    /// Printable ASCII codepoints `0x20..=0x7E`, indexed by
+    /// `byte - 0x20`. Non-printable bytes render through `dot`.
+    ascii_printable: std::sync::Arc<[std::sync::Arc<egui::Galley>; 0x7F - 0x20]>,
+    /// Fallback `'.'` galley for unprintable byte values.
+    dot: std::sync::Arc<egui::Galley>,
+}
+
+#[derive(Clone, PartialEq)]
+struct GlyphCacheKey {
+    font_id: FontId,
+    /// `pixels_per_point` rounded to f32 bits so equality is total
+    /// (egui never produces NaN here, but `f32` doesn't implement
+    /// `Eq` directly and a key needs to compare).
+    ppt_bits: u32,
+}
+
+impl GlyphCache {
+    fn build(painter: &egui::Painter, font_id: &FontId, ppt_bits: u32) -> Self {
+        // [`Color32::PLACEHOLDER`] guarantees `Shape::Galley`'s
+        // `override_text_color` always wins, so the same galley can
+        // be repainted in any per-cell color without rebuilding.
+        let placeholder = Color32::PLACEHOLDER;
+        let layout = |s: String| painter.layout_no_wrap(s, font_id.clone(), placeholder);
+        let hex: [std::sync::Arc<egui::Galley>; 256] = std::array::from_fn(|byte| layout(format!("{byte:02X}")));
+        let ascii_printable: [std::sync::Arc<egui::Galley>; 0x7F - 0x20] = std::array::from_fn(|i| {
+            let ch = char::from(0x20 + i as u8);
+            layout(ch.to_string())
+        });
+        let dot = layout(".".to_owned());
+        Self {
+            key: GlyphCacheKey { font_id: font_id.clone(), ppt_bits },
+            hex: std::sync::Arc::new(hex),
+            ascii_printable: std::sync::Arc::new(ascii_printable),
+            dot,
+        }
+    }
+
+    /// Look the cache up in egui's per-context data store, rebuilding
+    /// it when the font or pixels-per-point have changed since the
+    /// last frame. The returned cache outlives the painter's borrow
+    /// because every galley is held behind an `Arc`.
+    fn load_or_build(painter: &egui::Painter, font_id: &FontId) -> Self {
+        let id = egui::Id::new("hxy-glyph-cache");
+        let ppt_bits = painter.ctx().pixels_per_point().to_bits();
+        let key = GlyphCacheKey { font_id: font_id.clone(), ppt_bits };
+        if let Some(existing) = painter.ctx().data(|d| d.get_temp::<GlyphCache>(id))
+            && existing.key == key
+        {
+            return existing;
+        }
+        let fresh = Self::build(painter, font_id, ppt_bits);
+        painter.ctx().data_mut(|d| d.insert_temp(id, fresh.clone()));
+        fresh
+    }
+
+    fn ascii_for(&self, byte: u8) -> &std::sync::Arc<egui::Galley> {
+        if (0x20..0x7F).contains(&byte) {
+            &self.ascii_printable[(byte - 0x20) as usize]
+        } else {
+            &self.dot
+        }
+    }
 }
 
 /// Geometry + source metadata used for pointer hit-testing against the
@@ -1578,6 +1657,8 @@ fn paint_and_interact<S: HexSource + ?Sized>(
     let cursor_offset = selection.map(|s| s.cursor);
     let hover_offset = hovered_byte(ui, &response, &hit);
 
+    let painter = ui.painter_at(block_rect);
+    let glyphs = GlyphCache::load_or_build(&painter, font_id);
     let ctx = PaintCtx {
         layout,
         font_id,
@@ -1594,8 +1675,8 @@ fn paint_and_interact<S: HexSource + ?Sized>(
         hover_span,
         field_boundaries,
         source_len,
+        glyphs: &glyphs,
     };
-    let painter = ui.painter_at(block_rect);
     paint_rows(&painter, &ctx, block_rect, first_visible, &rows);
 
     let mut interacted_pane = None;
@@ -1798,9 +1879,12 @@ fn paint_row_backs_and_glyphs(
             palette_fg
         };
 
-        painter.text(hex_rect.center(), Align2::CENTER_CENTER, format!("{byte:02X}"), ctx.font_id.clone(), fg);
-        let ch = if (0x20..0x7f).contains(byte) { *byte as char } else { '.' };
-        painter.text(ascii_rect.center(), Align2::CENTER_CENTER, ch.to_string(), ctx.font_id.clone(), fg);
+        let hex_galley = ctx.glyphs.hex[*byte as usize].clone();
+        let hex_pos = Align2::CENTER_CENTER.anchor_size(hex_rect.center(), hex_galley.size()).min;
+        painter.galley_with_override_text_color(hex_pos, hex_galley, fg);
+        let ascii_galley = ctx.glyphs.ascii_for(*byte).clone();
+        let ascii_pos = Align2::CENTER_CENTER.anchor_size(ascii_rect.center(), ascii_galley.size()).min;
+        painter.galley_with_override_text_color(ascii_pos, ascii_galley, fg);
     }
 }
 

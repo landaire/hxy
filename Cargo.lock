@@ -3132,6 +3132,7 @@ dependencies = [
 name = "hxy-view"
 version = "0.2.0"
 dependencies = [
+ "dhat",
  "egui",
  "egui_kittest",
  "hxy-core",
