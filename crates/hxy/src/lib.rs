@@ -7,6 +7,7 @@ pub mod files;
 pub mod search;
 pub mod settings;
 pub mod state;
+pub mod style;
 pub mod tabs;
 pub mod window;
 

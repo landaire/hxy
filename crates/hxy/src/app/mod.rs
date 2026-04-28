@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use egui_dock::DockArea;
 use egui_dock::DockState;
-use egui_dock::Style;
 use egui_dock::TabViewer;
 use egui_dock::tab_viewer::OnCloseResponse;
 use hxy_plugin_host::TemplateRuntime as _;
@@ -344,6 +343,7 @@ impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx.set_global_style(crate::style::hxy_style());
         let (initial_zoom, initial_window, show_patterns_prompt) = {
             let s = state.read();
             // First-launch download dialog when the corpus isn't on
@@ -1610,7 +1610,7 @@ impl eframe::App for HxyApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_template_runs: &mut self.pending_template_runs,
             };
-            let style = Style::from_egui(ui.style());
+            let style = crate::style::hxy_dock_style(ui.style());
             DockArea::new(&mut self.dock).style(style).show_leaf_collapse_buttons(false).show_inside(ui, &mut viewer);
         }
 
@@ -3926,7 +3926,7 @@ fn render_workspace_tab(
         toasts,
         pending_template_runs,
     };
-    let style = egui_dock::Style::from_egui(ui.style());
+    let style = crate::style::hxy_dock_style(ui.style());
     egui_dock::DockArea::new(inner_dock)
         .id(egui::Id::new(("hxy-workspace-dock", workspace_id.get())))
         .style(style)
