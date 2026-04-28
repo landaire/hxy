@@ -967,7 +967,18 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             };
             let address_chars = address_chars_override.unwrap_or_else(|| address_hex_width(source.len()));
             let font_id = TextStyle::Monospace.resolve(ui.style());
-            let row_height = ui.text_style_height(&TextStyle::Monospace);
+            // Round the row height up to a whole number of physical
+            // pixels. Without this, fractional logical heights (e.g.
+            // 13.9 logical px at 2 pixels-per-point => 27.8 phys)
+            // pixel-snap differently per row -- some rows render 28
+            // px tall, others 27 -- and the eye reads that as
+            // irregular spacing where the address column visibly
+            // bunches certain rows together. Picking `ceil` rather
+            // than `round` keeps glyph descenders from clipping at
+            // very small heights.
+            let row_height_raw = ui.text_style_height(&TextStyle::Monospace);
+            let ppp = ui.pixels_per_point().max(1.0);
+            let row_height = (row_height_raw * ppp).ceil() / ppp;
             let char_w = measure_char_width(ui, &font_id);
             let layout = RowLayout::compute(char_w, address_chars, columns);
             let source_len = source.len();
