@@ -11,7 +11,9 @@ description = "Core types and file abstractions for the hxy hex editor"
 [dependencies]
 fskit = { version = "0.2.0", features = ["vfs", "jiff"] }
 jiff = { version = "0.2.24", features = ["serde"] }
+lru = "0.18.0"
 rootcause = "0.12.1"
+rustc-hash = "2"
 serde = { version = "1.0.228", features = ["derive"] }
 suture = { version = "0.2.0", path = "../../../suture" }
 thiserror = "2.0.18"
