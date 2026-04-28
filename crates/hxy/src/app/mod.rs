@@ -1479,6 +1479,7 @@ impl HxyApp {
         let Some(file) = self.files.get(&id) else { return false };
         let Some(handler) = file.detected_handler.clone() else { return false };
         let source = file.editor.source().clone();
+        let source_id = file.source_id;
         let mount = match handler.mount(source) {
             Ok(m) => Arc::new(m),
             Err(e) => {
@@ -1486,6 +1487,15 @@ impl HxyApp {
                 return false;
             }
         };
+        // Handlers like ZipHandler eagerly slurp the whole source via
+        // `load_all` to parse the central directory, then keep their
+        // own `Arc<[u8]>` for VFS entry reads. The chunks our cache
+        // populated during that read are no longer paying for VFS
+        // access -- only for the parent file's own hex view, which
+        // re-fetches on scroll anyway. Drop them so a 4 MiB archive
+        // doesn't stay double-resident (one copy in the handler, one
+        // in our cache).
+        self.byte_cache.drop_source(source_id);
         let workspace_id = self.spawn_workspace(id, mount);
         // Same redirect as the plain-file branch in `open` --
         // a workspace tab should never land in a leaf that's
