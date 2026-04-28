@@ -999,6 +999,15 @@ impl HxyApp {
 
         let pushed_workspace = if as_workspace { self.try_push_as_workspace(id) } else { false };
         if !pushed_workspace {
+            // Don't drop a fresh file tab into a leaf that's
+            // entirely tool panels (Inspector, Console,
+            // Entropy, Plugins, ...). Redirect focus to the
+            // last known content leaf so push_to_focused_leaf
+            // lands the file in the editing area instead.
+            #[cfg(not(target_arch = "wasm32"))]
+            if crate::tabs::dock_ops::focused_leaf_is_all_tool(self) {
+                crate::tabs::dock_ops::focus_content_leaf(self);
+            }
             self.dock.push_to_focused_leaf(Tab::File(id));
             if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
                 crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
@@ -1433,6 +1442,13 @@ impl HxyApp {
             }
         };
         let workspace_id = self.spawn_workspace(id, mount);
+        // Same redirect as the plain-file branch in `open` --
+        // a workspace tab should never land in a leaf that's
+        // entirely tool panels.
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::tabs::dock_ops::focused_leaf_is_all_tool(self) {
+            crate::tabs::dock_ops::focus_content_leaf(self);
+        }
         self.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
         if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
             crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);

@@ -122,6 +122,15 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                         app.show_entropy_for(id);
                     }
                 }
+                PaletteCommand::ToggleEntropy => {
+                    if let Some(id) = crate::app::active_file_id(app) {
+                        if let Some(path) = app.dock.find_tab(&crate::tabs::Tab::Entropy(id)) {
+                            let _ = app.dock.remove_tab(path);
+                        } else {
+                            app.show_entropy_for(id);
+                        }
+                    }
+                }
             }
         }
         Action::FocusFile(id) => {

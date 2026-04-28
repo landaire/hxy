@@ -204,10 +204,19 @@ pub fn push_workspace_entry(workspace: &mut crate::files::Workspace, file_id: Fi
     workspace.dock.push_to_focused_leaf(entry);
 }
 
-/// Tabs that belong in the right-hand "tool" panel: the plugin manager
-/// and any live plugin VFS browser.
+/// Tabs that belong in the right-hand "tool" panel: the plugin
+/// manager, live plugin VFS browsers, and the secondary
+/// inspector / console / entropy / search panels. The shared
+/// trait is "this tab augments the user's main editing area
+/// rather than being a primary editing surface" -- a leaf
+/// holding only these should never receive a fresh file open.
 pub fn is_tool_tab(t: &Tab) -> bool {
-    matches!(t, Tab::Plugins | Tab::PluginMount(_))
+    match t {
+        Tab::Plugins | Tab::Inspector | Tab::Console => true,
+        #[cfg(not(target_arch = "wasm32"))]
+        Tab::PluginMount(_) | Tab::SearchResults | Tab::Entropy(_) => true,
+        _ => false,
+    }
 }
 
 /// Tabs that hold the user's main editing surface -- File buffers and
@@ -269,6 +278,19 @@ pub fn track_content_leaf(app: &mut HxyApp) {
     if leaf.tabs.iter().any(is_content_tab) {
         app.last_content_leaf = Some(node_path);
     }
+}
+
+/// True when the dock's currently-focused leaf holds only
+/// tool-class tabs (Inspector, Console, Plugins, Entropy,
+/// SearchResults, plugin mounts) -- nothing the user would
+/// expect a freshly opened file to land in. The host
+/// consults this before pushing a new `Tab::File` so opens
+/// invoked while a tool panel is focused get rerouted to
+/// the editing area.
+pub fn focused_leaf_is_all_tool(app: &HxyApp) -> bool {
+    let Some(node_path) = app.dock.focused_leaf() else { return false };
+    let Ok(leaf) = app.dock.leaf(node_path) else { return false };
+    !leaf.tabs.is_empty() && leaf.tabs.iter().all(is_tool_tab)
 }
 
 /// Move dock focus onto the saved `last_content_leaf`, falling back

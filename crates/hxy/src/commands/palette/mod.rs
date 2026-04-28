@@ -375,6 +375,11 @@ pub enum PaletteCommand {
     /// Useful when the user has already run a compute and just
     /// wants to look at the plot again.
     ShowEntropy,
+    /// Toggle the entropy panel for the active file: open it
+    /// when missing, close it when present. Keyed off the
+    /// active file so two side-by-side entropy panels (one
+    /// per file) toggle independently.
+    ToggleEntropy,
 }
 
 #[derive(Clone)]

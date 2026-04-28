@@ -377,3 +377,10 @@ palette-compute-entropy = Compute entropy
 palette-compute-entropy-subtitle = Run a Shannon-entropy scan across the active file's bytes.
 palette-show-entropy = Show entropy panel
 palette-show-entropy-subtitle = Open the entropy plot for the active file (no recompute).
+
+# Tool-pane toggles (unified palette label + per-tool subtitles)
+palette-toggle-tool-pane = Toggle tool pane
+palette-tool-name-console = Console
+palette-tool-name-inspector = Data inspector
+palette-tool-name-plugins = Plugins
+palette-tool-name-entropy = Entropy (active file)

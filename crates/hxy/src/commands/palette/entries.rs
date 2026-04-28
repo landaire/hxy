@@ -253,37 +253,68 @@ pub fn build_palette_entries(
                 browse_vfs = browse_vfs.with_subtitle(hxy_i18n::t("palette-browse-vfs-unavailable"));
             }
             out.push(browse_vfs);
-            let panel_subtitle = |visible: bool| -> String {
-                hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" })
+            // Tool-pane toggles share a unified label so fuzzy
+            // search for "tool" surfaces every secondary panel
+            // in one cluster. The subtitle carries the specific
+            // panel name + visibility action ("Hide" / "Show")
+            // so typing "inspector" or "console" still narrows
+            // to the right entry (egui_palette's matcher
+            // searches title + subtitle together).
+            let tool_pane_label = hxy_i18n::t("palette-toggle-tool-pane");
+            let tool_subtitle = |name_key: &str, visible: bool| -> String {
+                let action = hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" });
+                format!("{} - {action}", hxy_i18n::t(name_key))
             };
             let console_visible = app.dock.find_tab(&Tab::Console).is_some();
             let inspector_visible = app.dock.find_tab(&Tab::Inspector).is_some();
             let plugins_visible = app.dock.find_tab(&Tab::Plugins).is_some();
+            let entropy_visible = history_ctx.has_active_file
+                && app
+                    .dock
+                    .iter_all_tabs()
+                    .any(|(_, t)| matches!(t, Tab::Entropy(_)));
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-console"),
+                    tool_pane_label.clone(),
                     Action::InvokeCommand(PaletteCommand::ToggleConsole),
                 )
                 .with_icon(icon::TERMINAL)
-                .with_subtitle(panel_subtitle(console_visible)),
+                .with_subtitle(tool_subtitle("palette-tool-name-console", console_visible)),
             );
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-inspector"),
+                    tool_pane_label.clone(),
                     Action::InvokeCommand(PaletteCommand::ToggleInspector),
                 )
                 .with_icon(icon::EYE)
-                .with_subtitle(panel_subtitle(inspector_visible)),
+                .with_subtitle(tool_subtitle("palette-tool-name-inspector", inspector_visible)),
             );
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t("menu-view-plugins"),
+                    tool_pane_label.clone(),
                     Action::InvokeCommand(PaletteCommand::TogglePlugins),
                 )
                 .with_icon(icon::PUZZLE_PIECE)
-                .with_subtitle(panel_subtitle(plugins_visible)),
+                .with_subtitle(tool_subtitle("palette-tool-name-plugins", plugins_visible)),
             );
+            if history_ctx.has_active_file {
+                out.push(
+                    egui_palette::Entry::new(
+                        tool_pane_label.clone(),
+                        Action::InvokeCommand(PaletteCommand::ToggleEntropy),
+                    )
+                    .with_icon(icon::CHART_LINE)
+                    .with_subtitle(tool_subtitle("palette-tool-name-entropy", entropy_visible)),
+                );
+            }
 
+            // The legacy bare-show / bare-hide subtitle helper
+            // is still used by the workspace + whole-tool-panel
+            // toggles below; those don't need a per-tool name
+            // because they target a single distinct surface.
+            let panel_subtitle = |visible: bool| -> String {
+                hxy_i18n::t(if visible { "palette-subtitle-hide" } else { "palette-subtitle-show" })
+            };
             // Skip the "Toggle VFS panel" entry entirely when no
             // workspace is open -- it'd toggle nothing in that case
             // and just clutters the list.
@@ -523,14 +554,11 @@ pub fn build_palette_entries(
                     .with_icon(icon::CHART_LINE)
                     .with_subtitle(hxy_i18n::t("palette-compute-entropy-subtitle")),
                 );
-                out.push(
-                    egui_palette::Entry::new(
-                        hxy_i18n::t("palette-show-entropy"),
-                        Action::InvokeCommand(PaletteCommand::ShowEntropy),
-                    )
-                    .with_icon(icon::CHART_LINE)
-                    .with_subtitle(hxy_i18n::t("palette-show-entropy-subtitle")),
-                );
+                // The "show entropy panel" use case is now
+                // covered by the unified Toggle tool pane
+                // entry (subtitle "Entropy - Show / Hide"),
+                // so a dedicated show-only row would just be
+                // a fuzzy-search dupe.
             }
             if history_ctx.can_paste {
                 out.push(
