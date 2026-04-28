@@ -423,7 +423,25 @@ impl GuestMount for ConsoleMount {
         if let Some(cached) = self.metadata_cache.borrow().get(&path).cloned() {
             return Ok(cached);
         }
-        // Cache miss -- the host asked about a path it never listed.
+        // Cache miss on a synthetic path: lazy-load the matching
+        // category so length is known. Without this, session restore
+        // (which goes straight to `read_file` without first listing
+        // the parent directory) would see length=0 and open an empty
+        // tab instead of the real bytes.
+        if let Some(kind) = classify_synthetic(&path) {
+            match kind {
+                SyntheticKind::Module(_) => {
+                    self.load_modules()?;
+                }
+                SyntheticKind::Memory(_) => {
+                    self.load_memory_regions()?;
+                }
+            }
+            if let Some(cached) = self.metadata_cache.borrow().get(&path).cloned() {
+                return Ok(cached);
+            }
+        }
+        // Cache miss on a non-synthetic path the host never listed.
         // Return a placeholder rather than spending a round trip; the
         // user can still open the file and any listing of the parent
         // will fix the cache.
