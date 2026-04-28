@@ -66,3 +66,14 @@ pub const FOCUS_PANE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAN
 
 pub const FIND_LOCAL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
 pub const FIND_GLOBAL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::F);
+
+// -------- Template field navigation --------
+
+/// Cmd+] jumps the caret to the start of the next template field.
+/// Useful for skipping past a giant `byte data[N]` array to whatever
+/// header / trailer comes after it.
+pub const JUMP_NEXT_FIELD: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND, Key::CloseBracket);
+/// Cmd+[ is the reverse of [`JUMP_NEXT_FIELD`].
+pub const JUMP_PREV_FIELD: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND, Key::OpenBracket);

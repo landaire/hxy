@@ -52,6 +52,20 @@ pub struct HistoryPaletteContext {
     /// the "Toggle VFS panel" entry, which is meaningless without a
     /// workspace to toggle in.
     pub has_workspace: bool,
+    /// Snapshot of the active file's running template. `None` when no
+    /// template has been run for that tab. Carries enough info to
+    /// gate / preview template-relative entries (next-field jump,
+    /// etc.) without re-borrowing `app.files`.
+    pub template: Option<TemplateCtx>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TemplateCtx {
+    /// Number of leaf fields the template emitted. Zero when the
+    /// template ran but produced no fields (e.g. parse-fail diag-only
+    /// state). The next/previous-field entries enable themselves only
+    /// when this is non-zero.
+    pub field_count: usize,
 }
 
 /// Snapshot of the active tab used for ranking `Run Template`
@@ -90,6 +104,7 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         has_active_file: true,
         can_browse_vfs: file.detected_handler.is_some(),
         has_workspace,
+        template: file.template.as_ref().map(|t| TemplateCtx { field_count: t.leaf_boundaries.len() }),
     }
 }
 
@@ -290,6 +305,27 @@ pub fn build_palette_entries(
                     )
                     .with_icon(icon::COLUMNS),
                 );
+                let has_fields = history_ctx.template.is_some_and(|t| t.field_count > 0);
+                let mut next_field = egui_palette::Entry::new(
+                    hxy_i18n::t("palette-jump-next-field"),
+                    Action::InvokeCommand(PaletteCommand::JumpNextField),
+                )
+                .with_icon(icon::ARROW_RIGHT)
+                .with_shortcut(fmt(&crate::commands::shortcuts::JUMP_NEXT_FIELD))
+                .with_disabled(!has_fields);
+                let mut prev_field = egui_palette::Entry::new(
+                    hxy_i18n::t("palette-jump-prev-field"),
+                    Action::InvokeCommand(PaletteCommand::JumpPrevField),
+                )
+                .with_icon(icon::ARROW_LEFT)
+                .with_shortcut(fmt(&crate::commands::shortcuts::JUMP_PREV_FIELD))
+                .with_disabled(!has_fields);
+                if !has_fields {
+                    next_field = next_field.with_subtitle(hxy_i18n::t("palette-jump-field-no-template"));
+                    prev_field = prev_field.with_subtitle(hxy_i18n::t("palette-jump-field-no-template"));
+                }
+                out.push(next_field);
+                out.push(prev_field);
             }
             out.push(
                 egui_palette::Entry::new(

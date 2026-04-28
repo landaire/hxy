@@ -328,6 +328,14 @@ pub enum PaletteCommand {
     /// picker dialog. Kept for users who prefer the side-by-side
     /// comboboxes.
     CompareFilesDialog,
+    /// Jump the caret to the start of the next template field after
+    /// the current cursor. No-op when the active file has no template
+    /// run.
+    JumpNextField,
+    /// Jump the caret to the start of the previous template field
+    /// before the current cursor. No-op when the active file has no
+    /// template run.
+    JumpPrevField,
 }
 
 #[derive(Clone)]

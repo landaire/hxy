@@ -86,6 +86,8 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
                 PaletteCommand::CompareFiles => crate::compare::picker::start_compare_palette_flow(app),
                 PaletteCommand::CompareFilesDialog => crate::compare::picker::start_compare_picker(app),
+                PaletteCommand::JumpNextField => crate::app::jump_to_template_field(app, true),
+                PaletteCommand::JumpPrevField => crate::app::jump_to_template_field(app, false),
             }
         }
         Action::FocusFile(id) => {

@@ -18,6 +18,24 @@ pub fn dispatch_hex_edit_keys(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Cmd+] / Cmd+[ jump the caret to the next / previous template
+/// field. No-op when the active file has no template loaded so the
+/// shortcut is reserved but inert -- matches the disabled palette
+/// entries' behavior.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dispatch_jump_field_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    use crate::commands::shortcuts::JUMP_NEXT_FIELD;
+    use crate::commands::shortcuts::JUMP_PREV_FIELD;
+
+    let (next, prev) = ctx.input_mut(|i| (i.consume_shortcut(&JUMP_NEXT_FIELD), i.consume_shortcut(&JUMP_PREV_FIELD)));
+    if next {
+        crate::app::jump_to_template_field(app, true);
+    }
+    if prev {
+        crate::app::jump_to_template_field(app, false);
+    }
+}
+
 /// New-file / save / save-as / toggle-edit-mode / undo / redo
 /// shortcuts. All consumed in one input borrow so a Cmd+Shift+S
 /// doesn't bleed into the bare Cmd+S handler.

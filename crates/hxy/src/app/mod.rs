@@ -1702,6 +1702,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::shortcuts::dispatch_find_shortcut(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        crate::app::shortcuts::dispatch_jump_field_shortcut(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::focus::dispatch_focus_pane_shortcut(ui.ctx(), self);
         crate::tabs::focus::dispatch_tab_focus_toggle(ui.ctx(), self);
         crate::tabs::focus::dispatch_tab_cycle(ui.ctx(), self);
@@ -2988,6 +2990,35 @@ fn jump_cursor_to(file: &mut crate::files::OpenFile, offset: u64) {
     let clamped = offset.min(len.saturating_sub(1));
     file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(clamped))));
     file.editor.reset_edit_nibble();
+}
+
+/// Move the active file's caret to the next / previous template
+/// field's start offset relative to the current cursor. No-op when
+/// the active file has no template run or no fields lie in the
+/// requested direction. Scrolls the new caret into view if it isn't
+/// already on screen.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn jump_to_template_field(app: &mut HxyApp, forward: bool) {
+    let Some(id) = active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    let Some(template) = file.template.as_ref() else { return };
+    let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
+    // Boundaries are sorted ascending by offset; partition_point
+    // pivots the slice at the first entry whose start is > cursor
+    // (forward) or >= cursor (backward).
+    let target = if forward {
+        let idx = template.leaf_boundaries.partition_point(|(o, _)| o.get() <= cursor);
+        template.leaf_boundaries.get(idx).map(|(o, _)| o.get())
+    } else {
+        let idx = template.leaf_boundaries.partition_point(|(o, _)| o.get() < cursor);
+        if idx == 0 { None } else { template.leaf_boundaries.get(idx - 1).map(|(o, _)| o.get()) }
+    };
+    let Some(target) = target else { return };
+    jump_cursor_to(file, target);
+    let target_off = hxy_core::ByteOffset::new(target);
+    if !file.editor.is_offset_visible(target_off) {
+        file.editor.set_scroll_to_byte(target_off);
+    }
 }
 
 #[cfg(target_os = "macos")]
