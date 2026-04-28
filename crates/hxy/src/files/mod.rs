@@ -18,6 +18,8 @@ pub mod paste;
 pub mod patch_persist;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod save;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod watch;
 
 use std::path::PathBuf;
 use std::sync::Arc;

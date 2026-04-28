@@ -43,11 +43,16 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
             break;
         }
     }
-    if let Some(removed) = app.files.remove(&id)
-        && let Some(source) = removed.source_kind
-    {
-        let mut state = app.state.write();
-        state.open_tabs.retain(|t| t.source != source);
+    let removed_root: Option<std::path::PathBuf> = app.files.remove(&id).and_then(|removed| {
+        let root = removed.root_path().cloned();
+        if let Some(source) = removed.source_kind {
+            let mut state = app.state.write();
+            state.open_tabs.retain(|t| t.source != source);
+        }
+        root
+    });
+    if let Some(path) = removed_root {
+        app.unwatch_path_if_unused(&path);
     }
     if app.last_active_file == Some(id) {
         app.last_active_file = None;
@@ -204,13 +209,22 @@ pub fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::files::Works
             to_drop.push(*file_id);
         }
     }
-    let mut state = app.state.write();
-    for file_id in &to_drop {
-        if let Some(removed) = app.files.remove(file_id)
-            && let Some(source) = removed.source_kind
-        {
-            state.open_tabs.retain(|t| t.source != source);
+    let mut paths_to_recheck: Vec<std::path::PathBuf> = Vec::new();
+    {
+        let mut state = app.state.write();
+        for file_id in &to_drop {
+            if let Some(removed) = app.files.remove(file_id) {
+                if let Some(p) = removed.root_path().cloned() {
+                    paths_to_recheck.push(p);
+                }
+                if let Some(source) = removed.source_kind {
+                    state.open_tabs.retain(|t| t.source != source);
+                }
+            }
         }
+    }
+    for path in paths_to_recheck {
+        app.unwatch_path_if_unused(&path);
     }
 }
 

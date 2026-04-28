@@ -298,6 +298,13 @@ pub struct HxyApp {
     /// command palette's `Run Template` action takes.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
+    /// Filesystem watcher that emits per-frame events for any
+    /// open path the user is editing. `None` only when the
+    /// platform watcher couldn't be constructed at startup; in
+    /// that case external changes go undetected and the user
+    /// must reload manually.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) file_watcher: Option<crate::files::watch::FileWatcher>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -451,6 +458,14 @@ impl HxyApp {
             pattern_first_run_prompt: show_patterns_prompt,
             #[cfg(not(target_arch = "wasm32"))]
             pending_template_runs: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            file_watcher: match crate::files::watch::FileWatcher::new(&cc.egui_ctx) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    tracing::warn!(error = %e, "filesystem watcher unavailable; external changes will go undetected");
+                    None
+                }
+            },
         }
     }
 
@@ -907,7 +922,32 @@ impl HxyApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.suggest_templates_for(id);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.watch_root_for_file(id);
         id
+    }
+
+    /// Register the watcher for whatever root path the just-opened
+    /// `OpenFile` ultimately derives from. No-op when the file is
+    /// in-memory (anonymous, plugin mount, etc) or when the watcher
+    /// failed to construct at startup.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn watch_root_for_file(&mut self, id: FileId) {
+        let Some(watcher) = self.file_watcher.as_mut() else { return };
+        let Some(path) = self.files.get(&id).and_then(|f| f.root_path().cloned()) else { return };
+        watcher.watch(path);
+    }
+
+    /// Unregister the watcher for `path` if no remaining open file
+    /// or workspace still references it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn unwatch_path_if_unused(&mut self, path: &std::path::Path) {
+        let Some(watcher) = self.file_watcher.as_mut() else { return };
+        let still_used = self.files.values().any(|f| f.root_path().map(|p| p.as_path()) == Some(path));
+        if still_used {
+            return;
+        }
+        watcher.unwatch(path);
     }
 
     /// Look at the just-opened file's extension + first bytes and
@@ -1547,6 +1587,13 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.drain_pending_plugin_ops(ui.ctx());
 
+        // Pull queued filesystem-change notifications off the
+        // notify watcher + polling worker. Each event becomes a
+        // log entry today; later phases convert them into reload
+        // prompts and VFS workspace re-mounts.
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_file_watch_events(self);
+
         #[cfg(target_os = "macos")]
         drain_native_menu(ui.ctx(), self);
         #[cfg(target_os = "macos")]
@@ -1852,6 +1899,30 @@ fn paint_drop_overlay(ctx: &egui::Context) {
 /// land here so the open path is identical -- read bytes, hand the
 /// file off to the same `request_open_filesystem` the file dialog
 /// uses (which dedupes via the existing duplicate-open modal).
+/// Pull every event the filesystem watcher has buffered since the
+/// previous frame. Phase 1 only logs them to the console -- later
+/// phases route each one through the reload prompt and template /
+/// VFS re-mount paths.
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_file_watch_events(app: &mut HxyApp) {
+    let Some(watcher) = app.file_watcher.as_mut() else { return };
+    let events = watcher.drain();
+    for event in events {
+        let path = event.primary_path().display().to_string();
+        match event {
+            crate::files::watch::WatchEvent::Modified(_) => {
+                tracing::debug!(path = %path, "file modified externally");
+            }
+            crate::files::watch::WatchEvent::Removed(_) => {
+                tracing::debug!(path = %path, "file removed externally");
+            }
+            crate::files::watch::WatchEvent::Renamed { from, to } => {
+                tracing::debug!(from = %from.display(), to = %to.display(), "file renamed externally");
+            }
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
     let mut batch = std::mem::take(&mut app.pending_cli_paths);
