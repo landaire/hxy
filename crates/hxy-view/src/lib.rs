@@ -1464,6 +1464,12 @@ struct PaintCtx<'a> {
 }
 
 /// Pre-laid-out galleys for the hex view's per-cell glyph rendering.
+///
+/// Also carries a small LRU for variable-content labels (the address
+/// column is the dominant case; the column header renders the same
+/// 16 labels every frame so it's covered too). The LRU is bounded to
+/// `LABEL_CACHE_CAPACITY` entries so a long scroll session doesn't
+/// turn it into an unbounded leak.
 #[derive(Clone)]
 struct GlyphCache {
     /// Cache key. Rebuilt when the font or pixels-per-point changes.
@@ -1475,6 +1481,43 @@ struct GlyphCache {
     ascii_printable: std::sync::Arc<[std::sync::Arc<egui::Galley>; 0x7F - 0x20]>,
     /// Fallback `'.'` galley for unprintable byte values.
     dot: std::sync::Arc<egui::Galley>,
+    /// Per-label LRU shared across frames. Behind a `Mutex` so the
+    /// cache can be cloned out of the egui data store and mutated
+    /// without re-inserting on every miss.
+    labels: std::sync::Arc<std::sync::Mutex<LabelLru>>,
+}
+
+const LABEL_CACHE_CAPACITY: usize = 512;
+
+/// Tiny FIFO-with-promotion cache for per-label galleys. Hits move
+/// the entry to the back (most-recently-used); misses append, evicting
+/// the oldest entry when capacity is exceeded. A linear scan is fine
+/// here because the visible address window is at most ~100 entries
+/// even at large window sizes.
+#[derive(Default)]
+struct LabelLru {
+    entries: Vec<(String, std::sync::Arc<egui::Galley>)>,
+}
+
+impl LabelLru {
+    fn get_or_insert_with(
+        &mut self,
+        label: &str,
+        build: impl FnOnce() -> std::sync::Arc<egui::Galley>,
+    ) -> std::sync::Arc<egui::Galley> {
+        if let Some(idx) = self.entries.iter().position(|(k, _)| k == label) {
+            let (k, galley) = self.entries.remove(idx);
+            let cloned = galley.clone();
+            self.entries.push((k, galley));
+            return cloned;
+        }
+        let galley = build();
+        if self.entries.len() >= LABEL_CACHE_CAPACITY {
+            self.entries.remove(0);
+        }
+        self.entries.push((label.to_owned(), galley.clone()));
+        galley
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -1504,7 +1547,20 @@ impl GlyphCache {
             hex: std::sync::Arc::new(hex),
             ascii_printable: std::sync::Arc::new(ascii_printable),
             dot,
+            labels: std::sync::Arc::new(std::sync::Mutex::new(LabelLru::default())),
         }
+    }
+
+    /// Look up (or lay out) a galley for a variable-content label.
+    /// Used by the address column and column header so the per-frame
+    /// re-format only allocates a `String` for the label key, never
+    /// a fresh `LayoutJob` + `Galley` for the same address that was
+    /// already on screen the previous frame.
+    fn label_galley(&self, painter: &egui::Painter, font_id: &FontId, label: &str) -> std::sync::Arc<egui::Galley> {
+        let mut lru = self.labels.lock().expect("glyph label cache poisoned");
+        lru.get_or_insert_with(label, || {
+            painter.layout_no_wrap(label.to_owned(), font_id.clone(), Color32::PLACEHOLDER)
+        })
     }
 
     /// Look the cache up in egui's per-context data store, rebuilding
@@ -2822,6 +2878,7 @@ fn paint_column_header(
     painter.rect_filled(header_rect, 0.0, ui.visuals().panel_fill);
     let color = ui.visuals().weak_text_color();
     let origin = header_rect.min - Vec2::new(x_offset, 0.0);
+    let glyphs = GlyphCache::load_or_build(&painter, font_id);
     for col in 0..cols {
         // Default labelling repeats 0..F per group of 16 columns.
         // The high nibbles of the absolute offset come from the
@@ -2835,10 +2892,13 @@ fn paint_column_header(
             Some(f) => f(col),
             None => format!("{:X}", col % 16),
         };
+        let galley = glyphs.label_galley(&painter, font_id, &label);
         let cell = layout.hex_cell_rect(origin, col, header_height);
-        painter.text(cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
+        let cell_pos = Align2::CENTER_CENTER.anchor_size(cell.center(), galley.size()).min;
+        painter.galley_with_override_text_color(cell_pos, galley.clone(), color);
         let ascii_cell = layout.ascii_cell_rect(origin, col, header_height);
-        painter.text(ascii_cell.center(), Align2::CENTER_CENTER, &label, font_id.clone(), color);
+        let ascii_pos = Align2::CENTER_CENTER.anchor_size(ascii_cell.center(), galley.size()).min;
+        painter.galley_with_override_text_color(ascii_pos, galley, color);
     }
     // Anchor the divider fully *above* the header / scroll-viewport
     // boundary instead of straddling it. The scroll viewport's top
@@ -2919,6 +2979,7 @@ fn paint_address_column(
         }
     };
 
+    let glyphs = GlyphCache::load_or_build(&painter, font_id);
     for (idx, maybe_offset) in row_offsets {
         let Some(row_first_offset) = maybe_offset else { continue };
         let y = rect.top() + (idx as f32) * row_height - v_offset;
@@ -2926,7 +2987,9 @@ fn paint_address_column(
             Some(f) => f(row_first_offset, layout.address_chars),
             None => format_address(row_first_offset, layout.address_chars),
         };
-        painter.text(Pos2::new(rect.left(), y + row_height * 0.5), Align2::LEFT_CENTER, label, font_id.clone(), color);
+        let galley = glyphs.label_galley(&painter, font_id, &label);
+        let pos = Align2::LEFT_CENTER.anchor_size(Pos2::new(rect.left(), y + row_height * 0.5), galley.size()).min;
+        painter.galley_with_override_text_color(pos, galley, color);
     }
 }
 
