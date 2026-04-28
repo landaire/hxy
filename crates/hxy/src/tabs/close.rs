@@ -60,6 +60,15 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
 /// editor has uncommitted edits the modal is staged instead of
 /// dropping. Non-File tabs (Console, Inspector, Plugins, ...)
 /// close immediately -- they have no save state.
+///
+/// When the active outer tab is a workspace, the close targets the
+/// workspace's inner active tab instead: closing an Entry closes
+/// that file, closing the Editor closes the entire workspace, and
+/// closing the VfsTree just removes that sub-tab. We dispatch on
+/// the active outer tab rather than `app.tab_focus` because
+/// `tab_focus` only flips on tab-header clicks; clicking into the
+/// hex body leaves it on `Outer` even though the user is plainly
+/// "inside" the workspace.
 pub fn request_close_active_tab(app: &mut HxyApp) {
     let Some((_, tab)) = app.dock.find_active_focused() else { return };
     let tab = *tab;
@@ -101,13 +110,49 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
             app.global_search.open = false;
         }
         Tab::Workspace(workspace_id) => {
-            close_workspace_by_id(app, workspace_id);
+            close_active_workspace_inner(app, workspace_id);
         }
         Tab::Compare(compare_id) => {
             if let Some(path) = app.dock.find_tab(&tab) {
                 let _ = app.dock.remove_tab(path);
             }
             app.compares.remove(&compare_id);
+        }
+    }
+}
+
+/// Close whatever sub-tab is active in the workspace's inner dock.
+/// Editor -> close the whole workspace; Entry -> close that file
+/// (dirty-check via the same prompt as the outer flow); VfsTree ->
+/// just remove the sub-tab. Falls back to closing the workspace
+/// outright when no inner active tab is resolvable, so a wedged
+/// workspace is still closeable.
+fn close_active_workspace_inner(app: &mut HxyApp, workspace_id: crate::files::WorkspaceId) {
+    let active = match app.workspaces.get_mut(&workspace_id) {
+        Some(w) => w.dock.find_active_focused().map(|(_, t)| *t),
+        None => return,
+    };
+    match active {
+        Some(crate::files::WorkspaceTab::Editor) | None => {
+            close_workspace_by_id(app, workspace_id);
+            app.tab_focus = crate::app::TabFocus::Outer;
+        }
+        Some(crate::files::WorkspaceTab::VfsTree) => {
+            if let Some(workspace) = app.workspaces.get_mut(&workspace_id)
+                && let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::VfsTree)
+            {
+                let _ = workspace.dock.remove_tab(path);
+            }
+        }
+        Some(crate::files::WorkspaceTab::Entry(file_id)) => {
+            if let Some(file) = app.files.get(&file_id)
+                && file.editor.is_dirty()
+            {
+                app.pending_close_workspace_entry =
+                    Some(PendingCloseTab { file_id, display_name: file.display_name.clone() });
+                return;
+            }
+            close_file_tab_by_id(app, file_id);
         }
     }
 }
