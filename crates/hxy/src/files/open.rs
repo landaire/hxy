@@ -10,9 +10,9 @@ use crate::app::HxyApp;
 use crate::files::FileOpenError;
 
 pub fn handle_open_file(app: &mut HxyApp) {
-    match pick_and_read_file() {
-        Ok((name, path, bytes)) => {
-            app.request_open_filesystem(name, path, bytes);
+    match pick_file() {
+        Ok((name, path)) => {
+            app.request_open_filesystem(name, path);
         }
         Err(FileOpenError::Cancelled) => {}
         Err(e) => {
@@ -21,13 +21,17 @@ pub fn handle_open_file(app: &mut HxyApp) {
     }
 }
 
-pub fn pick_and_read_file() -> Result<(String, std::path::PathBuf, Vec<u8>), FileOpenError> {
+/// Show the OS file picker. Returns the picked path (and a
+/// display name derived from its file_name), or `Cancelled`
+/// when the user dismissed the dialog. Doesn't read any
+/// bytes -- that happens later through the streaming open
+/// path.
+pub fn pick_file() -> Result<(String, std::path::PathBuf), FileOpenError> {
     let Some(path) = rfd::FileDialog::new().pick_file() else {
         return Err(FileOpenError::Cancelled);
     };
-    let bytes = std::fs::read(&path).map_err(|source| FileOpenError::Read { path: path.clone(), source })?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-    Ok((name, path, bytes))
+    Ok((name, path))
 }
 
 /// Build a `FileOpenError::Read` for the case where a tab's parent

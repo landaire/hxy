@@ -386,6 +386,23 @@ pub fn build_palette_entries(
                     reload_entry = reload_entry.with_subtitle(hxy_i18n::t("palette-reload-no-disk-source"));
                 }
                 out.push(reload_entry);
+
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-take-snapshot"),
+                        Action::InvokeCommand(PaletteCommand::TakeSnapshot),
+                    )
+                    .with_icon(icon::CAMERA)
+                    .with_subtitle(hxy_i18n::t("palette-take-snapshot-subtitle")),
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-open-snapshots"),
+                        Action::InvokeCommand(PaletteCommand::OpenSnapshots),
+                    )
+                    .with_icon(icon::IMAGES)
+                    .with_subtitle(hxy_i18n::t("palette-open-snapshots-subtitle")),
+                );
             }
             if history_ctx.can_paste {
                 out.push(

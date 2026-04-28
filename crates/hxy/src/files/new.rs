@@ -46,7 +46,8 @@ pub fn handle_new_file(app: &mut HxyApp) {
     }
     let source = TabSource::Anonymous { id, title: title.clone() };
     let initial_caret = Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(0)));
-    let file_id = app.open(title, Some(source), bytes, initial_caret, None, false);
+    let in_memory: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
+    let file_id = app.open(title, Some(source), in_memory, initial_caret, None, false);
     app.focus_file_tab(file_id);
 }
 

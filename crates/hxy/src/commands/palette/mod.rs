@@ -341,6 +341,12 @@ pub enum PaletteCommand {
     /// watcher fires when external changes are detected, so the
     /// user picks Discard / Keep / Ignore.
     ReloadActiveFile,
+    /// Capture the active tab's current patched bytes as a new
+    /// snapshot. Auto-named ("Snapshot N") -- the user can
+    /// rename via the snapshot dialog.
+    TakeSnapshot,
+    /// Open the snapshot manager dialog for the active file.
+    OpenSnapshots,
 }
 
 #[derive(Clone)]

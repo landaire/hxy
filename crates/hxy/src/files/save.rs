@@ -68,9 +68,26 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
 
     let previous_source = app.files.get(&id).and_then(|f| f.source_kind.clone());
     let previous_root = app.files.get(&id).and_then(|f| f.root_path().cloned());
+    // After atomic-write the in-memory `bytes` Vec is no longer
+    // needed; swap the editor onto a streaming source over the
+    // just-written file so a freshly-saved 4 GiB blob doesn't
+    // stay resident as a `MemorySource`. Falls back to the
+    // in-memory wrapping path if reopening for streaming
+    // somehow fails (file deleted between rename and reopen, FD
+    // limit, ...).
+    let post_save_source: std::sync::Arc<dyn hxy_core::HexSource> =
+        match crate::files::streaming::open_filesystem(&path) {
+            Ok((s, _)) => {
+                drop(bytes);
+                s
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, path = %path.display(), "post-save streaming reopen failed; staying in-memory");
+                std::sync::Arc::new(hxy_core::MemorySource::new(bytes))
+            }
+        };
     if let Some(file) = app.files.get_mut(&id) {
-        let base: std::sync::Arc<dyn hxy_core::HexSource> = std::sync::Arc::new(hxy_core::MemorySource::new(bytes));
-        file.editor.swap_source(base);
+        file.editor.swap_source(post_save_source);
         file.source_kind = Some(hxy_vfs::TabSource::Filesystem(path.clone()));
         if let Some(name) = path.file_name() {
             file.display_name = name.to_string_lossy().into_owned();

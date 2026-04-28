@@ -320,6 +320,11 @@ pub struct HxyApp {
     /// mount any more.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_orphan_entries: Vec<PendingOrphanEntry>,
+    /// Snapshot manager dialog state -- which file's snapshots
+    /// are being inspected, plus the in-progress compare-pair
+    /// picks. `None` hides the dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_snapshot_dialog: Option<crate::files::snapshot_ui::SnapshotDialogState>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -340,12 +345,12 @@ pub enum ConsoleSeverity {
 }
 
 /// A deferred filesystem-open request awaiting the user's choice in
-/// the duplicate-open dialog. Retains the bytes we already read so we
-/// don't hit the disk twice.
+/// the duplicate-open dialog. Just remembers the path -- with the
+/// streaming open path, opening is cheap and we don't need to
+/// stash the (potentially huge) bytes blob to avoid a re-read.
 pub(crate) struct PendingDuplicate {
     pub(crate) display_name: String,
     pub(crate) path: std::path::PathBuf,
-    pub(crate) bytes: Vec<u8>,
     pub(crate) existing: FileId,
 }
 
@@ -540,6 +545,8 @@ impl HxyApp {
             pending_reload_prompt: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_orphan_entries: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_snapshot_dialog: None,
         }
     }
 
@@ -859,18 +866,39 @@ impl HxyApp {
     }
 
     pub fn open_in_memory(&mut self, display_name: impl Into<String>, bytes: Vec<u8>) -> FileId {
-        self.open(display_name, None, bytes, None, None, false)
+        let source: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
+        self.open(display_name, None, source, None, None, false)
     }
 
+    /// Open a filesystem-backed tab from an already-constructed
+    /// streaming source. Internal helper -- most callers use
+    /// [`Self::open_filesystem_path`] which wires the source up
+    /// for them.
     pub fn open_filesystem(
         &mut self,
         display_name: impl Into<String>,
         path: std::path::PathBuf,
-        bytes: Vec<u8>,
+        source: Arc<dyn hxy_core::HexSource>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
     ) -> FileId {
-        self.open(display_name, Some(TabSource::Filesystem(path)), bytes, restore_selection, restore_scroll, false)
+        self.open(display_name, Some(TabSource::Filesystem(path)), source, restore_selection, restore_scroll, false)
+    }
+
+    /// Open a filesystem path with a streaming `HexSource` -- no
+    /// up-front full-file read. Returns the new tab id, or an
+    /// error if the file can't be opened.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_filesystem_path(
+        &mut self,
+        display_name: impl Into<String>,
+        path: std::path::PathBuf,
+        restore_selection: Option<hxy_core::Selection>,
+        restore_scroll: Option<f32>,
+    ) -> Result<FileId, crate::files::FileOpenError> {
+        let (source, _len) = crate::files::streaming::open_filesystem(&path)
+            .map_err(|source| crate::files::FileOpenError::Read { path: path.clone(), source })?;
+        Ok(self.open_filesystem(display_name, path, source, restore_selection, restore_scroll))
     }
 
     /// User-facing open: if the path is already in another tab, stash
@@ -879,18 +907,16 @@ impl HxyApp {
     ///
     /// Restore paths deliberately bypass this -- reopening a file
     /// across restarts shouldn't prompt.
-    pub fn request_open_filesystem(
-        &mut self,
-        display_name: impl Into<String>,
-        path: std::path::PathBuf,
-        bytes: Vec<u8>,
-    ) {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn request_open_filesystem(&mut self, display_name: impl Into<String>, path: std::path::PathBuf) {
         let display_name = display_name.into();
         if let Some(existing) = self.existing_filesystem_tab(&path) {
-            self.pending_duplicate = Some(PendingDuplicate { display_name, path, bytes, existing });
+            self.pending_duplicate = Some(PendingDuplicate { display_name, path, existing });
             return;
         }
-        self.open_filesystem(display_name, path, bytes, None, None);
+        if let Err(e) = self.open_filesystem_path(display_name, path, None, None) {
+            tracing::warn!(error = %e, "request_open_filesystem");
+        }
     }
 
     fn existing_filesystem_tab(&self, path: &std::path::Path) -> Option<FileId> {
@@ -947,12 +973,12 @@ impl HxyApp {
         &mut self,
         display_name: impl Into<String>,
         source_kind: Option<TabSource>,
-        bytes: Vec<u8>,
+        source: Arc<dyn hxy_core::HexSource>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
         as_workspace: bool,
     ) -> FileId {
-        let id = self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
+        let id = self.create_open_file(display_name, source_kind.clone(), source, restore_selection, restore_scroll);
         self.apply_readonly_for_source(id);
 
         let pushed_workspace = if as_workspace { self.try_push_as_workspace(id) } else { false };
@@ -1046,19 +1072,17 @@ impl HxyApp {
         let Some(path) = file.root_path().cloned() else { return false };
         let display = file.display_name.clone();
         let ctx_label = format!("Reload {}", path.display());
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
+        let (stream, len) = match crate::files::streaming::open_filesystem(&path) {
+            Ok(s) => s,
             Err(e) => {
-                self.console_log(ConsoleSeverity::Error, &ctx_label, format!("re-read disk bytes: {e}"));
+                self.console_log(ConsoleSeverity::Error, &ctx_label, format!("re-open disk source: {e}"));
                 return false;
             }
         };
-        let len = bytes.len();
         if let Some(file) = self.files.get_mut(&id) {
-            let base: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
             match decision {
-                ReloadDecision::DiscardEdits => file.editor.swap_source(base),
-                ReloadDecision::KeepEdits => file.editor.swap_source_keep_patch(base),
+                ReloadDecision::DiscardEdits => file.editor.swap_source(stream),
+                ReloadDecision::KeepEdits => file.editor.swap_source_keep_patch(stream),
                 ReloadDecision::Ignore => unreachable!("handled above"),
             }
         }
@@ -1143,11 +1167,10 @@ impl HxyApp {
                 .collect()
         };
         for (entry_id, entry_path) in entry_specs {
-            match crate::files::open::read_vfs_entry(new_mount.fs.as_ref(), &entry_path) {
-                Ok(bytes) => {
+            match crate::files::streaming::open_vfs(new_mount.clone(), entry_path.clone()) {
+                Ok((stream, _len)) => {
                     if let Some(file) = self.files.get_mut(&entry_id) {
-                        let base: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
-                        file.editor.swap_source(base);
+                        file.editor.swap_source(stream);
                     }
                 }
                 Err(e) => {
@@ -1234,12 +1257,12 @@ impl HxyApp {
         &mut self,
         display_name: impl Into<String>,
         source_kind: Option<TabSource>,
-        bytes: Vec<u8>,
+        source: Arc<dyn hxy_core::HexSource>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
     ) -> FileId {
         let id = self.fresh_file_id();
-        let mut file = OpenFile::from_bytes(id, display_name, source_kind, bytes);
+        let mut file = OpenFile::from_source(id, display_name, source_kind, source);
         file.editor.set_selection(restore_selection);
         if let Some(s) = restore_scroll {
             file.editor.set_scroll_to(s);
@@ -1364,13 +1387,13 @@ impl HxyApp {
         let as_workspace = tab.as_workspace || must_mount;
         match &tab.source {
             TabSource::Filesystem(path) => {
-                let bytes = std::fs::read(path)
+                let (source, _len) = crate::files::streaming::open_filesystem(path)
                     .map_err(|source| crate::files::FileOpenError::Read { path: path.clone(), source })?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                self.open(name, Some(tab.source.clone()), bytes, tab.selection, Some(tab.scroll_offset), as_workspace);
+                self.open(name, Some(tab.source.clone()), source, tab.selection, Some(tab.scroll_offset), as_workspace);
                 Ok(())
             }
             TabSource::VfsEntry { parent, entry_path } => {
@@ -1387,8 +1410,10 @@ impl HxyApp {
                         Err(crate::files::open::parent_missing(parent.as_ref()))
                     };
                 };
-                let bytes = crate::files::open::read_vfs_entry(&*parent_mount.fs, entry_path)
-                    .map_err(|e| crate::files::FileOpenError::Read { path: entry_path.into(), source: e })?;
+                let (source, _len) =
+                    crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()).map_err(|e| {
+                        crate::files::FileOpenError::Read { path: entry_path.into(), source: e }
+                    })?;
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 let target = self
                     .workspace_for_source(parent.as_ref())
@@ -1397,7 +1422,7 @@ impl HxyApp {
                 self.open_with_target(
                     name,
                     Some(tab.source.clone()),
-                    bytes,
+                    source,
                     tab.selection,
                     Some(tab.scroll_offset),
                     target,
@@ -1410,13 +1435,13 @@ impl HxyApp {
                         path: std::path::PathBuf::from(format!("anonymous/{}", id.get())),
                         source: std::io::Error::other("no data dir"),
                     })?;
-                let bytes = match std::fs::read(&path) {
-                    Ok(b) => b,
+                let source: Arc<dyn hxy_core::HexSource> = match crate::files::streaming::open_filesystem(&path) {
+                    Ok((s, _)) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         // Sidecar gone; fall back to a fresh zero buffer
                         // so the tab still opens rather than dropping the
                         // entry silently.
-                        vec![0u8; ANONYMOUS_DEFAULT_SIZE]
+                        Arc::new(hxy_core::MemorySource::new(vec![0u8; ANONYMOUS_DEFAULT_SIZE]))
                     }
                     Err(e) => {
                         return Err(crate::files::FileOpenError::Read { path, source: e });
@@ -1425,7 +1450,7 @@ impl HxyApp {
                 self.open(
                     title.clone(),
                     Some(tab.source.clone()),
-                    bytes,
+                    source,
                     tab.selection,
                     Some(tab.scroll_offset),
                     false,
@@ -1552,18 +1577,18 @@ impl HxyApp {
         &mut self,
         display_name: impl Into<String>,
         source_kind: Option<TabSource>,
-        bytes: Vec<u8>,
+        source: Arc<dyn hxy_core::HexSource>,
         restore_selection: Option<hxy_core::Selection>,
         restore_scroll: Option<f32>,
         target: OpenTarget,
     ) -> FileId {
         match target {
             OpenTarget::Toplevel => {
-                self.open(display_name, source_kind, bytes, restore_selection, restore_scroll, false)
+                self.open(display_name, source_kind, source, restore_selection, restore_scroll, false)
             }
             OpenTarget::Workspace(workspace_id) => {
                 let id =
-                    self.create_open_file(display_name, source_kind.clone(), bytes, restore_selection, restore_scroll);
+                    self.create_open_file(display_name, source_kind.clone(), source, restore_selection, restore_scroll);
                 self.apply_readonly_for_source(id);
                 if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
                     crate::tabs::dock_ops::push_workspace_entry(workspace, id);
@@ -2002,6 +2027,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_orphaned_entry_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        crate::files::snapshot_ui::render_snapshot_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -2091,18 +2118,11 @@ fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
     let req = ctx.data_mut(|d| d.remove_temp::<std::path::PathBuf>(egui::Id::new(WELCOME_OPEN_RECENT)));
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = req {
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
-                app.request_open_filesystem(name, path, bytes);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "open recent file");
-            }
-        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        app.request_open_filesystem(name, path);
     }
     #[cfg(target_arch = "wasm32")]
     let _ = (req, app);
@@ -2166,6 +2186,39 @@ pub fn request_reload_active_file(app: &mut HxyApp) {
         kind: ExternalChangeKind::Modified,
         has_unsaved,
     });
+}
+
+/// Capture a snapshot of the active file's current bytes with
+/// an auto-generated name. Console-logs when the active tab
+/// can't snapshot (no stable identity / read failure).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn take_snapshot_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Snapshot", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    if app.files.get(&id).and_then(|f| f.snapshots.as_ref()).is_none() {
+        app.console_log(ConsoleSeverity::Warning, "Snapshot", hxy_i18n::t("snapshot-no-store"));
+        return;
+    }
+    if let Some(new_id) = crate::files::snapshot_ui::capture_snapshot(app, id, String::new()) {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        app.console_log(
+            ConsoleSeverity::Info,
+            format!("Snapshot {display}"),
+            hxy_i18n::t_args("snapshot-capture-toast", &[("id", &new_id.get().to_string())]),
+        );
+    }
+}
+
+/// Open the snapshot manager dialog for the active file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_snapshots_active_file(app: &mut HxyApp) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Snapshot", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    crate::files::snapshot_ui::open_for(app, id);
 }
 
 /// Translate persisted settings into the live polling prefs the
@@ -2281,18 +2334,11 @@ fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
         }
     }
     for path in batch {
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
-                app.request_open_filesystem(name, path, bytes);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "open external path");
-            }
-        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        app.request_open_filesystem(name, path);
     }
 }
 
@@ -2301,18 +2347,11 @@ fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
     for file in dropped {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = file.path {
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    app.request_open_filesystem(name, path, bytes);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, path = %path.display(), "open dropped file");
-                }
-            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            app.request_open_filesystem(name, path);
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(bytes) = file.bytes.as_deref() {
@@ -2409,8 +2448,8 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                     Some(s) => s,
                     None => continue,
                 };
-                let bytes = match crate::files::open::read_vfs_entry(&*mount.fs, &entry_path) {
-                    Ok(b) => b,
+                let (stream, _len) = match crate::files::streaming::open_vfs(mount.clone(), entry_path.clone()) {
+                    Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
                         continue;
@@ -2418,7 +2457,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 };
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
-                app.open_with_target(name, Some(source), bytes, None, None, OpenTarget::Workspace(workspace_id));
+                app.open_with_target(name, Some(source), stream, None, None, OpenTarget::Workspace(workspace_id));
             }
             PendingVfsOpen::PluginMount { mount_id, entry_path } => {
                 let Some(entry) = app.mounts.get(&mount_id) else { continue };
@@ -2431,8 +2470,8 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                     tracing::warn!(entry = %entry_path, "plugin mount not ready -- ignoring entry open");
                     continue;
                 };
-                let bytes = match crate::files::open::read_vfs_entry(&*mount.fs, &entry_path) {
-                    Ok(b) => b,
+                let (stream, _len) = match crate::files::streaming::open_vfs(mount.clone(), entry_path.clone()) {
+                    Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
                         continue;
@@ -2444,7 +2483,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 // there too. Move focus back to the editing area
                 // before `open` -- it routes via push_to_focused_leaf.
                 crate::tabs::dock_ops::focus_content_leaf(app);
-                app.open(name, Some(source), bytes, None, None, false);
+                app.open(name, Some(source), stream, None, None, false);
             }
         }
     }
@@ -2472,15 +2511,12 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
         }
         CommandEffect::OpenRecent(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    app.request_open_filesystem(name, path, bytes);
-                }
-                Err(e) => tracing::warn!(error = %e, path = %path.display(), "open recent"),
+            {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                app.request_open_filesystem(name, path);
             }
             #[cfg(target_arch = "wasm32")]
             let _ = path;

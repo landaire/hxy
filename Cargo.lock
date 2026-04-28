@@ -2942,6 +2942,7 @@ dependencies = [
  "egui_ltreeview",
  "egui_table",
  "egui_taffy",
+ "fskit",
  "hxy-010-lang",
  "hxy-core",
  "hxy-i18n",

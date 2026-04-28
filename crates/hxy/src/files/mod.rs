@@ -21,6 +21,10 @@ pub mod save;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod snapshot_ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod streaming;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 
 use std::path::PathBuf;

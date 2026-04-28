@@ -307,3 +307,27 @@ orphan-entry-close = Close tab
 orphan-entry-close-tooltip = Drop the orphaned tab; its in-memory bytes are discarded.
 orphan-entry-keep = Keep open
 orphan-entry-keep-tooltip = Leave the tab open. Writeback through the mount is broken but the bytes can still be inspected and copied.
+
+# Snapshot manager
+palette-take-snapshot = Take snapshot
+palette-take-snapshot-subtitle = Capture the active tab's current bytes; persisted across restarts.
+palette-open-snapshots = Snapshots...
+palette-open-snapshots-subtitle = List, rename, delete, or compare snapshots for the active file.
+snapshot-dialog-title = Snapshots: { $name }
+snapshot-take-label = New snapshot:
+snapshot-take-name-hint = Optional name
+snapshot-take-button = Take
+snapshot-empty = No snapshots yet. Use Take to capture the current bytes.
+snapshot-no-store = This buffer doesn't have a stable identity, so snapshots can't be stored for it.
+snapshot-rename-hint = Press Enter to commit, Esc to cancel
+snapshot-compare-current = Compare with current
+snapshot-compare-current-tooltip = Open a Compare tab between this snapshot and the live patched bytes.
+snapshot-compare-pair = Compare A vs B
+snapshot-delete = Delete
+snapshot-delete-tooltip = Remove the snapshot and its sidecar bytes.
+snapshot-pair-header = Compare two snapshots
+snapshot-pick-empty = (pick a snapshot)
+snapshot-pick-current = Current bytes
+snapshot-size-cached = { $size } (cached)
+snapshot-size-disk = { $size } (on disk)
+snapshot-capture-toast = Captured snapshot { $id }

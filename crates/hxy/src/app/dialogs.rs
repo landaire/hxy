@@ -81,7 +81,9 @@ pub fn render_duplicate_open_dialog(ctx: &egui::Context, app: &mut HxyApp) {
             app.focus_file_tab(pending.existing);
         }
         DuplicateAction::OpenNewTab => {
-            app.open_filesystem(pending.display_name, pending.path, pending.bytes, None, None);
+            if let Err(e) = app.open_filesystem_path(pending.display_name, pending.path, None, None) {
+                tracing::warn!(error = %e, "open duplicate tab");
+            }
         }
         DuplicateAction::Cancel => {}
     }

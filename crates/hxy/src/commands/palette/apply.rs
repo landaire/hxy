@@ -89,6 +89,8 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::JumpNextField => crate::app::jump_to_template_field(app, true),
                 PaletteCommand::JumpPrevField => crate::app::jump_to_template_field(app, false),
                 PaletteCommand::ReloadActiveFile => crate::app::request_reload_active_file(app),
+                PaletteCommand::TakeSnapshot => crate::app::take_snapshot_active_file(app),
+                PaletteCommand::OpenSnapshots => crate::app::open_snapshots_active_file(app),
             }
         }
         Action::FocusFile(id) => {
