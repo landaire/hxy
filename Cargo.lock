@@ -6355,7 +6355,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suture"
-version = "0.2.0"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e3ab3cb24b117a07c0dc7488aea7b6f16044b890b4f3d2deb5ecf2582821cd3"
 dependencies = [
  "blake3",
  "serde",

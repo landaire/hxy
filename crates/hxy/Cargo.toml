@@ -73,7 +73,7 @@ similar = { version = "3.1.0", default-features = false, features = ["bytes", "s
 hxy-010-lang = { workspace = true }
 hxy-imhex-lang = { workspace = true }
 hxy-calculator = { workspace = true }
-suture = { version = "0.2.0", path = "../../../suture", features = ["serde", "blake3"] }
+suture = { version = "0.3.0", features = ["serde", "blake3"] }
 arboard = { version = "3.6.1", default-features = false }
 base64 = "0.22.1"
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }

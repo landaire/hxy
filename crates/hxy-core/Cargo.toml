@@ -15,6 +15,6 @@ lru = "0.18.0"
 rootcause = "0.12.1"
 rustc-hash = "2"
 serde = { version = "1.0.228", features = ["derive"] }
-suture = { version = "0.2.0", path = "../../../suture" }
+suture = { version = "0.3.0" }
 thiserror = "2.0.18"
 vfs = "0.13.0"
