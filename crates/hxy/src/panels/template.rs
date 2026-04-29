@@ -67,6 +67,16 @@ pub enum TemplateEvent {
     /// (template-supplied attribute or hue-cycle fallback). Right-click
     /// on the swatch.
     ResetColor(TemplateNodeIdx),
+    /// Keyboard arrow-key navigation: move the selected row by `delta`
+    /// positions in the visible row list, skipping non-Node rows
+    /// (synthesized array elements have no tree-node identity). The
+    /// app handler clamps and re-fires the `Select` side effects so
+    /// the hex view jumps to the new field.
+    MoveSelection(i32),
+    /// Left-arrow: collapse the currently selected node if expanded.
+    CollapseSelected,
+    /// Right-arrow: expand the currently selected node if collapsed.
+    ExpandSelected,
 }
 
 pub use crate::files::copy::CopyKind;
@@ -156,16 +166,72 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
 
     let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut any_hover: Option<TemplateNodeIdx> = None;
+    // Source access for synthesized ScalarArrayElement rows. Decoded
+    // values come back as strings via [`decode_scalar_bytes`]. Pulled
+    // up here so the per-cell render doesn't have to re-borrow `file`.
+    let source: std::sync::Arc<dyn hxy_core::HexSource> = file.editor.source().clone();
 
-    let mut delegate =
-        TemplateTableDelegate { state, visible: &visible, events: &mut events, any_hover: &mut any_hover, row_height };
+    // Panel-level focus widget. Per-row interacts each have their own
+    // ids and would lose focus when scrolled out of view (egui_table
+    // virtualizes), so route arrow-key focus through one stable
+    // widget that covers the whole table. Row clicks request focus
+    // on it via the shared `focus_id`.
+    let focus_id = egui::Id::new(("hxy-tmpl-focus", id_seed));
+    let table_rect = ui.available_rect_before_wrap();
+    let focus_resp = ui.interact(table_rect, focus_id, egui::Sense::focusable_noninteractive());
+    // Tell egui not to intercept arrow keys (or Tab) for focus
+    // traversal while we own focus. Without this, the first arrow
+    // press is treated as a focus-direction hint and moves focus
+    // off the panel widget, so subsequent presses stop reaching us.
+    // No-op when the widget isn't currently focused.
+    ui.memory_mut(|m| {
+        m.set_focus_lock_filter(
+            focus_id,
+            egui::EventFilter { tab: false, horizontal_arrows: true, vertical_arrows: true, escape: false },
+        );
+    });
+
+    let mut delegate = TemplateTableDelegate {
+        state,
+        visible: &visible,
+        events: &mut events,
+        any_hover: &mut any_hover,
+        row_height,
+        source: source.as_ref(),
+        focus_id,
+    };
+
+    // Bring the selected row into view when the selection just
+    // changed (arrow-key nav, or a click that happened to land on
+    // a row scrolled off-screen). We track the previous frame's
+    // selected_node in egui's per-context temp data so we can
+    // compare; scroll_to_row with `align: None` is a no-op when the
+    // row is already visible, so click-driven selections don't
+    // jitter the scroll position.
+    let last_selected_id = egui::Id::new(("hxy-tmpl-last-selected", id_seed));
+    let last_selected: Option<u32> = ui.ctx().data(|d| d.get_temp::<u32>(last_selected_id));
+    let current_selected: Option<u32> = state.selected_node.map(|n| n.0);
+    let scroll_to_row_nr: Option<u64> = current_selected
+        .filter(|_| current_selected != last_selected)
+        .and_then(|target| {
+            visible.iter().position(|r| matches!(r, RowKind::Node { idx, .. } if idx.0 == target))
+        })
+        .map(|pos| pos as u64);
+    ui.ctx().data_mut(|d| match current_selected {
+        Some(idx) => {
+            d.insert_temp(last_selected_id, idx);
+        }
+        None => {
+            d.remove::<u32>(last_selected_id);
+        }
+    });
 
     // Initial widths get content-fitted on the first frame (egui_table runs a
     // sizing pass while state is fresh) and continuously redistributed to fill
     // the parent via AutoSizeMode::Always. Name has the most slack in its
     // range so it absorbs spare horizontal space; the fixed-glyph columns
     // (Start/End/Length) keep tight ranges so they don't balloon.
-    Table::new()
+    let mut table = Table::new()
         .id_salt(("hxy_tmpl_table", id_seed))
         .num_rows(visible.len() as u64)
         .columns(vec![
@@ -178,11 +244,35 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
             Column::new(220.0).range(80.0..=800.0).resizable(true).id(egui::Id::new("tmpl-col-val")),
         ])
         .headers(vec![HeaderRow::new(row_height)])
-        .auto_size_mode(egui_table::AutoSizeMode::Always)
-        .show(ui, &mut delegate);
+        .auto_size_mode(egui_table::AutoSizeMode::Always);
+    if let Some(row_nr) = scroll_to_row_nr {
+        table = table.scroll_to_row(row_nr, None);
+    }
+    table.show(ui, &mut delegate);
 
     if any_hover != state.hovered_node {
         events.push(TemplateEvent::Hover(any_hover));
+    }
+
+    // Keyboard nav lives outside the egui_table render so it sees the
+    // post-render focus state. Arrows are only consumed when the
+    // panel widget actually owns focus, so they don't interfere with
+    // hex-view editor input or other panels.
+    if focus_resp.has_focus() && state.selected_node.is_some() {
+        ui.ctx().input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                events.push(TemplateEvent::MoveSelection(1));
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                events.push(TemplateEvent::MoveSelection(-1));
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                events.push(TemplateEvent::CollapseSelected);
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                events.push(TemplateEvent::ExpandSelected);
+            }
+        });
     }
 
     events
@@ -214,6 +304,16 @@ enum RowKind {
         index: usize,
         depth: usize,
     },
+    /// Synthetic element of an expanded primitive `ScalarArray` node.
+    /// The lang emits these arrays as a single contiguous node with no
+    /// children -- expanding the row into per-element rows happens
+    /// here in the panel by decoding bytes from the source on demand,
+    /// so we don't pay tree-size cost on collapsed arrays.
+    ScalarArrayElement {
+        parent_idx: TemplateNodeIdx,
+        index: u64,
+        depth: usize,
+    },
 }
 
 struct TemplateTableDelegate<'a> {
@@ -222,6 +322,14 @@ struct TemplateTableDelegate<'a> {
     events: &'a mut Vec<TemplateEvent>,
     any_hover: &'a mut Option<TemplateNodeIdx>,
     row_height: f32,
+    /// Byte source used to decode synthetic primitive-array element
+    /// rows on demand. Borrowed for the panel's render pass only.
+    source: &'a dyn hxy_core::HexSource,
+    /// Stable id of the panel-level focusable widget, so per-row
+    /// click handlers can request focus without each fighting for
+    /// its own id (rows scroll out of view under egui_table's
+    /// virtualization and would lose focus mid-navigation).
+    focus_id: egui::Id,
 }
 
 impl TableDelegate for TemplateTableDelegate<'_> {
@@ -274,13 +382,26 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
             if clicked_row && let Some(idx) = node_idx {
                 self.events.push(TemplateEvent::Select(idx));
+                // Pull keyboard focus to the panel-level widget so
+                // arrow keys move selection from this row going
+                // forward. Safe to do unconditionally now -- the
+                // earlier picker-dismiss bug was the swatch's
+                // `.context_menu` racing with the color picker
+                // popup, not focus contention.
+                ui.ctx().memory_mut(|m| m.request_focus(self.focus_id));
             }
             if let Some(idx) = node_idx {
                 resp.context_menu(|ui| self.row_context_menu(ui, idx));
             }
 
-            let this_row_highlighted = node_idx == self.state.hovered_node && node_idx.is_some();
-            if this_row_highlighted {
+            // Selected row (keyboard / click cursor) draws a heavier
+            // background tint than hover so the user can tell which
+            // row arrows will move from. Hover stacks underneath.
+            let is_hovered = node_idx == self.state.hovered_node && node_idx.is_some();
+            let is_selected = node_idx == self.state.selected_node && node_idx.is_some();
+            if is_selected {
+                ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.6));
+            } else if is_hovered {
                 ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35));
             }
         });
@@ -307,6 +428,9 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             }
             RowKind::ArrayElement { array_id, index, depth } => {
                 self.render_array_element_cell(ui, cell.col_nr, *array_id, *index, *depth);
+            }
+            RowKind::ScalarArrayElement { parent_idx, index, depth } => {
+                self.render_scalar_array_element_cell(ui, cell.col_nr, *parent_idx, *index, *depth);
             }
         }
     }
@@ -380,7 +504,9 @@ impl TemplateTableDelegate<'_> {
                 } else {
                     ui.add_space(14.0);
                 }
-                ui.add(egui::Label::new(&node.name).truncate());
+                let name_resp = ui.add(egui::Label::new(&node.name).truncate());
+                attach_comment_tooltip(name_resp, node);
+                render_comment_marker(ui, node);
             }
             2 => {
                 let label = hxy_plugin_host::node_display_type(node);
@@ -422,15 +548,22 @@ impl TemplateTableDelegate<'_> {
             self.events.push(TemplateEvent::SetColor { idx, color });
         }
         let has_override = self.state.node_color_overrides.contains_key(&idx.0);
-        resp.on_hover_text(if has_override { "Click to edit, right-click to reset" } else { "Click to override color" })
-            .context_menu(|ui| {
-                ui.add_enabled_ui(has_override, |ui| {
-                    if ui.button("Reset to auto").clicked() {
-                        self.events.push(TemplateEvent::ResetColor(idx));
-                        ui.close();
-                    }
-                });
-            });
+        // Shift-click resets to the auto color (template attribute or
+        // hue-cycle fallback). The previous design used a `.context_menu`
+        // popup, but registering a second popup on the same button
+        // response races the color picker's popup bookkeeping and
+        // dismisses the picker on the same frame it opens; a modifier
+        // click avoids the second popup entirely.
+        let shift_clicked = resp.clicked() && ui.input(|i| i.modifiers.shift);
+        if shift_clicked && has_override {
+            self.events.push(TemplateEvent::ResetColor(idx));
+        }
+        let tooltip = if has_override {
+            "Click to edit, shift-click to reset"
+        } else {
+            "Click to override color"
+        };
+        resp.on_hover_text(tooltip);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -472,6 +605,70 @@ impl TemplateTableDelegate<'_> {
         }
     }
 
+    /// Render one synthesized element row of a fixed-size primitive
+    /// array. The lang emitted the parent ScalarArray as one node; we
+    /// decode the per-element bytes from the source on demand. No
+    /// color swatch -- the parent owns the tint (see `collect_leaves`).
+    fn render_scalar_array_element_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        col_nr: usize,
+        parent_idx: TemplateNodeIdx,
+        index: u64,
+        depth: usize,
+    ) {
+        let Some(parent) = self.state.tree.nodes.get(parent_idx.0 as usize) else { return };
+        let hxy_plugin_host::template::NodeType::ScalarArray((kind, _count)) = parent.type_name else { return };
+        let Some(elem_width) = scalar_kind_width(kind) else { return };
+        if elem_width == 0 {
+            return;
+        }
+        let elem_offset = parent.span.offset.saturating_add(index * elem_width);
+        match col_nr {
+            0 => {}
+            1 => {
+                ui.add_space((depth as f32) * INDENT_STEP + 14.0);
+                ui.label(format!("[{index}]"));
+            }
+            2 => {
+                let label = scalar_kind_name(kind);
+                ui.add(egui::Label::new(egui::RichText::new(label).weak()));
+            }
+            3 => {
+                ui.monospace(format!("{elem_offset:#x}"));
+            }
+            4 => {
+                let end = elem_offset.saturating_add(elem_width);
+                ui.monospace(format!("{end:#x}"));
+            }
+            5 => {
+                ui.monospace(elem_width.to_string());
+            }
+            6 => {
+                let endian = parent
+                    .attributes
+                    .iter()
+                    .find_map(|(k, v)| (k == hxy_plugin_host::ENDIAN_ATTR).then_some(v.as_str()))
+                    .unwrap_or("little");
+                let range = match hxy_core::ByteRange::new(
+                    hxy_core::ByteOffset::new(elem_offset),
+                    hxy_core::ByteOffset::new(elem_offset.saturating_add(elem_width)),
+                ) {
+                    Ok(r) => r,
+                    Err(_) => return,
+                };
+                let bytes = match self.source.read(range) {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
+                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian) {
+                    ui.add(egui::Label::new(text).truncate());
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn render_array_element_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -486,7 +683,9 @@ impl TemplateTableDelegate<'_> {
             0 => {}
             1 => {
                 ui.add_space((depth as f32) * INDENT_STEP + 14.0);
-                ui.label(format!("[{index}]"));
+                let resp = ui.label(format!("[{index}]"));
+                attach_comment_tooltip(resp, node);
+                render_comment_marker(ui, node);
             }
             2 => {
                 let label = hxy_plugin_host::node_display_type(node);
@@ -547,7 +746,16 @@ fn emit_node(
     let node = &state.tree.nodes[idx.0 as usize];
     let kids = children.get(&Some(idx)).cloned().unwrap_or_default();
     let has_array = node.array.is_some();
-    let is_parent = !kids.is_empty() || has_array;
+    // Fixed-size primitive arrays (`u32 length[4]`, `char name[N]`)
+    // come back as a single ScalarArray node with no children. Treat
+    // them as parents anyway so the user can drill into individual
+    // elements; the rows themselves get synthesized lazily when the
+    // user expands.
+    let scalar_array_count = match node.type_name {
+        hxy_plugin_host::template::NodeType::ScalarArray((_, n)) if n > 0 => Some(n),
+        _ => None,
+    };
+    let is_parent = !kids.is_empty() || has_array || scalar_array_count.is_some();
     let collapsed = state.collapsed.contains(&idx);
 
     out.push(RowKind::Node { idx, depth, is_parent, collapsed });
@@ -573,6 +781,11 @@ fn emit_node(
                 element_type: arr.element_type.clone(),
                 depth: depth + 1,
             });
+        }
+    }
+    if let Some(count) = scalar_array_count {
+        for i in 0..count {
+            out.push(RowKind::ScalarArrayElement { parent_idx: idx, index: i, depth: depth + 1 });
         }
     }
 }
@@ -665,6 +878,24 @@ pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count:
     }
 }
 
+/// Tree-node indices for every visible Node row, in panel display
+/// order. Non-Node rows (deferred-array placeholders, expanded array
+/// elements, synthetic primitive-array elements) are filtered out
+/// because they don't have a stable `TemplateNodeIdx`. Used by the
+/// arrow-key navigation handler to step from one selectable row to
+/// the next.
+pub fn visible_node_indices(state: &TemplateState) -> Vec<TemplateNodeIdx> {
+    let children = children_by_parent(&state.tree.nodes);
+    let visible = build_visible(state, &children);
+    visible
+        .into_iter()
+        .filter_map(|r| match r {
+            RowKind::Node { idx, .. } => Some(idx),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn toggle_collapse(state: &mut TemplateState, idx: TemplateNodeIdx) {
     if !state.collapsed.remove(&idx) {
         state.collapsed.insert(idx);
@@ -686,17 +917,20 @@ pub fn new_state_from(
     tree: hxy_plugin_host::template::ResultTree,
     node_color_overrides: HashMap<u32, egui::Color32>,
 ) -> TemplateState {
-    let (leaf_boundaries, leaf_node_indices) = collect_leaves(&tree);
+    let children_of = build_children_index(&tree);
+    let (leaf_boundaries, leaf_node_indices) = collect_leaves(&tree, &children_of);
     let leaf_slot_by_node: HashMap<u32, usize> =
         leaf_node_indices.iter().enumerate().map(|(i, &n)| (n, i)).collect();
     let leaf_colors = resolve_leaf_colors(&tree, &leaf_node_indices, &node_color_overrides);
+    let collapsed = initial_collapsed(&tree, &children_of);
     let byte_palette_override = build_byte_palette_override(tree.byte_palette.as_deref());
     TemplateState {
         parsed: Some(parsed),
         tree,
         expanded_arrays: HashMap::new(),
-        collapsed: HashSet::new(),
+        collapsed,
         hovered_node: None,
+        selected_node: None,
         leaf_boundaries,
         leaf_colors,
         leaf_node_indices,
@@ -751,6 +985,7 @@ pub fn error_state(message: String) -> TemplateState {
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
+        selected_node: None,
         leaf_boundaries: Vec::new(),
         leaf_colors: Vec::new(),
         leaf_node_indices: Vec::new(),
@@ -903,6 +1138,38 @@ fn resolve_leaf_colors(
         .collect()
 }
 
+/// Pull a non-empty `hxy_comment` off the node, or `None`.
+fn node_comment(node: &Node) -> Option<&str> {
+    node.attributes
+        .iter()
+        .find_map(|(k, v)| (k == hxy_plugin_host::COMMENT_ATTR && !v.is_empty()).then_some(v.as_str()))
+}
+
+/// Render a dim INFO icon directly after the field name when the node
+/// carries a `hxy_comment`. Hovering the icon shows the full comment
+/// in a tooltip; hovering the name label does the same. The icon
+/// makes the comment discoverable (otherwise the user would have to
+/// know to hover) and also gives us a guaranteed-hoverable widget --
+/// `Label` tooltips can be flaky inside the densely-overlapping
+/// row layout.
+fn render_comment_marker(ui: &mut egui::Ui, node: &Node) {
+    let Some(comment) = node_comment(node) else {
+        return;
+    };
+    let icon = egui::RichText::new(egui_phosphor::regular::INFO).weak();
+    ui.add(egui::Label::new(icon)).on_hover_text(comment);
+}
+
+/// Attach a hover tooltip carrying the node's `hxy_comment` to a
+/// just-rendered widget response. Used on the row's name label so
+/// the user gets the tooltip whether they hover the name text or
+/// the marker icon next to it.
+fn attach_comment_tooltip(resp: egui::Response, node: &Node) {
+    if let Some(comment) = node_comment(node) {
+        resp.on_hover_text(comment);
+    }
+}
+
 /// Pull a `hxy_color` attribute off `node` and parse it as an sRGB(A)
 /// hex string. Accepted shapes (case-insensitive, optional `#` /
 /// `0x` prefix): `RRGGBB` and `AARRGGBB`. `None` when the attribute
@@ -937,11 +1204,19 @@ fn parse_hex_color(s: &str) -> Option<egui::Color32> {
     }
 }
 
-/// Walk `tree` to find the deepest node whose span contains `byte`
+/// Walk `tree` to find the first leaf node whose span contains `byte`
 /// and return a top-down path of "{type} {name}[ = {value}]" strings.
 /// `None` when no template field covers the offset.
 ///
-/// When the deepest node is a primitive `ScalarArray`, the breadcrumb
+/// "First" matters because some templates declare a trailing
+/// visualizer / peek field that overlaps the whole struct
+/// (`u8 v[length] @ addressof(this) [[no_unique_address]]`); a
+/// last-emitted-wins walk would always end on it instead of the
+/// structural field the user is hovering. "Leaf" matters because
+/// otherwise the root struct (which contains every byte) would win
+/// before we reach anything specific.
+///
+/// When the chosen leaf is a primitive `ScalarArray`, the breadcrumb
 /// gets an extra leaf row showing the specific element under the
 /// cursor -- e.g. `uchar [77] = 120` -- decoded on the fly from
 /// `source`. That's the reason the source is taken as an argument:
@@ -952,17 +1227,22 @@ pub fn breadcrumb_for_offset(
     source: &dyn hxy_core::HexSource,
     byte: u64,
 ) -> Option<Vec<String>> {
-    // Find the deepest containing node by scanning once; later (more
-    // specific) nodes in the flat pre-order list win over ancestors.
-    let mut deepest: Option<u32> = None;
-    for (idx, node) in tree.nodes.iter().enumerate() {
-        let start = node.span.offset;
-        let end = start.saturating_add(node.span.length);
-        if byte >= start && byte < end {
-            deepest = Some(idx as u32);
+    let mut has_children = vec![false; tree.nodes.len()];
+    for node in &tree.nodes {
+        if let Some(parent) = node.parent
+            && (parent as usize) < has_children.len()
+        {
+            has_children[parent as usize] = true;
         }
     }
-    let leaf = deepest?;
+    let leaf = tree.nodes.iter().enumerate().find_map(|(idx, node)| {
+        if has_children[idx] {
+            return None;
+        }
+        let start = node.span.offset;
+        let end = start.saturating_add(node.span.length);
+        (byte >= start && byte < end).then_some(idx as u32)
+    })?;
 
     // Walk parent chain leaf -> root.
     let mut chain: Vec<u32> = Vec::new();
@@ -1156,38 +1436,119 @@ fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
     })
 }
 
-/// Collect leaf nodes -- ones with no children and no deferred array --
-/// and sort them by offset. Returns parallel vectors of byte spans
-/// and source-tree node indices: `boundaries[i]` is the span of the
-/// leaf whose tree position is `node_indices[i]`. The hex view uses
-/// the spans to draw per-field outlines; the panel uses the indices
-/// to look up per-node color overrides.
-fn collect_leaves(
-    tree: &hxy_plugin_host::template::ResultTree,
-) -> (Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>, Vec<u32>) {
-    let mut has_children = vec![false; tree.nodes.len()];
-    for node in &tree.nodes {
+/// Per-parent child index. Built once at TemplateState construction
+/// and reused for both leaf detection and the initial collapse set.
+fn build_children_index(tree: &hxy_plugin_host::template::ResultTree) -> Vec<Vec<u32>> {
+    let mut out: Vec<Vec<u32>> = vec![Vec::new(); tree.nodes.len()];
+    for (idx, node) in tree.nodes.iter().enumerate() {
         if let Some(parent) = node.parent
-            && (parent as usize) < has_children.len()
+            && (parent as usize) < out.len()
         {
-            has_children[parent as usize] = true;
+            out[parent as usize].push(idx as u32);
         }
     }
-    let mut entries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen, u32)> = tree
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(idx, node)| !has_children[*idx] && node.array.is_none() && node.span.length > 0)
-        .map(|(idx, node)| {
-            (
-                hxy_core::ByteOffset::new(node.span.offset),
-                hxy_core::ByteLen::new(node.span.length),
-                idx as u32,
-            )
+    out
+}
+
+/// Collect "color leaves" -- the nodes whose byte spans should receive
+/// distinct tints in the hex view (and whose rows show a swatch in the
+/// panel's Color column). Returns parallel vectors of spans and tree
+/// node indices, sorted by offset.
+///
+/// A node is a color leaf when:
+/// - it has no children (the typical scalar field), or
+/// - it's the parent of a primitive-element array (every child has
+///   `Scalar(_)` type). In that case the children are *excluded*: a
+///   `char keyword[]` should paint as one continuous teal block, not
+///   eighteen rainbow bytes, even though the lang did emit eighteen
+///   per-element nodes for browsing.
+///
+/// Deferred arrays and zero-length nodes are always excluded.
+fn collect_leaves(
+    tree: &hxy_plugin_host::template::ResultTree,
+    children_of: &[Vec<u32>],
+) -> (Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>, Vec<u32>) {
+    // A node is "absorbed by a primitive-array parent" when its
+    // immediate parent has all-scalar children. The parent owns the
+    // tint for the whole span; the absorbed child contributes
+    // nothing of its own to leaf coloring even though it would
+    // otherwise pass the no-children filter below.
+    let absorbed: Vec<bool> = (0..tree.nodes.len())
+        .map(|idx| {
+            let Some(parent) = tree.nodes[idx].parent else {
+                return false;
+            };
+            let parent = parent as usize;
+            if parent >= children_of.len() {
+                return false;
+            }
+            all_children_scalar(tree, &children_of[parent])
         })
         .collect();
-    entries.sort_by_key(|(start, _, _)| start.get());
-    let boundaries = entries.iter().map(|(s, l, _)| (*s, *l)).collect();
-    let node_indices = entries.into_iter().map(|(_, _, n)| n).collect();
+    // Walk in declaration / tree order and accept a leaf only when
+    // its span doesn't overlap any leaf we've already accepted.
+    // First-emitted wins on overlap. Drops trailing "visualizer"
+    // fields some templates declare as
+    // `u8 v[length] @ addressof(this) [[no_unique_address]]` --
+    // those would otherwise claim every byte's tint and overshadow
+    // the structural fields. Same shape works for any other late
+    // peek field declared with the same overlap pattern, no
+    // hardcoding to a name.
+    let mut accepted: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen, u32)> = Vec::new();
+    for (idx, node) in tree.nodes.iter().enumerate() {
+        if node.array.is_some() || node.span.length == 0 || absorbed[idx] {
+            continue;
+        }
+        let kids = &children_of[idx];
+        if !(kids.is_empty() || all_children_scalar(tree, kids)) {
+            continue;
+        }
+        let new_start = node.span.offset;
+        let new_end = new_start.saturating_add(node.span.length);
+        let overlaps = accepted.iter().any(|(s, l, _)| {
+            let s_start = s.get();
+            let s_end = s_start.saturating_add(l.get());
+            new_start < s_end && s_start < new_end
+        });
+        if overlaps {
+            continue;
+        }
+        accepted.push((
+            hxy_core::ByteOffset::new(new_start),
+            hxy_core::ByteLen::new(node.span.length),
+            idx as u32,
+        ));
+    }
+    accepted.sort_by_key(|(start, _, _)| start.get());
+    let boundaries = accepted.iter().map(|(s, l, _)| (*s, *l)).collect();
+    let node_indices = accepted.into_iter().map(|(_, _, n)| n).collect();
     (boundaries, node_indices)
+}
+
+fn all_children_scalar(tree: &hxy_plugin_host::template::ResultTree, kids: &[u32]) -> bool {
+    kids.iter().all(|&c| {
+        tree.nodes
+            .get(c as usize)
+            .is_some_and(|n| matches!(n.type_name, hxy_plugin_host::template::NodeType::Scalar(_)))
+    })
+}
+
+/// Initial set of collapsed nodes: every node that *can* be expanded
+/// (parent of children, deferred array, or fixed-size primitive
+/// scalar array). Templates can be deep enough that landing on the
+/// fully-expanded tree is overwhelming; the user opens what they
+/// need.
+fn initial_collapsed(
+    tree: &hxy_plugin_host::template::ResultTree,
+    children_of: &[Vec<u32>],
+) -> std::collections::HashSet<TemplateNodeIdx> {
+    (0..tree.nodes.len() as u32)
+        .filter(|&idx| {
+            let node = &tree.nodes[idx as usize];
+            !children_of[idx as usize].is_empty()
+                || node.array.is_some()
+                || matches!(node.type_name, hxy_plugin_host::template::NodeType::ScalarArray((_, n)) if n > 0)
+        })
+        .map(TemplateNodeIdx)
+        .collect()
 }

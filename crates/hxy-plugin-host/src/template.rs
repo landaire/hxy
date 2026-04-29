@@ -115,6 +115,13 @@ pub const COMMENT_ATTR: &str = "hxy_comment";
 /// can still nudge the renderer through the generic attribute path.
 pub const FORMAT_ATTR: &str = "hxy_format";
 
+/// Display-name override. When present and non-empty, the panel
+/// shows this string instead of the field's source-declared
+/// identifier. Lets ImHex's `[[name("IDAT")]]` / `[[name(fn(this))]]`
+/// patterns relabel a chunk_t instance from its enclosing array
+/// index ("[0]", "[1]") to its actual chunk tag.
+pub const NAME_ATTR: &str = "hxy_name";
+
 /// UI label for a node, bitfield-aware. Composite kinds get a
 /// `struct ` / `enum ` prefix here (not in [`node_type_label`]) so the
 /// type column reads at a glance; the bare label is reserved for

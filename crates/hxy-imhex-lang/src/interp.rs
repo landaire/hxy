@@ -1864,6 +1864,7 @@ impl<S: HexSource> Interpreter<S> {
             // this, struct-local computed values are visible only
             // for the duration of the struct's body.
             if let Some(parent_idx) = parent {
+                let evaluated_attrs = self.eval_attrs(attrs);
                 self.push_node(NodeOut {
                     name: name.clone(),
                     ty: NodeType::Unknown(ty.leaf().to_owned()),
@@ -1871,7 +1872,7 @@ impl<S: HexSource> Interpreter<S> {
                     length: 0,
                     value: Some(value),
                     parent: Some(parent_idx),
-                    attrs: attrs_to_pairs(attrs),
+                    attrs: evaluated_attrs,
                 });
             }
             return Ok(Flow::Next);
@@ -1908,7 +1909,7 @@ impl<S: HexSource> Interpreter<S> {
             self.bind_var(name, value);
             return Ok(Flow::Next);
         }
-        let mut all_attrs = attrs_to_pairs(attrs);
+        let mut all_attrs = self.eval_attrs(attrs);
         // `[[no_unique_address]]` -- the field reads at the current
         // cursor but doesn't advance it. Save the cursor and
         // restore it after the read; the field itself still emits a
@@ -1968,7 +1969,7 @@ impl<S: HexSource> Interpreter<S> {
                     length: 0,
                     value: Some(value),
                     parent,
-                    attrs: attrs_to_pairs(attrs),
+                    attrs: all_attrs.clone(),
                 });
                 if let Some(saved) = saved_pos {
                     self.cursor_seek(saved);
@@ -2106,6 +2107,44 @@ pub const ARRAY_INLINE_THRESHOLD_BYTES: u64 = 1024 * 1024;
 impl<S: HexSource> Interpreter<S> {
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope stack empty")
+    }
+
+    /// Convert an [`Attrs`] AST list into the `(canonical_name, value)`
+    /// pairs the host stores on each emitted node. Non-literal
+    /// argument expressions get evaluated through [`Self::eval`] --
+    /// this is what makes ImHex's `[[name(chunkValueName(this))]]`
+    /// pattern resolve to the chunk's actual name instead of a
+    /// debug-formatted span. Eval errors swallow to an empty string;
+    /// attributes are presentational metadata, so we never want to
+    /// abort a run because of one.
+    fn eval_attrs(&mut self, attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
+        let mut out = Vec::with_capacity(attrs.0.len());
+        for a in &attrs.0 {
+            let value = a.args.first().map(|e| self.eval_attr_arg(e)).unwrap_or_default();
+            out.push((canonicalize_attr_name(&a.name), value));
+        }
+        out
+    }
+
+    fn eval_attr_arg(&mut self, e: &Expr) -> String {
+        match e {
+            Expr::IntLit { value, .. } => value.to_string(),
+            Expr::StringLit { value, .. } => value.clone(),
+            Expr::BoolLit { value, .. } => value.to_string(),
+            // Member access, function calls, computed expressions:
+            // run them through the regular evaluator and stringify
+            // the result. A bare identifier might be a variable name
+            // OR a type name; try eval first and fall back to the
+            // ident text only when eval fails (so `[[color(MyColor)]]`
+            // with a `MyColor` const works).
+            other => match self.eval(other) {
+                Ok(v) => stringify_attr_value(&v),
+                Err(_) => match other {
+                    Expr::Ident { name, .. } => name.clone(),
+                    _ => String::new(),
+                },
+            },
+        }
     }
 
     /// Push a node onto the emitted list and keep the by-name index
@@ -2378,6 +2417,18 @@ impl<S: HexSource> Interpreter<S> {
             }
             self.cursor_seek(max_end);
             self.nodes[idx.as_usize()].length = max_end - offset;
+        }
+        // Evaluate the struct decl's own attributes now -- after the
+        // body has populated `this`'s fields and before we pop the
+        // `this` / scope stack. This is the timing that makes
+        // `[[name(chunkValueName(this))]]` resolve to "IDAT" / "IEND" /
+        // ... rather than to `Void` (which it would, evaluated before
+        // the body) or to a parent's value (after pop). Append rather
+        // than replace so a field-decl `[[name("FOO")]]` stays first
+        // in the attrs list and wins lookups.
+        if !decl.attrs.0.is_empty() {
+            let struct_attrs = self.eval_attrs(&decl.attrs);
+            self.nodes[idx.as_usize()].attrs.extend(struct_attrs);
         }
         self.scopes.pop();
         self.this_stack.pop();
@@ -4392,24 +4443,34 @@ fn value_byte_size(v: &Value) -> u64 {
     }
 }
 
-fn attrs_to_pairs(attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
-    attrs
-        .0
-        .iter()
-        .map(|a| {
-            let value = a.args.first().map(format_attr_arg).unwrap_or_default();
-            (a.name.clone(), value)
-        })
-        .collect()
+/// Promote a bare ImHex attribute name to the canonical `hxy_*` key
+/// the rest of the host reads. Templates write `[[color("...")]]` /
+/// `[[name("...")]]` etc.; the panel + hex view look up
+/// `hxy_color` / `hxy_name`. Without this promotion every consumer
+/// would have to know both spellings, and adding a new attribute
+/// would mean fanning the alias out to every reader.
+fn canonicalize_attr_name(name: &str) -> String {
+    let canonical = match name {
+        "color" => "hxy_color",
+        "bg_color" => "hxy_bg_color",
+        "comment" => "hxy_comment",
+        "format" => "hxy_format",
+        "name" => "hxy_name",
+        other => return other.to_owned(),
+    };
+    canonical.to_owned()
 }
 
-fn format_attr_arg(e: &Expr) -> String {
-    match e {
-        Expr::IntLit { value, .. } => value.to_string(),
-        Expr::StringLit { value, .. } => value.clone(),
-        Expr::BoolLit { value, .. } => value.to_string(),
-        Expr::Ident { name, .. } => name.clone(),
-        _ => format!("{:?}", e.span()),
+/// Render a [`Value`] for use as an attribute string. Strings come
+/// through unquoted (a `[[name("Header")]]` should land as `Header`,
+/// not `"Header"`); chars become their character form; everything
+/// else uses [`Display`].
+fn stringify_attr_value(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.clone(),
+        Value::Char { value, .. } => char::from_u32(*value).map(String::from).unwrap_or_default(),
+        Value::Void => String::new(),
+        other => format!("{other}"),
     }
 }
 

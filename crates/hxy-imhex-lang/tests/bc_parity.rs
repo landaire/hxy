@@ -317,15 +317,17 @@ Palette pal;
 
 #[test]
 fn decorative_attrs_pass_through_matches_ast() {
-    // `[[name(...), comment(...)]]` are pure pass-through to the
-    // emitted node's attr list -- the renderer reads them but the
-    // VM doesn't need to do anything special.
+    // `[[name(...), comment(...)]]` flow through to the emitted
+    // node's attr list under their canonical `hxy_*` keys -- the
+    // panel reads `hxy_name` to override the displayed identifier
+    // and `hxy_comment` to render a hover tooltip. The VM doesn't
+    // need to do anything special beyond eval_attrs's promotion.
     let src = "u32 magic [[name(\"Magic\"), comment(\"file magic\")]];\n";
     let bytes = 0xDEADBEEFu32.to_le_bytes().to_vec();
     let (ast, bc_run) = run_both(src, bytes);
     assert_node_parity(&ast, &bc_run);
-    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "name" && v == "Magic"));
-    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "comment" && v == "file magic"));
+    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "hxy_name" && v == "Magic"));
+    assert!(bc_run.nodes[0].attrs.iter().any(|(k, v)| k == "hxy_comment" && v == "file magic"));
 }
 
 #[test]

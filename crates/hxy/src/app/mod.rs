@@ -1637,6 +1637,12 @@ impl HxyApp {
             else {
                 continue;
             };
+            // The tab's first-frame open already enqueued a "would
+            // you like to run X.bt?" prompt via `suggest_templates_for`.
+            // The user already picked a template last session (we're
+            // about to auto-rerun it); nagging them again is wrong,
+            // so dismiss the prompt before it gets a paint.
+            self.toasts.dismiss_for_file(file_id);
             for t in &templates {
                 let restore = crate::templates::runner::RestoreContext {
                     expected_fingerprint: t.source_fingerprint,
@@ -3403,16 +3409,7 @@ fn apply_template_event(
             }
         }
         TemplateEvent::Select(idx) => {
-            let Some(state) = file.active_template().map(|t| &t.state) else { return };
-            let Some(node) = state.tree.nodes.get(idx.0 as usize) else { return };
-            let offset = node.span.offset;
-            let length = node.span.length.max(1);
-            let end_inclusive = offset.saturating_add(length - 1);
-            file.editor.set_selection(Some(hxy_core::Selection {
-                anchor: hxy_core::ByteOffset::new(offset),
-                cursor: hxy_core::ByteOffset::new(end_inclusive),
-            }));
-            file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
+            select_template_node(file, idx);
         }
         TemplateEvent::Copy { idx, kind } => {
             let Some(state) = file.active_template().map(|t| &t.state) else { return };
@@ -3450,7 +3447,68 @@ fn apply_template_event(
                 crate::panels::template::recompute_leaf_colors(state);
             }
         }
+        TemplateEvent::MoveSelection(delta) => {
+            move_template_selection(file, delta);
+        }
+        TemplateEvent::CollapseSelected => {
+            let Some(state) = file.active_template_mut().map(|t| &mut t.state) else { return };
+            if let Some(idx) = state.selected_node {
+                state.collapsed.insert(idx);
+            }
+        }
+        TemplateEvent::ExpandSelected => {
+            let Some(state) = file.active_template_mut().map(|t| &mut t.state) else { return };
+            if let Some(idx) = state.selected_node {
+                state.collapsed.remove(&idx);
+            }
+        }
     }
+}
+
+/// Set the active template's selected row to `idx` and re-fire the
+/// usual byte-selection / scroll side effects so the hex view jumps
+/// to the new field. Shared between mouse Select clicks and arrow-
+/// key MoveSelection.
+#[cfg(not(target_arch = "wasm32"))]
+fn select_template_node(file: &mut OpenFile, idx: crate::files::TemplateNodeIdx) {
+    let Some(state) = file.active_template_mut().map(|t| &mut t.state) else { return };
+    state.selected_node = Some(idx);
+    let Some(node) = state.tree.nodes.get(idx.0 as usize) else { return };
+    let offset = node.span.offset;
+    let length = node.span.length.max(1);
+    let end_inclusive = offset.saturating_add(length - 1);
+    file.editor.set_selection(Some(hxy_core::Selection {
+        anchor: hxy_core::ByteOffset::new(offset),
+        cursor: hxy_core::ByteOffset::new(end_inclusive),
+    }));
+    file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
+}
+
+/// Move the active template's selection by `delta` positions in the
+/// flattened visible row list, skipping non-Node rows (synthesized
+/// array elements have no tree-node identity). Wraps to the first /
+/// last node row at the ends.
+#[cfg(not(target_arch = "wasm32"))]
+fn move_template_selection(file: &mut OpenFile, delta: i32) {
+    let Some(template) = file.active_template() else { return };
+    let state = &template.state;
+    let Some(current) = state.selected_node else { return };
+
+    // Recompute the visible list the same way the panel does. It
+    // depends on collapsed state and on which deferred arrays are
+    // expanded, so we need a fresh walk; the panel's view is
+    // ephemeral and not stored on TemplateState.
+    let visible = crate::panels::template::visible_node_indices(state);
+    if visible.is_empty() {
+        return;
+    }
+    let pos = match visible.iter().position(|i| *i == current) {
+        Some(p) => p,
+        None => 0,
+    };
+    let next = (pos as i32 + delta).clamp(0, visible.len() as i32 - 1) as usize;
+    let next_idx = visible[next];
+    select_template_node(file, next_idx);
 }
 
 /// Read `node`'s byte span from `source` and format it according to

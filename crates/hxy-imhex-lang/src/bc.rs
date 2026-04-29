@@ -1596,9 +1596,27 @@ fn ast_attrs_to_pairs(attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
         .iter()
         .map(|a| {
             let value = a.args.first().map(format_attr_arg).unwrap_or_default();
-            (a.name.clone(), value)
+            // Mirror the AST interpreter's eval_attrs canonicalisation
+            // so the BC path produces the same `hxy_*` keys the panel
+            // and hex view consume. The decorative-attr gate above
+            // ensures non-literal arg expressions are rejected, so
+            // this path doesn't need an evaluator hook -- just the
+            // name promotion.
+            (canonicalize_attr_name_bc(&a.name), value)
         })
         .collect()
+}
+
+fn canonicalize_attr_name_bc(name: &str) -> String {
+    let canonical = match name {
+        "color" => "hxy_color",
+        "bg_color" => "hxy_bg_color",
+        "comment" => "hxy_comment",
+        "format" => "hxy_format",
+        "name" => "hxy_name",
+        other => return other.to_owned(),
+    };
+    canonical.to_owned()
 }
 
 fn format_attr_arg(e: &crate::ast::Expr) -> String {

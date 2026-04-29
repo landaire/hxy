@@ -441,6 +441,14 @@ pub struct TemplateState {
     /// whose row the pointer is over, if any. Consumed by the hex
     /// view to paint a highlight over that node's byte span.
     pub hovered_node: Option<TemplateNodeIdx>,
+    /// Currently keyboard-selected row in the panel. Persists across
+    /// frames so up/down/left/right have somewhere to operate from
+    /// after the user clicked an initial row. Distinct from
+    /// `hovered_node` (which follows the pointer) and from the
+    /// editor's byte selection (which is what the hex view paints);
+    /// click and arrow-key moves both update this AND re-fire the
+    /// `Select` side effects so the hex view follows along.
+    pub selected_node: Option<TemplateNodeIdx>,
     /// Precomputed (offset, length) spans for every leaf node in
     /// the tree, sorted by offset. Passed to `HexView` so it can
     /// draw field-boundary outlines without walking the tree each

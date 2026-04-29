@@ -130,8 +130,9 @@ fn convert_node(n: &hxy_010_lang::NodeOut) -> wit::Node {
     // arrays, which the hex-view tooltip uses to decode individual
     // elements on hover.
     let attributes: Vec<(String, String)> = n.attrs.clone();
+    let name_override = first_nonempty_attr(&attributes, hxy_plugin_host::NAME_ATTR);
     wit::Node {
-        name: n.name.clone(),
+        name: name_override.unwrap_or_else(|| n.name.clone()),
         type_name: convert_node_type(&n.ty),
         span: wit::Span { offset: n.offset, length: n.length },
         value: n.value.as_ref().map(convert_value),
@@ -296,7 +297,16 @@ impl TemplateRuntime for ImHexRuntime {
         let tokens =
             hxy_imhex_lang::tokenize(template_source).map_err(|e| HandlerError::Malformed(format!("lex: {e}")))?;
         let program = hxy_imhex_lang::parse(tokens).map_err(|e| HandlerError::Malformed(format!("parse: {e}")))?;
-        Ok(Arc::new(ImHexParsed { program, source, resolver: self.resolver.clone() }))
+        // Pull `#pragma endian` off the original source so executes
+        // pick up the template author's intent. Without this, BE
+        // formats (PNG, classic image / network protocols) get every
+        // multi-byte field decoded LE -- a chunk's `u32 length` reads
+        // as ~0x64020000 instead of 0x264, the chunk_t's data array
+        // tries to span the rest of the file, and the surrounding
+        // `[while(read_string(...) != "IEND")]` loop sees one
+        // garbage iteration before EOF kills it.
+        let pragmas = hxy_imhex_lang::extract_pragmas(template_source);
+        Ok(Arc::new(ImHexParsed { program, source, resolver: self.resolver.clone(), endian: pragmas.endian }))
     }
 }
 
@@ -304,13 +314,17 @@ struct ImHexParsed {
     program: hxy_imhex_lang::ast::Program,
     source: Arc<dyn HexSource>,
     resolver: hxy_imhex_lang::SharedResolver,
+    endian: Option<hxy_imhex_lang::Endian>,
 }
 
 impl ParsedTemplate for ImHexParsed {
     fn execute(&self, _args: &[wit::Arg]) -> Result<wit::ResultTree, HandlerError> {
         let shim = ImHexSourceShim(self.source.clone());
-        let result =
-            hxy_imhex_lang::Interpreter::new(shim).with_import_resolver(self.resolver.clone()).run(&self.program);
+        let mut interp = hxy_imhex_lang::Interpreter::new(shim).with_import_resolver(self.resolver.clone());
+        if let Some(endian) = self.endian {
+            interp = interp.with_default_endian(endian);
+        }
+        let result = interp.run(&self.program);
         Ok(to_imhex_result_tree(result))
     }
 
@@ -345,8 +359,9 @@ fn to_imhex_result_tree(r: hxy_imhex_lang::RunResult) -> wit::ResultTree {
 
 fn convert_imhex_node(n: &hxy_imhex_lang::NodeOut) -> wit::Node {
     // Promote a `hxy_format` attribute (if present) to the typed
-    // `DisplayHint` slot. Same convention as the 010 adapter -- both
-    // runtimes target [`hxy_plugin_host::FORMAT_ATTR`].
+    // `DisplayHint` slot. The lang's `eval_attrs` already canonicalised
+    // ImHex's bare `format` to `hxy_format`, so we only need the one
+    // key here.
     let display = n.attrs.iter().find_map(|(k, v)| {
         if k == hxy_plugin_host::FORMAT_ATTR {
             Some(match v.as_str() {
@@ -360,8 +375,17 @@ fn convert_imhex_node(n: &hxy_imhex_lang::NodeOut) -> wit::Node {
             None
         }
     });
+    // ImHex's `[[name("…")]]` (or `[[name(someFn(this))]]`, evaluated
+    // by the lang) overrides the source-declared identifier in the
+    // panel. The PNG hexpat uses this pattern to rename every
+    // `chunk_t` instance to its 4-char tag (IHDR / IDAT / IEND /
+    // ...) -- without the override the panel just shows array
+    // indices. First non-empty match wins so a field-decl rename
+    // (pushed first) takes priority over a struct-decl rename
+    // (appended after the body).
+    let name_override = first_nonempty_attr(&n.attrs, hxy_plugin_host::NAME_ATTR);
     wit::Node {
-        name: n.name.clone(),
+        name: name_override.unwrap_or_else(|| n.name.clone()),
         type_name: convert_imhex_node_type(&n.ty),
         span: wit::Span { offset: n.offset, length: n.length },
         value: n.value.as_ref().map(convert_imhex_value),
@@ -370,6 +394,13 @@ fn convert_imhex_node(n: &hxy_imhex_lang::NodeOut) -> wit::Node {
         display,
         attributes: n.attrs.clone(),
     }
+}
+
+/// First non-empty value of `key` in `attrs`. Used to apply
+/// `[[name(...)]]` / future canonical-key overrides at conversion
+/// time without picking up an empty-string sentinel.
+fn first_nonempty_attr(attrs: &[(String, String)], key: &str) -> Option<String> {
+    attrs.iter().find_map(|(k, v)| (k == key && !v.is_empty()).then(|| v.clone()))
 }
 
 fn convert_imhex_scalar_kind(k: &hxy_imhex_lang::ScalarKind) -> wit::ScalarKind {

@@ -50,6 +50,7 @@ pub use template::COLOR_ATTR;
 pub use template::COMMENT_ATTR;
 pub use template::ENDIAN_ATTR;
 pub use template::FORMAT_ATTR;
+pub use template::NAME_ATTR;
 pub use template::ParsedTemplate;
 pub use template::TemplateRuntime;
 pub use template::WasmTemplateRuntime;
