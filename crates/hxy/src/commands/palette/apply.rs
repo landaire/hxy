@@ -49,6 +49,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::ToggleConsole => app.toggle_console(),
                 PaletteCommand::ToggleInspector => app.toggle_inspector(),
                 PaletteCommand::TogglePlugins => app.toggle_plugins(),
+                PaletteCommand::ToggleSettings => app.toggle_settings(),
                 PaletteCommand::ToggleMemory => app.toggle_memory_panel(),
                 PaletteCommand::Undo => crate::app::apply_command_effect(ctx, app, CommandEffect::UndoActiveFile),
                 PaletteCommand::Redo => crate::app::apply_command_effect(ctx, app, CommandEffect::RedoActiveFile),

@@ -494,6 +494,18 @@ pub fn build_palette_entries(
                 )
                 .with_icon(icon::PUZZLE_PIECE),
             );
+            let settings_visible = app.dock.find_tab(&Tab::Settings).is_some();
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t(if settings_visible {
+                        "palette-tool-close-settings"
+                    } else {
+                        "palette-tool-show-settings"
+                    }),
+                    Action::InvokeCommand(PaletteCommand::ToggleSettings),
+                )
+                .with_icon(icon::GEAR),
+            );
             let memory_visible = app.dock.find_tab(&Tab::Memory).is_some();
             out.push(
                 egui_palette::Entry::new(

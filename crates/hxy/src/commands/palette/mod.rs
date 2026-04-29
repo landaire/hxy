@@ -296,6 +296,10 @@ pub enum PaletteCommand {
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,
+    /// Reopen the Settings tab after the user closed it. Toggles --
+    /// hides the tab when it's already in the dock so the same
+    /// command works as a quick close.
+    ToggleSettings,
     /// Toggle the byte-cache debug Memory panel. Listed in the
     /// palette only when `AppSettings::debug_memory_panel_enabled`
     /// is on.

@@ -50,6 +50,7 @@ pub enum MenuAction {
     ToggleConsole,
     ToggleInspector,
     TogglePlugins,
+    ToggleSettings,
 }
 
 /// Owns the muda [`Menu`] (dropping it tears down the `NSMenu`) and
@@ -199,12 +200,15 @@ impl MenuState {
         let console = MenuItem::new("Toggle Console", true, None);
         let inspector = MenuItem::new("Toggle Inspector", true, None);
         let plugins = MenuItem::new("Toggle Plugins", true, None);
+        let settings = MenuItem::new("Toggle Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
         view_menu.append(&console).expect("append console");
         view_menu.append(&inspector).expect("append inspector");
         view_menu.append(&plugins).expect("append plugins");
+        view_menu.append(&settings).expect("append settings");
         actions.insert(console.id().0.clone(), MenuAction::ToggleConsole);
         actions.insert(inspector.id().0.clone(), MenuAction::ToggleInspector);
         actions.insert(plugins.id().0.clone(), MenuAction::TogglePlugins);
+        actions.insert(settings.id().0.clone(), MenuAction::ToggleSettings);
 
         menu.init_for_nsapp();
 

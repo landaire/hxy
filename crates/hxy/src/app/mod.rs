@@ -917,6 +917,30 @@ impl HxyApp {
         }
     }
 
+    /// Focus the existing Settings tab if present; otherwise push a
+    /// fresh one into the focused leaf. Settings is a content tab
+    /// rather than a tool panel, so we land it next to whatever the
+    /// user is currently looking at instead of routing through
+    /// `push_tool_tab`.
+    pub fn show_settings(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Settings) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        self.dock.push_to_focused_leaf(Tab::Settings);
+    }
+
+    /// Close the Settings tab if present; otherwise show it.
+    pub fn toggle_settings(&mut self) {
+        if let Some(path) = self.dock.find_tab(&Tab::Settings) {
+            let _ = self.dock.remove_tab(path);
+        } else {
+            self.show_settings();
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
         self.template_plugins.iter().find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension))).cloned()
@@ -4035,6 +4059,7 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::ToggleConsole => app.toggle_console(),
             crate::menu::MenuAction::ToggleInspector => app.toggle_inspector(),
             crate::menu::MenuAction::TogglePlugins => app.toggle_plugins(),
+            crate::menu::MenuAction::ToggleSettings => app.toggle_settings(),
         }
     }
 }
