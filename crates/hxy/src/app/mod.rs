@@ -2415,6 +2415,14 @@ impl eframe::App for HxyApp {
         for workspace_id in to_collapse {
             crate::tabs::close::collapse_workspace_to_file(self, workspace_id);
         }
+
+        // Empty dock = blank-canvas frame next render. Push Welcome
+        // back so the user always has *something* to look at, both to
+        // give them a starting point for the next action and so they
+        // don't think the app froze.
+        if self.dock.iter_all_tabs().next().is_none() {
+            self.dock.push_to_focused_leaf(Tab::Welcome);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let events = std::mem::take(&mut self.pending_global_search_events);
