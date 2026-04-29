@@ -2834,11 +2834,37 @@ pub enum StringsScope {
     Selection,
 }
 
+/// Above this size, the strings + checksum palette commands open
+/// the tool tab but skip the auto-run -- the user has to press Run
+/// in the panel to actually do the work. Stops a casual palette
+/// invocation against a 4 GiB memory dump from chewing tens of
+/// seconds of CPU before the user realizes what happened.
+#[cfg(not(target_arch = "wasm32"))]
+pub const AUTO_RUN_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Resolve a `StringsScope` to a concrete byte range against the
+/// file's current source. Pulled out so the strings + checksum
+/// palette helpers can share scope logic and gate auto-run by
+/// the actual range length.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_scope_range(file: &OpenFile, scope: StringsScope) -> Result<hxy_core::ByteRange, hxy_core::Error> {
+    let source_len = file.editor.source().len().get();
+    match scope {
+        StringsScope::WholeFile => whole_file_range(source_len),
+        StringsScope::Selection => match file.editor.selection() {
+            Some(sel) if !sel.range().is_empty() => Ok(sel.range()),
+            _ => whole_file_range(source_len),
+        },
+    }
+}
+
 /// Open the Strings panel for the active file. When `auto_run` is
 /// true, also kick off a fresh extraction with the current panel
-/// config (or sensible defaults on first open). When false, just
-/// open / focus the tab so the user can adjust settings before
-/// pressing Run.
+/// config -- but only if the resolved range fits inside
+/// [`AUTO_RUN_MAX_BYTES`]; over that, the tab opens with the range
+/// pre-filled and the user has to press Run explicitly. When
+/// `auto_run` is false (the "with options" palette entry), the tab
+/// always opens without spawning so the user can adjust settings.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_strings_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: StringsScope, auto_run: bool) {
     let Some(id) = active_file_id(app) else {
@@ -2846,40 +2872,48 @@ pub fn run_strings_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: Stri
         return;
     };
     app.show_strings_for(id);
+    let Some(range_len) = apply_strings_scope(app, id, scope) else { return };
     if !auto_run {
         return;
     }
-    spawn_strings_for(ctx, app, id, scope);
-}
-
-/// Kick off (or re-fire) a strings extraction for `id` against the
-/// given range, replacing any in-flight worker and updating the
-/// panel's config so the tool tab reflects what's being scanned.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn spawn_strings_for(ctx: &egui::Context, app: &mut HxyApp, id: FileId, scope: StringsScope) {
-    let Some(file) = app.files.get(&id) else { return };
-    let source_len = file.editor.source().len().get();
-    if source_len == 0 {
-        app.console_log(ConsoleSeverity::Info, "Strings", "buffer is empty");
+    if range_len > AUTO_RUN_MAX_BYTES {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        app.console_log(
+            ConsoleSeverity::Info,
+            format!("Strings {display}"),
+            format!(
+                "{} byte(s) selected -- press Run in the panel to scan (auto-run is gated above {} MiB)",
+                range_len,
+                AUTO_RUN_MAX_BYTES / (1024 * 1024),
+            ),
+        );
         return;
     }
-    let range = match scope {
-        StringsScope::WholeFile => whole_file_range(source_len),
-        StringsScope::Selection => match file.editor.selection() {
-            Some(sel) if !sel.range().is_empty() => Ok(sel.range()),
-            _ => whole_file_range(source_len),
-        },
-    };
-    let range = match range {
+    spawn_strings_with_panel_config(ctx, app, id);
+}
+
+/// Resolve `scope` against `id` and write the resulting range onto
+/// the file's strings panel config. Returns the range length on
+/// success or `None` when the file vanished, the source is empty,
+/// or the range is invalid (each case console-logs its own
+/// diagnostic).
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_strings_scope(app: &mut HxyApp, id: FileId, scope: StringsScope) -> Option<u64> {
+    let file = app.files.get(&id)?;
+    if file.editor.source().len().get() == 0 {
+        app.console_log(ConsoleSeverity::Info, "Strings", "buffer is empty");
+        return None;
+    }
+    let range = match resolve_scope_range(file, scope) {
         Ok(r) => r,
         Err(e) => {
             app.console_log(ConsoleSeverity::Error, "Strings", format!("invalid file range: {e}"));
-            return;
+            return None;
         }
     };
-    let Some(file) = app.files.get_mut(&id) else { return };
+    let file = app.files.get_mut(&id)?;
     file.strings_panel.config.range = range;
-    spawn_strings_with_panel_config(ctx, app, id);
+    Some(range.len().get())
 }
 
 /// Recompute strings for `id` using the panel's existing config
@@ -2937,9 +2971,9 @@ pub fn jump_to_strings_match(app: &mut HxyApp, file_id: FileId, offset: u64, end
 }
 
 /// Open the Checksums panel for the active file and kick off a
-/// fresh compute against `scope`. Reuses `StringsScope` for the
-/// range selector since the two tools share whole-file / selection
-/// semantics.
+/// fresh compute against `scope` when the range fits inside
+/// [`AUTO_RUN_MAX_BYTES`]; for larger ranges the panel opens with
+/// the range pre-filled and the user presses Run explicitly.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_checksums_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: StringsScope) {
     let Some(id) = active_file_id(app) else {
@@ -2947,36 +2981,44 @@ pub fn run_checksums_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: St
         return;
     };
     app.show_checksums_for(id);
-    spawn_checksums_for(ctx, app, id, scope);
-}
-
-/// Re-derive the panel range from `scope` and start a fresh
-/// streaming compute. Replaces any in-flight worker.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn spawn_checksums_for(ctx: &egui::Context, app: &mut HxyApp, id: FileId, scope: StringsScope) {
-    let Some(file) = app.files.get(&id) else { return };
-    let source_len = file.editor.source().len().get();
-    if source_len == 0 {
-        app.console_log(ConsoleSeverity::Info, "Checksums", "buffer is empty");
+    let Some(range_len) = apply_checksums_scope(app, id, scope) else { return };
+    if range_len > AUTO_RUN_MAX_BYTES {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        app.console_log(
+            ConsoleSeverity::Info,
+            format!("Checksums {display}"),
+            format!(
+                "{} byte(s) selected -- press Run in the panel to compute (auto-run is gated above {} MiB)",
+                range_len,
+                AUTO_RUN_MAX_BYTES / (1024 * 1024),
+            ),
+        );
         return;
     }
-    let range = match scope {
-        StringsScope::WholeFile => whole_file_range(source_len),
-        StringsScope::Selection => match file.editor.selection() {
-            Some(sel) if !sel.range().is_empty() => Ok(sel.range()),
-            _ => whole_file_range(source_len),
-        },
-    };
-    let range = match range {
+    spawn_checksums_with_panel_config(ctx, app, id);
+}
+
+/// Resolve `scope` against `id` and write the resulting range onto
+/// the file's checksums panel config. Returns the range length on
+/// success or `None` when the file vanished, the source is empty,
+/// or the range is invalid.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_checksums_scope(app: &mut HxyApp, id: FileId, scope: StringsScope) -> Option<u64> {
+    let file = app.files.get(&id)?;
+    if file.editor.source().len().get() == 0 {
+        app.console_log(ConsoleSeverity::Info, "Checksums", "buffer is empty");
+        return None;
+    }
+    let range = match resolve_scope_range(file, scope) {
         Ok(r) => r,
         Err(e) => {
             app.console_log(ConsoleSeverity::Error, "Checksums", format!("invalid file range: {e}"));
-            return;
+            return None;
         }
     };
-    let Some(file) = app.files.get_mut(&id) else { return };
+    let file = app.files.get_mut(&id)?;
     file.checksums_panel.config.range = range;
-    spawn_checksums_with_panel_config(ctx, app, id);
+    Some(range.len().get())
 }
 
 /// Recompute checksums for `id` using the panel's existing config.
