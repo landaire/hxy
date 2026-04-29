@@ -212,12 +212,13 @@ fn print_report(rows: &[Row]) {
             truncate(&r.bt_status, 28),
             truncate(&r.hexpat_status, 28),
         );
-        if r.bt_status == "ok" && r.hexpat_status == "ok" {
-            if let (Some(b), Some(h)) = (r.bt_time, r.hexpat_time) {
-                bt_total += b;
-                hexpat_total += h;
-                both_ok += 1;
-            }
+        if r.bt_status == "ok"
+            && r.hexpat_status == "ok"
+            && let (Some(b), Some(h)) = (r.bt_time, r.hexpat_time)
+        {
+            bt_total += b;
+            hexpat_total += h;
+            both_ok += 1;
         }
     }
     println!("{:-<132}", "");

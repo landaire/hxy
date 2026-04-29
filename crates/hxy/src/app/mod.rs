@@ -1180,10 +1180,10 @@ impl HxyApp {
         {
             return;
         }
-        if let Some(path) = file.root_path().cloned() {
-            if let Some(watcher) = self.file_watcher.as_mut() {
-                watcher.watch(path);
-            }
+        if let Some(path) = file.root_path().cloned()
+            && let Some(watcher) = self.file_watcher.as_mut()
+        {
+            watcher.watch(path);
         }
         let needs_vfs_poll = matches!(file.source_kind.as_ref(), Some(TabSource::VfsEntry { parent, .. })
             if !matches!(parent.as_ref(), TabSource::Filesystem(_)));
@@ -2865,7 +2865,7 @@ fn handle_external_change(
         if matches!(kind, ExternalChangeKind::Removed) {
             app.console_log(
                 ConsoleSeverity::Warning,
-                format!("{display_name}"),
+                display_name.to_string(),
                 format!("source removed externally ({})", label_path.display()),
             );
             continue;
@@ -3617,10 +3617,7 @@ fn move_template_selection(file: &mut OpenFile, delta: i32) {
     if visible.is_empty() {
         return;
     }
-    let pos = match visible.iter().position(|i| *i == current) {
-        Some(p) => p,
-        None => 0,
-    };
+    let pos = visible.iter().position(|i| *i == current).unwrap_or_default();
     let next = (pos as i32 + delta).clamp(0, visible.len() as i32 - 1) as usize;
     let next_idx = visible[next];
     select_template_node(file, next_idx);
@@ -5168,7 +5165,6 @@ impl TabViewer for HxyTabViewer<'_> {
 /// Render a `Tab::Workspace` body: spin up an inner DockArea against
 /// the workspace's `dock` and dispatch to `WorkspaceTabViewer` for
 /// each sub-tab (Editor, VfsTree, Entry).
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn render_workspace_tab(
     ui: &mut egui::Ui,

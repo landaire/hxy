@@ -43,7 +43,7 @@ pub const MIN_WINDOW_BYTES: u64 = 256;
 /// too smooth to surface format boundaries; we cap there and
 /// drop below TARGET_POINTS for files in the tens-of-GiB
 /// range.
-pub const MAX_WINDOW_BYTES: u64 = 1 * 1024 * 1024;
+pub const MAX_WINDOW_BYTES: u64 = 1024 * 1024;
 
 /// One sample on the entropy plot.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -208,7 +208,7 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.heading(hxy_i18n::t("entropy-heading"));
         ui.add_space(8.0);
-        let label = file_label.unwrap_or_else(|| "");
+        let label = file_label.unwrap_or("");
         ui.label(egui::RichText::new(label).weak());
     });
     ui.separator();
@@ -278,11 +278,8 @@ pub fn show(
         let raw = value.max(0.0) as u64;
         format!("0x{raw:X}")
     };
-    let x_axis_fmt = {
-        let format_hex_offset = format_hex_offset.clone();
-        move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
-            format_hex_offset(mark.value)
-        }
+    let x_axis_fmt = move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
+        format_hex_offset(mark.value)
     };
     let label_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
         format!("offset {}\nH = {:.2} bits/byte", format_hex_offset(point.x), point.y)
@@ -365,7 +362,7 @@ mod tests {
         // TARGET_POINTS samples.
         let len = 64 * 1024 * 1024;
         let w = pick_window_size(len);
-        assert!(w >= MIN_WINDOW_BYTES && w <= MAX_WINDOW_BYTES);
+        assert!((MIN_WINDOW_BYTES..=MAX_WINDOW_BYTES).contains(&w));
         // Huge files cap at MAX_WINDOW_BYTES even if we'd
         // need fewer points to represent them.
         let huge = 64 * 1024 * 1024 * 1024;

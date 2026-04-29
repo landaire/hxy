@@ -140,6 +140,11 @@ const VFS_SAMPLE_HEAD: u64 = 4096;
 const VFS_SAMPLE_TAIL: u64 = 4096;
 const VFS_SAMPLE_MID: u64 = 4096;
 
+// The `[0..len]` literal is genuinely a one-element array of `Range`,
+// not a misspelled "collect a range into a Vec". Clippy flags both
+// `vec![0..len]` and `[0..len]` here because it can't tell the
+// difference; the function signature pins the intent.
+#[allow(clippy::single_range_in_vec_init)]
 fn vfs_sample_ranges(len: u64) -> Vec<Range<u64>> {
     if len == 0 {
         return Vec::new();

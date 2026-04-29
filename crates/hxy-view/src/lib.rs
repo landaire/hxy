@@ -1113,7 +1113,6 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 header_rect,
                 &layout,
                 &font_id,
-                row_height,
                 h_offset,
                 column_header_formatter.as_deref(),
             );
@@ -2978,7 +2977,6 @@ fn paint_column_header(
     header_rect: Rect,
     layout: &RowLayout,
     font_id: &FontId,
-    row_height: f32,
     x_offset: f32,
     formatter: Option<&dyn Fn(usize) -> String>,
 ) {

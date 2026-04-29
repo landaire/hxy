@@ -7,7 +7,7 @@
 
 use super::VisualizerContext;
 
-const MAX_BYTES: usize = 1 * 1024 * 1024;
+const MAX_BYTES: usize = 1024 * 1024;
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
     let encoding = ctx.spec.args.first().map(|s| s.as_str()).unwrap_or("utf-8").to_ascii_lowercase();

@@ -1418,6 +1418,7 @@ impl<S: HexSource> Interpreter<S> {
         Ok((v.name.clone(), val))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn read_array(
         &mut self,
         name: &str,

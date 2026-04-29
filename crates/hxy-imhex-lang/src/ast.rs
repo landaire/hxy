@@ -19,6 +19,7 @@ pub struct Program {
 /// Top-level item. Function, type declaration, or top-level statement
 /// (the field placements that drive the actual byte-reading walk).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TopItem {
     Function(FunctionDef),
     Stmt(Stmt),
@@ -133,6 +134,7 @@ pub struct BitfieldDecl {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Stmt {
     /// `using Alias = T [[attrs]];` and `using Alias<T, ...> = T;`.
     /// Templated aliases carry their parameter names so the

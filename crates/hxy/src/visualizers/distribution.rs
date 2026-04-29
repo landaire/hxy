@@ -51,7 +51,7 @@ fn build_texture(ui: &egui::Ui, ctx: &VisualizerContext) -> (Option<egui::Textur
     if ctx.bytes.is_empty() {
         return (None, 0);
     }
-    let cols = ctx.bytes.len().min(TARGET_COLS).max(1);
+    let cols = ctx.bytes.len().clamp(1, TARGET_COLS);
     let chunk = ctx.bytes.len().div_ceil(cols);
     let actual_cols = ctx.bytes.len().div_ceil(chunk);
     let mut grid = vec![0u32; actual_cols * HEIGHT];

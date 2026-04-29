@@ -486,7 +486,7 @@ mod tests {
         let cache = cache_with_limit_mib(20);
         let id = cache.alloc_source_id();
         let cached = CachedSource::new(cache.clone(), id, Attribution::HexView(HexViewKey(1)), inner);
-        let want = (CHUNK_SIZE_BYTES - 100) as u64..(CHUNK_SIZE_BYTES * 2 + 50) as u64;
+        let want = (CHUNK_SIZE_BYTES - 100)..(CHUNK_SIZE_BYTES * 2 + 50);
         let got = cached.read(range(want.start, want.end)).expect("read");
         assert_eq!(got, bytes[want.start as usize..want.end as usize]);
     }

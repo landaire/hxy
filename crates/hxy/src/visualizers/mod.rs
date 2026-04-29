@@ -212,6 +212,7 @@ pub struct VisualizerCache {
 /// (so closing the panel via the X button stays closed across
 /// repaints) and the active visualizer key (the sub-tab the user
 /// last selected).
+#[derive(Default)]
 pub struct VisualizerPanel {
     pub cache: HashMap<VisualizerKey, VisualizerCache>,
     /// True after the user explicitly closed the dock tab. Suppresses
@@ -227,12 +228,6 @@ pub struct VisualizerPanel {
     /// app sink because the click handler only sees `&mut OpenFile`,
     /// not the dock state.
     pub pending_show: bool,
-}
-
-impl Default for VisualizerPanel {
-    fn default() -> Self {
-        Self { cache: HashMap::new(), dismissed: false, active: None, pending_show: false }
-    }
 }
 
 impl VisualizerPanel {

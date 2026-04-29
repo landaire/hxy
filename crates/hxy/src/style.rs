@@ -24,7 +24,6 @@ const VIOLET: Color32 = Color32::from_rgb(157, 86, 255); // #9D56FF
 /// cursor) without the eye fatigue of a saturated pink. Sits in the
 /// same hue family as VIOLET so the theme stays cohesive.
 const LAVENDER: Color32 = Color32::from_rgb(181, 164, 224); // #B5A4E0
-const LIME: Color32 = Color32::from_rgb(151, 224, 90); // #97E05A
 const CYAN: Color32 = Color32::from_rgb(96, 205, 215); // #60CDD7
 const GOLD: Color32 = Color32::from_rgb(245, 204, 78); // #F5CC4E
 

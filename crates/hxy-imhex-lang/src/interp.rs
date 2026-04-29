@@ -204,6 +204,7 @@ impl NameInterner {
         self.index.get(name).copied().map(NameId)
     }
 
+    #[allow(dead_code)]
     fn get(&self, id: NameId) -> &str {
         &self.storage[id.0 as usize]
     }
@@ -2483,7 +2484,7 @@ impl<S: HexSource> Interpreter<S> {
             let fn_candidates = [format!("{}_value", s.name.to_lowercase()), format!("{}_value", s.name)];
             let mut value: u128 = raw_value.to_i128().unwrap_or(0) as u128;
             for fn_name in &fn_candidates {
-                if let Ok(v) = self.call_named_with_aliases(fn_name, &[raw_value.clone()], &[]) {
+                if let Ok(v) = self.call_named_with_aliases(fn_name, std::slice::from_ref(&raw_value), &[]) {
                     value = v.to_i128().unwrap_or(0) as u128;
                     break;
                 }
