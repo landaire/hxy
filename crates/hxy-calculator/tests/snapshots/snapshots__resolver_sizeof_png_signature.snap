@@ -1,5 +1,0 @@
----
-source: crates/hxy-calculator/tests/snapshots.rs
-expression: "format!(\"{} = {}\", case, value.raw())"
----
-sizeof(png.signature) = 8

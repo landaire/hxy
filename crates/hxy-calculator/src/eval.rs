@@ -47,10 +47,7 @@ fn eval_function(func: Function, path: &Path, resolver: &dyn PathResolver) -> Re
     let field = resolver.lookup(path)?;
     let raw: u64 = match func {
         Function::Offset => field.offset,
-        // `Len` and `Sizeof` both pull the byte length. The
-        // distinction is preserved in the AST so a debug print
-        // shows what the user typed; numerically they're equal.
-        Function::Len | Function::Sizeof => field.length,
+        Function::Len => field.length,
     };
     Ok(i128::from(raw))
 }
@@ -185,13 +182,6 @@ mod tests {
         let expr = parse("len(png.length)").unwrap();
         let value = evaluate_with(&expr, &FixedResolver).unwrap();
         assert_eq!(value.raw(), 8);
-    }
-
-    #[test]
-    fn function_sizeof_alias_of_len() {
-        let len_v = evaluate_with(&parse("len(png.length)").unwrap(), &FixedResolver).unwrap();
-        let size_v = evaluate_with(&parse("sizeof(png.length)").unwrap(), &FixedResolver).unwrap();
-        assert_eq!(len_v.raw(), size_v.raw());
     }
 
     #[test]

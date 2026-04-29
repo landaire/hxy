@@ -100,7 +100,6 @@ fn evaluate_with_resolver_snapshots() {
         "png.length / 1KiB",
         "offset(png.signature)",
         "len(png.signature)",
-        "sizeof(png.signature)",
         "offset(png.length) + len(png.length)",
     ];
     for case in cases {

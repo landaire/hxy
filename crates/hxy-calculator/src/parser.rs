@@ -59,10 +59,8 @@ pub enum Expr {
     /// (and what its scalar value is) is the resolver's job.
     Path(Path),
     /// Built-in unary function applied to a template field.
-    /// `offset(png.signature)` returns the byte offset; `len` and
-    /// `sizeof` both return the byte length (kept as separate
-    /// variants so the displayed call site survives a debug print
-    /// even though they evaluate identically).
+    /// `offset(png.signature)` returns the byte offset;
+    /// `len(png.signature)` returns the byte length.
     Call(Function, Path),
 }
 
@@ -73,7 +71,6 @@ pub enum Expr {
 pub enum Function {
     Offset,
     Len,
-    Sizeof,
 }
 
 impl Function {
@@ -83,7 +80,6 @@ impl Function {
         match self {
             Self::Offset => "offset",
             Self::Len => "len",
-            Self::Sizeof => "sizeof",
         }
     }
 
@@ -94,7 +90,6 @@ impl Function {
         match name {
             "offset" => Some(Self::Offset),
             "len" => Some(Self::Len),
-            "sizeof" => Some(Self::Sizeof),
             _ => None,
         }
     }
@@ -623,10 +618,10 @@ mod tests {
 
     #[test]
     fn function_call_case_insensitive() {
-        // SizeOf and SIZEOF both pick the Sizeof variant.
+        // OFFSET and Offset both pick the Offset variant.
         let arg = Path { root: "png".into(), instance: None, segments: vec![] };
-        assert_eq!(parse("SizeOf(png)"), Ok(Expr::Call(Function::Sizeof, arg.clone())));
-        assert_eq!(parse("SIZEOF(png)"), Ok(Expr::Call(Function::Sizeof, arg)));
+        assert_eq!(parse("OFFSET(png)"), Ok(Expr::Call(Function::Offset, arg.clone())));
+        assert_eq!(parse("Offset(png)"), Ok(Expr::Call(Function::Offset, arg)));
     }
 
     #[test]
