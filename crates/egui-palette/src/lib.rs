@@ -523,12 +523,6 @@ pub fn show_with_style<A: Clone>(
             // was tiny, give the inner layout enough vertical room to
             // re-grow this frame.
             ui.set_max_height(area_inner_height);
-            // Reserve a gutter for the scrollbar so it doesn't
-            // overlay row text. Keep `floating = true` (the default)
-            // so the bar stays invisible when dormant and only fades
-            // in on hover; the allocated width just carves out the
-            // space in advance. Scoped to this Ui -- doesn't leak.
-            ui.spacing_mut().scroll.floating_allocated_width = ui.spacing().scroll.bar_width;
             let frame = match (style.panel_fill, style.panel_stroke) {
                 (Some(fill), Some(stroke)) => egui::Frame::new()
                     .fill(fill)
