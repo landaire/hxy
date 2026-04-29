@@ -193,6 +193,15 @@ pub struct AppSettings {
     #[serde(default)]
     pub numeric_format: NumericFormat,
 
+    /// Format used for *template scalar field values* (the Value
+    /// column in the template panel, the breadcrumb tooltip, the
+    /// visualizer table). Templates that explicitly set a `[[hex]]`
+    /// / `[[decimal]]` display hint on a field still take
+    /// precedence; this setting picks the base for fields that
+    /// didn't opt in.
+    #[serde(default = "default_template_value_format")]
+    pub template_value_format: NumericFormat,
+
     /// When true, render a tint on each byte based on its value class
     /// (null, all-bits, printable ASCII, whitespace, control, extended)
     /// so common patterns are visible at a glance.
@@ -372,6 +381,15 @@ fn default_address_separator_char() -> char {
     '_'
 }
 
+/// Decimal feels right for the typical scalar field's "Value"
+/// column -- chunk lengths, counters, magic-number indices --
+/// and templates that *want* hex still announce it via a
+/// display hint. The numeric_format default (which biases hex
+/// for offset / length cells) doesn't apply here.
+fn default_template_value_format() -> NumericFormat {
+    NumericFormat::Always(NumericBase::Decimal)
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -381,6 +399,7 @@ impl Default for AppSettings {
             check_for_updates: true,
             offset_base: OffsetBase::default(),
             numeric_format: NumericFormat::default(),
+            template_value_format: default_template_value_format(),
             byte_value_highlight: true,
             byte_highlight_mode: ByteHighlightMode::default(),
             byte_highlight_scheme: ByteHighlightScheme::default(),

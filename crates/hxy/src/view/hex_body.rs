@@ -147,13 +147,15 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     } else {
         crate::panels::template::BreadcrumbDetail::Leaf
     };
+    let template_value_format = state.app.template_value_format;
     if let Some(offset) = response.hovered_offset
-        && let Some(state) = breadcrumb_state
+        && let Some(tpl_state) = breadcrumb_state
         && let Some(path) = crate::panels::template::breadcrumb_for_offset(
-            &state.tree,
+            &tpl_state.tree,
             file.editor.source().as_ref(),
             offset.get(),
             detail,
+            template_value_format,
         )
     {
         let layer = ui.layer_id();

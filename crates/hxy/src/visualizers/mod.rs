@@ -293,7 +293,13 @@ fn collect_from_tree(instance: TemplateInstanceId, tree: &ResultTree, out: &mut 
 
 /// Render the visualizer dock tab body for `file_id`. Returns events
 /// the host needs to act on after the dock pass releases its borrow.
-pub fn show(ui: &mut egui::Ui, file: Option<&OpenFile>, panel: &mut VisualizerPanel) -> Vec<VisualizerEvent> {
+pub fn show(
+    ui: &mut egui::Ui,
+    file: Option<&OpenFile>,
+    panel: &mut VisualizerPanel,
+    numeric_format: crate::settings::NumericFormat,
+    template_value_format: crate::settings::NumericFormat,
+) -> Vec<VisualizerEvent> {
     let mut events = Vec::new();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{} Visualizer", egui_phosphor::regular::IMAGE_SQUARE)).strong());
@@ -371,6 +377,8 @@ pub fn show(ui: &mut egui::Ui, file: Option<&OpenFile>, panel: &mut VisualizerPa
         tree: &instance.state.tree,
         source: file.editor.source().clone(),
         ui_id: ui.id().with(active_key),
+        numeric_format,
+        template_value_format,
     };
     render_kind(ui, &ctx, cache);
     events
@@ -407,6 +415,14 @@ pub struct VisualizerContext<'a> {
     /// `bytes` (which is just the visualized field's slice).
     pub source: Arc<dyn HexSource>,
     pub ui_id: egui::Id,
+    /// User-configured base / threshold for span values
+    /// (offsets, lengths, end positions). Same setting the
+    /// template panel and breadcrumb tooltip use.
+    pub numeric_format: crate::settings::NumericFormat,
+    /// User-configured base / threshold for template scalar
+    /// field values. Used by the table visualizer's Value
+    /// column so it stays consistent with the template panel.
+    pub template_value_format: crate::settings::NumericFormat,
 }
 
 fn render_kind(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCache) {

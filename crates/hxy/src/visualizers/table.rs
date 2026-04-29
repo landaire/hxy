@@ -5,7 +5,6 @@
 //! is harder to scan than a flat table.
 
 use hxy_plugin_host::template::Node;
-use hxy_plugin_host::template::Value;
 
 use super::VisualizerContext;
 
@@ -55,31 +54,25 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
                 for child in &children {
                     ui.label(&child.name);
                     ui.label(hxy_plugin_host::node_display_type(child));
-                    ui.monospace(format!("{:#x}", child.span.offset));
-                    ui.monospace(child.span.length.to_string());
-                    ui.label(format_value(child).unwrap_or_default());
+                    ui.monospace(crate::view::format::format_numeric(child.span.offset, ctx.numeric_format));
+                    ui.monospace(crate::view::format::format_numeric(child.span.length, ctx.numeric_format));
+                    ui.label(format_value_for_table(child, ctx.template_value_format).unwrap_or_default());
                     ui.end_row();
                 }
             });
     });
 }
 
-fn format_value(node: &Node) -> Option<String> {
-    let v = node.value.as_ref()?;
-    Some(match v {
-        Value::U8Val(x) => format!("{x}"),
-        Value::U16Val(x) => format!("{x}"),
-        Value::U32Val(x) => format!("{x}"),
-        Value::U64Val(x) => format!("{x}"),
-        Value::S8Val(x) => format!("{x}"),
-        Value::S16Val(x) => format!("{x}"),
-        Value::S32Val(x) => format!("{x}"),
-        Value::S64Val(x) => format!("{x}"),
-        Value::F32Val(x) => format!("{x}"),
-        Value::F64Val(x) => format!("{x}"),
-        Value::BoolVal(b) => format!("{b}"),
-        Value::BytesVal(b) => format!("[{} bytes]", b.len()),
-        Value::StringVal(s) => format!("{s:?}"),
-        Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
-    })
+/// Per-cell value formatter for the table visualizer. Mostly
+/// delegates to [`crate::panels::template::format_value`] so the
+/// hex/decimal toggle and template `[[hex]]` hint behave the same
+/// as in the main panel; the only divergence is `BytesVal`, which
+/// the table renders as a compact `[N bytes]` summary instead of
+/// the longer `'\xAB\xCD...'` preview the panel uses.
+fn format_value_for_table(node: &Node, fmt: crate::settings::NumericFormat) -> Option<String> {
+    use hxy_plugin_host::template::Value;
+    if let Some(Value::BytesVal(b)) = node.value.as_ref() {
+        return Some(format!("[{} bytes]", b.len()));
+    }
+    crate::panels::template::format_value(node, fmt)
 }

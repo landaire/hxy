@@ -3416,7 +3416,7 @@ fn render_file_tab(
     );
 
     #[cfg(not(target_arch = "wasm32"))]
-    render_template_panel(ui, id, file, state.app.numeric_format);
+    render_template_panel(ui, id, file, state.app.numeric_format, state.app.template_value_format);
 
     let copy_request = egui::CentralPanel::default()
         .frame(egui::Frame::new())
@@ -3445,6 +3445,7 @@ fn render_template_panel(
     id: FileId,
     file: &mut OpenFile,
     numeric_format: crate::settings::NumericFormat,
+    template_value_format: crate::settings::NumericFormat,
 ) {
     let has_any = !file.templates.is_empty() || !file.templates_running.is_empty();
     if !has_any || !file.template_panel_visible {
@@ -3456,7 +3457,8 @@ fn render_template_panel(
         .default_size(300.0)
         .min_size(160.0)
         .show_inside(ui, |ui| {
-            let events = crate::panels::template::show(ui, file, whole_file_len, numeric_format);
+            let events =
+                crate::panels::template::show(ui, file, whole_file_len, numeric_format, template_value_format);
             for e in events {
                 apply_template_event(ui, file, e);
             }
@@ -4917,9 +4919,12 @@ impl TabViewer for HxyTabViewer<'_> {
                 // pass and slot it back afterwards so the renderer
                 // can borrow `OpenFile` immutably without contending
                 // with the `&mut` on the panel field.
+                let numeric_format = self.state.app.numeric_format;
+                let template_value_format = self.state.app.template_value_format;
                 if let Some(file) = self.files.get_mut(&pinned) {
                     let mut taken = std::mem::take(&mut file.visualizer_panel);
-                    let events = crate::visualizers::show(ui, Some(&*file), &mut taken);
+                    let events =
+                        crate::visualizers::show(ui, Some(&*file), &mut taken, numeric_format, template_value_format);
                     file.visualizer_panel = taken;
                     for ev in events {
                         match ev {
@@ -4930,7 +4935,7 @@ impl TabViewer for HxyTabViewer<'_> {
                     }
                 } else {
                     let mut empty = crate::visualizers::VisualizerPanel::default();
-                    let _ = crate::visualizers::show(ui, None, &mut empty);
+                    let _ = crate::visualizers::show(ui, None, &mut empty, numeric_format, template_value_format);
                 }
             }
             Tab::Memory => {
@@ -5706,7 +5711,10 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
 /// single grid row: a primary mode selector ("Always" / "Switch
 /// at threshold") followed by either one base picker or three
 /// (small / large / threshold value) for the threshold form.
-fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericFormat) {
+/// `id_prefix` salts the inner combo boxes so multiple
+/// independent NumericFormat editors on the same settings tab
+/// don't collide on egui ids.
+fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericFormat, id_prefix: &str) {
     use crate::settings::NumericBase;
     use crate::settings::NumericFormat;
 
@@ -5726,7 +5734,7 @@ fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericForma
     let prev_mode = mode;
 
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("hxy-numeric-format-mode")
+        egui::ComboBox::from_id_salt(format!("{id_prefix}-mode"))
             .selected_text(match mode {
                 Mode::Always => hxy_i18n::t("settings-numeric-format-always"),
                 Mode::Threshold => hxy_i18n::t("settings-numeric-format-threshold"),
@@ -5751,13 +5759,13 @@ fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericForma
 
         match fmt {
             NumericFormat::Always(base) => {
-                base_combo(ui, "hxy-numeric-format-always-base", base);
+                base_combo(ui, format!("{id_prefix}-always-base"), base);
             }
             NumericFormat::Threshold { small, large, threshold } => {
                 ui.label(hxy_i18n::t("settings-numeric-format-small-label"));
-                base_combo(ui, "hxy-numeric-format-small", small);
+                base_combo(ui, format!("{id_prefix}-small"), small);
                 ui.label(hxy_i18n::t("settings-numeric-format-large-label"));
-                base_combo(ui, "hxy-numeric-format-large", large);
+                base_combo(ui, format!("{id_prefix}-large"), large);
                 ui.label(hxy_i18n::t("settings-numeric-format-threshold-label"));
                 ui.add(egui::DragValue::new(threshold).range(1..=u64::MAX));
             }
@@ -5765,7 +5773,7 @@ fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericForma
     });
 }
 
-fn base_combo(ui: &mut egui::Ui, id: &'static str, base: &mut crate::settings::NumericBase) {
+fn base_combo(ui: &mut egui::Ui, id: String, base: &mut crate::settings::NumericBase) {
     use crate::settings::NumericBase;
     egui::ComboBox::from_id_salt(id)
         .selected_text(match base {
@@ -5886,7 +5894,11 @@ fn settings_ui(
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-numeric-format"));
-        numeric_format_row(ui, &mut settings.numeric_format);
+        numeric_format_row(ui, &mut settings.numeric_format, "hxy-numeric-format");
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-template-value-format"));
+        numeric_format_row(ui, &mut settings.template_value_format, "hxy-template-value-format");
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-address-separator"));

@@ -102,6 +102,7 @@ pub fn show(
     file: &OpenFile,
     whole_file_len: u64,
     numeric_format: crate::settings::NumericFormat,
+    template_value_format: crate::settings::NumericFormat,
 ) -> Vec<TemplateEvent> {
     let mut events = Vec::new();
     let id_seed = file.id.get();
@@ -220,6 +221,7 @@ pub fn show(
         focus_id,
         pending_select: None,
         numeric_format,
+        template_value_format,
     };
 
     // Bring the selected row into view when the selection just
@@ -372,6 +374,11 @@ struct TemplateTableDelegate<'a> {
     /// can pick a different base for tiny indices and big
     /// addresses on the same row.
     numeric_format: crate::settings::NumericFormat,
+    /// Same shape as [`Self::numeric_format`] but applied to
+    /// the Value column (template scalar field values). Kept
+    /// separate so the user can have hex addresses but decimal
+    /// field values, or vice versa.
+    template_value_format: crate::settings::NumericFormat,
 }
 
 impl TableDelegate for TemplateTableDelegate<'_> {
@@ -591,7 +598,7 @@ impl TemplateTableDelegate<'_> {
                 numeric_cell(ui, node.span.length, self.numeric_format);
             }
             6 => {
-                if let Some(text) = format_value(node) {
+                if let Some(text) = format_value(node, self.template_value_format) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -735,7 +742,8 @@ impl TemplateTableDelegate<'_> {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian) {
+                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian, parent.display, self.template_value_format)
+                {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -776,7 +784,7 @@ impl TemplateTableDelegate<'_> {
                 numeric_cell(ui, node.span.length, self.numeric_format);
             }
             6 => {
-                if let Some(text) = format_value(node) {
+                if let Some(text) = format_value(node, self.template_value_format) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -997,24 +1005,26 @@ fn looks_like_text(head: &str) -> bool {
 /// zero-width galley whose `line_height` is font-dependent and
 /// often sub-pixel, which trips egui's `show_unaligned` debug
 /// overlay on the cell's enclosing `Ui`.
-fn format_value(node: &Node) -> Option<String> {
+///
+/// Integer values respect the template's `display` hint when
+/// present (`[[hex]]` / `[[decimal]]`); for fields without an
+/// explicit hint, `fmt` decides between hex and decimal based
+/// on the value's magnitude. Hex output for signed types uses
+/// the bit pattern (`-1_i32` -> `0xFFFFFFFF`) so it lines up
+/// with what the user would read off the hex view.
+pub fn format_value(node: &Node, fmt: crate::settings::NumericFormat) -> Option<String> {
     use hxy_plugin_host::template::Value;
     let v = node.value.as_ref()?;
+    let display = node.display;
     Some(match v {
-        Value::U8Val(x) => format!("{x}"),
-        Value::U16Val(x) => format!("{x}"),
-        Value::U32Val(x) => match node.display {
-            Some(hxy_plugin_host::template::DisplayHint::Hex) => format!("0x{x:08X}"),
-            _ => format!("{x}"),
-        },
-        Value::U64Val(x) => match node.display {
-            Some(hxy_plugin_host::template::DisplayHint::Hex) => format!("0x{x:016X}"),
-            _ => format!("{x}"),
-        },
-        Value::S8Val(x) => format!("{x}"),
-        Value::S16Val(x) => format!("{x}"),
-        Value::S32Val(x) => format!("{x}"),
-        Value::S64Val(x) => format!("{x}"),
+        Value::U8Val(x) => format_unsigned_int(display, u64::from(*x), 1, fmt),
+        Value::U16Val(x) => format_unsigned_int(display, u64::from(*x), 2, fmt),
+        Value::U32Val(x) => format_unsigned_int(display, u64::from(*x), 4, fmt),
+        Value::U64Val(x) => format_unsigned_int(display, *x, 8, fmt),
+        Value::S8Val(x) => format_signed_int(display, i64::from(*x), 1, fmt),
+        Value::S16Val(x) => format_signed_int(display, i64::from(*x), 2, fmt),
+        Value::S32Val(x) => format_signed_int(display, i64::from(*x), 4, fmt),
+        Value::S64Val(x) => format_signed_int(display, *x, 8, fmt),
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
         Value::BoolVal(b) => format!("{b}"),
@@ -1022,6 +1032,67 @@ fn format_value(node: &Node) -> Option<String> {
         Value::StringVal(s) => quote_string_preview(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
     })
+}
+
+/// Pick a base for an integer value. The template's display hint
+/// wins when it's `Hex` or `Decimal`; non-numeric hints
+/// (`Binary`, `Ascii`, `Timestamp`, `Color`) leave us alone --
+/// they don't fit into the user's binary hex/decimal toggle and
+/// are passed through to whichever existing formatter handles
+/// them. Otherwise the user's [`crate::settings::NumericFormat`]
+/// decides based on `magnitude`.
+fn pick_value_base(
+    display: Option<hxy_plugin_host::template::DisplayHint>,
+    magnitude: u64,
+    fmt: crate::settings::NumericFormat,
+) -> Option<crate::settings::NumericBase> {
+    use hxy_plugin_host::template::DisplayHint;
+    match display {
+        Some(DisplayHint::Hex) => Some(crate::settings::NumericBase::Hex),
+        Some(DisplayHint::Decimal) => Some(crate::settings::NumericBase::Decimal),
+        Some(_) => None,
+        None => Some(fmt.pick(magnitude)),
+    }
+}
+
+fn format_unsigned_int(
+    display: Option<hxy_plugin_host::template::DisplayHint>,
+    value: u64,
+    byte_width: usize,
+    fmt: crate::settings::NumericFormat,
+) -> String {
+    match pick_value_base(display, value, fmt) {
+        Some(crate::settings::NumericBase::Hex) => {
+            let digits = byte_width * 2;
+            format!("0x{value:0digits$X}")
+        }
+        Some(crate::settings::NumericBase::Decimal) | None => format!("{value}"),
+    }
+}
+
+fn format_signed_int(
+    display: Option<hxy_plugin_host::template::DisplayHint>,
+    value: i64,
+    byte_width: usize,
+    fmt: crate::settings::NumericFormat,
+) -> String {
+    let magnitude = value.unsigned_abs();
+    match pick_value_base(display, magnitude, fmt) {
+        Some(crate::settings::NumericBase::Hex) => {
+            // Bit-pattern hex matches what the user reads off
+            // the hex view: -1_i32 displays as 0xFFFFFFFF, not
+            // -0x1.
+            let digits = byte_width * 2;
+            let bits = match byte_width {
+                1 => u64::from(value as i8 as u8),
+                2 => u64::from(value as i16 as u16),
+                4 => u64::from(value as i32 as u32),
+                _ => value as u64,
+            };
+            format!("0x{bits:0digits$X}")
+        }
+        Some(crate::settings::NumericBase::Decimal) | None => format!("{value}"),
+    }
 }
 
 pub fn expand_array(state: &mut TemplateState, array_id: TemplateArrayId, count: u64) {
@@ -1434,6 +1505,7 @@ pub fn breadcrumb_for_offset(
     source: &dyn hxy_core::HexSource,
     byte: u64,
     detail: BreadcrumbDetail,
+    fmt: crate::settings::NumericFormat,
 ) -> Option<Vec<String>> {
     let mut has_children = vec![false; tree.nodes.len()];
     for node in &tree.nodes {
@@ -1458,10 +1530,10 @@ pub fn breadcrumb_for_offset(
         // arrays, otherwise emit the leaf's own type/name/value
         // line. Single-row output -- the tooltip won't stretch
         // across the hex view.
-        if let Some(row) = array_element_row(leaf_node, source, byte) {
+        if let Some(row) = array_element_row(leaf_node, source, byte, fmt) {
             return Some(vec![row]);
         }
-        return Some(vec![format_leaf_line(leaf_node)]);
+        return Some(vec![format_leaf_line(leaf_node, fmt)]);
     }
 
     // Walk parent chain leaf -> root.
@@ -1479,7 +1551,7 @@ pub fn breadcrumb_for_offset(
             let node = &tree.nodes[*idx as usize];
             let is_leaf = *idx == leaf;
             let ty = hxy_plugin_host::node_display_type(node);
-            let value_str = if is_leaf { format_node_value(node) } else { None };
+            let value_str = if is_leaf { format_node_value(node, fmt) } else { None };
             match value_str {
                 Some(v) => format!("{} {} = {}", ty, node.name, v),
                 None => format!("{} {}", ty, node.name),
@@ -1487,7 +1559,7 @@ pub fn breadcrumb_for_offset(
         })
         .collect();
 
-    if let Some(row) = array_element_row(leaf_node, source, byte) {
+    if let Some(row) = array_element_row(leaf_node, source, byte, fmt) {
         raw.push(row);
     }
 
@@ -1512,9 +1584,9 @@ pub fn breadcrumb_for_offset(
 /// Format a single leaf node as `<type> <name> = <value>` (or
 /// `<type> <name>` when the node has no scalar value). Used by
 /// both the compact and full breadcrumbs to render the leaf row.
-fn format_leaf_line(node: &hxy_plugin_host::template::Node) -> String {
+fn format_leaf_line(node: &hxy_plugin_host::template::Node, fmt: crate::settings::NumericFormat) -> String {
     let ty = hxy_plugin_host::node_display_type(node);
-    match format_node_value(node) {
+    match format_node_value(node, fmt) {
         Some(v) => format!("{} {} = {}", ty, node.name, v),
         None => format!("{} {}", ty, node.name),
     }
@@ -1527,6 +1599,7 @@ fn array_element_row(
     leaf: &hxy_plugin_host::template::Node,
     source: &dyn hxy_core::HexSource,
     byte: u64,
+    fmt: crate::settings::NumericFormat,
 ) -> Option<String> {
     use hxy_plugin_host::template::NodeType;
 
@@ -1556,7 +1629,7 @@ fn array_element_row(
         .iter()
         .find_map(|(k, v)| (k == hxy_plugin_host::ENDIAN_ATTR).then_some(v.as_str()))
         .unwrap_or("little");
-    let value = decode_scalar_bytes(kind, &bytes, endian)?;
+    let value = decode_scalar_bytes(kind, &bytes, endian, leaf.display, fmt)?;
     let type_label = scalar_kind_name(kind);
     Some(format!("{type_label} {}[{index}] = {value}", leaf.name))
 }
@@ -1594,7 +1667,13 @@ fn scalar_kind_name(kind: hxy_plugin_host::template::ScalarKind) -> &'static str
     }
 }
 
-fn decode_scalar_bytes(kind: hxy_plugin_host::template::ScalarKind, bytes: &[u8], endian: &str) -> Option<String> {
+fn decode_scalar_bytes(
+    kind: hxy_plugin_host::template::ScalarKind,
+    bytes: &[u8],
+    endian: &str,
+    display: Option<hxy_plugin_host::template::DisplayHint>,
+    fmt: crate::settings::NumericFormat,
+) -> Option<String> {
     use hxy_plugin_host::template::ScalarKind as K;
     let big = endian == "big";
     let read_u = |b: &[u8]| -> u64 {
@@ -1613,10 +1692,14 @@ fn decode_scalar_bytes(kind: hxy_plugin_host::template::ScalarKind, bytes: &[u8]
         ((raw << shift) as i64) >> shift
     };
     Some(match kind {
-        K::U8K => format!("{}", bytes.first()?),
-        K::S8K => format!("{}", *bytes.first()? as i8),
-        K::U16K | K::U32K | K::U64K => format!("{}", read_u(bytes)),
-        K::S16K | K::S32K | K::S64K => format!("{}", read_i(bytes)),
+        K::U8K => format_unsigned_int(display, u64::from(*bytes.first()?), 1, fmt),
+        K::S8K => format_signed_int(display, i64::from(*bytes.first()? as i8), 1, fmt),
+        K::U16K => format_unsigned_int(display, read_u(bytes), 2, fmt),
+        K::U32K => format_unsigned_int(display, read_u(bytes), 4, fmt),
+        K::U64K => format_unsigned_int(display, read_u(bytes), 8, fmt),
+        K::S16K => format_signed_int(display, read_i(bytes), 2, fmt),
+        K::S32K => format_signed_int(display, read_i(bytes), 4, fmt),
+        K::S64K => format_signed_int(display, read_i(bytes), 8, fmt),
         K::U128K | K::S128K => {
             // 128-bit ints don't have a u128/i128 path through `read_u`
             // / `read_i`. Render as `0x` + raw bytes in source-endian
@@ -1646,25 +1729,16 @@ fn decode_scalar_bytes(kind: hxy_plugin_host::template::ScalarKind, bytes: &[u8]
     })
 }
 
-fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
-    use hxy_plugin_host::template::Value;
-    let v = node.value.as_ref()?;
-    Some(match v {
-        Value::U8Val(x) => format!("{x}"),
-        Value::U16Val(x) => format!("{x}"),
-        Value::U32Val(x) => format!("{x}"),
-        Value::U64Val(x) => format!("{x}"),
-        Value::S8Val(x) => format!("{x}"),
-        Value::S16Val(x) => format!("{x}"),
-        Value::S32Val(x) => format!("{x}"),
-        Value::S64Val(x) => format!("{x}"),
-        Value::F32Val(x) => format!("{x}"),
-        Value::F64Val(x) => format!("{x}"),
-        Value::BoolVal(b) => format!("{b}"),
-        Value::BytesVal(b) => quote_bytes_preview(b),
-        Value::StringVal(s) => quote_string_preview(s),
-        Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
-    })
+/// Tooltip-flavour wrapper around [`format_value`]. Kept as its
+/// own name (instead of directly inlining `format_value`) so the
+/// breadcrumb call site in [`breadcrumb_for_offset`] still reads
+/// as "format this node's value for the tooltip" rather than
+/// leaking the user-format detail into the call.
+fn format_node_value(
+    node: &hxy_plugin_host::template::Node,
+    fmt: crate::settings::NumericFormat,
+) -> Option<String> {
+    format_value(node, fmt)
 }
 
 /// Per-parent child index. Built once at TemplateState construction
@@ -1817,6 +1891,68 @@ mod tests {
         let preview = quote_bytes_preview(bytes);
         assert!(preview.starts_with('"'), "expected string preview, got {preview:?}");
         assert!(preview.contains("hello"), "expected text content, got {preview:?}");
+    }
+
+    fn fmt_always(b: crate::settings::NumericBase) -> crate::settings::NumericFormat {
+        crate::settings::NumericFormat::Always(b)
+    }
+
+    fn fmt_threshold(t: u64) -> crate::settings::NumericFormat {
+        crate::settings::NumericFormat::Threshold {
+            small: crate::settings::NumericBase::Decimal,
+            large: crate::settings::NumericBase::Hex,
+            threshold: t,
+        }
+    }
+
+    #[test]
+    fn unsigned_int_decimal_default() {
+        let s = format_unsigned_int(None, 42, 1, fmt_always(crate::settings::NumericBase::Decimal));
+        assert_eq!(s, "42");
+    }
+
+    #[test]
+    fn unsigned_int_hex_padded_per_width() {
+        // u8 -> 2 hex digits, u32 -> 8, u64 -> 16. Width comes from
+        // the byte_width arg, not the magnitude.
+        assert_eq!(format_unsigned_int(None, 0xAB, 1, fmt_always(crate::settings::NumericBase::Hex)), "0xAB");
+        assert_eq!(format_unsigned_int(None, 0xAB, 4, fmt_always(crate::settings::NumericBase::Hex)), "0x000000AB");
+        assert_eq!(
+            format_unsigned_int(None, 0xDEAD_BEEF, 8, fmt_always(crate::settings::NumericBase::Hex)),
+            "0x00000000DEADBEEF"
+        );
+    }
+
+    #[test]
+    fn signed_int_hex_uses_bit_pattern() {
+        // -1 as i32 -> 0xFFFFFFFF (matches what the user reads off
+        // the hex view), not -0x1 (signed-magnitude).
+        let s = format_signed_int(None, -1, 4, fmt_always(crate::settings::NumericBase::Hex));
+        assert_eq!(s, "0xFFFFFFFF");
+        let s = format_signed_int(None, -1, 1, fmt_always(crate::settings::NumericBase::Hex));
+        assert_eq!(s, "0xFF");
+    }
+
+    #[test]
+    fn template_display_hint_overrides_user_format() {
+        // `[[hex]]` on the field should still produce hex even when
+        // the user's setting is Always(Decimal) -- the template
+        // author's intent wins.
+        use hxy_plugin_host::template::DisplayHint;
+        let s = format_unsigned_int(Some(DisplayHint::Hex), 16, 4, fmt_always(crate::settings::NumericBase::Decimal));
+        assert_eq!(s, "0x00000010");
+        // Conversely, `[[decimal]]` overrides Always(Hex).
+        let s = format_unsigned_int(Some(DisplayHint::Decimal), 16, 4, fmt_always(crate::settings::NumericBase::Hex));
+        assert_eq!(s, "16");
+    }
+
+    #[test]
+    fn threshold_picks_base_per_value_magnitude() {
+        // small under threshold -> decimal, big over -> hex.
+        let fmt = fmt_threshold(256);
+        assert_eq!(format_unsigned_int(None, 100, 4, fmt), "100");
+        assert_eq!(format_unsigned_int(None, 256, 4, fmt), "0x00000100");
+        assert_eq!(format_unsigned_int(None, 0xDEAD, 4, fmt), "0x0000DEAD");
     }
 }
 
