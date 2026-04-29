@@ -666,10 +666,15 @@ impl HxyApp {
         }
     }
 
-    /// Open the data inspector as a right-side split of the main
-    /// dock area, matching 010 Editor's layout. If already docked
-    /// anywhere (including after the user drags it elsewhere),
-    /// focus the existing tab instead of creating a second split.
+    /// Open the data inspector. Routes through the shared tool
+    /// leaf (the one that already holds Plugins / Memory /
+    /// Visualizer / etc.) so opening the inspector when another
+    /// tool is up adds it as a sibling tab instead of forcing a
+    /// second right-split. Falls back to a fresh right split of
+    /// the main dock area when no tool leaf exists yet, matching
+    /// 010 Editor's layout. If already docked anywhere
+    /// (including after the user drags it elsewhere), focus the
+    /// existing tab instead of creating a second split.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn show_inspector(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Inspector) {
@@ -678,7 +683,8 @@ impl HxyApp {
             self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        self.dock.main_surface_mut().split_right(egui_dock::NodeIndex::root(), 0.72, vec![Tab::Inspector]);
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Inspector);
+        self.dock.set_focused_node_and_surface(node_path);
     }
 
     /// Close the Inspector tab if present; otherwise show it.
