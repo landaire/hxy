@@ -23,15 +23,33 @@ authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
 
 [workspace.dependencies]
-hxy-core = { path = "crates/hxy-core", version = "0.2.0" }
-hxy-i18n = { path = "crates/hxy-i18n", version = "0.2.0" }
-hxy-view = { path = "crates/hxy-view", version = "0.2.0" }
-hxy-vfs = { path = "crates/hxy-vfs", version = "0.2.0" }
-hxy-plugin-host = { path = "crates/hxy-plugin-host", version = "0.2.0" }
-hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.2.0" }
-hxy-imhex-lang = { path = "crates/hxy-imhex-lang", version = "0.2.0" }
-hxy-calculator = { path = "crates/hxy-calculator", version = "0.2.0" }
-egui-palette = { path = "crates/egui-palette", version = "0.2.0" }
+# Internal crates -- versioned in lockstep with the workspace.
+hxy-core = { path = "crates/hxy-core", version = "0.3.0" }
+hxy-i18n = { path = "crates/hxy-i18n", version = "0.3.0" }
+hxy-view = { path = "crates/hxy-view", version = "0.3.0" }
+hxy-vfs = { path = "crates/hxy-vfs", version = "0.3.0" }
+hxy-plugin-host = { path = "crates/hxy-plugin-host", version = "0.3.0" }
+hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.3.0" }
+hxy-imhex-lang = { path = "crates/hxy-imhex-lang", version = "0.3.0" }
+hxy-calculator = { path = "crates/hxy-calculator", version = "0.3.0" }
+egui-palette = { path = "crates/egui-palette", version = "0.3.0" }
+
+# Shared third-party deps. Pinning here keeps every member crate on
+# the same version and feature baseline; per-crate Cargo.tomls add
+# extra features on top via `features = [...]` next to
+# `workspace = true`.
+egui = "0.34.1"
+fskit = { version = "0.2", features = ["vfs"] }
+jiff = { version = "0.2.24", features = ["serde"] }
+rustc-hash = "2"
+serde = { version = "1.0.228", features = ["derive"] }
+suture = "0.3.0"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+vfs = "0.13.0"
+winnow = "0.7"
+base64 = "0.22.1"
+insta = { version = "1.43.2", features = ["yaml"] }
 
 [profile.release]
 opt-level = 3

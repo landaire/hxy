@@ -9,8 +9,8 @@ repository.workspace = true
 description = "Tiny arithmetic calculator for byte-offset / length expressions: hex + decimal numbers, binary / decimal unit suffixes, implicit close parens."
 
 [dependencies]
-thiserror = "2.0.18"
-winnow = "0.7"
+thiserror = { workspace = true }
+winnow = { workspace = true }
 
 [dev-dependencies]
-insta = "1.43.2"
+insta = { workspace = true }

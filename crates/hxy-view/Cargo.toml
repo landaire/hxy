@@ -9,12 +9,12 @@ repository.workspace = true
 description = "Reusable egui hex-view widget"
 
 [dependencies]
-egui = "0.34.1"
+egui = { workspace = true }
 hxy-core = { workspace = true }
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-suture = { version = "0.3.0",  optional = true }
-thiserror = { version = "2.0.18", optional = true }
-tracing = { version = "0.1.44", optional = true }
+serde = { workspace = true, optional = true }
+suture = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 default = ["editor"]

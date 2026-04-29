@@ -18,10 +18,10 @@ arbitrary = ["dep:arbitrary"]
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
-rustc-hash = "2"
-thiserror = "2.0.18"
-winnow = "0.7"
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+winnow = { workspace = true }
 
 [dev-dependencies]
-hxy-imhex-lang = { path = "../hxy-imhex-lang" }
-insta = { version = "1.43.2", features = ["yaml"] }
+hxy-imhex-lang = { workspace = true }
+insta = { workspace = true }

@@ -12,5 +12,5 @@ keywords = ["egui", "palette", "fuzzy"]
 categories = ["gui"]
 
 [dependencies]
-egui = "0.34.1"
+egui = { workspace = true }
 nucleo-matcher = "0.3.1"

@@ -10,9 +10,9 @@ description = "VFS detection, registry, and built-in handlers for the hxy hex ed
 
 [dependencies]
 file_type = "0.8.11"
-fskit = { version = "0.2", features = ["vfs"] }
+fskit = { workspace = true }
 hxy-core = { workspace = true }
-serde = { version = "1.0.228", features = ["derive"] }
-thiserror = "2.0.18"
-vfs = "0.13.0"
+serde = { workspace = true }
+thiserror = { workspace = true }
+vfs = { workspace = true }
 zip = { version = "8.5.1", default-features = false, features = ["deflate", "deflate64"] }

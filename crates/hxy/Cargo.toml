@@ -44,7 +44,7 @@ hxy-view = { workspace = true, features = ["serde"] }
 # UI -- eframe configured with default-features = false so we can opt into
 # wayland only on desktop (wayland can't be linked on wasm).
 eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-egui = "0.34.1"
+egui = { workspace = true }
 egui-phosphor = "0.12.0"
 egui_dock = { version = "0.19.1", features = ["serde"] }
 egui_inbox = "0.11.0"
@@ -52,14 +52,14 @@ egui_taffy = "0.12.0"
 wgpu = "29.0.1"
 
 # Platform-neutral utilities
-jiff = { version = "0.2.24", features = ["serde"] }
+jiff = { workspace = true }
 parking_lot = { version = "0.12.5", features = ["serde"] }
 rfd = "0.17.2"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { workspace = true }
 serde_json = "1.0.149"
 sys-locale = "0.3.2"
-thiserror = "2.0.18"
-tracing = "0.1.44"
+thiserror = { workspace = true }
+tracing = { workspace = true }
 hxy-vfs.workspace = true
 egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
@@ -73,12 +73,12 @@ similar = { version = "3.1.0", default-features = false, features = ["bytes", "s
 hxy-010-lang = { workspace = true }
 hxy-imhex-lang = { workspace = true }
 hxy-calculator = { workspace = true }
-suture = { version = "0.3.0", features = ["serde", "blake3"] }
+suture = { workspace = true, features = ["serde", "blake3"] }
 arboard = { version = "3.6.1", default-features = false }
-base64 = "0.22.1"
+base64 = { workspace = true }
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
 egui-toast = "0.20.0"
-fskit = { version = "0.2", features = ["vfs"] }
+fskit = { workspace = true }
 egui_plot = "0.35"
 dhat = { version = "0.3.3", optional = true }
 # Visualizer renderers: `image` decodes PNG/JPEG/GIF/BMP/TIFF/WebP
