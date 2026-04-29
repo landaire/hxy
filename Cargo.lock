@@ -3022,6 +3022,7 @@ dependencies = [
  "egui_taffy",
  "fskit",
  "hxy-010-lang",
+ "hxy-calculator",
  "hxy-core",
  "hxy-i18n",
  "hxy-imhex-lang",
@@ -3069,6 +3070,15 @@ dependencies = [
  "hxy-imhex-lang",
  "insta",
  "rustc-hash 2.1.2",
+ "thiserror 2.0.18",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "hxy-calculator"
+version = "0.2.0"
+dependencies = [
+ "insta",
  "thiserror 2.0.18",
  "winnow 0.7.15",
 ]

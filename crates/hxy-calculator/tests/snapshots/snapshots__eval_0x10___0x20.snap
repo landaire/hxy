@@ -1,0 +1,5 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: "format!(\"{} = {}\", case, value.raw())"
+---
+-(0x10 + 0x20) = -48

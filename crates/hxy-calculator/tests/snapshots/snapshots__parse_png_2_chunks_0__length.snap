@@ -1,0 +1,23 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: parsed
+---
+Path(
+    Path {
+        root: "png",
+        instance: Some(
+            2,
+        ),
+        segments: [
+            Name(
+                "chunks",
+            ),
+            Index(
+                0,
+            ),
+            Name(
+                "length",
+            ),
+        ],
+    },
+)

@@ -213,6 +213,82 @@ pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, re
     );
 }
 
+/// Resolve a `@<expression>` query into a single Go-to-offset
+/// palette entry. When the expression is empty (`@` with nothing
+/// after) we render an inert hint so the user sees the prompt
+/// instead of an empty list. Parse / evaluation errors render as
+/// a non-actionable "Invalid: ..." row -- consistent with the
+/// other argument-style palette modes.
+///
+/// Template field paths (`png.length`) are resolved through the
+/// active file's `templates` slice. Unrecognised template names,
+/// missing fields, and non-integer scalars all surface as
+/// "Invalid: ..." rows; the user can keep typing and the row
+/// updates each frame.
+fn build_calculator_entry(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    expr: &str,
+    app: &HxyApp,
+    offset_ctx: &OffsetPaletteContext,
+) {
+    use egui_phosphor::regular as icon;
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-prompt"), Action::NoOp).with_icon(icon::CALCULATOR),
+        );
+        return;
+    }
+    if !offset_ctx.available {
+        invalid_entry(out, trimmed, &hxy_i18n::t("palette-invalid-no-active-file"));
+        return;
+    }
+    // `last_active_file` was refreshed earlier this frame by
+    // `offset_palette_context` (which is the only call site that
+    // can mutate it before us). Reading it here keeps
+    // `build_palette_entries` on a `&HxyApp` borrow.
+    let active_file = app.last_active_file.and_then(|id| app.files.get(&id));
+    let templates: &[crate::files::TemplateInstance] =
+        active_file.map(|f| f.templates.as_slice()).unwrap_or(&[]);
+    let resolver = super::calculator::TemplateFieldResolver::new(templates);
+    let value = match hxy_calculator::evaluate_str_with(trimmed, &resolver) {
+        Ok(v) => v,
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    let raw = value.raw();
+    let max_offset = offset_ctx.source_len.saturating_sub(1);
+    let target = match value.as_u64() {
+        Ok(t) if t <= max_offset => t,
+        Ok(t) => {
+            invalid_entry(
+                out,
+                trimmed,
+                &hxy_i18n::t_args(
+                    "palette-calculator-out-of-range",
+                    &[("value", &format!("0x{t:X}")), ("max", &format!("0x{max_offset:X}"))],
+                ),
+            );
+            return;
+        }
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
+            Action::GoToOffset(target),
+        )
+        .with_icon(icon::CALCULATOR)
+        .with_subtitle(format!("{trimmed} = {raw}")),
+    );
+}
+
 /// Build a QuickOpen palette entry for a tool / panel tab kind.
 /// Returns `None` for `Tab::File` and `Tab::Workspace` because the
 /// surrounding QuickOpen loop already lists every `OpenFile` (which
@@ -268,6 +344,19 @@ pub fn build_palette_entries(
     let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
     match app.palette.mode {
         Mode::Main => {
+            // `@<expression>` is a calculator-driven Go to Offset
+            // shortcut: the rest of the query is parsed as an
+            // arithmetic expression and the result is offered as a
+            // single entry. Pressing Enter jumps directly without
+            // entering the GoToOffset sub-mode. When `@` is present
+            // we stop building the standard Main list -- the user
+            // committed to the expression flow, and showing a fuzzy-
+            // matched grab bag of unrelated commands underneath
+            // would be noise.
+            if let Some(rest) = app.palette.inner.query.trim_start().strip_prefix('@') {
+                build_calculator_entry(&mut out, rest, app, offset_ctx);
+                return out;
+            }
             out.push(
                 egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
                     .with_icon(icon::FILE_PLUS)
@@ -450,6 +539,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-go-to-offset-entry"),
                         Action::SwitchMode(Mode::GoToOffset),
                     )
+                    .with_subtitle(hxy_i18n::t("palette-go-to-offset-shortcut-hint"))
                     .with_icon(icon::CROSSHAIR),
                 );
                 out.push(

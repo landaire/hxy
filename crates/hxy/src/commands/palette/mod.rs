@@ -7,6 +7,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 pub mod apply;
+pub mod calculator;
 pub mod columns;
 pub mod entries;
 pub mod offset;
@@ -548,7 +549,7 @@ pub fn show(
             | Mode::SetColumnsGlobal
             | Mode::PluginPrompt
             | Mode::SetPollInterval
-    );
+    ) || (matches!(state.mode, Mode::Main) && state.inner.query.trim_start().starts_with('@'));
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),

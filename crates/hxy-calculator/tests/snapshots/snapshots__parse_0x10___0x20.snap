@@ -1,0 +1,16 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: parsed
+---
+Unary(
+    Neg,
+    Binary(
+        Add,
+        Literal(
+            16,
+        ),
+        Literal(
+            32,
+        ),
+    ),
+)

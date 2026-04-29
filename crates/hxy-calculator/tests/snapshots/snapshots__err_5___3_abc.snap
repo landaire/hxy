@@ -1,0 +1,5 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: rendered
+---
+err(trailing input at position 6: "abc")

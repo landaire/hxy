@@ -1,0 +1,5 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: "format!(\"{} = {}\", case, value.raw())"
+---
+(1 + 1) MiB = 2097152

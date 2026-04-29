@@ -1,0 +1,21 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: parsed
+---
+Binary(
+    Add,
+    Literal(
+        1,
+    ),
+    Path(
+        Path {
+            root: "png",
+            instance: None,
+            segments: [
+                Name(
+                    "length",
+                ),
+            ],
+        },
+    ),
+)

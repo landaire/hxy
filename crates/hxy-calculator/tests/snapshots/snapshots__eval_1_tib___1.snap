@@ -1,0 +1,5 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: "format!(\"{} = {}\", case, value.raw())"
+---
+1 TiB - 1 = 1099511627775

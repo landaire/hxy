@@ -1,0 +1,7 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: parsed
+---
+Literal(
+    1000000,
+)

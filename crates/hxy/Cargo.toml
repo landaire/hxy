@@ -72,6 +72,7 @@ similar = { version = "3.1.0", default-features = false, features = ["bytes", "s
 # through wasmtime via hxy-plugin-host.
 hxy-010-lang = { workspace = true }
 hxy-imhex-lang = { workspace = true }
+hxy-calculator = { workspace = true }
 suture = { version = "0.2.0", path = "../../../suture", features = ["serde", "blake3"] }
 arboard = { version = "3.6.1", default-features = false }
 base64 = "0.22.1"

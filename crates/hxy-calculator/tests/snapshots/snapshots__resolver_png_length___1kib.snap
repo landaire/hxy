@@ -1,0 +1,5 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: "format!(\"{} = {}\", case, value.raw())"
+---
+png.length / 1KiB = 8

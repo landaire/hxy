@@ -1,0 +1,13 @@
+---
+source: crates/hxy-calculator/tests/snapshots.rs
+expression: parsed
+---
+Binary(
+    Add,
+    Literal(
+        256,
+    ),
+    Literal(
+        1048576,
+    ),
+)
