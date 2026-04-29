@@ -354,6 +354,13 @@ pub struct TemplateInstance {
     /// "Run template at selection..." or for nested templates over
     /// embedded streams (e.g. zlib-decompressed PNG IDAT).
     pub range: ByteRange,
+    /// BLAKE3 of the *expanded* template source (post `#include`) at
+    /// the moment the run kicked off. Persisted so a restart-time
+    /// auto-rerun can detect "the template author edited the file
+    /// since last session" -- in which case the node-id-keyed color
+    /// overrides are dropped because the indices may no longer align.
+    /// `None` for error-only instances where no run happened.
+    pub source_fingerprint: Option<[u8; 32]>,
     pub state: TemplateState,
 }
 
@@ -378,6 +385,17 @@ pub struct TemplateRunInstance {
     pub source_path: PathBuf,
     pub display_name: String,
     pub range: ByteRange,
+    /// Hash of the expanded template source as the worker thread saw
+    /// it, computed synchronously before the worker is spawned.
+    /// Forwarded to the resulting [`TemplateInstance`].
+    pub source_fingerprint: Option<[u8; 32]>,
+    /// Color overrides to splice into the resulting [`TemplateState`]
+    /// once the worker returns -- non-empty only for restart-time
+    /// auto-reruns whose persisted fingerprint matched
+    /// `source_fingerprint`. Mismatches drop the overrides at runner
+    /// kickoff so we never apply them to a node tree they no longer
+    /// fit.
+    pub pending_overrides: std::collections::HashMap<u32, egui::Color32>,
     pub run: TemplateRun,
 }
 
@@ -430,8 +448,24 @@ pub struct TemplateState {
     pub leaf_boundaries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>,
     /// One tint per entry in `leaf_boundaries`. The hex view uses
     /// these to paint each field's bytes a distinct color when
-    /// [`Self::show_colors`] is on.
+    /// [`Self::show_colors`] is on. Resolved at construction (and on
+    /// every override change) as `node_color_overrides` >
+    /// `hxy_color`/`hxy_bg_color` attribute > hue-cycle fallback.
     pub leaf_colors: Vec<egui::Color32>,
+    /// Node index for each entry in `leaf_boundaries` / `leaf_colors`.
+    /// Lets the panel and override pipeline map "this row" -> "this
+    /// field's byte coloring slot" in O(1) via [`Self::leaf_slot_by_node`].
+    pub leaf_node_indices: Vec<u32>,
+    /// Reverse index: node-tree index -> position in
+    /// `leaf_boundaries`. Built once at construction; consulted on
+    /// every panel row to decide whether the Color column gets a
+    /// swatch (only nodes that actually paint bytes do).
+    pub leaf_slot_by_node: std::collections::HashMap<u32, usize>,
+    /// User-dialed color overrides, keyed by node-tree index. Take
+    /// precedence over template-supplied `hxy_color` and over the
+    /// hue-cycle fallback. Persisted across restarts via
+    /// [`crate::state::PersistedTemplateInstance::node_color_overrides`].
+    pub node_color_overrides: std::collections::HashMap<u32, egui::Color32>,
     /// When true, the hex view recolors bytes by their containing
     /// template field. Toggled from the template panel header.
     pub show_colors: bool,

@@ -28,7 +28,18 @@ use crate::files::TemplateInstanceId;
 pub fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(id) = crate::app::active_file_id(app) else { return };
     let Some(path) = rfd::FileDialog::new().pick_file() else { return };
-    run_template_from_path(ctx, app, id, path, None);
+    run_template_from_path(ctx, app, id, path, None, RestoreContext::default());
+}
+
+/// Restart-time context for an auto-rerun. The startup path passes the
+/// previous session's fingerprint and color overrides; the runner
+/// applies the overrides only when the freshly computed fingerprint
+/// still matches (template source unchanged on disk).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Default)]
+pub struct RestoreContext {
+    pub expected_fingerprint: Option<[u8; 32]>,
+    pub overrides: std::collections::HashMap<u32, egui::Color32>,
 }
 
 /// Run `path` against `id`'s bytes. When `range` is `Some`, the runtime
@@ -40,6 +51,7 @@ pub fn run_template_from_path(
     id: FileId,
     path: std::path::PathBuf,
     range: Option<ByteRange>,
+    restore: RestoreContext,
 ) {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_owned();
 
@@ -123,12 +135,32 @@ pub fn run_template_from_path(
     } else {
         Arc::new(SubrangeSource::new(source, bound_range))
     };
+    // Hash the expanded source the worker is about to consume. This
+    // is the byte content the resulting node tree's indices reflect,
+    // so it's the right key for "are last session's overrides still
+    // valid?" comparisons.
+    let source_fingerprint = fingerprint_template_source(&template_source);
+    let pending_overrides = match restore.expected_fingerprint {
+        Some(expected) if Some(expected) == source_fingerprint => restore.overrides,
+        Some(_) => {
+            app.console_log(
+                ConsoleSeverity::Info,
+                &console_ctx,
+                "template source changed since last session; dropping persisted color overrides",
+            );
+            std::collections::HashMap::new()
+        }
+        None => restore.overrides,
+    };
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
+    let Some(file) = app.files.get_mut(&id) else { return };
     file.templates_running.push(crate::files::TemplateRunInstance {
         id: instance_id,
         source_path: path.clone(),
         display_name: tpl_name.clone(),
         range: bound_range,
+        source_fingerprint,
+        pending_overrides,
         run: crate::files::TemplateRun {
             inbox,
             template_name: tpl_name.clone(),
@@ -166,6 +198,8 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
         source_path: std::path::PathBuf,
         display_name: String,
         range: ByteRange,
+        source_fingerprint: Option<[u8; 32]>,
+        pending_overrides: std::collections::HashMap<u32, egui::Color32>,
         outcome: crate::files::TemplateRunOutcome,
     }
     let mut done: Vec<Done> = Vec::new();
@@ -173,12 +207,17 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
     for (id, file) in app.files.iter_mut() {
         let mut still_running: Vec<crate::files::TemplateRunInstance> =
             Vec::with_capacity(file.templates_running.len());
-        for running in std::mem::take(&mut file.templates_running) {
+        for mut running in std::mem::take(&mut file.templates_running) {
             let outcomes: Vec<_> = running.run.inbox.read(ctx).collect();
             if outcomes.is_empty() {
                 still_running.push(running);
                 continue;
             }
+            // First completion takes the pending overrides; the
+            // remainder (rare -- a worker only ever sends one
+            // outcome) get an empty map.
+            let mut overrides_iter = std::iter::once(std::mem::take(&mut running.pending_overrides))
+                .chain(std::iter::repeat_with(std::collections::HashMap::new));
             for outcome in outcomes {
                 done.push(Done {
                     file_id: *id,
@@ -186,6 +225,8 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
                     source_path: running.source_path.clone(),
                     display_name: running.display_name.clone(),
                     range: running.range,
+                    source_fingerprint: running.source_fingerprint,
+                    pending_overrides: overrides_iter.next().unwrap_or_default(),
                     outcome,
                 });
             }
@@ -203,9 +244,17 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
         match entry.outcome {
             crate::files::TemplateRunOutcome::Ok { parsed, tree } => {
                 let diagnostics = tree.diagnostics.clone();
-                let state = crate::panels::template::new_state_from(parsed, tree);
+                let state = crate::panels::template::new_state_from(parsed, tree, entry.pending_overrides);
                 if let Some(file) = app.files.get_mut(&entry.file_id) {
-                    upsert_instance(file, entry.instance_id, &entry.source_path, &entry.display_name, entry.range, state);
+                    upsert_instance(
+                        file,
+                        entry.instance_id,
+                        &entry.source_path,
+                        &entry.display_name,
+                        entry.range,
+                        entry.source_fingerprint,
+                        state,
+                    );
                 }
                 for d in &diagnostics {
                     let severity = match d.severity {
@@ -233,6 +282,7 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
                         &entry.source_path,
                         &entry.display_name,
                         entry.range,
+                        None,
                         state,
                     );
                 }
@@ -248,8 +298,17 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
 pub fn drain_pending_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
     let runs: Vec<crate::toasts::PendingTemplateRun> = app.pending_template_runs.drain(..).collect();
     for run in runs {
-        run_template_from_path(ctx, app, run.file_id, run.template_path, None);
+        run_template_from_path(ctx, app, run.file_id, run.template_path, None, RestoreContext::default());
     }
+}
+
+/// Hash an expanded template source. The result is paired with each
+/// run's resulting [`TemplateInstance`] and persisted; on restart we
+/// re-hash the source we're about to feed the worker and only carry
+/// over color overrides if the hashes match.
+pub(crate) fn fingerprint_template_source(source: &str) -> Option<[u8; 32]> {
+    let digest = suture::metadata::HashAlgorithm::Blake3.compute(source.as_bytes());
+    digest.try_into().ok()
 }
 
 /// Insert or replace a template instance under a known id. Used by the
@@ -261,6 +320,7 @@ fn upsert_instance(
     source_path: &std::path::Path,
     display_name: &str,
     range: ByteRange,
+    source_fingerprint: Option<[u8; 32]>,
     state: crate::files::TemplateState,
 ) {
     let new_instance = TemplateInstance {
@@ -268,6 +328,7 @@ fn upsert_instance(
         source_path: source_path.to_path_buf(),
         display_name: display_name.to_owned(),
         range,
+        source_fingerprint,
         state,
     };
     if let Some(slot) = file.templates.iter_mut().find(|t| t.id == instance_id) {
@@ -295,7 +356,7 @@ fn record_error_instance(
     let Some(file) = app.files.get_mut(&id) else { return };
     let instance_id = file.fresh_template_instance_id();
     let state = crate::panels::template::error_state(message);
-    upsert_instance(file, instance_id, path, display_name, range, state);
+    upsert_instance(file, instance_id, path, display_name, range, None, state);
     file.active_template = Some(instance_id);
 }
 

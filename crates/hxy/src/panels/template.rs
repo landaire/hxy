@@ -55,6 +55,18 @@ pub enum TemplateEvent {
     SaveBytes(TemplateNodeIdx),
     /// User toggled per-field byte tinting in the hex view.
     ToggleColors(bool),
+    /// User picked a new tint for `idx`'s field via the Color column
+    /// swatch. The override survives across re-runs and (per
+    /// [`crate::state::PersistedTemplateInstance`]) across restarts as
+    /// long as the template source's BLAKE3 fingerprint matches.
+    SetColor {
+        idx: TemplateNodeIdx,
+        color: egui::Color32,
+    },
+    /// User reset `idx`'s field tint back to the auto color
+    /// (template-supplied attribute or hue-cycle fallback). Right-click
+    /// on the swatch.
+    ResetColor(TemplateNodeIdx),
 }
 
 pub use crate::files::copy::CopyKind;
@@ -148,18 +160,25 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
     let mut delegate =
         TemplateTableDelegate { state, visible: &visible, events: &mut events, any_hover: &mut any_hover, row_height };
 
+    // Initial widths get content-fitted on the first frame (egui_table runs a
+    // sizing pass while state is fresh) and continuously redistributed to fill
+    // the parent via AutoSizeMode::Always. Name has the most slack in its
+    // range so it absorbs spare horizontal space; the fixed-glyph columns
+    // (Start/End/Length) keep tight ranges so they don't balloon.
     Table::new()
         .id_salt(("hxy_tmpl_table", id_seed))
         .num_rows(visible.len() as u64)
         .columns(vec![
-            Column::new(240.0).range(80.0..=600.0).resizable(true).id(egui::Id::new("tmpl-col-name")),
-            Column::new(110.0).range(60.0..=300.0).resizable(true).id(egui::Id::new("tmpl-col-type")),
-            Column::new(90.0).range(60.0..=160.0).resizable(true).id(egui::Id::new("tmpl-col-off")),
-            Column::new(70.0).range(50.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-len")),
+            Column::new(36.0).range(32.0..=48.0).resizable(false).id(egui::Id::new("tmpl-col-color")),
+            Column::new(240.0).range(80.0..=1200.0).resizable(true).id(egui::Id::new("tmpl-col-name")),
+            Column::new(120.0).range(60.0..=300.0).resizable(true).id(egui::Id::new("tmpl-col-type")),
+            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-start")),
+            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-end")),
+            Column::new(70.0).range(50.0..=120.0).resizable(true).id(egui::Id::new("tmpl-col-len")),
             Column::new(220.0).range(80.0..=800.0).resizable(true).id(egui::Id::new("tmpl-col-val")),
         ])
         .headers(vec![HeaderRow::new(row_height)])
-        .auto_size_mode(egui_table::AutoSizeMode::OnParentResize)
+        .auto_size_mode(egui_table::AutoSizeMode::Always)
         .show(ui, &mut delegate);
 
     if any_hover != state.hovered_node {
@@ -185,6 +204,7 @@ enum RowKind {
         array_id: TemplateArrayId,
         count: u64,
         stride: u64,
+        first_offset: u64,
         element_type: String,
         depth: usize,
     },
@@ -207,15 +227,19 @@ struct TemplateTableDelegate<'a> {
 impl TableDelegate for TemplateTableDelegate<'_> {
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &HeaderCellInfo) {
         let label = match cell.col_range.start {
-            0 => "Name",
-            1 => "Type",
-            2 => "Offset",
-            3 => "Length",
-            4 => "Value",
+            0 => "",
+            1 => "Name",
+            2 => "Type",
+            3 => "Start",
+            4 => "End",
+            5 => "Length",
+            6 => "Value",
             _ => "",
         };
-        ui.add_space(6.0);
-        ui.strong(label);
+        if !label.is_empty() {
+            ui.add_space(6.0);
+            ui.strong(label);
+        }
     }
 
     fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
@@ -269,8 +293,17 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             RowKind::Node { idx, depth, is_parent, collapsed } => {
                 self.render_node_cell(ui, cell.col_nr, *idx, *depth, *is_parent, *collapsed);
             }
-            RowKind::DeferredArray { array_id, count, stride, element_type, depth } => {
-                self.render_deferred_cell(ui, cell.col_nr, *array_id, *count, *stride, element_type, *depth);
+            RowKind::DeferredArray { array_id, count, stride, first_offset, element_type, depth } => {
+                self.render_deferred_cell(
+                    ui,
+                    cell.col_nr,
+                    *array_id,
+                    *count,
+                    *stride,
+                    *first_offset,
+                    element_type,
+                    *depth,
+                );
             }
             RowKind::ArrayElement { array_id, index, depth } => {
                 self.render_array_element_cell(ui, cell.col_nr, *array_id, *index, *depth);
@@ -330,6 +363,9 @@ impl TemplateTableDelegate<'_> {
         let node = &self.state.tree.nodes[idx.0 as usize];
         match col_nr {
             0 => {
+                self.render_color_swatch(ui, idx);
+            }
+            1 => {
                 ui.add_space((depth as f32) * INDENT_STEP);
                 if is_parent {
                     let icon = if collapsed {
@@ -346,23 +382,55 @@ impl TemplateTableDelegate<'_> {
                 }
                 ui.add(egui::Label::new(&node.name).truncate());
             }
-            1 => {
+            2 => {
                 let label = hxy_plugin_host::node_display_type(node);
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
             }
-            2 => {
+            3 => {
                 ui.monospace(format!("{:#x}", node.span.offset));
             }
-            3 => {
+            4 => {
+                let end = node.span.offset.saturating_add(node.span.length);
+                ui.monospace(format!("{end:#x}"));
+            }
+            5 => {
                 ui.monospace(node.span.length.to_string());
             }
-            4 => {
+            6 => {
                 if let Some(text) = format_value(node) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
             _ => {}
         }
+    }
+
+    /// Color column for a node row. Renders a clickable swatch only
+    /// for nodes that actually contribute to the hex view's tinting
+    /// (leaves with a non-empty span); parent nodes and bookkeeping
+    /// rows leave the cell blank. The swatch shows the resolved color
+    /// (override > template attribute > hue-cycle fallback). Click
+    /// opens egui's color picker; right-click resets to auto.
+    fn render_color_swatch(&mut self, ui: &mut egui::Ui, idx: TemplateNodeIdx) {
+        let Some(&slot) = self.state.leaf_slot_by_node.get(&idx.0) else {
+            return;
+        };
+        let original = self.state.leaf_colors[slot];
+        let mut color = original;
+        let resp = ui.color_edit_button_srgba(&mut color);
+        if color != original {
+            self.events.push(TemplateEvent::SetColor { idx, color });
+        }
+        let has_override = self.state.node_color_overrides.contains_key(&idx.0);
+        resp.on_hover_text(if has_override { "Click to edit, right-click to reset" } else { "Click to override color" })
+            .context_menu(|ui| {
+                ui.add_enabled_ui(has_override, |ui| {
+                    if ui.button("Reset to auto").clicked() {
+                        self.events.push(TemplateEvent::ResetColor(idx));
+                        ui.close();
+                    }
+                });
+            });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -373,22 +441,32 @@ impl TemplateTableDelegate<'_> {
         array_id: TemplateArrayId,
         count: u64,
         stride: u64,
+        first_offset: u64,
         element_type: &str,
         depth: usize,
     ) {
+        let total_len = count.saturating_mul(stride);
         match col_nr {
-            0 => {
+            0 => {}
+            1 => {
                 ui.add_space((depth as f32) * INDENT_STEP + 14.0);
                 ui.weak(format!("[{count} x {element_type}]"));
                 if ui.small_button("Expand").clicked() {
                     self.events.push(TemplateEvent::ExpandArray { array_id, count });
                 }
             }
-            1 => {
+            2 => {
                 ui.add(egui::Label::new(egui::RichText::new(element_type).weak()));
             }
             3 => {
-                ui.monospace(format!("{}", count.saturating_mul(stride)));
+                ui.monospace(format!("{first_offset:#x}"));
+            }
+            4 => {
+                let end = first_offset.saturating_add(total_len);
+                ui.monospace(format!("{end:#x}"));
+            }
+            5 => {
+                ui.monospace(format!("{total_len}"));
             }
             _ => {}
         }
@@ -405,21 +483,26 @@ impl TemplateTableDelegate<'_> {
         let Some(elements) = self.state.expanded_arrays.get(&array_id) else { return };
         let Some(node) = elements.get(index) else { return };
         match col_nr {
-            0 => {
+            0 => {}
+            1 => {
                 ui.add_space((depth as f32) * INDENT_STEP + 14.0);
                 ui.label(format!("[{index}]"));
             }
-            1 => {
+            2 => {
                 let label = hxy_plugin_host::node_display_type(node);
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
-            2 => {
+            3 => {
                 ui.monospace(format!("{:#x}", node.span.offset));
             }
-            3 => {
+            4 => {
+                let end = node.span.offset.saturating_add(node.span.length);
+                ui.monospace(format!("{end:#x}"));
+            }
+            5 => {
                 ui.monospace(node.span.length.to_string());
             }
-            4 => {
+            6 => {
                 if let Some(text) = format_value(node) {
                     ui.add(egui::Label::new(text).truncate());
                 }
@@ -486,6 +569,7 @@ fn emit_node(
                 array_id,
                 count: arr.count,
                 stride: arr.stride,
+                first_offset: arr.first_offset,
                 element_type: arr.element_type.clone(),
                 depth: depth + 1,
             });
@@ -493,24 +577,46 @@ fn emit_node(
     }
 }
 
-/// Character budget for rendering a template field's string / bytes
-/// value. Fields wider than this collapse to `... (N bytes)` so a
-/// multi-megabyte `uchar[N] data` doesn't blow up the row or tooltip.
-const STRING_VALUE_PREVIEW_BUDGET: usize = 64;
+/// Character budget for rendering a string value's preview before it
+/// collapses to `"head..." (N bytes)`. Keeps a multi-megabyte
+/// `string` field from blowing up a single row.
+const STRING_VALUE_PREVIEW_CHARS: usize = 64;
 
-fn summarise_string(s: &str) -> String {
-    if s.is_empty() {
-        // Render empty strings as `""` so the cell still has visible
-        // glyphs. An empty Label with `.truncate()` produces a galley
-        // of size `(0, line_height)`; the fractional line_height
-        // pulls the enclosing Ui's min_rect off the pixel grid and
-        // trips egui's `show_unaligned` debug overlay.
-        "\"\"".to_owned()
-    } else if s.len() <= STRING_VALUE_PREVIEW_BUDGET {
-        s.to_owned()
+/// Byte budget for rendering a byte value's hex-escaped preview before
+/// it collapses to `'\xAB\xCD...' (N bytes)`. Smaller than the string
+/// budget because each byte expands to four characters (`\xHH`).
+const BYTES_VALUE_PREVIEW_BYTES: usize = 16;
+
+/// Render a string value with surrounding double quotes and Rust-style
+/// debug escaping. Empty strings come out as `""`, which is enough to
+/// give the surrounding label a non-zero galley (an empty galley would
+/// trip egui's `show_unaligned` overlay).
+fn quote_string_preview(s: &str) -> String {
+    let mut chars = s.chars();
+    let preview: String = chars.by_ref().take(STRING_VALUE_PREVIEW_CHARS).collect();
+    if chars.next().is_none() {
+        format!("{preview:?}")
     } else {
-        format!("... ({} bytes)", s.len())
+        format!("{preview:?}... ({} bytes)", s.len())
     }
+}
+
+/// Render a byte slice as `'\xAB\xCD...'` so the user can tell it apart
+/// from a string at a glance. Long buffers truncate to
+/// [`BYTES_VALUE_PREVIEW_BYTES`] with a `... (N bytes)` tail.
+fn quote_bytes_preview(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let head_len = BYTES_VALUE_PREVIEW_BYTES.min(b.len());
+    let mut out = String::with_capacity(head_len * 4 + 16);
+    out.push('\'');
+    for byte in &b[..head_len] {
+        let _ = write!(out, "\\x{byte:02X}");
+    }
+    out.push('\'');
+    if b.len() > head_len {
+        let _ = write!(out, "... ({} bytes)", b.len());
+    }
+    out
 }
 
 /// Returns `Some(text)` for a scalar value to render in the Value
@@ -541,8 +647,8 @@ fn format_value(node: &Node) -> Option<String> {
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
         Value::BoolVal(b) => format!("{b}"),
-        Value::BytesVal(b) => format!("{} bytes", b.len()),
-        Value::StringVal(s) => summarise_string(s),
+        Value::BytesVal(b) => quote_bytes_preview(b),
+        Value::StringVal(s) => quote_string_preview(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
     })
 }
@@ -567,18 +673,23 @@ pub fn toggle_collapse(state: &mut TemplateState, idx: TemplateNodeIdx) {
 
 pub fn new_state(parsed: std::sync::Arc<dyn ParsedTemplate>) -> Result<TemplateState, hxy_vfs::HandlerError> {
     let tree = parsed.execute(&[])?;
-    Ok(new_state_from(parsed, tree))
+    Ok(new_state_from(parsed, tree, HashMap::new()))
 }
 
 /// Build a [`TemplateState`] from an already-computed tree. Used by
 /// the background-run path where the worker thread executes the
-/// template and sends the result back to the UI.
+/// template and sends the result back to the UI. `node_color_overrides`
+/// is non-empty when the run is a restart-time auto-rerun replaying
+/// the user's previously persisted picks.
 pub fn new_state_from(
     parsed: std::sync::Arc<dyn ParsedTemplate>,
     tree: hxy_plugin_host::template::ResultTree,
+    node_color_overrides: HashMap<u32, egui::Color32>,
 ) -> TemplateState {
-    let leaf_boundaries = collect_leaf_boundaries(&tree);
-    let leaf_colors = generate_leaf_colors(leaf_boundaries.len());
+    let (leaf_boundaries, leaf_node_indices) = collect_leaves(&tree);
+    let leaf_slot_by_node: HashMap<u32, usize> =
+        leaf_node_indices.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+    let leaf_colors = resolve_leaf_colors(&tree, &leaf_node_indices, &node_color_overrides);
     let byte_palette_override = build_byte_palette_override(tree.byte_palette.as_deref());
     TemplateState {
         parsed: Some(parsed),
@@ -588,9 +699,20 @@ pub fn new_state_from(
         hovered_node: None,
         leaf_boundaries,
         leaf_colors,
+        leaf_node_indices,
+        leaf_slot_by_node,
+        node_color_overrides,
         show_colors: true,
         byte_palette_override,
     }
+}
+
+/// Recompute `leaf_colors` after a change to `node_color_overrides`.
+/// Cheap (O(leaves)) and called from the SetColor / ResetColor event
+/// handlers so the hex view picks up the new tint on the next frame
+/// without a full template re-run.
+pub fn recompute_leaf_colors(state: &mut TemplateState) {
+    state.leaf_colors = resolve_leaf_colors(&state.tree, &state.leaf_node_indices, &state.node_color_overrides);
 }
 
 /// Unpack the runtime's optional 256-entry `0xAARRGGBB` table into an
@@ -631,6 +753,9 @@ pub fn error_state(message: String) -> TemplateState {
         hovered_node: None,
         leaf_boundaries: Vec::new(),
         leaf_colors: Vec::new(),
+        leaf_node_indices: Vec::new(),
+        leaf_slot_by_node: HashMap::new(),
+        node_color_overrides: HashMap::new(),
         show_colors: true,
         byte_palette_override: None,
     }
@@ -742,14 +867,74 @@ fn render_tab_button(
 /// leaves don't land on similar colors. The base colors are vivid
 /// enough to read as glyphs in `ValueHighlight::Text` mode; callers
 /// that paint them as backgrounds apply `gamma_multiply` to mute
-/// them on the fly.
-fn generate_leaf_colors(n: usize) -> Vec<egui::Color32> {
-    (0..n)
-        .map(|i| {
-            let hue = (i as f32 * 0.381966) % 1.0;
-            egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.6, 0.9, 1.0))
+/// them on the fly. Used as the per-leaf fallback when neither a
+/// user override nor a template-supplied `hxy_color` attribute
+/// applies.
+fn fallback_leaf_color(slot: usize) -> egui::Color32 {
+    let hue = (slot as f32 * 0.381966) % 1.0;
+    egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.6, 0.9, 1.0))
+}
+
+/// Per-leaf color resolution: user override > template
+/// `hxy_color` attribute > hue-cycle fallback. The fallback's slot
+/// index is just the leaf's position in `leaf_node_indices`, which
+/// keeps the auto colors stable across runs of the same template
+/// (so a field that previously sat at slot 7 still gets slot 7's
+/// hue if no override is set).
+fn resolve_leaf_colors(
+    tree: &hxy_plugin_host::template::ResultTree,
+    leaf_node_indices: &[u32],
+    overrides: &HashMap<u32, egui::Color32>,
+) -> Vec<egui::Color32> {
+    leaf_node_indices
+        .iter()
+        .enumerate()
+        .map(|(slot, &node_idx)| {
+            if let Some(c) = overrides.get(&node_idx) {
+                return *c;
+            }
+            if let Some(node) = tree.nodes.get(node_idx as usize)
+                && let Some(c) = parse_color_attr(node)
+            {
+                return c;
+            }
+            fallback_leaf_color(slot)
         })
         .collect()
+}
+
+/// Pull a `hxy_color` attribute off `node` and parse it as an sRGB(A)
+/// hex string. Accepted shapes (case-insensitive, optional `#` /
+/// `0x` prefix): `RRGGBB` and `AARRGGBB`. `None` when the attribute
+/// is missing or doesn't parse.
+fn parse_color_attr(node: &Node) -> Option<egui::Color32> {
+    let raw = node
+        .attributes
+        .iter()
+        .find_map(|(k, v)| (k == hxy_plugin_host::COLOR_ATTR).then_some(v.as_str()))?;
+    parse_hex_color(raw)
+}
+
+fn parse_hex_color(s: &str) -> Option<egui::Color32> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    match s.len() {
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some(egui::Color32::from_rgb(r, g, b))
+        }
+        8 => {
+            let a = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let r = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let g = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let b = u8::from_str_radix(&s[6..8], 16).ok()?;
+            Some(egui::Color32::from_rgba_unmultiplied(r, g, b, a))
+        }
+        _ => None,
+    }
 }
 
 /// Walk `tree` to find the deepest node whose span contains `byte`
@@ -965,18 +1150,21 @@ fn format_node_value(node: &hxy_plugin_host::template::Node) -> Option<String> {
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
         Value::BoolVal(b) => format!("{b}"),
-        Value::BytesVal(b) => format!("{} bytes", b.len()),
-        Value::StringVal(s) => format!("{:?}", summarise_string(s)),
+        Value::BytesVal(b) => quote_bytes_preview(b),
+        Value::StringVal(s) => quote_string_preview(s),
         Value::EnumVal((name, raw)) => format!("{name} ({raw})"),
     })
 }
 
-/// Collect (offset, length) for every leaf node -- one with no
-/// children and no deferred array -- and sort by offset. This is the
-/// list the hex view uses to draw per-field outlines.
-fn collect_leaf_boundaries(
+/// Collect leaf nodes -- ones with no children and no deferred array --
+/// and sort them by offset. Returns parallel vectors of byte spans
+/// and source-tree node indices: `boundaries[i]` is the span of the
+/// leaf whose tree position is `node_indices[i]`. The hex view uses
+/// the spans to draw per-field outlines; the panel uses the indices
+/// to look up per-node color overrides.
+fn collect_leaves(
     tree: &hxy_plugin_host::template::ResultTree,
-) -> Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> {
+) -> (Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>, Vec<u32>) {
     let mut has_children = vec![false; tree.nodes.len()];
     for node in &tree.nodes {
         if let Some(parent) = node.parent
@@ -985,13 +1173,21 @@ fn collect_leaf_boundaries(
             has_children[parent as usize] = true;
         }
     }
-    let mut out: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)> = tree
+    let mut entries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen, u32)> = tree
         .nodes
         .iter()
         .enumerate()
         .filter(|(idx, node)| !has_children[*idx] && node.array.is_none() && node.span.length > 0)
-        .map(|(_, node)| (hxy_core::ByteOffset::new(node.span.offset), hxy_core::ByteLen::new(node.span.length)))
+        .map(|(idx, node)| {
+            (
+                hxy_core::ByteOffset::new(node.span.offset),
+                hxy_core::ByteLen::new(node.span.length),
+                idx as u32,
+            )
+        })
         .collect();
-    out.sort_by_key(|(start, _)| start.get());
-    out
+    entries.sort_by_key(|(start, _, _)| start.get());
+    let boundaries = entries.iter().map(|(s, l, _)| (*s, *l)).collect();
+    let node_indices = entries.into_iter().map(|(_, _, n)| n).collect();
+    (boundaries, node_indices)
 }

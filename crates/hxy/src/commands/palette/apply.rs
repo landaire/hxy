@@ -141,7 +141,14 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
         Action::RunTemplate { path, range } => {
             app.palette.close();
             if let Some(id) = crate::app::active_file_id(app) {
-                crate::templates::runner::run_template_from_path(ctx, app, id, path, range);
+                crate::templates::runner::run_template_from_path(
+                    ctx,
+                    app,
+                    id,
+                    path,
+                    range,
+                    crate::templates::runner::RestoreContext::default(),
+                );
             }
         }
         Action::SwitchMode(mode) => {

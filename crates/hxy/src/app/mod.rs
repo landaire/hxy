@@ -306,6 +306,13 @@ pub struct HxyApp {
     /// command palette's `Run Template` action takes.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
+    /// Set true at startup when [`Self::restore_open_tabs`] sees any
+    /// persisted templates -- consumed once on the first `update()`
+    /// frame (when the egui [`egui::Context`] is finally available)
+    /// to spawn the auto-reruns. Builder-time can't do it: the
+    /// template runner needs the context to wire its result inbox.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_template_restore: bool,
     /// Filesystem watcher that emits per-frame events for any
     /// open path the user is editing. `None` only when the
     /// platform watcher couldn't be constructed at startup; in
@@ -547,6 +554,8 @@ impl HxyApp {
             pattern_first_run_prompt: show_patterns_prompt,
             #[cfg(not(target_arch = "wasm32"))]
             pending_template_runs: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_template_restore: false,
             #[cfg(not(target_arch = "wasm32"))]
             file_watcher: match crate::files::watch::FileWatcher::with_prefs(&cc.egui_ctx, initial_polling) {
                 Ok(w) => Some(w),
@@ -1080,6 +1089,8 @@ impl HxyApp {
                     selection: restore_selection,
                     scroll_offset: restore_scroll.unwrap_or(0.0),
                     as_workspace: pushed_workspace,
+                    templates: Vec::new(),
+                    active_template_idx: None,
                 });
             }
         }
@@ -1369,20 +1380,34 @@ impl HxyApp {
         if file.templates.is_empty() || !file.templates_running.is_empty() {
             return;
         }
-        // Snapshot path+range pairs first because run_template_from_path
-        // borrows `self` mutably and pushes new `templates_running`
-        // entries which, on completion, would replace the existing
-        // instances under the same id. Re-running a stale instance
-        // means dropping it and starting fresh; collect identities
-        // first, then drain.
-        let to_rerun: Vec<(std::path::PathBuf, hxy_core::ByteRange)> =
-            file.templates.iter().map(|t| (t.source_path.clone(), t.range)).collect();
+        // Snapshot path+range+overrides+fingerprint first because
+        // run_template_from_path borrows `self` mutably and pushes
+        // new `templates_running` entries which, on completion, would
+        // replace the existing instances under the same id. Re-running
+        // a stale instance means dropping it and starting fresh;
+        // collect identities first, then drain. Carrying the previous
+        // fingerprint + overrides through means a data-only reload
+        // (template source unchanged) preserves the user's color picks.
+        let to_rerun: Vec<(std::path::PathBuf, hxy_core::ByteRange, crate::templates::runner::RestoreContext)> = file
+            .templates
+            .iter()
+            .map(|t| {
+                (
+                    t.source_path.clone(),
+                    t.range,
+                    crate::templates::runner::RestoreContext {
+                        expected_fingerprint: t.source_fingerprint,
+                        overrides: t.state.node_color_overrides.clone(),
+                    },
+                )
+            })
+            .collect();
         if let Some(file) = self.files.get_mut(&file_id) {
             file.templates.clear();
             file.active_template = None;
         }
-        for (path, range) in to_rerun {
-            crate::templates::runner::run_template_from_path(ctx, self, file_id, path, Some(range));
+        for (path, range, restore) in to_rerun {
+            crate::templates::runner::run_template_from_path(ctx, self, file_id, path, Some(range), restore);
         }
     }
 
@@ -1578,6 +1603,65 @@ impl HxyApp {
         // WorkspaceId / MountId, replay the saved dock layout on top
         // so splits / sizes / focus / window state survive.
         self.apply_persisted_dock_layout();
+        // Defer template auto-rerun to the first `update()` frame --
+        // the runner needs an `egui::Context` for its result inbox,
+        // which the builder can't supply. The flag is no-op when
+        // there's nothing to rerun.
+        self.pending_template_restore = self.state.read().open_tabs.iter().any(|t| !t.templates.is_empty());
+    }
+
+    /// Replay the previous session's running templates on this frame.
+    /// Idempotent via `pending_template_restore`; the per-template
+    /// fingerprint check inside [`crate::templates::runner::run_template_from_path`]
+    /// drops persisted color overrides when the template source has
+    /// changed on disk since the last save.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_persisted_templates(&mut self, ctx: &egui::Context) {
+        // Snapshot the work list so the per-template loop doesn't have
+        // to keep re-acquiring `self.state` against the runner's own
+        // writes.
+        let entries: Vec<(TabSource, Vec<crate::state::PersistedTemplateInstance>, Option<usize>)> = self
+            .state
+            .read()
+            .open_tabs
+            .iter()
+            .filter(|t| !t.templates.is_empty())
+            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx))
+            .collect();
+        for (source, templates, active_idx) in entries {
+            let Some(file_id) = self
+                .files
+                .iter()
+                .find(|(_, f)| f.source_kind.as_ref() == Some(&source))
+                .map(|(&id, _)| id)
+            else {
+                continue;
+            };
+            for t in &templates {
+                let restore = crate::templates::runner::RestoreContext {
+                    expected_fingerprint: t.source_fingerprint,
+                    overrides: t.node_color_overrides.iter().map(|(&k, &v)| (k, v)).collect(),
+                };
+                crate::templates::runner::run_template_from_path(
+                    ctx,
+                    self,
+                    file_id,
+                    t.source_path.clone(),
+                    Some(t.range),
+                    restore,
+                );
+            }
+            // The runner sets `active_template` to the most recently
+            // queued instance; override it with the persisted choice
+            // so the panel comes back focused on the same tab the
+            // user closed it on.
+            if let Some(idx) = active_idx
+                && let Some(file) = self.files.get_mut(&file_id)
+                && let Some(running) = file.templates_running.get(idx)
+            {
+                file.active_template = Some(running.id);
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1811,6 +1895,8 @@ impl HxyApp {
                             selection: restore_selection,
                             scroll_offset: restore_scroll.unwrap_or(0.0),
                             as_workspace: false,
+                            templates: Vec::new(),
+                            active_template_idx: None,
                         });
                     }
                 }
@@ -2062,6 +2148,15 @@ impl eframe::App for HxyApp {
         // through the reload prompt / auto-reload paths.
         #[cfg(not(target_arch = "wasm32"))]
         drain_file_watch_events(ui.ctx(), self);
+
+        // First-frame auto-rerun of every persisted template the
+        // previous session left running. Cleared after one shot;
+        // see `restore_persisted_templates` for the semantics.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.pending_template_restore {
+            self.pending_template_restore = false;
+            self.restore_persisted_templates(ui.ctx());
+        }
 
         #[cfg(target_os = "macos")]
         drain_native_menu(ui.ctx(), self);
@@ -2907,7 +3002,14 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
         CommandEffect::RunTemplateDirect(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(id) = active_file_id(app) {
-                crate::templates::runner::run_template_from_path(ctx, app, id, path, None);
+                crate::templates::runner::run_template_from_path(
+                    ctx,
+                    app,
+                    id,
+                    path,
+                    None,
+                    crate::templates::runner::RestoreContext::default(),
+                );
             }
             #[cfg(target_arch = "wasm32")]
             let _ = path;
@@ -3334,6 +3436,18 @@ fn apply_template_event(
         TemplateEvent::ToggleColors(on) => {
             if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
                 state.show_colors = on;
+            }
+        }
+        TemplateEvent::SetColor { idx, color } => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                state.node_color_overrides.insert(idx.0, color);
+                crate::panels::template::recompute_leaf_colors(state);
+            }
+        }
+        TemplateEvent::ResetColor(idx) => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                state.node_color_overrides.remove(&idx.0);
+                crate::panels::template::recompute_leaf_colors(state);
             }
         }
     }

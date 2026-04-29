@@ -3,8 +3,11 @@
 //! [`HxyApp::persist_mut`](crate::app::HxyApp::persist_mut) so every
 //! change gets persisted unconditionally.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use hxy_core::ByteRange;
 use hxy_core::Selection;
 use hxy_vfs::TabSource;
 use parking_lot::RwLock;
@@ -13,6 +16,32 @@ use serde::Serialize;
 
 use crate::settings::AppSettings;
 use crate::window::WindowSettings;
+
+/// One template run we want to re-establish on the next app launch.
+/// Auto-rerun matches by `source_path` + `range`; `source_fingerprint`
+/// is the BLAKE3 of the expanded template source the previous run
+/// saw and gates whether `node_color_overrides` get re-applied
+/// (mismatched fingerprint = template author edited the file, node
+/// indices may have shifted, drop the overrides).
+///
+/// Defined on every target so [`OpenTabState`] has a stable shape,
+/// even though templates only actually execute on non-wasm builds.
+/// On wasm the persisted list is just round-tripped untouched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PersistedTemplateInstance {
+    pub source_path: PathBuf,
+    pub display_name: String,
+    pub range: ByteRange,
+    /// `None` for instances persisted before fingerprinting existed,
+    /// or for error-only entries that never produced a node tree.
+    /// In both cases we restore the run but discard overrides.
+    #[serde(default)]
+    pub source_fingerprint: Option<[u8; 32]>,
+    /// `BTreeMap` for stable JSON key ordering across saves; the keys
+    /// are tree-node indices (`TemplateNodeIdx::0`).
+    #[serde(default)]
+    pub node_color_overrides: BTreeMap<u32, egui::Color32>,
+}
 
 /// State for a single tab's open file -- enough to reopen it on launch
 /// with the same selection and scroll position. `source` may refer to a
@@ -32,6 +61,18 @@ pub struct OpenTabState {
     /// restore inside their parent's workspace and ignore this flag.
     #[serde(default)]
     pub as_workspace: bool,
+    /// Templates the user had running on this tab when the session
+    /// last saved. Auto-replayed on restore; see
+    /// [`PersistedTemplateInstance`] for fingerprint semantics. The
+    /// vec is always present in the schema so wasm and desktop tabs
+    /// round-trip the same JSON shape; wasm just leaves it empty.
+    #[serde(default)]
+    pub templates: Vec<PersistedTemplateInstance>,
+    /// Index into `templates` of the tab that was active in the
+    /// template panel, or `None` if no tab was selected (or no
+    /// templates were running). Restored after auto-rerun completes.
+    #[serde(default)]
+    pub active_template_idx: Option<usize>,
 }
 
 #[derive(Clone, Default)]

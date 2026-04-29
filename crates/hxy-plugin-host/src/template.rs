@@ -115,13 +115,21 @@ pub const COMMENT_ATTR: &str = "hxy_comment";
 /// can still nudge the renderer through the generic attribute path.
 pub const FORMAT_ATTR: &str = "hxy_format";
 
-/// UI label for a node, bitfield-aware. Falls back to
-/// [`node_type_label`] when the `hxy_bits` attribute is absent.
+/// UI label for a node, bitfield-aware. Composite kinds get a
+/// `struct ` / `enum ` prefix here (not in [`node_type_label`]) so the
+/// type column reads at a glance; the bare label is reserved for
+/// places that need to feed the name back into generated source code
+/// (Rust/C struct literals).
 pub fn node_display_type(node: &Node) -> String {
     if let Some((_, bits)) = node.attributes.iter().find(|(k, _)| k == BITFIELD_BITS_ATTR) {
-        format!("B{bits}")
-    } else {
-        node_type_label(&node.type_name)
+        return format!("B{bits}");
+    }
+    match &node.type_name {
+        NodeType::StructType(name) => format!("struct {name}"),
+        NodeType::StructArray((name, n)) => format!("struct {name}[{n}]"),
+        NodeType::EnumType(name) => format!("enum {name}"),
+        NodeType::EnumArray((name, n)) => format!("enum {name}[{n}]"),
+        _ => node_type_label(&node.type_name),
     }
 }
 

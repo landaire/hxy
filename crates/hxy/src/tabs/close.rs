@@ -296,11 +296,25 @@ pub fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 
 /// Sync the current editor selection / scroll back into the
 /// persisted [`crate::state::OpenTabState`] entry so the next
-/// session restores the user's view.
+/// session restores the user's view. Also mirrors the file's
+/// completed template runs (path, range, fingerprint, color
+/// overrides) so the next launch can auto-rerun them.
 pub fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
     let Some(source) = &file.source_kind else { return };
-    if let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) {
-        entry.selection = file.editor.selection();
-        entry.scroll_offset = file.editor.scroll_offset();
-    }
+    let Some(entry) = state.open_tabs.iter_mut().find(|t| &t.source == source) else { return };
+    entry.selection = file.editor.selection();
+    entry.scroll_offset = file.editor.scroll_offset();
+    entry.templates = file
+        .templates
+        .iter()
+        .map(|t| crate::state::PersistedTemplateInstance {
+            source_path: t.source_path.clone(),
+            display_name: t.display_name.clone(),
+            range: t.range,
+            source_fingerprint: t.source_fingerprint,
+            node_color_overrides: t.state.node_color_overrides.iter().map(|(&k, &v)| (k, v)).collect(),
+        })
+        .collect();
+    entry.active_template_idx =
+        file.active_template.and_then(|active| file.templates.iter().position(|t| t.id == active));
 }

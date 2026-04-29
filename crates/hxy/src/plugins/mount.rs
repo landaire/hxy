@@ -282,6 +282,8 @@ pub fn install_mount_tab(
                 selection: None,
                 scroll_offset: 0.0,
                 as_workspace: false,
+                templates: Vec::new(),
+                active_template_idx: None,
             });
         }
     }
