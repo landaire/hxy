@@ -1848,26 +1848,38 @@ fn read_visible_rows<S: HexSource + ?Sized>(
 /// every neighboring row's tint -- otherwise the cell to the right of the
 /// cursor can paint its tint *over* the cursor stroke.
 fn paint_rows(painter: &egui::Painter, ctx: &PaintCtx<'_>, block_rect: Rect, first_visible: usize, rows: &[RowRead]) {
+    let first_y = row_origin_for(block_rect, first_visible, ctx.row_height).y;
     for (visible_idx, row) in rows.iter().enumerate() {
         if row.is_gap {
             continue;
         }
-        let row_idx = first_visible + visible_idx;
-        let row_origin = row_origin_for(block_rect, row_idx, ctx.row_height);
+        let row_origin = Pos2::new(block_rect.left(), first_y + (visible_idx as f32) * ctx.row_height);
         paint_row_backs_and_glyphs(painter, ctx, row_origin, row.offset, &row.bytes);
     }
     for (visible_idx, row) in rows.iter().enumerate() {
         if row.is_gap {
             continue;
         }
-        let row_idx = first_visible + visible_idx;
-        let row_origin = row_origin_for(block_rect, row_idx, ctx.row_height);
+        let row_origin = Pos2::new(block_rect.left(), first_y + (visible_idx as f32) * ctx.row_height);
         paint_row_marks(painter, ctx, row_origin, row.offset, row.bytes.len());
     }
 }
 
+/// Compute one row's screen origin from the absolute row index. Used
+/// once at paint time per render to anchor the first visible row;
+/// downstream rows then walk in small `(visible_idx as f32) *
+/// row_height` steps so consecutive rows are always exactly
+/// `row_height` apart in f32.
+///
+/// The `(row_idx as f64) * (row_height as f64)` cast carries the
+/// precision through the multiplication so very large file offsets
+/// (tens of MB content => millions of rows) don't lose sub-pixel
+/// accuracy in the product. Casting back to f32 at the end yields a
+/// screen-coordinate value that lands within an f32 step (~1 px at
+/// even the largest content sizes).
 fn row_origin_for(block_rect: Rect, row_idx: usize, row_height: f32) -> Pos2 {
-    Pos2::new(block_rect.left(), block_rect.top() + (row_idx as f32) * row_height)
+    let offset = (row_idx as f64) * (row_height as f64);
+    Pos2::new(block_rect.left(), block_rect.top() + offset as f32)
 }
 
 fn paint_row_backs_and_glyphs(
@@ -3047,15 +3059,33 @@ fn paint_address_column(
     };
 
     let glyphs = GlyphCache::load_or_build(&painter, font_id);
+    // Anchor the first visible row's y in f64 -- the cell view is
+    // doing the same thing for the same reason: at large file
+    // offsets `(idx as f32) * row_height` rounds to the f32 step
+    // for that magnitude, alternating between two snap positions
+    // and producing visibly bunched rows. Walking subsequent rows
+    // by a small `relative * row_height` increment keeps the
+    // spacing exactly `row_height` apart in f32.
+    let mut first_idx: Option<usize> = None;
+    let mut first_y: f32 = 0.0;
     for (idx, maybe_offset) in row_offsets {
         let Some(row_first_offset) = maybe_offset else { continue };
-        let y = rect.top() + (idx as f32) * row_height - v_offset;
+        let row_top = match first_idx {
+            None => {
+                let absolute = rect.top() as f64 + (idx as f64) * (row_height as f64) - v_offset as f64;
+                first_idx = Some(idx);
+                first_y = absolute as f32;
+                first_y
+            }
+            Some(base) => first_y + ((idx - base) as f32) * row_height,
+        };
         let label = match formatter {
             Some(f) => f(row_first_offset, layout.address_chars),
             None => format_address(row_first_offset, layout.address_chars),
         };
         let galley = glyphs.label_galley(&painter, font_id, &label);
-        let pos = Align2::LEFT_CENTER.anchor_size(Pos2::new(rect.left(), y + row_height * 0.5), galley.size()).min;
+        let pos =
+            Align2::LEFT_CENTER.anchor_size(Pos2::new(rect.left(), row_top + row_height * 0.5), galley.size()).min;
         painter.galley_with_override_text_color(pos, galley, color);
     }
 }
