@@ -180,16 +180,62 @@ fn walk(
         let size_text = format_size(size);
         let label = format!("{} {}", egui_phosphor::regular::FILE, name);
         builder.node(NodeBuilder::leaf(id).label_ui(move |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(&label).selectable(false).truncate());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(&size_text).weak()).selectable(false));
-                });
+            // egui_ltreeview's `state.min_width` only ever grows
+            // (`x.at_least(used)`), so anything we *allocate* in a
+            // row gets baked into the row width forever and pins
+            // right-aligned widgets past a later-shrunken viewport.
+            // Track the actually-visible right edge via `clip_rect`
+            // and paint the size with the painter so it doesn't
+            // count toward the row's measured content width.
+            let visible_right = ui.clip_rect().right();
+            let body_font = egui::TextStyle::Body.resolve(ui.style());
+            let weak_color = ui.visuals().weak_text_color();
+            let measured_size_w = ui.fonts_mut(|f| {
+                f.layout_no_wrap(size_text.clone(), body_font.clone(), weak_color).size().x
             });
+            let cursor_x = ui.cursor().min.x;
+            let avail_visible = (visible_right - cursor_x).max(0.0);
+            let row_h = ui.available_height();
+            let show_size = avail_visible >= MIN_NAME_W + measured_size_w + SIZE_GAP;
+            let name_max =
+                if show_size { avail_visible - measured_size_w - SIZE_GAP } else { avail_visible };
+            // `add_sized` centers the widget within the allocated
+            // rect, which would shove the filename rightwards. Use an
+            // explicit left-to-right layout so the name hugs the
+            // tree's indent edge.
+            let name_resp = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(name_max, row_h),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| ui.add(egui::Label::new(&label).selectable(false).truncate()),
+                )
+                .response;
+            if show_size {
+                let center_y = name_resp.rect.center().y;
+                ui.painter().text(
+                    egui::pos2(visible_right - SIZE_PAD_RIGHT, center_y),
+                    egui::Align2::RIGHT_CENTER,
+                    &size_text,
+                    body_font,
+                    weak_color,
+                );
+            }
         }));
         totals.files += 1;
     }
 }
+
+/// Minimum horizontal room reserved for the (possibly truncated)
+/// filename before the size column is allowed to take its slot.
+/// Below this the size is hidden so the filename isn't crushed to a
+/// single glyph.
+const MIN_NAME_W: f32 = 60.0;
+/// Gap between the filename and the right-aligned size label so the
+/// two never visually touch.
+const SIZE_GAP: f32 = 12.0;
+/// Visual margin between the size label's right edge and the panel's
+/// visible right edge so the text doesn't kiss the scrollbar.
+const SIZE_PAD_RIGHT: f32 = 4.0;
 
 fn join(parent: &str, name: &str) -> String {
     if parent.is_empty() { format!("/{name}") } else { format!("{parent}/{name}") }
