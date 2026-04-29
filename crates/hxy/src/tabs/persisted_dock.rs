@@ -68,6 +68,10 @@ pub enum PersistedTab {
     /// Strings panel, keyed by the underlying file's [`TabSource`]
     /// like the other per-file tool tabs.
     Strings(TabSource),
+    /// Checksums panel, keyed by [`TabSource`]. The user's
+    /// algorithm selection is held in the live panel and not
+    /// included here -- the persisted dock is purely the layout.
+    Checksums(TabSource),
     /// File tab, keyed by its [`TabSource`] -- the same identity used
     /// in [`crate::state::OpenTabState`], so we can look up whichever
     /// [`FileId`] was allocated for it during the open-tabs restore.
@@ -178,6 +182,7 @@ fn live_to_persisted_tab(
         Tab::Entropy(id) => PersistedTab::Entropy(files.get(id)?.source_kind.clone()?),
         Tab::Visualizer(id) => PersistedTab::Visualizer(files.get(id)?.source_kind.clone()?),
         Tab::Strings(id) => PersistedTab::Strings(files.get(id)?.source_kind.clone()?),
+        Tab::Checksums(id) => PersistedTab::Checksums(files.get(id)?.source_kind.clone()?),
         Tab::File(id) => PersistedTab::File(files.get(id)?.source_kind.clone()?),
         Tab::Workspace(id) => {
             let ws = workspaces.get(id)?;
@@ -248,6 +253,7 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
         PersistedTab::Entropy(source) => Tab::Entropy(*maps.files_by_source.get(source)?),
         PersistedTab::Visualizer(source) => Tab::Visualizer(*maps.files_by_source.get(source)?),
         PersistedTab::Strings(source) => Tab::Strings(*maps.files_by_source.get(source)?),
+        PersistedTab::Checksums(source) => Tab::Checksums(*maps.files_by_source.get(source)?),
         PersistedTab::File(source) => Tab::File(*maps.files_by_source.get(source)?),
         PersistedTab::Workspace(parent) => Tab::Workspace(*maps.workspaces_by_parent.get(parent)?),
         PersistedTab::PluginMount { plugin_name, token, .. } => {

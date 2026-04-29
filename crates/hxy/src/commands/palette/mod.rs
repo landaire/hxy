@@ -317,6 +317,13 @@ pub enum PaletteCommand {
     /// range *without* auto-running, so the user can adjust the
     /// encoding or min length before pressing Run.
     FindStringsWithOptions,
+    /// Open the Checksums tool against the active file's whole-file
+    /// range and run the user's selected algorithm set in one
+    /// streaming pass.
+    CalculateChecksumsWholeFile,
+    /// Open the Checksums tool against the active file's current
+    /// non-empty selection.
+    CalculateChecksumsSelection,
     /// Toggle the byte-cache debug Memory panel. Listed in the
     /// palette only when `AppSettings::debug_memory_panel_enabled`
     /// is on.

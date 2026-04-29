@@ -49,6 +49,9 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
     if let Some(path) = app.dock.find_tab(&Tab::Strings(id)) {
         let _ = app.dock.remove_tab(path);
     }
+    if let Some(path) = app.dock.find_tab(&Tab::Checksums(id)) {
+        let _ = app.dock.remove_tab(path);
+    }
     // Same lifetime story for the visualizer panel: keyed on
     // FileId, so it goes when its file does.
     if let Some(path) = app.dock.find_tab(&Tab::Visualizer(id)) {
@@ -109,7 +112,13 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
         Tab::Welcome | Tab::Settings => {
             // Non-closeable in the TabViewer; Cmd+W matches.
         }
-        Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Entropy(_) | Tab::Memory | Tab::Strings(_) => {
+        Tab::Console
+        | Tab::Inspector
+        | Tab::Plugins
+        | Tab::Entropy(_)
+        | Tab::Memory
+        | Tab::Strings(_)
+        | Tab::Checksums(_) => {
             if let Some(path) = app.dock.find_tab(&tab) {
                 let _ = app.dock.remove_tab(path);
             }

@@ -4,6 +4,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+pub mod checksums;
 pub mod entropy;
 pub mod inspector;
 pub mod memory;

@@ -392,7 +392,7 @@ strings-no-active-file = No active file. Open a file to extract strings.
 strings-min-length = Min length:
 strings-run = Run
 strings-running = Running...
-strings-range = Range: { $start } – { $end } ({ $length })
+strings-range = Range: { $start } to { $end } ({ $length })
 strings-filter = Filter:
 strings-no-results-yet = Press Run to scan the configured range.
 strings-no-matches = No strings match the filter.
@@ -407,9 +407,27 @@ strings-col-text = Text
 palette-strings-whole-file = Find strings (whole file)
 palette-strings-whole-file-subtitle = Open the strings panel and scan every byte in the active file.
 palette-strings-selection = Find strings (selection)
-palette-strings-selection-subtitle = Scan { $start }–{ $end } only.
+palette-strings-selection-subtitle = Scan { $start } to { $end } only.
 palette-strings-with-options = Find strings...
 palette-strings-with-options-subtitle = Open the panel without scanning so you can adjust encoding or minimum length first.
+
+# Checksums tool
+tab-checksums = Checksums: { $name }
+checksums-heading = Checksums
+checksums-no-active-file = No active file. Open a file to compute checksums.
+checksums-run = Run
+checksums-running = Running...
+checksums-range = Range: { $start } to { $end } ({ $length })
+checksums-no-results-yet = Press Run to compute the selected checksums.
+checksums-col-algorithm = Algorithm
+checksums-col-value = Value
+checksums-copy = Copy
+checksums-copy-all = Copy all
+
+palette-checksums-whole-file = Calculate checksums (whole file)
+palette-checksums-whole-file-subtitle = Run the selected hashes over every byte in the active file.
+palette-checksums-selection = Calculate checksums (selection)
+palette-checksums-selection-subtitle = Run the selected hashes over { $start } to { $end } only.
 
 # Visualizer panel
 visualizer-close = Hide visualizer

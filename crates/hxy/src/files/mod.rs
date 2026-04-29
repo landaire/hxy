@@ -306,6 +306,11 @@ pub struct OpenFile {
     /// placeholder until the user runs the extractor.
     #[cfg(not(target_arch = "wasm32"))]
     pub strings_panel: crate::panels::strings::StringsPanel,
+    /// Per-file checksum tool state: enabled algorithm set, the
+    /// configured range, the most recent result, and any in-flight
+    /// worker. Default selection ticks SHA-256 + BLAKE3.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub checksums_panel: crate::panels::checksums::ChecksumsPanel,
     /// Identifier for this file's bytes inside the shared byte
     /// cache. Allocated once on construction and reused for every
     /// [`CachedSource`] handle the file or its template runs build.
@@ -620,6 +625,8 @@ impl OpenFile {
             visualizer_panel: crate::visualizers::VisualizerPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
             strings_panel: crate::panels::strings::StringsPanel::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            checksums_panel: crate::panels::checksums::ChecksumsPanel::default(),
             source_id,
             byte_cache: byte_cache.clone(),
         }

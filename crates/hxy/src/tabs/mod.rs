@@ -84,6 +84,12 @@ pub enum Tab {
     /// [`FileId`] so two files can each surface their own runs.
     #[cfg(not(target_arch = "wasm32"))]
     Strings(FileId),
+    /// Checksum panel for a specific file. The panel owns the
+    /// algorithm-selection state, the most recent result, and any
+    /// in-flight worker; results are computed in a single streaming
+    /// pass over the configured byte range.
+    #[cfg(not(target_arch = "wasm32"))]
+    Checksums(FileId),
 }
 
 impl Tab {

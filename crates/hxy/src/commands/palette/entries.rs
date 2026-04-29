@@ -379,6 +379,10 @@ fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entr
             let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
             (hxy_i18n::t_args("tab-strings", &[("name", name)]), icon::TEXT_T)
         }
+        Tab::Checksums(file_id) => {
+            let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
+            (hxy_i18n::t_args("tab-checksums", &[("name", name)]), icon::FINGERPRINT)
+        }
         Tab::Compare(compare_id) => match app.compares.get(&compare_id) {
             Some(s) => (
                 hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]),
@@ -604,6 +608,36 @@ pub fn build_palette_entries(
                     .with_icon(icon::TEXT_T)
                     .with_subtitle(hxy_i18n::t("palette-strings-with-options-subtitle")),
                 );
+            }
+
+            // Checksum tool: whole-file always available; selection
+            // entry shows when there's a non-empty selection.
+            if history_ctx.has_active_file {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-checksums-whole-file"),
+                        Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
+                    )
+                    .with_icon(icon::FINGERPRINT)
+                    .with_subtitle(hxy_i18n::t("palette-checksums-whole-file-subtitle")),
+                );
+                if let Some(sel) = template_ctx.selection {
+                    let subtitle = hxy_i18n::t_args(
+                        "palette-checksums-selection-subtitle",
+                        &[
+                            ("start", &format!("{:#x}", sel.start().get())),
+                            ("end", &format!("{:#x}", sel.end().get())),
+                        ],
+                    );
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t("palette-checksums-selection"),
+                            Action::InvokeCommand(PaletteCommand::CalculateChecksumsSelection),
+                        )
+                        .with_icon(icon::FINGERPRINT)
+                        .with_subtitle(subtitle),
+                    );
+                }
             }
 
             // Skip the "Toggle VFS panel" entry entirely when no

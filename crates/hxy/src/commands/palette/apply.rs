@@ -158,6 +158,12 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::FindStringsWithOptions => {
                     crate::app::run_strings_for_active(ctx, app, crate::app::StringsScope::WholeFile, false);
                 }
+                PaletteCommand::CalculateChecksumsWholeFile => {
+                    crate::app::run_checksums_for_active(ctx, app, crate::app::StringsScope::WholeFile);
+                }
+                PaletteCommand::CalculateChecksumsSelection => {
+                    crate::app::run_checksums_for_active(ctx, app, crate::app::StringsScope::Selection);
+                }
             }
         }
         Action::CopyText(text) => {

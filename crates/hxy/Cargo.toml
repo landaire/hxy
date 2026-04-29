@@ -87,6 +87,14 @@ dhat = { version = "0.3.3", optional = true }
 # (other ISAs are stubbed -- adding capstone would pull in C deps).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel"] }
+# Checksum tool: each crate exposes the same RustCrypto `Digest` API
+# so the streaming-pass implementation can fan out to every selected
+# algorithm uniformly. CRC32 sits outside the RustCrypto trait family
+# but `crc32fast::Hasher` follows the same `update` + `finalize`
+# shape so the dispatcher pays no overhead.
+md-5 = "0.10"
+sha1 = "0.10"
+crc32fast = "1"
 # BLAKE3 used directly for: source-bytes fingerprints (snapshot,
 # patch sidecar, watch), template-source fingerprints (run/restart
 # match), and the visualizer-cache fingerprint that decides when to

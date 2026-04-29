@@ -757,6 +757,19 @@ impl HxyApp {
         self.dock.set_focused_node_and_surface(node_path);
     }
 
+    /// Show (or focus) the Checksums panel for `file_id`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_checksums_for(&mut self, file_id: FileId) {
+        if let Some(path) = self.dock.find_tab(&Tab::Checksums(file_id)) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Checksums(file_id));
+        self.dock.set_focused_node_and_surface(node_path);
+    }
+
     /// Show (or focus) the Visualizer panel for `file_id`. Used by
     /// the auto-open path after a template run produces visualizer
     /// attributes, and by the in-row visualizer icon. No-ops when
@@ -2304,6 +2317,11 @@ impl eframe::App for HxyApp {
         let mut pending_strings_run: Vec<FileId> = Vec::new();
         #[cfg(not(target_arch = "wasm32"))]
         let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
+        // Checksum panel "Run" clicks + clipboard requests.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pending_checksums_run: Vec<FileId> = Vec::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pending_checksums_copy: Vec<String> = Vec::new();
 
         {
             // Snapshot fields that the viewer needs but that live on
@@ -2361,6 +2379,10 @@ impl eframe::App for HxyApp {
                 pending_strings_run: &mut pending_strings_run,
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_strings_jump: &mut pending_strings_jump,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_checksums_run: &mut pending_checksums_run,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_checksums_copy: &mut pending_checksums_copy,
                 byte_cache: &self.byte_cache,
             };
             let style = crate::style::hxy_dock_style(ui.style());
@@ -2387,6 +2409,17 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         for (file_id, offset, end) in std::mem::take(&mut pending_strings_jump) {
             jump_to_strings_match(self, file_id, offset, end);
+        }
+        // Checksum panel "Run" + Copy. Run uses the panel's current
+        // config (algorithm set + range) and re-fires the worker;
+        // Copy puts the formatted hex on the clipboard.
+        #[cfg(not(target_arch = "wasm32"))]
+        for file_id in std::mem::take(&mut pending_checksums_run) {
+            spawn_checksums_with_panel_config(ui.ctx(), self, file_id);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for text in std::mem::take(&mut pending_checksums_copy) {
+            ui.ctx().copy_text(text);
         }
 
         // Visualizer panel header X-clicks: remove the dock tab
@@ -2494,6 +2527,8 @@ impl eframe::App for HxyApp {
         drain_entropy_runs(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_strings_runs(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_checksums_runs(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -2899,6 +2934,114 @@ pub fn jump_to_strings_match(app: &mut HxyApp, file_id: FileId, offset: u64, end
     let cursor = hxy_core::ByteOffset::new(end - 1);
     file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor }));
     file.editor.set_scroll_to_byte(anchor);
+}
+
+/// Open the Checksums panel for the active file and kick off a
+/// fresh compute against `scope`. Reuses `StringsScope` for the
+/// range selector since the two tools share whole-file / selection
+/// semantics.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_checksums_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: StringsScope) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Checksums", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    app.show_checksums_for(id);
+    spawn_checksums_for(ctx, app, id, scope);
+}
+
+/// Re-derive the panel range from `scope` and start a fresh
+/// streaming compute. Replaces any in-flight worker.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_checksums_for(ctx: &egui::Context, app: &mut HxyApp, id: FileId, scope: StringsScope) {
+    let Some(file) = app.files.get(&id) else { return };
+    let source_len = file.editor.source().len().get();
+    if source_len == 0 {
+        app.console_log(ConsoleSeverity::Info, "Checksums", "buffer is empty");
+        return;
+    }
+    let range = match scope {
+        StringsScope::WholeFile => whole_file_range(source_len),
+        StringsScope::Selection => match file.editor.selection() {
+            Some(sel) if !sel.range().is_empty() => Ok(sel.range()),
+            _ => whole_file_range(source_len),
+        },
+    };
+    let range = match range {
+        Ok(r) => r,
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Error, "Checksums", format!("invalid file range: {e}"));
+            return;
+        }
+    };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.checksums_panel.config.range = range;
+    spawn_checksums_with_panel_config(ctx, app, id);
+}
+
+/// Recompute checksums for `id` using the panel's existing config.
+/// Used by the panel's own "Run" button.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_checksums_with_panel_config(ctx: &egui::Context, app: &mut HxyApp, id: FileId) {
+    let Some(file) = app.files.get_mut(&id) else { return };
+    let config = file.checksums_panel.config.clone();
+    if config.algorithms.is_empty() {
+        app.console_log(ConsoleSeverity::Warning, "Checksums", "no algorithms selected");
+        return;
+    }
+    if config.range.is_empty() {
+        app.console_log(ConsoleSeverity::Info, "Checksums", "configured range is empty");
+        return;
+    }
+    let source = file.editor.source().clone();
+    let display = file.display_name.clone();
+    file.checksums_panel.last_result = None;
+    file.checksums_panel.running = Some(crate::panels::checksums::spawn_compute(ctx, id, source, config.clone()));
+    let alg_list = config.algorithms.iter().map(|a| a.label()).collect::<Vec<_>>().join(", ");
+    app.console_log(
+        ConsoleSeverity::Info,
+        format!("Checksums {display}"),
+        format!("computing [{alg_list}] over {} byte(s)...", config.range.len().get()),
+    );
+}
+
+/// Drain any completed checksum computations into the file's
+/// `checksums_panel.last_result` slot.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drain_checksums_runs(ctx: &egui::Context, app: &mut HxyApp) {
+    let mut done: Vec<(FileId, crate::panels::checksums::ChecksumOutcome, std::time::Duration)> = Vec::new();
+    for (id, file) in app.files.iter_mut() {
+        let Some(run) = file.checksums_panel.running.as_ref() else { continue };
+        let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+        if outcomes.is_empty() {
+            continue;
+        }
+        let elapsed = run.started.elapsed();
+        file.checksums_panel.running = None;
+        for outcome in outcomes {
+            done.push((*id, outcome, elapsed));
+        }
+    }
+    for (id, outcome, elapsed) in done {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        let ctx_label = format!("Checksums {display}");
+        match outcome {
+            crate::panels::checksums::ChecksumOutcome::Ok(result) => {
+                let summary = format!(
+                    "computed {} checksum(s) in {:.0} ms",
+                    result.values.len(),
+                    elapsed.as_secs_f64() * 1000.0,
+                );
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.checksums_panel.last_result = Some(result);
+                }
+                app.console_log(ConsoleSeverity::Info, &ctx_label, summary);
+            }
+            crate::panels::checksums::ChecksumOutcome::Err(msg) => {
+                app.console_log(ConsoleSeverity::Error, &ctx_label, msg);
+            }
+        }
+    }
 }
 
 /// Drain any completed strings extractions into the file's
@@ -5036,6 +5179,14 @@ struct HxyTabViewer<'a> {
     /// hex view.
     #[cfg(not(target_arch = "wasm32"))]
     pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
+    /// Checksum panel "Run" requests captured during render.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_checksums_run: &'a mut Vec<FileId>,
+    /// Clipboard-copy requests emitted by the Checksum panel
+    /// (per-row "Copy" buttons + "Copy all"). Each entry is the
+    /// already-formatted string that should land on the clipboard.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_checksums_copy: &'a mut Vec<String>,
     /// Shared byte cache, plumbed through so the Settings tab can
     /// drive `set_limit` directly when the user changes the cache
     /// budget and the Memory debug panel can call `stats()`.
@@ -5086,6 +5237,11 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Strings(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-strings", &[("name", name)]).into()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Checksums(id) => {
+                let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
+                hxy_i18n::t_args("tab-checksums", &[("name", name)]).into()
             }
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
@@ -5188,6 +5344,27 @@ impl TabViewer for HxyTabViewer<'_> {
                 } else {
                     let mut empty = crate::panels::strings::StringsPanel::default();
                     let _ = crate::panels::strings::show(ui, None, &mut empty);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Checksums(file_id) => {
+                let pinned = *file_id;
+                if let Some(file) = self.files.get_mut(&pinned) {
+                    let label = file.display_name.clone();
+                    let events = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                    for ev in events {
+                        match ev {
+                            crate::panels::checksums::ChecksumsEvent::Run => {
+                                self.pending_checksums_run.push(pinned);
+                            }
+                            crate::panels::checksums::ChecksumsEvent::Copy(text) => {
+                                self.pending_checksums_copy.push(text);
+                            }
+                        }
+                    }
+                } else {
+                    let mut empty = crate::panels::checksums::ChecksumsPanel::default();
+                    let _ = crate::panels::checksums::show(ui, None, &mut empty);
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
