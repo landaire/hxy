@@ -2273,14 +2273,37 @@ fn apply_interaction(
     selection: &mut Option<Selection>,
     interacted_pane: &mut Option<Pane>,
 ) {
-    let cols = usize::from(hit.columns.get());
+    let _ = usize::from(hit.columns.get());
     let shift = ui.input(|i| i.modifiers.shift);
-    let active = response.dragged() || response.drag_started() || response.clicked();
-    if !active {
+
+    // Mouse-driven selection has three concurrent signals:
+    //
+    //   * `pressed_on_widget`: the user just pressed the primary
+    //     button while hovering the hex view -- one-frame edge.
+    //     This is when we capture the anchor, BEFORE egui's drag
+    //     threshold (~6px) gets a chance to swallow the initial
+    //     motion. Going through `drag_started()` instead would
+    //     anchor at the post-threshold pointer position, which is
+    //     why click-drag could skip the first row / first chars.
+    //
+    //   * `held`: primary button is still down on this widget
+    //     (`is_pointer_button_down_on`). Fires every frame between
+    //     press and release, including the gap before the drag
+    //     threshold crosses, so the cursor follows the pointer
+    //     immediately without waiting for `dragged()`.
+    //
+    //   * `clicked`: a press+release with motion below the drag
+    //     threshold. Mostly a no-op here -- the press branch
+    //     already set the selection -- but kept for shift-click
+    //     paths that didn't go through a fresh press (e.g. focus
+    //     gained on the click frame).
+    let pressed_on_widget = ui.input(|i| i.pointer.primary_pressed()) && response.contains_pointer();
+    let held = response.is_pointer_button_down_on();
+    let clicked = response.clicked();
+    if !pressed_on_widget && !held && !clicked {
         return;
     }
 
-    let _ = cols;
     let pos = response.interact_pointer_pos().or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()));
     let Some(pos) = pos else { return };
     let Some(rc) = hit.layout.hit_test(hit.block_rect, pos, hit.row_height, hit.total_rows) else {
@@ -2288,25 +2311,34 @@ fn apply_interaction(
     };
     let Some(hit_offset) = hit_to_offset(hit, rc) else { return };
 
-    if response.drag_started() || response.clicked() {
-        // Report the pane the click landed in so the consumer can
+    if pressed_on_widget || clicked {
+        // Report the pane the press landed in so the consumer can
         // switch input routing to ASCII vs hex keystrokes. Plain
-        // drags without a fresh click should not rebind the pane
+        // drag-continuation frames should not rebind the pane
         // mid-gesture.
         *interacted_pane = Some(rc.pane);
     }
 
-    if response.drag_started() {
+    if pressed_on_widget {
+        // Capture the anchor at the exact byte the user pressed
+        // on. Subsequent `held` frames will move the cursor; the
+        // anchor stays put so click-drag covers every byte from
+        // the press position onward, including the row / chars
+        // the drag threshold would have eaten otherwise.
         *selection = Some(match (shift, *selection) {
             (true, Some(existing)) => Selection { anchor: existing.anchor, cursor: hit_offset },
             _ => Selection::caret(hit_offset),
         });
-    } else if response.dragged() {
+    } else if held {
         match selection.as_mut() {
             Some(s) => s.cursor = hit_offset,
             None => *selection = Some(Selection::caret(hit_offset)),
         }
-    } else if response.clicked() {
+    } else if clicked {
+        // Fallback for paths where `primary_pressed` didn't fire
+        // on this widget (e.g. focus arrived only on the click
+        // frame and the press hadn't been registered as targeting
+        // us yet). Mirrors the press branch.
         *selection = Some(match (shift, *selection) {
             (true, Some(existing)) => Selection { anchor: existing.anchor, cursor: hit_offset },
             _ => Selection::caret(hit_offset),
