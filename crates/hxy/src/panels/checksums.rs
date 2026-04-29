@@ -29,6 +29,7 @@ const CHUNK_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Algorithm {
     Crc32,
+    Adler32,
     Md5,
     Sha1,
     Sha256,
@@ -37,12 +38,13 @@ pub enum Algorithm {
 }
 
 impl Algorithm {
-    pub const ALL: [Algorithm; 6] =
-        [Self::Crc32, Self::Md5, Self::Sha1, Self::Sha256, Self::Sha512, Self::Blake3];
+    pub const ALL: [Algorithm; 7] =
+        [Self::Crc32, Self::Adler32, Self::Md5, Self::Sha1, Self::Sha256, Self::Sha512, Self::Blake3];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Crc32 => "CRC32",
+            Self::Adler32 => "Adler-32",
             Self::Md5 => "MD5",
             Self::Sha1 => "SHA-1",
             Self::Sha256 => "SHA-256",
@@ -112,6 +114,7 @@ pub struct ChecksumsPanel {
 /// enum once per chunk, not once per algorithm per chunk.
 enum Hasher {
     Crc32(crc32fast::Hasher),
+    Adler32(adler2::Adler32),
     Md5(md5::Md5),
     Sha1(sha1::Sha1),
     Sha256(sha2::Sha256),
@@ -123,6 +126,7 @@ impl Hasher {
     fn for_algorithm(alg: Algorithm) -> Self {
         match alg {
             Algorithm::Crc32 => Self::Crc32(crc32fast::Hasher::new()),
+            Algorithm::Adler32 => Self::Adler32(adler2::Adler32::new()),
             Algorithm::Md5 => Self::Md5(<md5::Md5 as md5::Digest>::new()),
             Algorithm::Sha1 => Self::Sha1(<sha1::Sha1 as sha1::Digest>::new()),
             Algorithm::Sha256 => Self::Sha256(sha2::Sha256::new()),
@@ -134,6 +138,7 @@ impl Hasher {
     fn update(&mut self, bytes: &[u8]) {
         match self {
             Self::Crc32(h) => h.update(bytes),
+            Self::Adler32(h) => h.write_slice(bytes),
             Self::Md5(h) => md5::Digest::update(h, bytes),
             Self::Sha1(h) => sha1::Digest::update(h, bytes),
             Self::Sha256(h) => h.update(bytes),
@@ -147,6 +152,7 @@ impl Hasher {
     fn finalize_hex(self) -> String {
         match self {
             Self::Crc32(h) => format!("{:08x}", h.finalize()),
+            Self::Adler32(h) => format!("{:08x}", h.checksum()),
             Self::Md5(h) => hex_encode(&md5::Digest::finalize(h)),
             Self::Sha1(h) => hex_encode(&sha1::Digest::finalize(h)),
             Self::Sha256(h) => hex_encode(&h.finalize()),
@@ -311,7 +317,16 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut ChecksumsPa
                 ui.end_row();
                 for (alg, value) in &result.values {
                     ui.label(alg.label());
-                    ui.add(egui::Label::new(egui::RichText::new(value).monospace()).wrap());
+                    // Extend wrap mode keeps the hex digest on one
+                    // line; the outer ScrollArea handles overflow
+                    // when the panel is narrow. `selectable(true)`
+                    // lets the user double-click to grab the value
+                    // without taking the dedicated Copy button path.
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(value).monospace())
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .selectable(true),
+                    );
                     if ui.small_button(hxy_i18n::t("checksums-copy")).clicked() {
                         events.push(ChecksumsEvent::Copy(value.clone()));
                     }
@@ -362,6 +377,9 @@ mod tests {
         let result = compute(&source, &config).unwrap();
         // All hashes for empty input -- well-known values.
         assert_eq!(result.values[&Algorithm::Crc32], "00000000");
+        // Adler-32 of an empty buffer is 1 by definition (initial s2=0,
+        // s1=1; concat'ing the high half of s2 with s1 yields 0x00000001).
+        assert_eq!(result.values[&Algorithm::Adler32], "00000001");
         assert_eq!(result.values[&Algorithm::Md5], "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(result.values[&Algorithm::Sha1], "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(
@@ -383,6 +401,8 @@ mod tests {
         let source = hxy_core::MemorySource::new(b"abc".to_vec());
         let config = cfg(&Algorithm::ALL, 3);
         let result = compute(&source, &config).unwrap();
+        // Adler-32 of "abc" = 0x024d0127 (RFC 1950 worked example).
+        assert_eq!(result.values[&Algorithm::Adler32], "024d0127");
         assert_eq!(result.values[&Algorithm::Md5], "900150983cd24fb0d6963f7d28e17f72");
         assert_eq!(result.values[&Algorithm::Sha1], "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(

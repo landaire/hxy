@@ -95,6 +95,7 @@ iced-x86 = { version = "1.21", default-features = false, features = ["std", "dec
 md-5 = "0.10"
 sha1 = "0.10"
 crc32fast = "1"
+adler2 = "2"
 # BLAKE3 used directly for: source-bytes fingerprints (snapshot,
 # patch sidecar, watch), template-source fingerprints (run/restart
 # match), and the visualizer-cache fingerprint that decides when to
