@@ -139,12 +139,21 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         .active_template
         .and_then(|active_id| file.templates.iter().find(|t| t.id == active_id))
         .map(|t| &t.state);
+    // Alt / Option held = full struct path; otherwise just the
+    // leaf field. Cross-platform: egui maps the macOS Option key
+    // to `modifiers.alt`.
+    let detail = if ui.input(|i| i.modifiers.alt) {
+        crate::panels::template::BreadcrumbDetail::Full
+    } else {
+        crate::panels::template::BreadcrumbDetail::Leaf
+    };
     if let Some(offset) = response.hovered_offset
         && let Some(state) = breadcrumb_state
         && let Some(path) = crate::panels::template::breadcrumb_for_offset(
             &state.tree,
             file.editor.source().as_ref(),
             offset.get(),
+            detail,
         )
     {
         let layer = ui.layer_id();

@@ -1287,16 +1287,35 @@ fn parse_hex_color(s: &str) -> Option<egui::Color32> {
 /// otherwise the root struct (which contains every byte) would win
 /// before we reach anything specific.
 ///
+/// Verbosity for [`breadcrumb_for_offset`]. The hex view picks
+/// between them based on whether the user is holding the Alt /
+/// Option modifier: by default the tooltip stays compact (just
+/// the leaf field, or the per-element row for scalar arrays);
+/// holding the modifier reveals the full struct path from the
+/// root down to the leaf so the user can see exactly which
+/// nested field they're hovering over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreadcrumbDetail {
+    /// Single line. Non-array leaves render as `type name = value`;
+    /// scalar arrays render as `name[index] = value` (the array's
+    /// field name plus the cursor's element index).
+    Leaf,
+    /// Full struct chain root-to-leaf, plus the per-element row
+    /// for scalar arrays. Triggered while a modifier key is held.
+    Full,
+}
+
 /// When the chosen leaf is a primitive `ScalarArray`, the breadcrumb
 /// gets an extra leaf row showing the specific element under the
-/// cursor -- e.g. `uchar [77] = 120` -- decoded on the fly from
-/// `source`. That's the reason the source is taken as an argument:
-/// primitive arrays are emitted as a single contiguous node, so
-/// individual element values aren't in the tree.
+/// cursor -- e.g. `compressed_profile[77] = 120` -- decoded on the
+/// fly from `source`. That's the reason the source is taken as an
+/// argument: primitive arrays are emitted as a single contiguous
+/// node, so individual element values aren't in the tree.
 pub fn breadcrumb_for_offset(
     tree: &hxy_plugin_host::template::ResultTree,
     source: &dyn hxy_core::HexSource,
     byte: u64,
+    detail: BreadcrumbDetail,
 ) -> Option<Vec<String>> {
     let mut has_children = vec![false; tree.nodes.len()];
     for node in &tree.nodes {
@@ -1314,6 +1333,18 @@ pub fn breadcrumb_for_offset(
         let end = start.saturating_add(node.span.length);
         (byte >= start && byte < end).then_some(idx as u32)
     })?;
+    let leaf_node = &tree.nodes[leaf as usize];
+
+    if matches!(detail, BreadcrumbDetail::Leaf) {
+        // Compact form: prefer the per-element row for scalar
+        // arrays, otherwise emit the leaf's own type/name/value
+        // line. Single-row output -- the tooltip won't stretch
+        // across the hex view.
+        if let Some(row) = array_element_row(leaf_node, source, byte) {
+            return Some(vec![row]);
+        }
+        return Some(vec![format_leaf_line(leaf_node)]);
+    }
 
     // Walk parent chain leaf -> root.
     let mut chain: Vec<u32> = Vec::new();
@@ -1338,7 +1369,7 @@ pub fn breadcrumb_for_offset(
         })
         .collect();
 
-    if let Some(row) = array_element_row(&tree.nodes[leaf as usize], source, byte) {
+    if let Some(row) = array_element_row(leaf_node, source, byte) {
         raw.push(row);
     }
 
@@ -1358,6 +1389,17 @@ pub fn breadcrumb_for_offset(
         })
         .collect();
     Some(lines)
+}
+
+/// Format a single leaf node as `<type> <name> = <value>` (or
+/// `<type> <name>` when the node has no scalar value). Used by
+/// both the compact and full breadcrumbs to render the leaf row.
+fn format_leaf_line(node: &hxy_plugin_host::template::Node) -> String {
+    let ty = hxy_plugin_host::node_display_type(node);
+    match format_node_value(node) {
+        Some(v) => format!("{} {} = {}", ty, node.name, v),
+        None => format!("{} {}", ty, node.name),
+    }
 }
 
 /// Produce the per-element breadcrumb row for a primitive scalar
@@ -1398,7 +1440,7 @@ fn array_element_row(
         .unwrap_or("little");
     let value = decode_scalar_bytes(kind, &bytes, endian)?;
     let type_label = scalar_kind_name(kind);
-    Some(format!("{type_label} [{index}] = {value}"))
+    Some(format!("{type_label} {}[{index}] = {value}", leaf.name))
 }
 
 fn scalar_kind_width(kind: hxy_plugin_host::template::ScalarKind) -> Option<u64> {

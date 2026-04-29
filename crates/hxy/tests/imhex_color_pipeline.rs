@@ -221,8 +221,13 @@ s_t s @ 0x00;
 
     // Breadcrumb at byte 0 should land on `first`, not on the
     // visualizer-like `v`.
-    let crumbs = hxy_lib::panels::template::breadcrumb_for_offset(&tree, &MemorySource::new(vec![0xAA, 0xBB]), 0)
-        .expect("breadcrumb at byte 0");
+    let crumbs = hxy_lib::panels::template::breadcrumb_for_offset(
+        &tree,
+        &MemorySource::new(vec![0xAA, 0xBB]),
+        0,
+        hxy_lib::panels::template::BreadcrumbDetail::Full,
+    )
+    .expect("breadcrumb at byte 0");
     let leaf_label = crumbs.last().expect("at least one row");
     assert!(leaf_label.contains("first"), "breadcrumb leaf at byte 0 should be `first`, got: {leaf_label:?}");
 }
