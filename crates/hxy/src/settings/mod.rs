@@ -106,13 +106,13 @@ pub type OffsetBase = NumericBase;
 /// explicit `[[hex]]` / `[[decimal]]` hint when set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateValueFormats {
-    #[serde(default = "default_u8_format")]
+    #[serde(default = "default_unsigned_format")]
     pub u8: NumericFormat,
-    #[serde(default = "default_u16_format")]
+    #[serde(default = "default_unsigned_format")]
     pub u16: NumericFormat,
-    #[serde(default = "default_u32_format")]
+    #[serde(default = "default_unsigned_format")]
     pub u32: NumericFormat,
-    #[serde(default = "default_u64_format")]
+    #[serde(default = "default_unsigned_format")]
     pub u64: NumericFormat,
     #[serde(default = "default_signed_format")]
     pub s8: NumericFormat,
@@ -127,10 +127,10 @@ pub struct TemplateValueFormats {
 impl Default for TemplateValueFormats {
     fn default() -> Self {
         Self {
-            u8: default_u8_format(),
-            u16: default_u16_format(),
-            u32: default_u32_format(),
-            u64: default_u64_format(),
+            u8: default_unsigned_format(),
+            u16: default_unsigned_format(),
+            u32: default_unsigned_format(),
+            u64: default_unsigned_format(),
             s8: default_signed_format(),
             s16: default_signed_format(),
             s32: default_signed_format(),
@@ -208,27 +208,18 @@ impl TemplateValueFormats {
     }
 }
 
-fn default_u8_format() -> NumericFormat {
-    // Single bytes are usually flags or magic ints -- hex reads
-    // better than decimal at that scale.
+/// Unsigned widths typically read as hex by default -- they're
+/// the natural form for byte values, magic numbers, flags, and
+/// raw addresses. Users who want decimal can flip individual
+/// widths in the per-type settings.
+fn default_unsigned_format() -> NumericFormat {
     NumericFormat::Always(NumericBase::Hex)
 }
-fn default_u16_format() -> NumericFormat {
-    // 16-bit unsigned often packs flags too.
-    NumericFormat::Always(NumericBase::Hex)
-}
-fn default_u32_format() -> NumericFormat {
-    // u32 is typically a length / counter -- decimal stays
-    // readable even for medium values.
-    NumericFormat::Always(NumericBase::Decimal)
-}
-fn default_u64_format() -> NumericFormat {
-    NumericFormat::Always(NumericBase::Decimal)
-}
+
+/// Signed widths read as decimal -- hex of a negative bit
+/// pattern (`-1_i32` rendering as `0xFFFFFFFF`) is a
+/// developer-debug view, not a default.
 fn default_signed_format() -> NumericFormat {
-    // Signed values almost always read as decimal; hex of a
-    // negative bit pattern is a developer-debug view, not a
-    // default.
     NumericFormat::Always(NumericBase::Decimal)
 }
 
