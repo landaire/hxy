@@ -29,11 +29,13 @@ editor = ["dep:suture", "dep:thiserror", "dep:tracing"]
 # through their own storage layer. Requires `editor`; pulls `serde`
 # and turns on `suture/serde`.
 serde = ["dep:serde", "editor", "suture?/serde"]
-# Pull in `dhat` + `egui_kittest` so the `hexview_dhat` benchmark
-# binary can swap in dhat::Alloc as the global allocator and drop a
+# Pull in `dhat` + `egui_kittest` so the `hexview_dhat` profiling
+# example can swap in dhat::Alloc as the global allocator and drop a
 # heap profile after a synthetic frame loop. Off by default; enable
-# with `cargo run -p hxy-view --bin hexview_dhat --features
-# dhat-bench --release`.
+# with `cargo run -p hxy-view --example hexview_dhat --features
+# dhat-bench --release`. Lives as `[[example]]` rather than `[[bin]]`
+# so it doesn't compete with the hxy binary for `cargo run`'s
+# default-package selection.
 dhat-bench = ["dep:dhat", "dep:egui_kittest"]
 
 [dev-dependencies]
@@ -47,7 +49,7 @@ optional = true
 version = "0.34.1"
 optional = true
 
-[[bin]]
+[[example]]
 name = "hexview_dhat"
 path = "bin/hexview_dhat.rs"
 required-features = ["editor", "dhat-bench"]

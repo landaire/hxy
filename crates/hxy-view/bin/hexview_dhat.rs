@@ -7,7 +7,7 @@
 //!
 //! Run with:
 //! ```sh
-//! cargo run -p hxy-view --bin hexview_dhat --features dhat-bench --release
+//! cargo run -p hxy-view --example hexview_dhat --features dhat-bench --release
 //! ```
 //! Then load the resulting `dhat-heap.json` at
 //! <https://nnethercote.github.io/dh_view/dh_view.html>.
