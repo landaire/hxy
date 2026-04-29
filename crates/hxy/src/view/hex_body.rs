@@ -16,7 +16,17 @@ pub const MODIFIED_BYTE_BG: egui::Color32 = egui::Color32::from_rgba_premultipli
 pub const MODIFIED_BYTE_FG: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x5A, 0x4A);
 
 pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut PersistedState) -> Option<CopyKind> {
-    let template_palette_override = file.template.as_ref().and_then(|t| t.byte_palette_override.clone());
+    // Inline-resolve the active template via direct field access so
+    // the resulting borrow is on `file.templates` (a field), not on
+    // `&file` as a whole. Going through the `active_template()`
+    // method would extend the borrow to all of `file` and conflict
+    // with the later `file.editor.view()` mutable borrow.
+    let active_state: Option<&crate::files::TemplateState> = file
+        .active_template
+        .and_then(|active_id| file.templates.iter().find(|t| t.id == active_id))
+        .map(|t| &t.state);
+
+    let template_palette_override = active_state.and_then(|s| s.byte_palette_override.clone());
     let (highlight, palette) = if let Some(table) = template_palette_override {
         (Some(state.app.byte_highlight_mode.as_view()), Some(hxy_view::HighlightPalette::Custom(table)))
     } else {
@@ -28,23 +38,18 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
 
     let mut copy_request: Option<CopyKind> = None;
-    let hover_span = file
-        .template
-        .as_ref()
-        .and_then(|t| t.hovered_node)
-        .and_then(|idx| file.template.as_ref().and_then(|t| t.tree.nodes.get(idx.0 as usize)))
-        .and_then(|node| {
-            let start = node.span.offset;
-            let end = start.saturating_add(node.span.length);
-            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
-        });
+    let hover_span = active_state.and_then(|s| {
+        let idx = s.hovered_node?;
+        let node = s.tree.nodes.get(idx.0 as usize)?;
+        let start = node.span.offset;
+        let end = start.saturating_add(node.span.length);
+        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
+    });
 
-    let field_boundaries = file.template.as_ref().map(|t| t.leaf_boundaries.as_slice()).unwrap_or_default();
-    let field_colors = file
-        .template
-        .as_ref()
-        .filter(|t| t.show_colors && !t.leaf_boundaries.is_empty())
-        .map(|t| (t.leaf_boundaries.as_slice(), t.leaf_colors.as_slice()));
+    let field_boundaries = active_state.map(|s| s.leaf_boundaries.as_slice()).unwrap_or_default();
+    let field_colors = active_state
+        .filter(|s| s.show_colors && !s.leaf_boundaries.is_empty())
+        .map(|s| (s.leaf_boundaries.as_slice(), s.leaf_colors.as_slice()));
 
     let modified_ranges = file.editor.modified_ranges();
     let tab_id = file.id.get();
@@ -130,10 +135,17 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     file.hovered = response.hovered_offset;
     crate::tabs::close::sync_tab_state(state, file);
 
+    let breadcrumb_state: Option<&crate::files::TemplateState> = file
+        .active_template
+        .and_then(|active_id| file.templates.iter().find(|t| t.id == active_id))
+        .map(|t| &t.state);
     if let Some(offset) = response.hovered_offset
-        && let Some(template) = file.template.as_ref()
-        && let Some(path) =
-            crate::panels::template::breadcrumb_for_offset(&template.tree, file.editor.source().as_ref(), offset.get())
+        && let Some(state) = breadcrumb_state
+        && let Some(path) = crate::panels::template::breadcrumb_for_offset(
+            &state.tree,
+            file.editor.source().as_ref(),
+            offset.get(),
+        )
     {
         let layer = ui.layer_id();
         egui::Tooltip::always_open(

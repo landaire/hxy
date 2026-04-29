@@ -1358,22 +1358,32 @@ impl HxyApp {
         }
     }
 
-    /// Re-fire the template that was last run against `file_id`,
-    /// if any. Called from the reload path so the parsed tree
-    /// stays in sync with the new bytes; if no template was ever
-    /// run, this is a no-op.
+    /// Re-fire every completed template against `file_id` so the
+    /// parsed trees stay in sync with the new bytes. Skips the file
+    /// when nothing has completed yet, or when any run is still in
+    /// flight (the worker hasn't seen the old bytes yet either, so
+    /// rerunning would just duplicate work).
     #[cfg(not(target_arch = "wasm32"))]
     fn rerun_template_for_file(&mut self, ctx: &egui::Context, file_id: FileId) {
-        // Only re-run when the previous run actually completed.
-        // Pending suggestions or in-flight runs aren't worth
-        // displacing -- the user hasn't committed to a template
-        // yet, or the worker is still computing the original.
         let Some(file) = self.files.get(&file_id) else { return };
-        if file.template.is_none() || file.template_running.is_some() {
+        if file.templates.is_empty() || !file.templates_running.is_empty() {
             return;
         }
-        let Some(path) = file.last_template_path.clone() else { return };
-        crate::templates::runner::run_template_from_path(ctx, self, file_id, path);
+        // Snapshot path+range pairs first because run_template_from_path
+        // borrows `self` mutably and pushes new `templates_running`
+        // entries which, on completion, would replace the existing
+        // instances under the same id. Re-running a stale instance
+        // means dropping it and starting fresh; collect identities
+        // first, then drain.
+        let to_rerun: Vec<(std::path::PathBuf, hxy_core::ByteRange)> =
+            file.templates.iter().map(|t| (t.source_path.clone(), t.range)).collect();
+        if let Some(file) = self.files.get_mut(&file_id) {
+            file.templates.clear();
+            file.active_template = None;
+        }
+        for (path, range) in to_rerun {
+            crate::templates::runner::run_template_from_path(ctx, self, file_id, path, Some(range));
+        }
     }
 
     /// Look at the just-opened file's extension + first bytes and
@@ -2897,7 +2907,7 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
         CommandEffect::RunTemplateDirect(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(id) = active_file_id(app) {
-                crate::templates::runner::run_template_from_path(ctx, app, id, path);
+                crate::templates::runner::run_template_from_path(ctx, app, id, path, None);
             }
             #[cfg(target_arch = "wasm32")]
             let _ = path;
@@ -3232,70 +3242,101 @@ fn render_file_tab(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
-    let show_ready = file.template.as_ref().is_some_and(|t| t.show_panel);
-    let show_running = file.template_running.is_some();
-    if !show_ready && !show_running {
+    let has_any = !file.templates.is_empty() || !file.templates_running.is_empty();
+    if !has_any || !file.template_panel_visible {
         return;
     }
+    let whole_file_len = file.editor.source().len().get();
     egui::Panel::bottom(egui::Id::new(("hxy-template-panel", id.get())))
         .resizable(true)
         .default_size(300.0)
         .min_size(160.0)
         .show_inside(ui, |ui| {
-            if let Some(run) = file.template_running.as_ref() {
-                render_template_running(ui, run);
-                return;
-            }
-            let Some(state) = file.template.as_mut() else { return };
-            let events = crate::panels::template::show(ui, id.get(), state);
+            let events = crate::panels::template::show(ui, file, whole_file_len);
             for e in events {
-                match e {
-                    crate::panels::template::TemplateEvent::Close => state.show_panel = false,
-                    crate::panels::template::TemplateEvent::ExpandArray { array_id, count } => {
-                        crate::panels::template::expand_array(state, array_id, count);
-                    }
-                    crate::panels::template::TemplateEvent::ToggleCollapse(idx) => {
-                        crate::panels::template::toggle_collapse(state, idx);
-                    }
-                    crate::panels::template::TemplateEvent::Hover(idx) => {
-                        state.hovered_node = idx;
-                    }
-                    crate::panels::template::TemplateEvent::Select(idx) => {
-                        if let Some(node) = state.tree.nodes.get(idx.0 as usize) {
-                            let offset = node.span.offset;
-                            let length = node.span.length.max(1);
-                            let end_inclusive = offset.saturating_add(length - 1);
-                            file.editor.set_selection(Some(hxy_core::Selection {
-                                anchor: hxy_core::ByteOffset::new(offset),
-                                cursor: hxy_core::ByteOffset::new(end_inclusive),
-                            }));
-                            file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
-                        }
-                    }
-                    crate::panels::template::TemplateEvent::Copy { idx, kind } => {
-                        let ctx = ui.ctx().clone();
-                        if kind.is_struct() {
-                            if let Some(text) = format_template_struct(&state.tree.nodes, idx.0 as usize, kind) {
-                                ctx.copy_text(text);
-                            }
-                        } else if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
-                            let source = file.editor.source().clone();
-                            if let Some(text) = format_template_copy(&source, &node, kind) {
-                                ctx.copy_text(text);
-                            }
-                        }
-                    }
-                    crate::panels::template::TemplateEvent::SaveBytes(idx) => {
-                        if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
-                            save_template_bytes(file.editor.source(), &node);
-                        }
-                    }
-                    crate::panels::template::TemplateEvent::ToggleColors(on) => {
-                        state.show_colors = on;
-                    }
-                }
+                apply_template_event(ui, file, e);
             }
         });
+}
+
+/// Dispatch one event from the template panel. Pulled out so the
+/// per-frame loop above doesn't have to keep ten arms inline; events
+/// that target "the active instance" look it up here so the panel
+/// renderer can stay borrow-clean.
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_template_event(
+    ui: &mut egui::Ui,
+    file: &mut OpenFile,
+    event: crate::panels::template::TemplateEvent,
+) {
+    use crate::panels::template::TemplateEvent;
+    match event {
+        TemplateEvent::HidePanel => {
+            file.template_panel_visible = false;
+        }
+        TemplateEvent::SetActive(id) => {
+            file.active_template = Some(id);
+        }
+        TemplateEvent::RemoveInstance(id) => {
+            file.templates.retain(|t| t.id != id);
+            file.templates_running.retain(|r| r.id != id);
+            if file.active_template == Some(id) {
+                file.active_template =
+                    file.templates.first().map(|t| t.id).or_else(|| file.templates_running.first().map(|r| r.id));
+            }
+        }
+        TemplateEvent::ExpandArray { array_id, count } => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                crate::panels::template::expand_array(state, array_id, count);
+            }
+        }
+        TemplateEvent::ToggleCollapse(idx) => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                crate::panels::template::toggle_collapse(state, idx);
+            }
+        }
+        TemplateEvent::Hover(idx) => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                state.hovered_node = idx;
+            }
+        }
+        TemplateEvent::Select(idx) => {
+            let Some(state) = file.active_template().map(|t| &t.state) else { return };
+            let Some(node) = state.tree.nodes.get(idx.0 as usize) else { return };
+            let offset = node.span.offset;
+            let length = node.span.length.max(1);
+            let end_inclusive = offset.saturating_add(length - 1);
+            file.editor.set_selection(Some(hxy_core::Selection {
+                anchor: hxy_core::ByteOffset::new(offset),
+                cursor: hxy_core::ByteOffset::new(end_inclusive),
+            }));
+            file.editor.set_scroll_to_byte(hxy_core::ByteOffset::new(offset));
+        }
+        TemplateEvent::Copy { idx, kind } => {
+            let Some(state) = file.active_template().map(|t| &t.state) else { return };
+            let ctx = ui.ctx().clone();
+            if kind.is_struct() {
+                if let Some(text) = format_template_struct(&state.tree.nodes, idx.0 as usize, kind) {
+                    ctx.copy_text(text);
+                }
+            } else if let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() {
+                let source = file.editor.source().clone();
+                if let Some(text) = format_template_copy(&source, &node, kind) {
+                    ctx.copy_text(text);
+                }
+            }
+        }
+        TemplateEvent::SaveBytes(idx) => {
+            let Some(state) = file.active_template().map(|t| &t.state) else { return };
+            let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() else { return };
+            save_template_bytes(file.editor.source(), &node);
+        }
+        TemplateEvent::ToggleColors(on) => {
+            if let Some(state) = file.active_template_mut().map(|t| &mut t.state) {
+                state.show_colors = on;
+            }
+        }
+    }
 }
 
 /// Read `node`'s byte span from `source` and format it according to
@@ -3584,22 +3625,6 @@ fn save_template_bytes(source: &std::sync::Arc<dyn hxy_core::HexSource>, node: &
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_template_running(ui: &mut egui::Ui, run: &crate::files::TemplateRun) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(24.0);
-        ui.label(egui::RichText::new(format!("{} Template", egui_phosphor::regular::SCROLL)).strong());
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(format!("Running `{}`...", run.template_name));
-        });
-        let elapsed_ms = jiff::Timestamp::now().duration_since(run.started).as_millis().max(0);
-        ui.add_space(4.0);
-        ui.weak(format!("{} ms", elapsed_ms));
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn register_user_plugins(
     registry: &mut VfsRegistry,
     grants: &hxy_plugin_host::PluginGrants,
@@ -3847,22 +3872,21 @@ fn jump_cursor_to(file: &mut crate::files::OpenFile, offset: u64) {
 /// field's start offset relative to the current cursor. No-op when
 /// the active file has no template run or no fields lie in the
 /// requested direction. Scrolls the new caret into view if it isn't
-/// already on screen.
+/// already on screen. Uses the active template instance's
+/// boundaries; switching tabs in the template panel changes which
+/// fields the jump traverses.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn jump_to_template_field(app: &mut HxyApp, forward: bool) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    let Some(template) = file.template.as_ref() else { return };
+    let Some(template) = file.active_template() else { return };
     let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-    // Boundaries are sorted ascending by offset; partition_point
-    // pivots the slice at the first entry whose start is > cursor
-    // (forward) or >= cursor (backward).
     let target = if forward {
-        let idx = template.leaf_boundaries.partition_point(|(o, _)| o.get() <= cursor);
-        template.leaf_boundaries.get(idx).map(|(o, _)| o.get())
+        let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() <= cursor);
+        template.state.leaf_boundaries.get(idx).map(|(o, _)| o.get())
     } else {
-        let idx = template.leaf_boundaries.partition_point(|(o, _)| o.get() < cursor);
-        if idx == 0 { None } else { template.leaf_boundaries.get(idx - 1).map(|(o, _)| o.get()) }
+        let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() < cursor);
+        if idx == 0 { None } else { template.state.leaf_boundaries.get(idx - 1).map(|(o, _)| o.get()) }
     };
     let Some(target) = target else { return };
     jump_cursor_to(file, target);

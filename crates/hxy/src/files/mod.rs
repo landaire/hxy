@@ -33,6 +33,7 @@ use std::sync::Arc;
 use hxy_core::Attribution;
 use hxy_core::ByteCache;
 use hxy_core::ByteOffset;
+use hxy_core::ByteRange;
 use hxy_core::CachedSource;
 use hxy_core::HexSource;
 use hxy_core::HexViewKey;
@@ -215,15 +216,35 @@ pub struct OpenFile {
     /// (see `HxyApp::workspaces`) using `detected_handler` to construct
     /// the mount; `OpenFile` itself does not own a mount.
     pub detected_handler: Option<Arc<dyn VfsHandler>>,
-    /// Template run state for this tab, if the user has applied a
-    /// template. `None` until the first successful run.
+    /// Completed template runs for this tab, in the order the user
+    /// kicked them off. Each instance carries the byte range it was
+    /// applied to so multiple templates -- on overlapping or disjoint
+    /// regions -- can coexist as separate tabs in the template panel.
     #[cfg(not(target_arch = "wasm32"))]
-    pub template: Option<TemplateState>,
-    /// Background parse+execute in flight. Mutually exclusive with
-    /// `template` in practice -- when a run starts we clear the old
-    /// tree; when the run finishes we swap the result in here.
+    pub templates: Vec<TemplateInstance>,
+    /// In-flight parse+execute jobs. Each one will eventually land in
+    /// [`Self::templates`] (success) or be replaced with a diagnostics-
+    /// only error instance.
     #[cfg(not(target_arch = "wasm32"))]
-    pub template_running: Option<TemplateRun>,
+    pub templates_running: Vec<TemplateRunInstance>,
+    /// Which template tab is currently selected in the template panel.
+    /// `None` when the file has no completed templates yet, or the user
+    /// closed the panel and we haven't picked a new active id.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub active_template: Option<TemplateInstanceId>,
+    /// Counter for handing out fresh template instance ids on this tab.
+    /// Scoped per-file because instance ids only need to be unique
+    /// within a single tab's [`Self::templates`] list (egui_table tab
+    /// keys, palette routing, etc.).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub next_template_instance_id: u64,
+    /// Whether the per-file template panel is visible. Hidden by the
+    /// panel's close button; set back to `true` whenever a new
+    /// template run lands. Spans across tabs because the panel itself
+    /// is one widget; per-instance visibility is expressed by which
+    /// tab is active.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub template_panel_visible: bool,
     /// Template auto-detected for this file by the library scanner:
     /// either a File Mask extension hit or an ID Bytes magic match.
     /// `None` when no library entry matches.
@@ -295,6 +316,47 @@ pub struct SuggestedTemplate {
     pub display_name: String,
 }
 
+/// Identifier for one template applied to a file. Allocated by the
+/// owning [`OpenFile`] so lookups inside [`OpenFile::templates`] don't
+/// need to compare paths or ranges. Two instances of the same template
+/// run against different ranges get distinct ids.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TemplateInstanceId(u64);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TemplateInstanceId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One completed template applied to a slice of the file. The owned
+/// [`TemplateState`] reports node offsets in **file-absolute** coordinates
+/// (the runner adjusts them by `range.start()` on the way in), so
+/// downstream code -- hex view tinting, breadcrumb tooltips, copy
+/// formatting -- doesn't need to know whether the template was run
+/// against the whole file or a sub-range.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TemplateInstance {
+    pub id: TemplateInstanceId,
+    /// Path of the template source file. Carried so reload can re-fire
+    /// the same template, and so the panel header can show the source.
+    pub source_path: PathBuf,
+    /// Short name for the tab strip (template's filename or library
+    /// display name).
+    pub display_name: String,
+    /// Byte range of the file the template was bound to. The whole file
+    /// for the default "Run template..." flow; a user-picked range for
+    /// "Run template at selection..." or for nested templates over
+    /// embedded streams (e.g. zlib-decompressed PNG IDAT).
+    pub range: ByteRange,
+    pub state: TemplateState,
+}
+
 /// In-flight template run on a worker thread. Receives the full
 /// parse+execute result via an [`egui_inbox::UiInbox`]; sending into
 /// the inbox triggers a repaint automatically, so the UI picks up
@@ -304,6 +366,19 @@ pub struct TemplateRun {
     pub inbox: egui_inbox::UiInbox<TemplateRunOutcome>,
     pub template_name: String,
     pub started: jiff::Timestamp,
+}
+
+/// In-flight run paired with the eventual instance identity. The id is
+/// reserved up front so the panel can render a placeholder tab for the
+/// running job; on completion the worker's result swaps in under the
+/// same id.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct TemplateRunInstance {
+    pub id: TemplateInstanceId,
+    pub source_path: PathBuf,
+    pub display_name: String,
+    pub range: ByteRange,
+    pub run: TemplateRun,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -338,9 +413,6 @@ pub struct TemplateState {
     /// diagnostics header.
     pub parsed: Option<std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>>,
     pub tree: hxy_plugin_host::template::ResultTree,
-    /// Show the panel in the file tab. User can toggle via the tree
-    /// panel's close button.
-    pub show_panel: bool,
     /// Array id -> materialised children, by order of expansion.
     pub expanded_arrays: std::collections::HashMap<TemplateArrayId, Vec<hxy_plugin_host::template::Node>>,
     /// Indexes of nodes whose subtrees the user has collapsed. Default
@@ -467,9 +539,15 @@ impl OpenFile {
             hovered: None,
             detected_handler: None,
             #[cfg(not(target_arch = "wasm32"))]
-            template: None,
+            templates: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            template_running: None,
+            templates_running: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            active_template: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            next_template_instance_id: 1,
+            #[cfg(not(target_arch = "wasm32"))]
+            template_panel_visible: true,
             #[cfg(not(target_arch = "wasm32"))]
             suggested_template: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -493,6 +571,41 @@ impl OpenFile {
     /// tabs with no path backing (e.g. placeholder buffers).
     pub fn root_path(&self) -> Option<&PathBuf> {
         self.source_kind.as_ref().and_then(|s| s.root_path())
+    }
+
+    /// Allocate a fresh [`TemplateInstanceId`] for a new run on this
+    /// tab. Counter is monotonic for the tab's lifetime.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fresh_template_instance_id(&mut self) -> TemplateInstanceId {
+        let id = TemplateInstanceId(self.next_template_instance_id);
+        self.next_template_instance_id += 1;
+        id
+    }
+
+    /// Return the currently-selected template instance, if any. Used by
+    /// the hex view (overlay tinting, hover breadcrumbs) and palette
+    /// commands that need the "primary" template (e.g. jump to
+    /// next/prev field).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn active_template(&self) -> Option<&TemplateInstance> {
+        let id = self.active_template?;
+        self.templates.iter().find(|t| t.id == id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn active_template_mut(&mut self) -> Option<&mut TemplateInstance> {
+        let id = self.active_template?;
+        self.templates.iter_mut().find(|t| t.id == id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn template_instance(&self, id: TemplateInstanceId) -> Option<&TemplateInstance> {
+        self.templates.iter().find(|t| t.id == id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn template_instance_mut(&mut self, id: TemplateInstanceId) -> Option<&mut TemplateInstance> {
+        self.templates.iter_mut().find(|t| t.id == id)
     }
 }
 

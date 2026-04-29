@@ -144,7 +144,14 @@ pub enum Mode {
     QuickOpen,
     /// Second-level cascade shown after the user picks `Run Template...`
     /// from the main list. Registered templates + an install entry.
+    /// Each pick binds against the whole file.
     Templates,
+    /// Sibling cascade shown after the user picks `Run Template at
+    /// Selection...`. Lists the same templates as [`Mode::Templates`]
+    /// but each pick binds against the active file's current
+    /// selection. Only reachable from the main palette when a
+    /// non-empty selection exists.
+    TemplatesAtSelection,
     /// Third-level cascade: list installed templates to remove.
     /// Picking one deletes its `.bt` file (and any siblings we added
     /// for it). Reached from `Main` via "Uninstall template...".
@@ -240,6 +247,7 @@ impl Mode {
             // rather than popping back somewhere.
             Mode::Main | Mode::QuickOpen => None,
             Mode::Templates
+            | Mode::TemplatesAtSelection
             | Mode::Uninstall
             | Mode::UninstallPlugin
             | Mode::Recent
@@ -393,7 +401,12 @@ pub enum PaletteCommand {
 pub enum Action {
     InvokeCommand(PaletteCommand),
     FocusFile(FileId),
-    RunTemplate(PathBuf),
+    /// Run `path` against the active file. `range` is the byte slice
+    /// the template binds to; `None` means the whole file.
+    RunTemplate {
+        path: PathBuf,
+        range: Option<hxy_core::ByteRange>,
+    },
     SwitchMode(Mode),
     InstallTemplate,
     /// Delete the given `.bt` from the user's templates directory.
@@ -492,6 +505,7 @@ pub fn show(
         Mode::Main => hxy_i18n::t("palette-hint-main"),
         Mode::QuickOpen => hxy_i18n::t("palette-hint-quick-open"),
         Mode::Templates => hxy_i18n::t("palette-hint-templates"),
+        Mode::TemplatesAtSelection => hxy_i18n::t("palette-hint-templates-at-selection"),
         Mode::Uninstall => hxy_i18n::t("palette-hint-uninstall"),
         Mode::UninstallPlugin => hxy_i18n::t("palette-hint-uninstall-plugin"),
         Mode::Recent => hxy_i18n::t("palette-hint-recent"),

@@ -86,6 +86,12 @@ pub struct TemplateCtx {
 pub struct TemplatePaletteContext {
     pub extension: Option<String>,
     pub head_bytes: Vec<u8>,
+    /// Current non-empty selection on the active file, if any.
+    /// Surfaced in the Templates mode so each "Run X" entry can offer
+    /// a sibling "Run X at selection" variant. Carried separately
+    /// from `CopyPaletteContext` because the templates mode needs it
+    /// even when the copy palette doesn't (different mode).
+    pub selection: Option<hxy_core::ByteRange>,
 }
 
 pub fn copy_palette_context(app: &mut HxyApp) -> Option<CopyPaletteContext> {
@@ -118,7 +124,7 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         has_workspace,
         has_disk_source: file.root_path().is_some(),
         watch_mode,
-        template: file.template.as_ref().map(|t| TemplateCtx { field_count: t.leaf_boundaries.len() }),
+        template: file.active_template().map(|t| TemplateCtx { field_count: t.state.leaf_boundaries.len() }),
     }
 }
 
@@ -128,15 +134,18 @@ pub fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
     let extension = file.source_kind.as_ref().and_then(|s| s.leaf_extension());
     let source_len = file.editor.source().len().get();
     let window = source_len.min(crate::templates::library::DETECTION_WINDOW as u64);
-    let head_bytes = if window == 0 {
-        Vec::new()
-    } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window))
-    {
-        file.editor.source().read(range).unwrap_or_default()
-    } else {
-        Vec::new()
+    // Read failure here just means the ranker has no magic bytes to
+    // match against; fall through to the default ordering rather than
+    // showing the user an error for a benign read miss in the palette.
+    let head_bytes = match hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(window)) {
+        Ok(range) if window > 0 => file.editor.source().read(range).unwrap_or_default(),
+        _ => Vec::new(),
     };
-    TemplatePaletteContext { extension, head_bytes }
+    let selection = file.editor.selection().and_then(|s| {
+        let r = s.range();
+        if r.is_empty() { None } else { Some(r) }
+    });
+    TemplatePaletteContext { extension, head_bytes, selection }
 }
 
 /// Build the single argument-style row for the
@@ -365,6 +374,20 @@ pub fn build_palette_entries(
                 )
                 .with_icon(icon::SCROLL),
             );
+            if let Some(sel) = template_ctx.selection {
+                let subtitle = hxy_i18n::t_args(
+                    "palette-run-template-at-selection-subtitle",
+                    &[("start", &format!("{:#x}", sel.start().get())), ("end", &format!("{:#x}", sel.end().get()))],
+                );
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-run-template-at-selection-entry"),
+                        Action::SwitchMode(Mode::TemplatesAtSelection),
+                    )
+                    .with_icon(icon::SCROLL)
+                    .with_subtitle(subtitle),
+                );
+            }
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-uninstall-template"),
@@ -843,7 +866,7 @@ pub fn build_palette_entries(
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),
-                        Action::RunTemplate(entry.path.clone()),
+                        Action::RunTemplate { path: entry.path.clone(), range: None },
                     )
                     .with_subtitle(entry.path.display().to_string())
                     .with_icon(icon::SCROLL),
@@ -861,6 +884,25 @@ pub fn build_palette_entries(
                 )
                 .with_icon(icon::TRASH),
             );
+        }
+        Mode::TemplatesAtSelection => {
+            // Selection might have been cleared between opening this
+            // mode and rendering this frame. Bail with an empty list
+            // rather than silently degrading to whole-file runs --
+            // the user explicitly asked for "at selection" and a
+            // missing selection means there's nothing to bind to.
+            let Some(sel) = template_ctx.selection else { return out };
+            let ranked = app.templates.rank_entries(template_ctx.extension.as_deref(), &template_ctx.head_bytes);
+            for entry in ranked {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),
+                        Action::RunTemplate { path: entry.path.clone(), range: Some(sel) },
+                    )
+                    .with_subtitle(entry.path.display().to_string())
+                    .with_icon(icon::SCROLL),
+                );
+            }
         }
         Mode::Uninstall => {
             if let Some(dir) = crate::app::user_templates_dir() {

@@ -16,13 +16,23 @@ use egui_table::TableDelegate;
 use hxy_plugin_host::ParsedTemplate;
 use hxy_plugin_host::template::Node;
 
+use crate::files::OpenFile;
 use crate::files::TemplateArrayId;
+use crate::files::TemplateInstanceId;
 use crate::files::TemplateNodeIdx;
 use crate::files::TemplateState;
 
 /// Events the app needs to handle after the panel renders.
 pub enum TemplateEvent {
-    Close,
+    /// User clicked the panel's close button. Hides the panel for
+    /// every template on this file; doesn't drop any instances.
+    HidePanel,
+    /// User clicked a tab strip entry; switch to that template.
+    SetActive(TemplateInstanceId),
+    /// User clicked the close button on a tab; remove that instance
+    /// (whether running or completed). The panel itself stays open if
+    /// other instances remain.
+    RemoveInstance(TemplateInstanceId),
     ExpandArray {
         array_id: TemplateArrayId,
         count: u64,
@@ -51,8 +61,22 @@ pub use crate::files::copy::CopyKind;
 
 const INDENT_STEP: f32 = 14.0;
 
-pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<TemplateEvent> {
+/// Tab strip + active-instance body in one pass. The file context lets
+/// us render every running and completed template's tab without
+/// re-borrowing `app.files` between cells. Only the active instance's
+/// node tree is rendered below the strip; the rest of the templates'
+/// trees still exist on the file but are presented as tabs to swap to.
+///
+/// `whole_file_len` lets the strip suppress range-decoration on the
+/// "default" case: a single template covering the entire file shows
+/// just its name, with no `[..]` byte-range suffix.
+pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<TemplateEvent> {
     let mut events = Vec::new();
+    let id_seed = file.id.get();
+
+    let header_color_state = file.active_template().map(|t| t.state.show_colors).unwrap_or(true);
+    let total_count = file.templates.len() + file.templates_running.len();
+    let only_one = total_count == 1;
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{} Template", egui_phosphor::regular::SCROLL)).strong());
@@ -62,18 +86,36 @@ pub fn show(ui: &mut egui::Ui, id_seed: u64, state: &TemplateState) -> Vec<Templ
                 .on_hover_text("Hide template")
                 .clicked()
             {
-                events.push(TemplateEvent::Close);
+                events.push(TemplateEvent::HidePanel);
             }
-            let mut colors_on = state.show_colors;
-            let resp = ui
-                .toggle_value(&mut colors_on, egui_phosphor::regular::PAINT_BUCKET)
-                .on_hover_text("Tint bytes by field");
-            if resp.changed() {
-                events.push(TemplateEvent::ToggleColors(colors_on));
+            if file.active_template().is_some() {
+                let mut colors_on = header_color_state;
+                let resp = ui
+                    .toggle_value(&mut colors_on, egui_phosphor::regular::PAINT_BUCKET)
+                    .on_hover_text("Tint bytes by field");
+                if resp.changed() {
+                    events.push(TemplateEvent::ToggleColors(colors_on));
+                }
             }
         });
     });
+
+    render_tab_strip(ui, file, whole_file_len, only_one, &mut events);
     ui.separator();
+
+    let Some(active_id) = file.active_template else {
+        ui.weak("No template active.");
+        return events;
+    };
+    if let Some(running) = file.templates_running.iter().find(|r| r.id == active_id) {
+        render_template_running(ui, &running.run);
+        return events;
+    }
+    let Some(active) = file.templates.iter().find(|t| t.id == active_id) else {
+        ui.weak("Active template not found.");
+        return events;
+    };
+    let state = &active.state;
 
     if !state.tree.diagnostics.is_empty() {
         egui::CollapsingHeader::new(format!("Diagnostics ({})", state.tree.diagnostics.len()))
@@ -541,7 +583,6 @@ pub fn new_state_from(
     TemplateState {
         parsed: Some(parsed),
         tree,
-        show_panel: true,
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
@@ -585,7 +626,6 @@ pub fn error_state(message: String) -> TemplateState {
             }],
             byte_palette: None,
         },
-        show_panel: true,
         expanded_arrays: HashMap::new(),
         collapsed: HashSet::new(),
         hovered_node: None,
@@ -593,6 +633,108 @@ pub fn error_state(message: String) -> TemplateState {
         leaf_colors: Vec::new(),
         show_colors: true,
         byte_palette_override: None,
+    }
+}
+
+/// Centered "Running `<name>`..." spinner block. Shown in place of
+/// the body when the active tab is an in-flight run.
+fn render_template_running(ui: &mut egui::Ui, run: &crate::files::TemplateRun) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(24.0);
+        ui.label(egui::RichText::new(format!("{} Template", egui_phosphor::regular::SCROLL)).strong());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(format!("Running `{}`...", run.template_name));
+        });
+        let elapsed_ms = jiff::Timestamp::now().duration_since(run.started).as_millis().max(0);
+        ui.add_space(4.0);
+        ui.weak(format!("{} ms", elapsed_ms));
+    });
+}
+
+/// Render the row of selectable tab labels above the tree. Hidden when
+/// only one template covers the whole file (no point in a single-tab
+/// strip with no range to disambiguate). Each tab carries a close (X)
+/// button so the user can drop a single instance without affecting
+/// the rest.
+fn render_tab_strip(
+    ui: &mut egui::Ui,
+    file: &OpenFile,
+    whole_file_len: u64,
+    only_one: bool,
+    events: &mut Vec<TemplateEvent>,
+) {
+    if file.templates.is_empty() && file.templates_running.is_empty() {
+        return;
+    }
+    let active = file.active_template;
+    let suppress_range_for_single = only_one;
+
+    egui::ScrollArea::horizontal().id_salt(("hxy-tmpl-tab-strip", file.id.get())).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for instance in &file.templates {
+                render_tab_button(
+                    ui,
+                    instance.id,
+                    &instance.display_name,
+                    instance.range,
+                    whole_file_len,
+                    suppress_range_for_single,
+                    /* running = */ false,
+                    active == Some(instance.id),
+                    events,
+                );
+            }
+            for running in &file.templates_running {
+                render_tab_button(
+                    ui,
+                    running.id,
+                    &running.display_name,
+                    running.range,
+                    whole_file_len,
+                    suppress_range_for_single,
+                    /* running = */ true,
+                    active == Some(running.id),
+                    events,
+                );
+            }
+        });
+    });
+}
+
+/// Single tab button: `<icon> Name [0xS..0xE]  X`. Active tab is
+/// styled as a `SelectableLabel`-selected; running tabs prefix a
+/// spinner glyph so the user sees the work still in flight.
+#[allow(clippy::too_many_arguments)]
+fn render_tab_button(
+    ui: &mut egui::Ui,
+    id: TemplateInstanceId,
+    name: &str,
+    range: hxy_core::ByteRange,
+    whole_file_len: u64,
+    suppress_range_for_single: bool,
+    running: bool,
+    active: bool,
+    events: &mut Vec<TemplateEvent>,
+) {
+    let covers_whole_file = range.start().get() == 0 && range.len().get() == whole_file_len;
+    let label = if covers_whole_file && suppress_range_for_single {
+        name.to_owned()
+    } else if covers_whole_file {
+        format!("{name}  (whole file)")
+    } else {
+        format!("{name}  [{:#x}..{:#x}]", range.start().get(), range.end().get())
+    };
+    let prefix = if running { format!("{}  ", egui_phosphor::regular::CIRCLE_NOTCH) } else { String::new() };
+    let resp = ui.add(egui::Button::selectable(active, format!("{prefix}{label}")));
+    if resp.clicked() {
+        events.push(TemplateEvent::SetActive(id));
+    }
+    let close = ui.add(egui::Button::new(egui_phosphor::regular::X).frame(false).small());
+    if close.clicked() {
+        events.push(TemplateEvent::RemoveInstance(id));
     }
 }
 
