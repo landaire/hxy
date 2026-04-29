@@ -306,6 +306,17 @@ pub enum PaletteCommand {
     /// closed by default, so this is the primary discoverable path
     /// for opening it.
     ToggleVisualizer,
+    /// Open the Strings tool against the active file's whole-file
+    /// range and run the extractor with the panel's last-used
+    /// encoding / min-length config.
+    FindStringsWholeFile,
+    /// Open the Strings tool against the active file's current
+    /// non-empty selection and run the extractor.
+    FindStringsSelection,
+    /// Open the Strings tool against the active file's whole-file
+    /// range *without* auto-running, so the user can adjust the
+    /// encoding or min length before pressing Run.
+    FindStringsWithOptions,
     /// Toggle the byte-cache debug Memory panel. Listed in the
     /// palette only when `AppSettings::debug_memory_panel_enabled`
     /// is on.

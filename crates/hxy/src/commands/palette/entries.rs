@@ -375,6 +375,10 @@ fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entr
             let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
             (hxy_i18n::t_args("tab-visualizer", &[("name", name)]), icon::SHAPES)
         }
+        Tab::Strings(file_id) => {
+            let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
+            (hxy_i18n::t_args("tab-strings", &[("name", name)]), icon::TEXT_T)
+        }
         Tab::Compare(compare_id) => match app.compares.get(&compare_id) {
             Some(s) => (
                 hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]),
@@ -558,6 +562,47 @@ pub fn build_palette_entries(
                         Action::InvokeCommand(PaletteCommand::ToggleVisualizer),
                     )
                     .with_icon(icon::SHAPES),
+                );
+            }
+
+            // Strings tool: three entries -- whole-file, selection
+            // (only when a non-empty selection exists), and a
+            // "...with options" entry that opens the tab without
+            // auto-running so the user can adjust encoding / min
+            // length first.
+            if history_ctx.has_active_file {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-strings-whole-file"),
+                        Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
+                    )
+                    .with_icon(icon::TEXT_T)
+                    .with_subtitle(hxy_i18n::t("palette-strings-whole-file-subtitle")),
+                );
+                if let Some(sel) = template_ctx.selection {
+                    let subtitle = hxy_i18n::t_args(
+                        "palette-strings-selection-subtitle",
+                        &[
+                            ("start", &format!("{:#x}", sel.start().get())),
+                            ("end", &format!("{:#x}", sel.end().get())),
+                        ],
+                    );
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t("palette-strings-selection"),
+                            Action::InvokeCommand(PaletteCommand::FindStringsSelection),
+                        )
+                        .with_icon(icon::TEXT_T)
+                        .with_subtitle(subtitle),
+                    );
+                }
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-strings-with-options"),
+                        Action::InvokeCommand(PaletteCommand::FindStringsWithOptions),
+                    )
+                    .with_icon(icon::TEXT_T)
+                    .with_subtitle(hxy_i18n::t("palette-strings-with-options-subtitle")),
                 );
             }
 

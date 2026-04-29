@@ -8,5 +8,6 @@ pub mod entropy;
 pub mod inspector;
 pub mod memory;
 pub mod plugins;
+pub mod strings;
 pub mod template;
 pub mod vfs;

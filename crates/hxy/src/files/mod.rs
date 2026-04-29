@@ -300,6 +300,12 @@ pub struct OpenFile {
     /// recreating the same image doesn't re-decode.
     #[cfg(not(target_arch = "wasm32"))]
     pub visualizer_panel: crate::visualizers::VisualizerPanel,
+    /// Per-file strings tool state: encoding, min length, the
+    /// configured range, the most recent result, and any in-flight
+    /// extractor. Default-initialised; the panel renders an empty
+    /// placeholder until the user runs the extractor.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub strings_panel: crate::panels::strings::StringsPanel,
     /// Identifier for this file's bytes inside the shared byte
     /// cache. Allocated once on construction and reused for every
     /// [`CachedSource`] handle the file or its template runs build.
@@ -612,6 +618,8 @@ impl OpenFile {
             entropy_running: None,
             #[cfg(not(target_arch = "wasm32"))]
             visualizer_panel: crate::visualizers::VisualizerPanel::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            strings_panel: crate::panels::strings::StringsPanel::default(),
             source_id,
             byte_cache: byte_cache.clone(),
         }

@@ -384,6 +384,32 @@ status-watch-tooltip-anonymous = This buffer has no persistent identity, so chan
 # Tabs
 tab-entropy = Entropy: { $name }
 tab-visualizer = Visualizer: { $name }
+tab-strings = Strings: { $name }
+
+# Strings tool
+strings-heading = Strings
+strings-no-active-file = No active file. Open a file to extract strings.
+strings-min-length = Min length:
+strings-run = Run
+strings-running = Running...
+strings-range = Range: { $start } – { $end } ({ $length })
+strings-filter = Filter:
+strings-no-results-yet = Press Run to scan the configured range.
+strings-no-matches = No strings match the filter.
+strings-summary = { $count } string(s) found.
+strings-summary-filtered = { $count } string(s) found, filtering by "{ $filter }".
+strings-truncated = Result truncated at { $max } hits; narrow the range or raise the minimum length.
+strings-col-offset = Offset
+strings-col-end = End
+strings-col-length = Length
+strings-col-text = Text
+
+palette-strings-whole-file = Find strings (whole file)
+palette-strings-whole-file-subtitle = Open the strings panel and scan every byte in the active file.
+palette-strings-selection = Find strings (selection)
+palette-strings-selection-subtitle = Scan { $start }–{ $end } only.
+palette-strings-with-options = Find strings...
+palette-strings-with-options-subtitle = Open the panel without scanning so you can adjust encoding or minimum length first.
 
 # Visualizer panel
 visualizer-close = Hide visualizer

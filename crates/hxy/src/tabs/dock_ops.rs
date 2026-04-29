@@ -212,7 +212,7 @@ pub fn is_tool_tab(t: &Tab) -> bool {
     match t {
         Tab::Plugins | Tab::Inspector | Tab::Console | Tab::Memory => true,
         #[cfg(not(target_arch = "wasm32"))]
-        Tab::PluginMount(_) | Tab::SearchResults | Tab::Entropy(_) | Tab::Visualizer(_) => true,
+        Tab::PluginMount(_) | Tab::SearchResults | Tab::Entropy(_) | Tab::Visualizer(_) | Tab::Strings(_) => true,
         _ => false,
     }
 }

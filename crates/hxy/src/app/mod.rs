@@ -742,6 +742,21 @@ impl HxyApp {
         self.dock.set_focused_node_and_surface(node_path);
     }
 
+    /// Show (or focus) the Strings panel for `file_id`. Modeled on
+    /// [`Self::show_entropy_for`]: per-file dock tab, push to the
+    /// shared tool leaf if not already present, focus otherwise.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_strings_for(&mut self, file_id: FileId) {
+        if let Some(path) = self.dock.find_tab(&Tab::Strings(file_id)) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Strings(file_id));
+        self.dock.set_focused_node_and_surface(node_path);
+    }
+
     /// Show (or focus) the Visualizer panel for `file_id`. Used by
     /// the auto-open path after a template run produces visualizer
     /// attributes, and by the in-row visualizer icon. No-ops when
@@ -2281,6 +2296,14 @@ impl eframe::App for HxyApp {
         // matching dock tab + record the sticky-dismiss flag.
         #[cfg(not(target_arch = "wasm32"))]
         let mut pending_visualizer_dismiss: Vec<FileId> = Vec::new();
+        // Strings panel "Run" clicks queue here (re-runs the
+        // extractor against the panel's current config), and offset-
+        // link clicks queue (FileId, offset, end) tuples for the
+        // hex-view jump dispatch.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pending_strings_run: Vec<FileId> = Vec::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
 
         {
             // Snapshot fields that the viewer needs but that live on
@@ -2334,6 +2357,10 @@ impl eframe::App for HxyApp {
                 entropy_recompute: &mut entropy_recompute,
                 #[cfg(not(target_arch = "wasm32"))]
                 pending_visualizer_dismiss: &mut pending_visualizer_dismiss,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_strings_run: &mut pending_strings_run,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_strings_jump: &mut pending_strings_jump,
                 byte_cache: &self.byte_cache,
             };
             let style = crate::style::hxy_dock_style(ui.style());
@@ -2348,6 +2375,20 @@ impl eframe::App for HxyApp {
         for file_id in std::mem::take(&mut entropy_recompute) {
             compute_entropy_for(ui.ctx(), self, file_id);
         }
+        // Strings panel "Run" + offset-link clicks. The Run path
+        // re-fires the extractor against the panel's current config
+        // (range, encoding, min length the user just edited inline);
+        // the Jump path drives the file's hex-view selection so the
+        // matched bytes are visible and selected.
+        #[cfg(not(target_arch = "wasm32"))]
+        for file_id in std::mem::take(&mut pending_strings_run) {
+            spawn_strings_with_panel_config(ui.ctx(), self, file_id);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for (file_id, offset, end) in std::mem::take(&mut pending_strings_jump) {
+            jump_to_strings_match(self, file_id, offset, end);
+        }
+
         // Visualizer panel header X-clicks: remove the dock tab
         // and clear the user's "open" flag so a re-run on the same
         // file doesn't pop the panel back. Persisted so the closure
@@ -2451,6 +2492,8 @@ impl eframe::App for HxyApp {
         crate::templates::runner::drain_template_runs(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_entropy_runs(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_strings_runs(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -2743,6 +2786,163 @@ pub fn compute_entropy_for(ctx: &egui::Context, app: &mut HxyApp, id: FileId) {
         format!("Entropy {display}"),
         format!("computing entropy with {window}-byte windows over {len} byte(s)..."),
     );
+}
+
+/// Range scope for the strings palette commands.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringsScope {
+    /// Run the strings extractor against every byte in the file.
+    WholeFile,
+    /// Run against the active file's current non-empty selection.
+    /// Falls back to the whole file when no selection exists.
+    Selection,
+}
+
+/// Open the Strings panel for the active file. When `auto_run` is
+/// true, also kick off a fresh extraction with the current panel
+/// config (or sensible defaults on first open). When false, just
+/// open / focus the tab so the user can adjust settings before
+/// pressing Run.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_strings_for_active(ctx: &egui::Context, app: &mut HxyApp, scope: StringsScope, auto_run: bool) {
+    let Some(id) = active_file_id(app) else {
+        app.console_log(ConsoleSeverity::Warning, "Strings", hxy_i18n::t("palette-reload-no-active-file"));
+        return;
+    };
+    app.show_strings_for(id);
+    if !auto_run {
+        return;
+    }
+    spawn_strings_for(ctx, app, id, scope);
+}
+
+/// Kick off (or re-fire) a strings extraction for `id` against the
+/// given range, replacing any in-flight worker and updating the
+/// panel's config so the tool tab reflects what's being scanned.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_strings_for(ctx: &egui::Context, app: &mut HxyApp, id: FileId, scope: StringsScope) {
+    let Some(file) = app.files.get(&id) else { return };
+    let source_len = file.editor.source().len().get();
+    if source_len == 0 {
+        app.console_log(ConsoleSeverity::Info, "Strings", "buffer is empty");
+        return;
+    }
+    let range = match scope {
+        StringsScope::WholeFile => whole_file_range(source_len),
+        StringsScope::Selection => match file.editor.selection() {
+            Some(sel) if !sel.range().is_empty() => Ok(sel.range()),
+            _ => whole_file_range(source_len),
+        },
+    };
+    let range = match range {
+        Ok(r) => r,
+        Err(e) => {
+            app.console_log(ConsoleSeverity::Error, "Strings", format!("invalid file range: {e}"));
+            return;
+        }
+    };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.strings_panel.config.range = range;
+    spawn_strings_with_panel_config(ctx, app, id);
+}
+
+/// Recompute strings for `id` using the panel's existing config
+/// (range, encoding, min length). Used by the panel's own "Run"
+/// button, which doesn't want to redrive the range from a palette
+/// scope.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_strings_with_panel_config(ctx: &egui::Context, app: &mut HxyApp, id: FileId) {
+    let Some(file) = app.files.get_mut(&id) else { return };
+    let config = file.strings_panel.config.clone();
+    if config.range.is_empty() {
+        app.console_log(ConsoleSeverity::Info, "Strings", "configured range is empty");
+        return;
+    }
+    let source = file.editor.source().clone();
+    let display = file.display_name.clone();
+    file.strings_panel.last_result = None;
+    file.strings_panel.running = Some(crate::panels::strings::spawn_compute(ctx, id, source, config.clone()));
+    app.console_log(
+        ConsoleSeverity::Info,
+        format!("Strings {display}"),
+        format!(
+            "scanning {} bytes ({}, min length {})...",
+            config.range.len().get(),
+            config.encoding.label(),
+            config.min_length,
+        ),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn whole_file_range(source_len: u64) -> Result<hxy_core::ByteRange, hxy_core::Error> {
+    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(source_len))
+}
+
+/// Move the file's hex view selection onto a strings match and
+/// scroll it into view. Pinned to `file_id` (rather than the
+/// currently-focused tab) so a click in one file's strings panel
+/// routes to that file's hex view regardless of focus.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn jump_to_strings_match(app: &mut HxyApp, file_id: FileId, offset: u64, end: u64) {
+    // Focus the file tab first so the selection + scroll lands
+    // somewhere visible.
+    app.focus_file_tab(file_id);
+    let Some(file) = app.files.get_mut(&file_id) else { return };
+    if end <= offset {
+        return;
+    }
+    // Selection range is inclusive on both ends; cursor lands on
+    // the last byte of the run.
+    let anchor = hxy_core::ByteOffset::new(offset);
+    let cursor = hxy_core::ByteOffset::new(end - 1);
+    file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor }));
+    file.editor.set_scroll_to_byte(anchor);
+}
+
+/// Drain any completed strings extractions into the file's
+/// `strings_panel.last_result` slot.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drain_strings_runs(ctx: &egui::Context, app: &mut HxyApp) {
+    let mut done: Vec<(FileId, crate::panels::strings::StringsOutcome, std::time::Duration)> = Vec::new();
+    for (id, file) in app.files.iter_mut() {
+        let Some(run) = file.strings_panel.running.as_ref() else { continue };
+        let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+        if outcomes.is_empty() {
+            continue;
+        }
+        let elapsed = run.started.elapsed();
+        file.strings_panel.running = None;
+        for outcome in outcomes {
+            done.push((*id, outcome, elapsed));
+        }
+    }
+    for (id, outcome, elapsed) in done {
+        let display = app.files.get(&id).map(|f| f.display_name.clone()).unwrap_or_default();
+        let ctx_label = format!("Strings {display}");
+        match outcome {
+            crate::panels::strings::StringsOutcome::Ok(result) => {
+                let summary = format!(
+                    "found {} string(s) in {:.0} ms{}",
+                    result.entries.len(),
+                    elapsed.as_secs_f64() * 1000.0,
+                    if result.truncated {
+                        format!(" (truncated to {} hits)", crate::panels::strings::MAX_RESULTS)
+                    } else {
+                        String::new()
+                    },
+                );
+                if let Some(file) = app.files.get_mut(&id) {
+                    file.strings_panel.last_result = Some(result);
+                }
+                app.console_log(ConsoleSeverity::Info, &ctx_label, summary);
+            }
+            crate::panels::strings::StringsOutcome::Err(msg) => {
+                app.console_log(ConsoleSeverity::Error, &ctx_label, msg);
+            }
+        }
+    }
 }
 
 /// Drain any completed entropy computations into the file's
@@ -4825,6 +5025,17 @@ struct HxyTabViewer<'a> {
     /// `visualizer_panel.open` flag.
     #[cfg(not(target_arch = "wasm32"))]
     pending_visualizer_dismiss: &'a mut Vec<FileId>,
+    /// Strings panel "Run" requests captured during render.
+    /// Drained post-dock-pass, where we have `&mut HxyApp` and can
+    /// route through `spawn_strings_for`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_strings_run: &'a mut Vec<FileId>,
+    /// Strings panel offset-link clicks captured during render.
+    /// Each entry is `(file_id, offset, end)`; the post-dock drain
+    /// translates them into selection + scroll updates on the file's
+    /// hex view.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
     /// Shared byte cache, plumbed through so the Settings tab can
     /// drive `set_limit` directly when the user changes the cache
     /// budget and the Memory debug panel can call `stats()`.
@@ -4870,6 +5081,11 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Visualizer(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-visualizer", &[("name", name)]).into()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Strings(id) => {
+                let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
+                hxy_i18n::t_args("tab-strings", &[("name", name)]).into()
             }
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
@@ -4951,6 +5167,27 @@ impl TabViewer for HxyTabViewer<'_> {
                 crate::panels::entropy::show(ui, label, state, running, &mut clicked);
                 if clicked {
                     self.entropy_recompute.push(pinned);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Strings(file_id) => {
+                let pinned = *file_id;
+                if let Some(file) = self.files.get_mut(&pinned) {
+                    let label = file.display_name.clone();
+                    let events = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                    for ev in events {
+                        match ev {
+                            crate::panels::strings::StringsEvent::Run => {
+                                self.pending_strings_run.push(pinned);
+                            }
+                            crate::panels::strings::StringsEvent::Jump { offset, end } => {
+                                self.pending_strings_jump.push((pinned, offset, end));
+                            }
+                        }
+                    }
+                } else {
+                    let mut empty = crate::panels::strings::StringsPanel::default();
+                    let _ = crate::panels::strings::show(ui, None, &mut empty);
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]

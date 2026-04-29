@@ -65,6 +65,9 @@ pub enum PersistedTab {
     /// reopened file's visualizer dock placement survives a
     /// restart.
     Visualizer(TabSource),
+    /// Strings panel, keyed by the underlying file's [`TabSource`]
+    /// like the other per-file tool tabs.
+    Strings(TabSource),
     /// File tab, keyed by its [`TabSource`] -- the same identity used
     /// in [`crate::state::OpenTabState`], so we can look up whichever
     /// [`FileId`] was allocated for it during the open-tabs restore.
@@ -174,6 +177,7 @@ fn live_to_persisted_tab(
         Tab::Memory => PersistedTab::Memory,
         Tab::Entropy(id) => PersistedTab::Entropy(files.get(id)?.source_kind.clone()?),
         Tab::Visualizer(id) => PersistedTab::Visualizer(files.get(id)?.source_kind.clone()?),
+        Tab::Strings(id) => PersistedTab::Strings(files.get(id)?.source_kind.clone()?),
         Tab::File(id) => PersistedTab::File(files.get(id)?.source_kind.clone()?),
         Tab::Workspace(id) => {
             let ws = workspaces.get(id)?;
@@ -243,6 +247,7 @@ fn persisted_to_live_tab(tab: &PersistedTab, maps: &RestoreMaps<'_>) -> Option<T
         PersistedTab::Memory => Tab::Memory,
         PersistedTab::Entropy(source) => Tab::Entropy(*maps.files_by_source.get(source)?),
         PersistedTab::Visualizer(source) => Tab::Visualizer(*maps.files_by_source.get(source)?),
+        PersistedTab::Strings(source) => Tab::Strings(*maps.files_by_source.get(source)?),
         PersistedTab::File(source) => Tab::File(*maps.files_by_source.get(source)?),
         PersistedTab::Workspace(parent) => Tab::Workspace(*maps.workspaces_by_parent.get(parent)?),
         PersistedTab::PluginMount { plugin_name, token, .. } => {

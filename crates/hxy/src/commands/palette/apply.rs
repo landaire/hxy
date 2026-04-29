@@ -149,6 +149,15 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                         }
                     }
                 }
+                PaletteCommand::FindStringsWholeFile => {
+                    crate::app::run_strings_for_active(ctx, app, crate::app::StringsScope::WholeFile, true);
+                }
+                PaletteCommand::FindStringsSelection => {
+                    crate::app::run_strings_for_active(ctx, app, crate::app::StringsScope::Selection, true);
+                }
+                PaletteCommand::FindStringsWithOptions => {
+                    crate::app::run_strings_for_active(ctx, app, crate::app::StringsScope::WholeFile, false);
+                }
             }
         }
         Action::CopyText(text) => {

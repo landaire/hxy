@@ -78,6 +78,12 @@ pub enum Tab {
     /// each show their own visualizer side by side.
     #[cfg(not(target_arch = "wasm32"))]
     Visualizer(FileId),
+    /// Strings extraction panel for a specific file. Modeled on
+    /// unix `strings(1)`; the panel owns the encoding / min-length
+    /// configuration and the most recent result, both keyed by
+    /// [`FileId`] so two files can each surface their own runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    Strings(FileId),
 }
 
 impl Tab {
