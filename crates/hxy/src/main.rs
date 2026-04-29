@@ -13,7 +13,6 @@ fn main() -> eframe::Result<()> {
     use hxy_lib::settings::persist;
     use hxy_lib::state::PersistedState;
     use hxy_lib::state::shared;
-    use tokio::runtime::Runtime;
     use tracing_subscriber::EnvFilter;
 
     // Heap profiler kept alive for the whole process; its `Drop`
@@ -67,7 +66,18 @@ fn main() -> eframe::Result<()> {
         }
     };
 
-    let runtime = Arc::new(Runtime::new().expect("create tokio runtime"));
+    // SQLite persistence runs on `max_connections=1`, so a single
+    // serial executor is enough. Cap workers at 2 (one for the I/O
+    // loop, one for any sqlx `spawn_blocking` work) and the blocking
+    // pool at 2 so we don't pay for ~num_cpus idle worker threads.
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+            .expect("create tokio runtime"),
+    );
     let startup = load_persistent_state(&runtime);
 
     let state = shared(PersistedState {
