@@ -220,5 +220,11 @@ pub fn hxy_dock_style(egui_style: &egui::Style) -> egui_dock::Style {
     // it. The panel's own fill provides the boundary.
     style.tab.tab_body.stroke = Stroke::NONE;
     style.tab.tab_body.bg_fill = PANEL;
+    // Drop the 4px bottom padding egui_dock adds around every tab
+    // body. Our file tab anchors a `Panel::bottom` (status bar) here,
+    // so the default margin shows up as a dead strip below the
+    // status text. Top/left/right stay at 4 because the inner panels
+    // (VFS tree, console) don't add their own gutters.
+    style.tab.tab_body.inner_margin.bottom = 0;
     style
 }

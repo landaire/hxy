@@ -3171,7 +3171,11 @@ fn render_file_tab(
     ui.painter().rect_filled(tab_rect, 0.0, bg);
 
     let text_h = ui.text_style_height(&egui::TextStyle::Body);
-    let status_h = text_h + 2.0;
+    // text_h already covers ascent + descent, but with only ~2px of
+    // slack the centered label gets pixel-rounded against the panel
+    // edge and clips the bottom of descenders ("g", "p", "y"). Add
+    // a few px so a descender always has a clear pixel below it.
+    let status_h = text_h + 6.0;
 
     #[cfg(not(target_arch = "wasm32"))]
     let watch_chip = compute_watch_chip(file, &state.app);
