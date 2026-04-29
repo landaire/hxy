@@ -5,9 +5,19 @@
 
 pub fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
     match base {
-        crate::settings::OffsetBase::Hex => format!("0x{value:X}"),
-        crate::settings::OffsetBase::Decimal => format!("{value}"),
+        crate::settings::NumericBase::Hex => format!("0x{value:X}"),
+        crate::settings::NumericBase::Decimal => format!("{value}"),
     }
+}
+
+/// Format a byte offset / length / end position using the
+/// user's configured [`NumericFormat`]. Routes through
+/// [`format_offset`] after picking the right base for `value`,
+/// so callers don't have to write the threshold check
+/// themselves. Use this everywhere a numeric span value is
+/// rendered outside the status bar.
+pub fn format_numeric(value: u64, fmt: crate::settings::NumericFormat) -> String {
+    format_offset(value, fmt.pick(value))
 }
 
 /// Click to toggle offset base, hover for the alternate-base tooltip,

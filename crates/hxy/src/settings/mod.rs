@@ -24,16 +24,17 @@ fn default_ts() -> jiff::Timestamp {
 /// How many recents to retain.
 pub const MAX_RECENT_FILES: usize = 20;
 
-/// Base used by the status bar to render offsets. User can flip this by
-/// clicking on the status bar values.
+/// Base used to render a single numeric value (offset, length,
+/// end position). The wider [`NumericFormat`] picks one of these
+/// per call; this enum is just the leaf format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OffsetBase {
+pub enum NumericBase {
     #[default]
     Hex,
     Decimal,
 }
 
-impl OffsetBase {
+impl NumericBase {
     pub fn toggle(self) -> Self {
         match self {
             Self::Hex => Self::Decimal,
@@ -41,6 +42,61 @@ impl OffsetBase {
         }
     }
 }
+
+/// How to format byte offsets / lengths / end positions across
+/// the UI. `Always(b)` always uses `b`; `Threshold { ... }`
+/// switches between `small` (when value < threshold) and `large`
+/// (when value >= threshold), so the user can keep small numbers
+/// readable in decimal while big addresses stay compact in hex.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NumericFormat {
+    Always(NumericBase),
+    Threshold {
+        small: NumericBase,
+        large: NumericBase,
+        threshold: u64,
+    },
+}
+
+impl Default for NumericFormat {
+    fn default() -> Self {
+        Self::Always(NumericBase::Hex)
+    }
+}
+
+impl NumericFormat {
+    /// Pick the base that applies to `value`. For `Threshold`,
+    /// `large` kicks in at-or-above the threshold so a setting of
+    /// `threshold = 256` reads as "show hex once we're past a byte's
+    /// worth".
+    pub fn pick(self, value: u64) -> NumericBase {
+        match self {
+            Self::Always(b) => b,
+            Self::Threshold { small, large, threshold } => {
+                if value >= threshold { large } else { small }
+            }
+        }
+    }
+
+    /// Quick toggle for the click-to-flip status-bar widget. For
+    /// `Always(b)`, swap to the other base; for `Threshold`, swap
+    /// the two bases (keeping the threshold intact) so the user
+    /// gets the inverted view without losing their threshold pick.
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Always(b) => Self::Always(b.toggle()),
+            Self::Threshold { small, large, threshold } => {
+                Self::Threshold { small: large, large: small, threshold }
+            }
+        }
+    }
+}
+
+/// Type alias kept for the existing call sites that only care
+/// about a single base (the status bar's hover tooltip, the
+/// click-to-toggle helper). Lets us drop in [`NumericFormat`]
+/// without churning every call to `OffsetBase::toggle()`.
+pub type OffsetBase = NumericBase;
 
 /// Where to paint byte highlight color: as a background fill or as a
 /// tint on the glyphs themselves.
@@ -121,8 +177,21 @@ pub struct AppSettings {
     /// wired up when we actually implement update checks).
     pub check_for_updates: bool,
 
-    /// Base used by the status bar for displaying offsets.
+    /// Base used by the status bar for displaying offsets. Kept
+    /// as a single base (without the threshold form) because the
+    /// status-bar's click-to-toggle UX wants a binary flip; the
+    /// richer template-panel / tooltip / palette path uses
+    /// [`Self::numeric_format`] instead.
     pub offset_base: OffsetBase,
+
+    /// Format used everywhere a byte offset / length / end
+    /// position is rendered as text outside the status bar
+    /// (template panel, hover tooltip, palette previews).
+    /// Supports a fixed base or a value-threshold split so small
+    /// numbers stay readable in decimal while large addresses
+    /// stay compact in hex.
+    #[serde(default)]
+    pub numeric_format: NumericFormat,
 
     /// When true, render a tint on each byte based on its value class
     /// (null, all-bits, printable ASCII, whitespace, control, extended)
@@ -311,6 +380,7 @@ impl Default for AppSettings {
             hex_columns: ColumnCount::DEFAULT,
             check_for_updates: true,
             offset_base: OffsetBase::default(),
+            numeric_format: NumericFormat::default(),
             byte_value_highlight: true,
             byte_highlight_mode: ByteHighlightMode::default(),
             byte_highlight_scheme: ByteHighlightScheme::default(),

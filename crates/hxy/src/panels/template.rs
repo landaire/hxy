@@ -97,7 +97,12 @@ const INDENT_STEP: f32 = 14.0;
 /// `whole_file_len` lets the strip suppress range-decoration on the
 /// "default" case: a single template covering the entire file shows
 /// just its name, with no `[..]` byte-range suffix.
-pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<TemplateEvent> {
+pub fn show(
+    ui: &mut egui::Ui,
+    file: &OpenFile,
+    whole_file_len: u64,
+    numeric_format: crate::settings::NumericFormat,
+) -> Vec<TemplateEvent> {
     let mut events = Vec::new();
     let id_seed = file.id.get();
 
@@ -205,6 +210,7 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
         source: source.as_ref(),
         focus_id,
         pending_select: None,
+        numeric_format,
     };
 
     // Bring the selected row into view when the selection just
@@ -352,6 +358,11 @@ struct TemplateTableDelegate<'a> {
     /// gate clicking the caret to expand a parent would also select
     /// (and selecting a parent paints the entire span purple).
     pending_select: Option<TemplateNodeIdx>,
+    /// User-configured base / threshold for offset / length /
+    /// end columns. Looked up per cell so the threshold form
+    /// can pick a different base for tiny indices and big
+    /// addresses on the same row.
+    numeric_format: crate::settings::NumericFormat,
 }
 
 impl TableDelegate for TemplateTableDelegate<'_> {
@@ -547,14 +558,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
             }
             3 => {
-                ui.monospace(format!("{:#x}", node.span.offset));
+                numeric_cell(ui, node.span.offset, self.numeric_format);
             }
             4 => {
                 let end = node.span.offset.saturating_add(node.span.length);
-                ui.monospace(format!("{end:#x}"));
+                numeric_cell(ui, end, self.numeric_format);
             }
             5 => {
-                ui.monospace(node.span.length.to_string());
+                numeric_cell(ui, node.span.length, self.numeric_format);
             }
             6 => {
                 if let Some(text) = format_value(node) {
@@ -632,14 +643,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(element_type).weak()));
             }
             3 => {
-                ui.monospace(format!("{first_offset:#x}"));
+                numeric_cell(ui, first_offset, self.numeric_format);
             }
             4 => {
                 let end = first_offset.saturating_add(total_len);
-                ui.monospace(format!("{end:#x}"));
+                numeric_cell(ui, end, self.numeric_format);
             }
             5 => {
-                ui.monospace(format!("{total_len}"));
+                numeric_cell(ui, total_len, self.numeric_format);
             }
             _ => {}
         }
@@ -675,14 +686,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             3 => {
-                ui.monospace(format!("{elem_offset:#x}"));
+                numeric_cell(ui, elem_offset, self.numeric_format);
             }
             4 => {
                 let end = elem_offset.saturating_add(elem_width);
-                ui.monospace(format!("{end:#x}"));
+                numeric_cell(ui, end, self.numeric_format);
             }
             5 => {
-                ui.monospace(elem_width.to_string());
+                numeric_cell(ui, elem_width, self.numeric_format);
             }
             6 => {
                 let endian = parent
@@ -732,14 +743,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             3 => {
-                ui.monospace(format!("{:#x}", node.span.offset));
+                numeric_cell(ui, node.span.offset, self.numeric_format);
             }
             4 => {
                 let end = node.span.offset.saturating_add(node.span.length);
-                ui.monospace(format!("{end:#x}"));
+                numeric_cell(ui, end, self.numeric_format);
             }
             5 => {
-                ui.monospace(node.span.length.to_string());
+                numeric_cell(ui, node.span.length, self.numeric_format);
             }
             6 => {
                 if let Some(text) = format_value(node) {
@@ -749,6 +760,17 @@ impl TemplateTableDelegate<'_> {
             _ => {}
         }
     }
+}
+
+/// Render a numeric span value (offset / length / end) using
+/// the user's [`crate::settings::NumericFormat`] in a monospace
+/// label that truncates on narrow columns. Truncation is what
+/// avoids wrapping into a multi-line cell, which is what tripped
+/// egui's `show_unaligned` debug overlay -- a wrapped value
+/// produces a sub-pixel-tall galley.
+fn numeric_cell(ui: &mut egui::Ui, value: u64, fmt: crate::settings::NumericFormat) {
+    let text = crate::view::format::format_numeric(value, fmt);
+    ui.add(egui::Label::new(egui::RichText::new(text).monospace()).truncate());
 }
 
 fn children_by_parent(nodes: &[Node]) -> HashMap<Option<TemplateNodeIdx>, Vec<TemplateNodeIdx>> {
@@ -857,8 +879,20 @@ fn quote_string_preview(s: &str) -> String {
 /// Render a byte slice as `'\xAB\xCD...'` so the user can tell it apart
 /// from a string at a glance. Long buffers truncate to
 /// [`BYTES_VALUE_PREVIEW_BYTES`] with a `... (N bytes)` tail.
+///
+/// When the buffer is valid UTF-8 *and* mostly looks like a real
+/// string (no embedded NULs, mostly printable / common-whitespace
+/// codepoints), the preview routes through [`quote_string_preview`]
+/// instead -- a byte buffer that's actually text reads much better
+/// as `"PNG\r\n..."` than as `\x50\x4E\x47\x0D\x0A\x...`. Stops short
+/// of running on long buffers (validity check on the first ~256
+/// bytes) so the heuristic stays cheap.
 fn quote_bytes_preview(b: &[u8]) -> String {
     use std::fmt::Write as _;
+
+    if let Some(text) = bytes_as_string_preview(b) {
+        return quote_string_preview(&text);
+    }
     let head_len = BYTES_VALUE_PREVIEW_BYTES.min(b.len());
     let mut out = String::with_capacity(head_len * 4 + 16);
     out.push('\'');
@@ -870,6 +904,67 @@ fn quote_bytes_preview(b: &[u8]) -> String {
         let _ = write!(out, "... ({} bytes)", b.len());
     }
     out
+}
+
+/// Decode `b` as UTF-8 and return the head when it's "string-like":
+/// non-empty, decodes successfully (limited to a head sample so
+/// multi-MB buffers don't get fully validated for nothing), and the
+/// majority of decoded chars are printable / common whitespace.
+/// The caller renders the result as a quoted string preview.
+fn bytes_as_string_preview(b: &[u8]) -> Option<String> {
+    /// Cap on how many bytes we try to UTF-8-decode for the
+    /// preview. Keeps the heuristic O(1) regardless of how big
+    /// the underlying buffer is. Picked > the visible preview
+    /// budget so the preview itself is never short on chars.
+    const SAMPLE_BYTES: usize = 256;
+
+    if b.is_empty() {
+        return None;
+    }
+    let sample = &b[..b.len().min(SAMPLE_BYTES)];
+    // Tolerate a multi-byte char straddling the sample boundary:
+    // accept the longest valid UTF-8 prefix.
+    let valid_len = match std::str::from_utf8(sample) {
+        Ok(_) => sample.len(),
+        Err(e) => e.valid_up_to(),
+    };
+    if valid_len == 0 {
+        return None;
+    }
+    let head = std::str::from_utf8(&sample[..valid_len]).ok()?;
+    if !looks_like_text(head) {
+        return None;
+    }
+    // Decode as much of the *full* buffer as is valid UTF-8 so a
+    // long string preview shows the full byte count, not a 256-byte
+    // truncation.
+    let full_valid = match std::str::from_utf8(b) {
+        Ok(_) => b.len(),
+        Err(e) => e.valid_up_to(),
+    };
+    Some(std::str::from_utf8(&b[..full_valid]).ok()?.to_owned())
+}
+
+/// "String-like" heuristic for the head sample: at least 50% of
+/// chars are printable / common whitespace, and there are no
+/// interior NUL bytes (which signal a binary buffer that just
+/// happens to contain ASCII letters near the start). NULs at the
+/// very end are tolerated -- C-style null-terminated strings are
+/// common in templates.
+fn looks_like_text(head: &str) -> bool {
+    let trimmed = head.trim_end_matches('\0');
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('\0') {
+        return false;
+    }
+    let total = trimmed.chars().count();
+    let printable = trimmed
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
+        .count();
+    printable * 2 >= total
 }
 
 /// Returns `Some(text)` for a scalar value to render in the Value
@@ -1665,3 +1760,40 @@ fn initial_collapsed(
         .map(TemplateNodeIdx)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_preview_renders_text_as_string() {
+        let bytes: &[u8] = b"PNG\r\n";
+        let preview = quote_bytes_preview(bytes);
+        assert!(preview.starts_with('"'), "expected quoted string preview, got {preview:?}");
+        assert!(preview.contains("PNG"), "expected ascii content, got {preview:?}");
+    }
+
+    #[test]
+    fn bytes_preview_falls_back_to_hex_for_binary() {
+        let bytes: &[u8] = &[0x8E, 0xA3, 0xFF, 0xC0, 0x42];
+        let preview = quote_bytes_preview(bytes);
+        assert!(preview.starts_with('\''), "expected hex preview, got {preview:?}");
+        assert!(preview.contains("\\x8E"), "expected hex-escaped first byte, got {preview:?}");
+    }
+
+    #[test]
+    fn bytes_preview_rejects_buffer_with_interior_nul() {
+        let bytes: &[u8] = b"hello\0world";
+        let preview = quote_bytes_preview(bytes);
+        assert!(preview.starts_with('\''), "expected hex preview, got {preview:?}");
+    }
+
+    #[test]
+    fn bytes_preview_accepts_trailing_nul_terminator() {
+        let bytes: &[u8] = b"hello\0";
+        let preview = quote_bytes_preview(bytes);
+        assert!(preview.starts_with('"'), "expected string preview, got {preview:?}");
+        assert!(preview.contains("hello"), "expected text content, got {preview:?}");
+    }
+}
+

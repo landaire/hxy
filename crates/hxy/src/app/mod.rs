@@ -3416,7 +3416,7 @@ fn render_file_tab(
     );
 
     #[cfg(not(target_arch = "wasm32"))]
-    render_template_panel(ui, id, file);
+    render_template_panel(ui, id, file, state.app.numeric_format);
 
     let copy_request = egui::CentralPanel::default()
         .frame(egui::Frame::new())
@@ -3440,7 +3440,12 @@ fn render_file_tab(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
+fn render_template_panel(
+    ui: &mut egui::Ui,
+    id: FileId,
+    file: &mut OpenFile,
+    numeric_format: crate::settings::NumericFormat,
+) {
     let has_any = !file.templates.is_empty() || !file.templates_running.is_empty();
     if !has_any || !file.template_panel_visible {
         return;
@@ -3451,7 +3456,7 @@ fn render_template_panel(ui: &mut egui::Ui, id: FileId, file: &mut OpenFile) {
         .default_size(300.0)
         .min_size(160.0)
         .show_inside(ui, |ui| {
-            let events = crate::panels::template::show(ui, file, whole_file_len);
+            let events = crate::panels::template::show(ui, file, whole_file_len, numeric_format);
             for e in events {
                 apply_template_event(ui, file, e);
             }
@@ -5696,6 +5701,83 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     });
 }
 
+/// Mode dropdown + per-base sub-controls for editing a
+/// [`crate::settings::NumericFormat`] in-place. Renders inside a
+/// single grid row: a primary mode selector ("Always" / "Switch
+/// at threshold") followed by either one base picker or three
+/// (small / large / threshold value) for the threshold form.
+fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericFormat) {
+    use crate::settings::NumericBase;
+    use crate::settings::NumericFormat;
+
+    /// Bare mode tag, used so the user-facing dropdown can
+    /// preserve the bases / threshold the user already picked
+    /// when toggling between modes (egui's `selectable_value`
+    /// would replace the whole enum and lose them otherwise).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        Always,
+        Threshold,
+    }
+    let mut mode = match *fmt {
+        NumericFormat::Always(_) => Mode::Always,
+        NumericFormat::Threshold { .. } => Mode::Threshold,
+    };
+    let prev_mode = mode;
+
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("hxy-numeric-format-mode")
+            .selected_text(match mode {
+                Mode::Always => hxy_i18n::t("settings-numeric-format-always"),
+                Mode::Threshold => hxy_i18n::t("settings-numeric-format-threshold"),
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut mode, Mode::Always, hxy_i18n::t("settings-numeric-format-always"));
+                ui.selectable_value(&mut mode, Mode::Threshold, hxy_i18n::t("settings-numeric-format-threshold"));
+            });
+
+        if mode != prev_mode {
+            // Mode flip: derive sensible defaults from whatever
+            // bases / threshold the user had selected, so the
+            // pickers don't snap back to an arbitrary default.
+            *fmt = match (mode, *fmt) {
+                (Mode::Always, NumericFormat::Threshold { large, .. }) => NumericFormat::Always(large),
+                (Mode::Threshold, NumericFormat::Always(b)) => {
+                    NumericFormat::Threshold { small: NumericBase::Decimal, large: b, threshold: 256 }
+                }
+                (_, current) => current,
+            };
+        }
+
+        match fmt {
+            NumericFormat::Always(base) => {
+                base_combo(ui, "hxy-numeric-format-always-base", base);
+            }
+            NumericFormat::Threshold { small, large, threshold } => {
+                ui.label(hxy_i18n::t("settings-numeric-format-small-label"));
+                base_combo(ui, "hxy-numeric-format-small", small);
+                ui.label(hxy_i18n::t("settings-numeric-format-large-label"));
+                base_combo(ui, "hxy-numeric-format-large", large);
+                ui.label(hxy_i18n::t("settings-numeric-format-threshold-label"));
+                ui.add(egui::DragValue::new(threshold).range(1..=u64::MAX));
+            }
+        }
+    });
+}
+
+fn base_combo(ui: &mut egui::Ui, id: &'static str, base: &mut crate::settings::NumericBase) {
+    use crate::settings::NumericBase;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(match base {
+            NumericBase::Hex => "Hex",
+            NumericBase::Decimal => "Decimal",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(base, NumericBase::Hex, "Hex");
+            ui.selectable_value(base, NumericBase::Decimal, "Decimal");
+        });
+}
+
 fn settings_ui(
     ui: &mut egui::Ui,
     settings: &mut crate::settings::AppSettings,
@@ -5801,6 +5883,10 @@ fn settings_ui(
                 ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Hex, "Hex");
                 ui.selectable_value(&mut settings.offset_base, crate::settings::OffsetBase::Decimal, "Decimal");
             });
+        ui.end_row();
+
+        ui.label(hxy_i18n::t("settings-numeric-format"));
+        numeric_format_row(ui, &mut settings.numeric_format);
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-address-separator"));
