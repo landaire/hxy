@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde::Serialize;
-use suture::metadata::HashAlgorithm;
 
 use crate::APP_NAME;
 
@@ -278,9 +277,9 @@ fn snapshot_dir_for(key_path: &Path) -> Option<PathBuf> {
 fn snapshot_dir_name(key_path: &Path) -> String {
     let canonical = key_path.canonicalize().unwrap_or_else(|_| key_path.to_path_buf());
     let bytes = canonical.to_string_lossy().into_owned();
-    let digest = HashAlgorithm::Blake3.compute(bytes.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for b in &digest {
+    let digest = blake3::hash(bytes.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for b in digest.as_bytes() {
         use std::fmt::Write;
         write!(&mut hex, "{b:02x}").expect("infallible");
     }

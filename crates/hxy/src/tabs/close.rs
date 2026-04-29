@@ -44,6 +44,11 @@ pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
     if let Some(path) = app.dock.find_tab(&Tab::Entropy(id)) {
         let _ = app.dock.remove_tab(path);
     }
+    // Same lifetime story for the visualizer panel: keyed on
+    // FileId, so it goes when its file does.
+    if let Some(path) = app.dock.find_tab(&Tab::Visualizer(id)) {
+        let _ = app.dock.remove_tab(path);
+    }
     for workspace in app.workspaces.values_mut() {
         if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::Entry(id)) {
             let _ = workspace.dock.remove_tab(path);
@@ -102,6 +107,17 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
         Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Entropy(_) | Tab::Memory => {
             if let Some(path) = app.dock.find_tab(&tab) {
                 let _ = app.dock.remove_tab(path);
+            }
+        }
+        Tab::Visualizer(file_id) => {
+            if let Some(path) = app.dock.find_tab(&tab) {
+                let _ = app.dock.remove_tab(path);
+            }
+            // Sticky dismiss: a re-run on the same file
+            // shouldn't pop the panel back open after the user
+            // explicitly closed it via Cmd+W.
+            if let Some(file) = app.files.get_mut(&file_id) {
+                file.visualizer_panel.dismissed = true;
             }
         }
         Tab::PluginMount(mount_id) => {

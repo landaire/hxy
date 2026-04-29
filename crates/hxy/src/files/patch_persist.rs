@@ -106,9 +106,9 @@ impl PatchSidecar {
 pub fn sidecar_filename(source_path: &Path) -> String {
     let canonical = source_path.canonicalize().unwrap_or_else(|_| source_path.to_path_buf());
     let bytes = canonical.to_string_lossy().into_owned();
-    let digest = HashAlgorithm::Blake3.compute(bytes.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2 + 5);
-    for b in &digest {
+    let digest = blake3::hash(bytes.as_bytes());
+    let mut hex = String::with_capacity(64 + 5);
+    for b in digest.as_bytes() {
         use std::fmt::Write;
         write!(&mut hex, "{b:02x}").expect("infallible");
     }
@@ -181,10 +181,13 @@ pub fn snapshot(
                 .expect("range valid"),
         )
     {
-        let digest = HashAlgorithm::Blake3.compute(&bytes);
+        let digest = blake3::hash(&bytes);
         // BLAKE3 always produces 32 bytes; `SourceDigest::new` only
-        // errors on length mismatch.
-        let source_digest = SourceDigest::new(HashAlgorithm::Blake3, digest).expect("blake3 digest is 32 bytes");
+        // errors on length mismatch. `HashAlgorithm::Blake3` is the
+        // tag suture stores alongside the bytes -- we still rely on
+        // suture's metadata schema, just not on its `compute()`.
+        let source_digest = SourceDigest::new(HashAlgorithm::Blake3, digest.as_bytes().to_vec())
+            .expect("blake3 digest is 32 bytes");
         metadata = metadata.with_digest(source_digest);
     }
     Some(PatchSidecar { source_path, metadata, patch, undo_stack, redo_stack })

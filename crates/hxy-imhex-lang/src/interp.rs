@@ -2120,8 +2120,14 @@ impl<S: HexSource> Interpreter<S> {
     fn eval_attrs(&mut self, attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
         let mut out = Vec::with_capacity(attrs.0.len());
         for a in &attrs.0 {
-            let value = a.args.first().map(|e| self.eval_attr_arg(e)).unwrap_or_default();
-            out.push((canonicalize_attr_name(&a.name), value));
+            let key = canonicalize_attr_name(&a.name);
+            let value = if is_multi_arg_attr(&key) {
+                let parts: Vec<String> = a.args.iter().map(|e| self.eval_attr_arg(e)).collect();
+                parts.join(VISUALIZE_ARG_SEP)
+            } else {
+                a.args.first().map(|e| self.eval_attr_arg(e)).unwrap_or_default()
+            };
+            out.push((key, value));
         }
         out
     }
@@ -4456,9 +4462,26 @@ fn canonicalize_attr_name(name: &str) -> String {
         "comment" => "hxy_comment",
         "format" => "hxy_format",
         "name" => "hxy_name",
+        "hex::visualize" => "hxy_visualize",
+        "hex::inline_visualize" => "hxy_inline_visualize",
         other => return other.to_owned(),
     };
     canonical.to_owned()
+}
+
+/// ASCII unit separator used to pack a multi-arg attribute (today:
+/// the visualizer attrs) into one string the host can split apart on
+/// the way out. Must match `hxy_plugin_host::VISUALIZE_ARG_SEP`
+/// byte-for-byte; the literal is duplicated here only because this
+/// crate doesn't depend on plugin-host (the dep direction is the
+/// other way around).
+pub(crate) const VISUALIZE_ARG_SEP: &str = "\u{1f}";
+
+/// True when the canonical attribute name carries a list of args
+/// (rather than a single value). Today: just the two visualizer
+/// attribute names.
+pub(crate) fn is_multi_arg_attr(canonical: &str) -> bool {
+    matches!(canonical, "hxy_visualize" | "hxy_inline_visualize")
 }
 
 /// Render a [`Value`] for use as an attribute string. Strings come

@@ -731,6 +731,42 @@ impl HxyApp {
         self.dock.set_focused_node_and_surface(node_path);
     }
 
+    /// Show (or focus) the Visualizer panel for `file_id`. Used by
+    /// the auto-open path after a template run produces visualizer
+    /// attributes, and by the in-row visualizer icon. No-ops when
+    /// the user has previously dismissed the panel for this file
+    /// (so re-runs don't re-pop it). The user can still re-open
+    /// manually via the View menu / palette.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_visualizer_for(&mut self, file_id: FileId) {
+        if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, Tab::Visualizer(file_id));
+        self.dock.set_focused_node_and_surface(node_path);
+    }
+
+    /// Open the visualizer panel only when (a) the file actually
+    /// has at least one visualizer-bearing field in its currently
+    /// loaded templates, and (b) the user hasn't dismissed the
+    /// panel for this file. Called after each successful template
+    /// run by [`crate::templates::runner`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn auto_open_visualizer_for(&mut self, file_id: FileId) {
+        let has_visualizer = match self.files.get(&file_id) {
+            Some(file) if !file.visualizer_panel.dismissed => {
+                !crate::visualizers::collect_targets(file).is_empty()
+            }
+            _ => false,
+        };
+        if has_visualizer {
+            self.show_visualizer_for(file_id);
+        }
+    }
+
     /// Append a message to the Console tab. Caps the buffer at
     /// [`Self::CONSOLE_CAPACITY`] entries; older entries are dropped
     /// first so long-running sessions don't accumulate unbounded RAM.
@@ -2183,6 +2219,11 @@ impl eframe::App for HxyApp {
         // borrow releases.
         #[cfg(not(target_arch = "wasm32"))]
         let mut entropy_recompute: Vec<FileId> = Vec::new();
+        // Visualizer-panel close clicks land here for the same
+        // reason; drained after the dock pass to remove the
+        // matching dock tab + record the sticky-dismiss flag.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pending_visualizer_dismiss: Vec<FileId> = Vec::new();
 
         {
             // Snapshot fields that the viewer needs but that live on
@@ -2234,6 +2275,8 @@ impl eframe::App for HxyApp {
                 pending_template_runs: &mut self.pending_template_runs,
                 #[cfg(not(target_arch = "wasm32"))]
                 entropy_recompute: &mut entropy_recompute,
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_visualizer_dismiss: &mut pending_visualizer_dismiss,
                 byte_cache: &self.byte_cache,
             };
             let style = crate::style::hxy_dock_style(ui.style());
@@ -2247,6 +2290,36 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut entropy_recompute) {
             compute_entropy_for(ui.ctx(), self, file_id);
+        }
+        // Visualizer panel header X-clicks: remove the dock tab
+        // and remember the dismissal so a re-run on the same file
+        // doesn't pop the panel back open.
+        #[cfg(not(target_arch = "wasm32"))]
+        for file_id in std::mem::take(&mut pending_visualizer_dismiss) {
+            if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
+                let _ = self.dock.remove_tab(path);
+            }
+            if let Some(file) = self.files.get_mut(&file_id) {
+                file.visualizer_panel.dismissed = true;
+            }
+        }
+        // In-row visualizer-icon clicks: pop or focus the panel
+        // for each file whose template-panel handler set the
+        // pending_show flag. The handler also wrote the active
+        // node into `panel.active`, so the next render lands on
+        // the right sub-tab.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let to_show: Vec<FileId> = self
+                .files
+                .iter_mut()
+                .filter_map(|(id, file)| {
+                    if std::mem::take(&mut file.visualizer_panel.pending_show) { Some(*id) } else { None }
+                })
+                .collect();
+            for id in to_show {
+                self.show_visualizer_for(id);
+            }
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -3462,6 +3535,18 @@ fn apply_template_event(
                 state.collapsed.remove(&idx);
             }
         }
+        TemplateEvent::OpenVisualizer(node_idx) => {
+            // Set the active visualizer key + flag the panel so the
+            // post-dock-pass drain pops the dock tab. Clearing the
+            // dismissed flag here reverses a prior X-click: the user
+            // explicitly clicked the row icon, so they want the
+            // panel back regardless of their earlier dismissal.
+            let Some(active_id) = file.active_template else { return };
+            file.visualizer_panel.active =
+                Some(crate::visualizers::VisualizerKey { instance: active_id, node: node_idx });
+            file.visualizer_panel.dismissed = false;
+            file.visualizer_panel.pending_show = true;
+        }
     }
 }
 
@@ -4650,6 +4735,13 @@ struct HxyTabViewer<'a> {
     /// recompute in the same frame.
     #[cfg(not(target_arch = "wasm32"))]
     entropy_recompute: &'a mut Vec<FileId>,
+    /// Sink for visualizer-panel header X-button clicks. The
+    /// dock-pass borrow on `app.dock` blocks the renderer from
+    /// removing the tab inline, so it queues the file id here and
+    /// the post-dock drain calls `remove_tab` + sets the file's
+    /// `visualizer_panel.dismissed` flag.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_visualizer_dismiss: &'a mut Vec<FileId>,
     /// Shared byte cache, plumbed through so the Settings tab can
     /// drive `set_limit` directly when the user changes the cache
     /// budget and the Memory debug panel can call `stats()`.
@@ -4690,6 +4782,11 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Entropy(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-entropy", &[("name", name)]).into()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Visualizer(id) => {
+                let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
+                hxy_i18n::t_args("tab-visualizer", &[("name", name)]).into()
             }
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
@@ -4769,6 +4866,32 @@ impl TabViewer for HxyTabViewer<'_> {
                 crate::panels::entropy::show(ui, label, state, running, &mut clicked);
                 if clicked {
                     self.entropy_recompute.push(pinned);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Tab::Visualizer(file_id) => {
+                let pinned = *file_id;
+                // Split-borrow: the visualizer renderer needs both
+                // `OpenFile` (template trees, byte source) and a
+                // mutable handle to the file's `visualizer_panel`
+                // field. Take ownership of the panel for the render
+                // pass and slot it back afterwards so the renderer
+                // can borrow `OpenFile` immutably without contending
+                // with the `&mut` on the panel field.
+                if let Some(file) = self.files.get_mut(&pinned) {
+                    let mut taken = std::mem::take(&mut file.visualizer_panel);
+                    let events = crate::visualizers::show(ui, Some(&*file), &mut taken);
+                    file.visualizer_panel = taken;
+                    for ev in events {
+                        match ev {
+                            crate::visualizers::VisualizerEvent::Dismiss => {
+                                self.pending_visualizer_dismiss.push(pinned);
+                            }
+                        }
+                    }
+                } else {
+                    let mut empty = crate::visualizers::VisualizerPanel::default();
+                    let _ = crate::visualizers::show(ui, None, &mut empty);
                 }
             }
             Tab::Memory => {
@@ -4877,7 +5000,7 @@ impl TabViewer for HxyTabViewer<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => true,
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::Entropy(_) => true,
+            Tab::Entropy(_) | Tab::Visualizer(_) => true,
             _ => false,
         }
     }
@@ -4892,7 +5015,7 @@ impl TabViewer for HxyTabViewer<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => [false, false],
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::Entropy(_) => [false, false],
+            Tab::Entropy(_) | Tab::Visualizer(_) => [false, false],
             Tab::Memory => [false, true],
             _ => [true, true],
         }
@@ -4927,6 +5050,15 @@ impl TabViewer for HxyTabViewer<'_> {
             // matches on this slot and drops the mount entry plus the
             // matching `state.open_tabs` record.
             *self.pending_close_mount = Some(*mount_id);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Tab::Visualizer(file_id) = tab {
+            // Sticky dismiss: remember that the user closed this
+            // file's visualizer panel so the next template re-run
+            // doesn't auto-pop it back open.
+            if let Some(file) = self.files.get_mut(file_id) {
+                file.visualizer_panel.dismissed = true;
+            }
         }
         if let Tab::Workspace(workspace_id) = tab {
             // Workspace close = editor + every entry sub-tab. Bail to

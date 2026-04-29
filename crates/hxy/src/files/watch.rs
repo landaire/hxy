@@ -33,7 +33,6 @@ use notify_debouncer_full::DebouncedEvent;
 use notify_debouncer_full::Debouncer;
 use notify_debouncer_full::RecommendedCache;
 use notify_debouncer_full::new_debouncer;
-use suture::metadata::HashAlgorithm;
 
 use crate::files::FileId;
 
@@ -449,10 +448,7 @@ fn vfs_fingerprint(source: &dyn HexSource) -> Result<VfsFingerprint, String> {
         let range = ByteRange::new(ByteOffset::new(r.start), ByteOffset::new(r.end))
             .map_err(|e| format!("range {}..{}: {e}", r.start, r.end))?;
         let bytes = source.read(range).map_err(|e| format!("read {}..{}: {e}", r.start, r.end))?;
-        let digest = HashAlgorithm::Blake3.compute(&bytes);
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&digest[..32.min(digest.len())]);
-        sample_hashes.push(arr);
+        sample_hashes.push(*blake3::hash(&bytes).as_bytes());
     }
     Ok(VfsFingerprint { len, sample_hashes })
 }

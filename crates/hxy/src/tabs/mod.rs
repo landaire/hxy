@@ -70,6 +70,14 @@ pub enum Tab {
     /// usage. Gated by `AppSettings::debug_memory_panel_enabled`
     /// in the palette / view menu.
     Memory,
+    /// ImHex-style visualizer panel for a specific file. Auto-opens
+    /// the first time a parsed template on the file emits a
+    /// `[[hex::visualize(...)]]` attribute; the user can close it
+    /// to dismiss for this file's lifetime (a re-run won't re-open
+    /// it on its own). Keyed by [`FileId`] so several files can
+    /// each show their own visualizer side by side.
+    #[cfg(not(target_arch = "wasm32"))]
+    Visualizer(FileId),
 }
 
 impl Tab {

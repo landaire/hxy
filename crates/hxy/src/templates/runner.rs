@@ -255,7 +255,19 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
                         entry.source_fingerprint,
                         state,
                     );
+                    // Drop cache entries that no longer back a node
+                    // in the new tree -- a re-run might have
+                    // renumbered nodes and we don't want stale GPU
+                    // textures keyed by indices that now point at a
+                    // different field.
+                    let live_keys: std::collections::HashSet<crate::visualizers::VisualizerKey> =
+                        crate::visualizers::collect_targets(file).into_iter().map(|t| t.key).collect();
+                    file.visualizer_panel.gc(&live_keys);
                 }
+                // Auto-open the visualizer panel if the new tree
+                // contains any `[[hex::visualize(...)]]` fields and
+                // the user hasn't dismissed the panel for this file.
+                app.auto_open_visualizer_for(entry.file_id);
                 for d in &diagnostics {
                     let severity = match d.severity {
                         hxy_plugin_host::template::Severity::Error => ConsoleSeverity::Error,
@@ -307,8 +319,7 @@ pub fn drain_pending_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
 /// re-hash the source we're about to feed the worker and only carry
 /// over color overrides if the hashes match.
 pub(crate) fn fingerprint_template_source(source: &str) -> Option<[u8; 32]> {
-    let digest = suture::metadata::HashAlgorithm::Blake3.compute(source.as_bytes());
-    digest.try_into().ok()
+    Some(*blake3::hash(source.as_bytes()).as_bytes())
 }
 
 /// Insert or replace a template instance under a known id. Used by the

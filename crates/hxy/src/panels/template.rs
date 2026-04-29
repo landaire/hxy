@@ -77,6 +77,11 @@ pub enum TemplateEvent {
     CollapseSelected,
     /// Right-arrow: expand the currently selected node if collapsed.
     ExpandSelected,
+    /// User clicked the visualizer icon on a row whose field carries
+    /// a `[[hex::visualize(...)]]` attribute. Host opens / focuses
+    /// the file's [`Tab::Visualizer`](crate::tabs::Tab::Visualizer)
+    /// dock tab and selects this node as the active sub-tab.
+    OpenVisualizer(TemplateNodeIdx),
 }
 
 pub use crate::files::copy::CopyKind;
@@ -199,6 +204,7 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
         row_height,
         source: source.as_ref(),
         focus_id,
+        pending_select: None,
     };
 
     // Bring the selected row into view when the selection just
@@ -249,9 +255,13 @@ pub fn show(ui: &mut egui::Ui, file: &OpenFile, whole_file_len: u64) -> Vec<Temp
         table = table.scroll_to_row(row_nr, None);
     }
     table.show(ui, &mut delegate);
+    let pending_select = delegate.pending_select.take();
 
     if any_hover != state.hovered_node {
         events.push(TemplateEvent::Hover(any_hover));
+    }
+    if let Some(idx) = pending_select {
+        events.push(TemplateEvent::Select(idx));
     }
 
     // Keyboard nav lives outside the egui_table render so it sees the
@@ -330,6 +340,18 @@ struct TemplateTableDelegate<'a> {
     /// its own id (rows scroll out of view under egui_table's
     /// virtualization and would lose focus mid-navigation).
     focus_id: egui::Id,
+    /// Tentative row-click selection: `row_ui` writes here when the
+    /// click landed on bare row area, but cell-level widgets (caret
+    /// expander, color swatch, visualizer icon) clear it back to
+    /// `None` if their own widget claimed the click. After
+    /// `Table::show` returns, any leftover entry becomes a
+    /// [`TemplateEvent::Select`]. This avoids selecting a node just
+    /// because the user clicked a child widget on its row -- the
+    /// fallback `pointer.primary_clicked()` check in `row_ui` fires
+    /// regardless of which widget owned the click, so without this
+    /// gate clicking the caret to expand a parent would also select
+    /// (and selecting a parent paints the entire span purple).
+    pending_select: Option<TemplateNodeIdx>,
 }
 
 impl TableDelegate for TemplateTableDelegate<'_> {
@@ -381,13 +403,17 @@ impl TableDelegate for TemplateTableDelegate<'_> {
             }
             let clicked_row = resp.clicked() || (over_row && ui.input(|i| i.pointer.primary_clicked()));
             if clicked_row && let Some(idx) = node_idx {
-                self.events.push(TemplateEvent::Select(idx));
+                // Tentative -- a child widget rendered below (caret
+                // expander, color swatch, visualizer icon) can clear
+                // this back to None if it claimed the click. The
+                // post-`Table::show` drain converts whatever's still
+                // here into a real Select event.
+                self.pending_select = Some(idx);
                 // Pull keyboard focus to the panel-level widget so
                 // arrow keys move selection from this row going
-                // forward. Safe to do unconditionally now -- the
-                // earlier picker-dismiss bug was the swatch's
-                // `.context_menu` racing with the color picker
-                // popup, not focus contention.
+                // forward. Safe to do unconditionally even if the
+                // pending_select gets cancelled -- focusing the panel
+                // doesn't move the selection on its own.
                 ui.ctx().memory_mut(|m| m.request_focus(self.focus_id));
             }
             if let Some(idx) = node_idx {
@@ -500,6 +526,13 @@ impl TemplateTableDelegate<'_> {
                     let r = ui.add(egui::Button::new(icon).frame(false).min_size(egui::vec2(14.0, 14.0)));
                     if r.clicked() {
                         self.events.push(TemplateEvent::ToggleCollapse(idx));
+                        // Suppress the row-level Select that would
+                        // otherwise fire on the same press -- selecting
+                        // a parent paints its entire span with the
+                        // selection color, which on a struct that
+                        // covers the whole file (PNG, ZIP, ...) looks
+                        // like the hex view "lost" all its tinting.
+                        self.pending_select = None;
                     }
                 } else {
                     ui.add_space(14.0);
@@ -507,6 +540,7 @@ impl TemplateTableDelegate<'_> {
                 let name_resp = ui.add(egui::Label::new(&node.name).truncate());
                 attach_comment_tooltip(name_resp, node);
                 render_comment_marker(ui, node);
+                render_visualizer_marker(ui, node, idx, self.events, &mut self.pending_select);
             }
             2 => {
                 let label = hxy_plugin_host::node_display_type(node);
@@ -544,6 +578,12 @@ impl TemplateTableDelegate<'_> {
         let original = self.state.leaf_colors[slot];
         let mut color = original;
         let resp = ui.color_edit_button_srgba(&mut color);
+        if resp.clicked() {
+            // Opening the picker is a deliberate per-cell action, so
+            // don't also fire the row-level Select that the bare-row
+            // fallback would have produced.
+            self.pending_select = None;
+        }
         if color != original {
             self.events.push(TemplateEvent::SetColor { idx, color });
         }
@@ -1167,6 +1207,37 @@ fn render_comment_marker(ui: &mut egui::Ui, node: &Node) {
 fn attach_comment_tooltip(resp: egui::Response, node: &Node) {
     if let Some(comment) = node_comment(node) {
         resp.on_hover_text(comment);
+    }
+}
+
+/// Render a small "visualize" icon after the field name when the
+/// node carries a `[[hex::visualize(...)]]` or
+/// `[[hex::inline_visualize(...)]]` attribute. Click pushes
+/// [`TemplateEvent::OpenVisualizer`] so the host can pop the
+/// visualizer panel + select this field. Hovering the icon shows the
+/// visualizer name as a tooltip so the user can see what kind of
+/// renderer they'll get without clicking through.
+///
+/// `pending_select` is the row-level tentative selection slot the
+/// delegate threads through every cell widget; we clear it when the
+/// icon claims a click so the row's bare-area fallback doesn't ALSO
+/// fire a `Select(idx)` for the same press.
+fn render_visualizer_marker(
+    ui: &mut egui::Ui,
+    node: &Node,
+    idx: TemplateNodeIdx,
+    events: &mut Vec<TemplateEvent>,
+    pending_select: &mut Option<TemplateNodeIdx>,
+) {
+    let Some((spec, _inline)) = crate::visualizers::read_node_visualizer(node) else {
+        return;
+    };
+    let icon = egui::RichText::new(egui_phosphor::regular::IMAGE_SQUARE).weak();
+    let resp = ui.add(egui::Button::new(icon).frame(false).small());
+    let tooltip = hxy_i18n::t_args("visualizer-row-tooltip", &[("name", spec.kind.label())]);
+    if resp.on_hover_text(tooltip).clicked() {
+        events.push(TemplateEvent::OpenVisualizer(idx));
+        *pending_select = None;
     }
 }
 

@@ -366,6 +366,87 @@ status-watch-tooltip-anonymous = This buffer has no persistent identity, so chan
 
 # Tabs
 tab-entropy = Entropy: { $name }
+tab-visualizer = Visualizer: { $name }
+
+# Visualizer panel
+visualizer-close = Hide visualizer
+visualizer-no-file = No active file -- open a file to view its visualizers.
+visualizer-no-targets = No fields in this file's templates carry a [[hex::visualize(...)]] attribute.
+visualizer-read-error = Read failed: { $error }
+visualizer-row-tooltip = Open in visualizer panel ({ $name })
+visualizer-unknown = Visualizer "{ $name }" is not registered. Drop a [[hex::visualize(...)]] attribute or implement a renderer for it.
+
+# Image visualizer
+visualizer-image-decode-failed = Image decode failed: { $error }
+visualizer-image-empty = No image decoded yet.
+visualizer-image-info = { $w }x{ $h } px ({ $bytes } bytes)
+
+# Bitmap visualizer
+visualizer-bitmap-empty = No bitmap rendered yet.
+visualizer-bitmap-info = { $w }x{ $h } px (raw)
+visualizer-bitmap-needs-args = bitmap visualizer needs format, width, height: [[hex::visualize("bitmap", "RGBA8", w, h)]]
+visualizer-bitmap-overflow = bitmap dimensions overflow usize
+visualizer-bitmap-too-short = bitmap field has { $have } bytes but the declared dimensions need { $need }
+visualizer-bitmap-unknown-format = Unknown bitmap format: { $name }
+visualizer-bitmap-bad-int = bitmap { $which } must be an integer (got "{ $got }")
+visualizer-bitmap-zero-dims = bitmap width and height must both be > 0
+
+# Hex viewer visualizer
+visualizer-hex-info = offset { $offset }, { $len } bytes
+visualizer-hex-truncated = (truncated to { $max } bytes for display)
+
+# Text visualizer
+visualizer-text-info = encoding { $encoding }, { $bytes } bytes
+visualizer-text-truncated = (truncated to { $max } bytes for display)
+visualizer-text-unknown-encoding = Unknown text encoding: { $name }
+
+# Plot / chunk_entropy visualizers
+visualizer-plot-no-samples = Field has no samples to plot.
+visualizer-entropy-x = offset
+visualizer-entropy-y = bits/byte
+
+# Digram visualizer
+visualizer-digram-empty = Need at least 2 bytes to plot a digram.
+visualizer-digram-info = { $pairs } byte pairs
+
+# Layered distribution visualizer
+visualizer-distribution-empty = Field is empty.
+visualizer-distribution-info = { $bytes } bytes across { $cols } columns
+
+# Sound visualizer
+visualizer-sound-empty = No samples to plot at the chosen format / channels.
+visualizer-sound-info = { $ch } ch, { $rate } Hz, ~{ $seconds } s
+visualizer-sound-no-playback = Playback is not available yet -- waveform only.
+
+# Disassembler visualizer
+visualizer-disasm-info = { $isa }, base { $base }, { $count } instructions
+visualizer-disasm-unsupported-isa = Disassembler does not yet support ISA "{ $isa }". Try x86, x86-64.
+
+# Coordinates visualizer
+visualizer-coords-info = lat { $lat }, lng { $lng }
+visualizer-coords-bad-arg = coordinates { $which } must be a number (got "{ $got }")
+visualizer-coords-need-bytes-or-args = coordinates needs either two args (lat, lng) or 16 bytes (two f64 LE)
+
+# Timestamp visualizer
+visualizer-timestamp-info = format { $format }
+visualizer-timestamp-need-4 = timestamp format needs at least 4 bytes
+visualizer-timestamp-need-8 = timestamp format needs at least 8 bytes
+visualizer-timestamp-bad = timestamp out of range: { $err }
+visualizer-timestamp-unknown = Unknown timestamp format: { $name }
+
+# Table visualizer
+visualizer-table-no-children = This field has no children to tabulate.
+visualizer-table-info = { $count } children
+visualizer-table-col-name = Name
+visualizer-table-col-type = Type
+visualizer-table-col-offset = Offset
+visualizer-table-col-length = Length
+visualizer-table-col-value = Value
+
+# 3D visualizer
+visualizer-3d-heading = 3D mesh
+visualizer-3d-info = { $bytes } bytes of mesh data
+visualizer-3d-not-yet = Built-in 3D viewer is not yet implemented. Decode the field with another visualizer for now.
 
 # Entropy panel
 entropy-heading = Shannon entropy

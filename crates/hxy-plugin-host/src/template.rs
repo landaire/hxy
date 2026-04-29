@@ -122,6 +122,29 @@ pub const FORMAT_ATTR: &str = "hxy_format";
 /// index ("[0]", "[1]") to its actual chunk tag.
 pub const NAME_ATTR: &str = "hxy_name";
 
+/// Visualizer spec: a packed `name<US>arg1<US>arg2...` string where
+/// `<US>` is ASCII 0x1F (see [`VISUALIZE_ARG_SEP`]). The first part
+/// is the visualizer name (e.g. `"image"`, `"bitmap"`,
+/// `"chunk_entropy"`); subsequent parts are visualizer-specific
+/// arguments evaluated by the runtime against the bound source.
+/// Mirrors ImHex's `[[hex::visualize("name", arg1, arg2)]]` and
+/// opens a popout panel tab on the host side.
+pub const VISUALIZE_ATTR: &str = "hxy_visualize";
+
+/// Inline-visualizer spec, same encoding as [`VISUALIZE_ATTR`].
+/// Mirrors ImHex's `[[hex::inline_visualize(...)]]`: the host
+/// renders a thumbnail / preview directly in the field row in
+/// addition to (or instead of) the popout tab.
+pub const INLINE_VISUALIZE_ATTR: &str = "hxy_inline_visualize";
+
+/// ASCII Unit Separator (0x1F) used to pack the visualizer name and
+/// its evaluated args into one attribute string. Picked because it's
+/// outside the printable range and won't appear in any realistic
+/// visualizer argument value (numbers, format names like `"RGBA8"`,
+/// field names). Runtimes encode with this separator; the host
+/// splits on it when dispatching.
+pub const VISUALIZE_ARG_SEP: &str = "\u{1f}";
+
 /// UI label for a node, bitfield-aware. Composite kinds get a
 /// `struct ` / `enum ` prefix here (not in [`node_type_label`]) so the
 /// type column reads at a glance; the bare label is reserved for

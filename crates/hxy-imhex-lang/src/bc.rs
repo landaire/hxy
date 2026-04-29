@@ -1595,14 +1595,20 @@ fn ast_attrs_to_pairs(attrs: &crate::ast::Attrs) -> Vec<(String, String)> {
         .0
         .iter()
         .map(|a| {
-            let value = a.args.first().map(format_attr_arg).unwrap_or_default();
+            let key = canonicalize_attr_name_bc(&a.name);
+            let value = if is_multi_arg_attr_bc(&key) {
+                let parts: Vec<String> = a.args.iter().map(format_attr_arg).collect();
+                parts.join(crate::interp::VISUALIZE_ARG_SEP)
+            } else {
+                a.args.first().map(format_attr_arg).unwrap_or_default()
+            };
             // Mirror the AST interpreter's eval_attrs canonicalisation
             // so the BC path produces the same `hxy_*` keys the panel
             // and hex view consume. The decorative-attr gate above
             // ensures non-literal arg expressions are rejected, so
             // this path doesn't need an evaluator hook -- just the
             // name promotion.
-            (canonicalize_attr_name_bc(&a.name), value)
+            (key, value)
         })
         .collect()
 }
@@ -1614,9 +1620,15 @@ fn canonicalize_attr_name_bc(name: &str) -> String {
         "comment" => "hxy_comment",
         "format" => "hxy_format",
         "name" => "hxy_name",
+        "hex::visualize" => "hxy_visualize",
+        "hex::inline_visualize" => "hxy_inline_visualize",
         other => return other.to_owned(),
     };
     canonical.to_owned()
+}
+
+fn is_multi_arg_attr_bc(canonical: &str) -> bool {
+    crate::interp::is_multi_arg_attr(canonical)
 }
 
 fn format_attr_arg(e: &crate::ast::Expr) -> String {
