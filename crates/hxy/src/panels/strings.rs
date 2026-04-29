@@ -171,6 +171,14 @@ pub struct StringsPanel {
     /// Active sort applied to `last_result.entries`. Defaults to
     /// ascending offset, matching the order the extractor produces.
     pub sort: SortOrder,
+    /// Byte range the pointer is currently over in the result table,
+    /// used by the hex view to paint a hover highlight on the
+    /// matched bytes. Mirrors `TemplateState::hovered_node` -- the
+    /// hex view reads from here whenever the pointer rests over a
+    /// row in this panel. Reset to `None` each frame when no cell
+    /// sees the pointer; also cleared on tab close so a stale value
+    /// doesn't keep the highlight stuck after the panel goes away.
+    pub hovered_entry: Option<ByteRange>,
 }
 
 /// Synchronous strings extractor. Reads the configured range from
@@ -546,6 +554,7 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
         visible: &visible,
         sort: panel.sort,
         pending_sort: None,
+        pending_hover: None,
         events: &mut events,
     };
 
@@ -563,9 +572,16 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
         .auto_size_mode(egui_table::AutoSizeMode::Always);
     table.show(ui, &mut delegate);
 
-    if let Some(new_sort) = delegate.pending_sort {
-        panel.sort = new_sort;
+    // Copy values out of the delegate before any further mutable
+    // borrow of `panel`, since the delegate still holds a shared
+    // borrow on `panel.last_result.entries` until it goes out of
+    // scope. ByteRange and SortOrder are Copy.
+    let new_sort = delegate.pending_sort;
+    let new_hover = delegate.pending_hover;
+    if let Some(s) = new_sort {
+        panel.sort = s;
     }
+    panel.hovered_entry = new_hover;
 
     events
 }
@@ -597,6 +613,11 @@ struct StringsTableDelegate<'a> {
     /// header. The caller writes it back onto the panel after
     /// `Table::show` returns.
     pending_sort: Option<SortOrder>,
+    /// Byte range of the row whose cell currently contains the
+    /// pointer, or `None` when no cell sees the pointer this frame.
+    /// Mirrored back onto `panel.hovered_entry` post-render so the
+    /// hex view picks it up.
+    pending_hover: Option<ByteRange>,
     events: &'a mut Vec<StringsEvent>,
 }
 
@@ -627,6 +648,15 @@ impl egui_table::TableDelegate for StringsTableDelegate<'_> {
         let row = cell.row_nr as usize;
         let Some(entry_idx) = self.visible.get(row).copied() else { return };
         let Some(entry) = self.entries.get(entry_idx) else { return };
+        // Pointer-over-cell counts as pointer-over-row for the hex
+        // view hover highlight: every cell in a row resolves to the
+        // same byte range, so the last cell that sees the pointer
+        // wins each frame and produces a stable hover signal.
+        if ui.rect_contains_pointer(ui.max_rect())
+            && let Ok(range) = ByteRange::new(ByteOffset::new(entry.offset), ByteOffset::new(entry.end))
+        {
+            self.pending_hover = Some(range);
+        }
         ui.add_space(4.0);
         match cell.col_nr {
             0 => {

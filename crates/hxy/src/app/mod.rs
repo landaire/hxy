@@ -5615,6 +5615,14 @@ impl TabViewer for HxyTabViewer<'_> {
                 }
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Tab::Strings(file_id) = tab {
+            // Drop the cached row hover so the hex view doesn't keep
+            // painting a stale highlight after the panel disappears.
+            if let Some(file) = self.files.get_mut(file_id) {
+                file.strings_panel.hovered_entry = None;
+            }
+        }
         if let Tab::Workspace(workspace_id) = tab {
             // Workspace close = editor + every entry sub-tab. Bail to
             // the modal if any of them is dirty; the modal handler is

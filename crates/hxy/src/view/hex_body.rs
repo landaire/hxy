@@ -38,13 +38,17 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
 
     let mut copy_request: Option<CopyKind> = None;
-    let hover_span = active_state.and_then(|s| {
+    let template_hover_span = active_state.and_then(|s| {
         let idx = s.hovered_node?;
         let node = s.tree.nodes.get(idx.0 as usize)?;
         let start = node.span.offset;
         let end = start.saturating_add(node.span.length);
         hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
     });
+    // Strings-panel row hover paints the same highlight used by
+    // template field hover; template wins on tie, since template
+    // hovers are usually paired with explicit field selection.
+    let hover_span = template_hover_span.or(file.strings_panel.hovered_entry);
 
     let field_boundaries = active_state.map(|s| s.leaf_boundaries.as_slice()).unwrap_or_default();
     let field_colors = active_state

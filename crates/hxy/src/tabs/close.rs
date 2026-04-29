@@ -117,10 +117,20 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
         | Tab::Plugins
         | Tab::Entropy(_)
         | Tab::Memory
-        | Tab::Strings(_)
         | Tab::Checksums(_) => {
             if let Some(path) = app.dock.find_tab(&tab) {
                 let _ = app.dock.remove_tab(path);
+            }
+        }
+        Tab::Strings(file_id) => {
+            if let Some(path) = app.dock.find_tab(&tab) {
+                let _ = app.dock.remove_tab(path);
+            }
+            // Drop the cached row hover so the hex view doesn't
+            // keep painting a stale highlight after the panel
+            // disappears.
+            if let Some(file) = app.files.get_mut(&file_id) {
+                file.strings_panel.hovered_entry = None;
             }
         }
         Tab::Visualizer(file_id) => {
