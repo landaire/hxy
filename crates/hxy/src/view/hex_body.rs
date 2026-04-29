@@ -147,7 +147,8 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     } else {
         crate::panels::template::BreadcrumbDetail::Leaf
     };
-    let template_value_format = state.app.template_value_format;
+    let template_value_formats = &state.app.template_value_formats;
+    let inverse_format = ui.input(|i| i.modifiers.alt);
     if let Some(offset) = response.hovered_offset
         && let Some(tpl_state) = breadcrumb_state
         && let Some(path) = crate::panels::template::breadcrumb_for_offset(
@@ -155,7 +156,8 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
             file.editor.source().as_ref(),
             offset.get(),
             detail,
-            template_value_format,
+            template_value_formats,
+            inverse_format,
         )
     {
         let layer = ui.layer_id();

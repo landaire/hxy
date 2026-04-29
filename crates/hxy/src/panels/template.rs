@@ -102,7 +102,7 @@ pub fn show(
     file: &OpenFile,
     whole_file_len: u64,
     numeric_format: crate::settings::NumericFormat,
-    template_value_format: crate::settings::NumericFormat,
+    template_value_formats: &crate::settings::TemplateValueFormats,
 ) -> Vec<TemplateEvent> {
     let mut events = Vec::new();
     let id_seed = file.id.get();
@@ -211,6 +211,10 @@ pub fn show(
         );
     });
 
+    // Inverse-format modifier (Alt / Option) flips the picked
+    // base for every cell rendered this frame. Read once so all
+    // cells make the same call.
+    let inverse_format = ui.input(|i| i.modifiers.alt);
     let mut delegate = TemplateTableDelegate {
         state,
         visible: &visible,
@@ -221,7 +225,8 @@ pub fn show(
         focus_id,
         pending_select: None,
         numeric_format,
-        template_value_format,
+        template_value_formats,
+        inverse_format,
     };
 
     // Bring the selected row into view when the selection just
@@ -374,11 +379,14 @@ struct TemplateTableDelegate<'a> {
     /// can pick a different base for tiny indices and big
     /// addresses on the same row.
     numeric_format: crate::settings::NumericFormat,
-    /// Same shape as [`Self::numeric_format`] but applied to
-    /// the Value column (template scalar field values). Kept
-    /// separate so the user can have hex addresses but decimal
-    /// field values, or vice versa.
-    template_value_format: crate::settings::NumericFormat,
+    /// Per-integer-type formats for the Value column. Kept as
+    /// a borrow so the table delegate can hand one slot to each
+    /// integer arm without re-cloning the bundle.
+    template_value_formats: &'a crate::settings::TemplateValueFormats,
+    /// True while the inverse-format modifier (Alt / Option) is
+    /// held -- flips every rendered base for the duration of
+    /// the frame.
+    inverse_format: bool,
 }
 
 impl TableDelegate for TemplateTableDelegate<'_> {
@@ -588,17 +596,17 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
             }
             3 => {
-                numeric_cell(ui, node.span.offset, self.numeric_format);
+                numeric_cell(ui, node.span.offset, self.numeric_format, self.inverse_format);
             }
             4 => {
                 let end = node.span.offset.saturating_add(node.span.length);
-                numeric_cell(ui, end, self.numeric_format);
+                numeric_cell(ui, end, self.numeric_format, self.inverse_format);
             }
             5 => {
-                numeric_cell(ui, node.span.length, self.numeric_format);
+                numeric_cell(ui, node.span.length, self.numeric_format, self.inverse_format);
             }
             6 => {
-                if let Some(text) = format_value(node, self.template_value_format) {
+                if let Some(text) = format_value(node, self.template_value_formats, self.inverse_format) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -673,14 +681,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(element_type).weak()));
             }
             3 => {
-                numeric_cell(ui, first_offset, self.numeric_format);
+                numeric_cell(ui, first_offset, self.numeric_format, self.inverse_format);
             }
             4 => {
                 let end = first_offset.saturating_add(total_len);
-                numeric_cell(ui, end, self.numeric_format);
+                numeric_cell(ui, end, self.numeric_format, self.inverse_format);
             }
             5 => {
-                numeric_cell(ui, total_len, self.numeric_format);
+                numeric_cell(ui, total_len, self.numeric_format, self.inverse_format);
             }
             _ => {}
         }
@@ -716,14 +724,14 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             3 => {
-                numeric_cell(ui, elem_offset, self.numeric_format);
+                numeric_cell(ui, elem_offset, self.numeric_format, self.inverse_format);
             }
             4 => {
                 let end = elem_offset.saturating_add(elem_width);
-                numeric_cell(ui, end, self.numeric_format);
+                numeric_cell(ui, end, self.numeric_format, self.inverse_format);
             }
             5 => {
-                numeric_cell(ui, elem_width, self.numeric_format);
+                numeric_cell(ui, elem_width, self.numeric_format, self.inverse_format);
             }
             6 => {
                 let endian = parent
@@ -742,7 +750,7 @@ impl TemplateTableDelegate<'_> {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian, parent.display, self.template_value_format)
+                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian, parent.display, self.template_value_formats, self.inverse_format)
                 {
                     ui.add(egui::Label::new(text).truncate());
                 }
@@ -774,17 +782,17 @@ impl TemplateTableDelegate<'_> {
                 ui.add(egui::Label::new(egui::RichText::new(label).weak()));
             }
             3 => {
-                numeric_cell(ui, node.span.offset, self.numeric_format);
+                numeric_cell(ui, node.span.offset, self.numeric_format, self.inverse_format);
             }
             4 => {
                 let end = node.span.offset.saturating_add(node.span.length);
-                numeric_cell(ui, end, self.numeric_format);
+                numeric_cell(ui, end, self.numeric_format, self.inverse_format);
             }
             5 => {
-                numeric_cell(ui, node.span.length, self.numeric_format);
+                numeric_cell(ui, node.span.length, self.numeric_format, self.inverse_format);
             }
             6 => {
-                if let Some(text) = format_value(node, self.template_value_format) {
+                if let Some(text) = format_value(node, self.template_value_formats, self.inverse_format) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -798,9 +806,11 @@ impl TemplateTableDelegate<'_> {
 /// label that truncates on narrow columns. Truncation is what
 /// avoids wrapping into a multi-line cell, which is what tripped
 /// egui's `show_unaligned` debug overlay -- a wrapped value
-/// produces a sub-pixel-tall galley.
-fn numeric_cell(ui: &mut egui::Ui, value: u64, fmt: crate::settings::NumericFormat) {
-    let text = crate::view::format::format_numeric(value, fmt);
+/// produces a sub-pixel-tall galley. `inverse` flips the picked
+/// base while the user holds the inverse-format modifier.
+fn numeric_cell(ui: &mut egui::Ui, value: u64, fmt: crate::settings::NumericFormat, inverse: bool) {
+    let base = if inverse { fmt.pick(value).toggle() } else { fmt.pick(value) };
+    let text = crate::view::format::format_offset(value, base);
     ui.add(egui::Label::new(egui::RichText::new(text).monospace()).truncate());
 }
 
@@ -1012,19 +1022,25 @@ fn looks_like_text(head: &str) -> bool {
 /// on the value's magnitude. Hex output for signed types uses
 /// the bit pattern (`-1_i32` -> `0xFFFFFFFF`) so it lines up
 /// with what the user would read off the hex view.
-pub fn format_value(node: &Node, fmt: crate::settings::NumericFormat) -> Option<String> {
+pub fn format_value(
+    node: &Node,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
+) -> Option<String> {
+    use crate::settings::IntValueType;
     use hxy_plugin_host::template::Value;
     let v = node.value.as_ref()?;
     let display = node.display;
+    let int = |ty: IntValueType| fmts.slot(ty);
     Some(match v {
-        Value::U8Val(x) => format_unsigned_int(display, u64::from(*x), 1, fmt),
-        Value::U16Val(x) => format_unsigned_int(display, u64::from(*x), 2, fmt),
-        Value::U32Val(x) => format_unsigned_int(display, u64::from(*x), 4, fmt),
-        Value::U64Val(x) => format_unsigned_int(display, *x, 8, fmt),
-        Value::S8Val(x) => format_signed_int(display, i64::from(*x), 1, fmt),
-        Value::S16Val(x) => format_signed_int(display, i64::from(*x), 2, fmt),
-        Value::S32Val(x) => format_signed_int(display, i64::from(*x), 4, fmt),
-        Value::S64Val(x) => format_signed_int(display, *x, 8, fmt),
+        Value::U8Val(x) => format_unsigned_int(display, u64::from(*x), 1, int(IntValueType::U8), inverse),
+        Value::U16Val(x) => format_unsigned_int(display, u64::from(*x), 2, int(IntValueType::U16), inverse),
+        Value::U32Val(x) => format_unsigned_int(display, u64::from(*x), 4, int(IntValueType::U32), inverse),
+        Value::U64Val(x) => format_unsigned_int(display, *x, 8, int(IntValueType::U64), inverse),
+        Value::S8Val(x) => format_signed_int(display, i64::from(*x), 1, int(IntValueType::S8), inverse),
+        Value::S16Val(x) => format_signed_int(display, i64::from(*x), 2, int(IntValueType::S16), inverse),
+        Value::S32Val(x) => format_signed_int(display, i64::from(*x), 4, int(IntValueType::S32), inverse),
+        Value::S64Val(x) => format_signed_int(display, *x, 8, int(IntValueType::S64), inverse),
         Value::F32Val(x) => format!("{x}"),
         Value::F64Val(x) => format!("{x}"),
         Value::BoolVal(b) => format!("{b}"),
@@ -1060,8 +1076,9 @@ fn format_unsigned_int(
     value: u64,
     byte_width: usize,
     fmt: crate::settings::NumericFormat,
+    inverse: bool,
 ) -> String {
-    match pick_value_base(display, value, fmt) {
+    match flip_if(pick_value_base(display, value, fmt), inverse) {
         Some(crate::settings::NumericBase::Hex) => {
             let digits = byte_width * 2;
             format!("0x{value:0digits$X}")
@@ -1075,9 +1092,10 @@ fn format_signed_int(
     value: i64,
     byte_width: usize,
     fmt: crate::settings::NumericFormat,
+    inverse: bool,
 ) -> String {
     let magnitude = value.unsigned_abs();
-    match pick_value_base(display, magnitude, fmt) {
+    match flip_if(pick_value_base(display, magnitude, fmt), inverse) {
         Some(crate::settings::NumericBase::Hex) => {
             // Bit-pattern hex matches what the user reads off
             // the hex view: -1_i32 displays as 0xFFFFFFFF, not
@@ -1092,6 +1110,21 @@ fn format_signed_int(
             format!("0x{bits:0digits$X}")
         }
         Some(crate::settings::NumericBase::Decimal) | None => format!("{value}"),
+    }
+}
+
+/// Toggle a picked base when the user is holding the inverse-
+/// format modifier. `None` (template hint we don't handle, like
+/// `Binary` / `Ascii`) passes through unchanged so non-numeric
+/// hints keep their special formatting even with the modifier
+/// down.
+fn flip_if(
+    base: Option<crate::settings::NumericBase>,
+    flip: bool,
+) -> Option<crate::settings::NumericBase> {
+    match base {
+        Some(b) if flip => Some(b.toggle()),
+        other => other,
     }
 }
 
@@ -1505,7 +1538,8 @@ pub fn breadcrumb_for_offset(
     source: &dyn hxy_core::HexSource,
     byte: u64,
     detail: BreadcrumbDetail,
-    fmt: crate::settings::NumericFormat,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
 ) -> Option<Vec<String>> {
     let mut has_children = vec![false; tree.nodes.len()];
     for node in &tree.nodes {
@@ -1530,10 +1564,10 @@ pub fn breadcrumb_for_offset(
         // arrays, otherwise emit the leaf's own type/name/value
         // line. Single-row output -- the tooltip won't stretch
         // across the hex view.
-        if let Some(row) = array_element_row(leaf_node, source, byte, fmt) {
+        if let Some(row) = array_element_row(leaf_node, source, byte, fmts, inverse) {
             return Some(vec![row]);
         }
-        return Some(vec![format_leaf_line(leaf_node, fmt)]);
+        return Some(vec![format_leaf_line(leaf_node, fmts, inverse)]);
     }
 
     // Walk parent chain leaf -> root.
@@ -1551,7 +1585,7 @@ pub fn breadcrumb_for_offset(
             let node = &tree.nodes[*idx as usize];
             let is_leaf = *idx == leaf;
             let ty = hxy_plugin_host::node_display_type(node);
-            let value_str = if is_leaf { format_node_value(node, fmt) } else { None };
+            let value_str = if is_leaf { format_node_value(node, fmts, inverse) } else { None };
             match value_str {
                 Some(v) => format!("{} {} = {}", ty, node.name, v),
                 None => format!("{} {}", ty, node.name),
@@ -1559,7 +1593,7 @@ pub fn breadcrumb_for_offset(
         })
         .collect();
 
-    if let Some(row) = array_element_row(leaf_node, source, byte, fmt) {
+    if let Some(row) = array_element_row(leaf_node, source, byte, fmts, inverse) {
         raw.push(row);
     }
 
@@ -1584,9 +1618,13 @@ pub fn breadcrumb_for_offset(
 /// Format a single leaf node as `<type> <name> = <value>` (or
 /// `<type> <name>` when the node has no scalar value). Used by
 /// both the compact and full breadcrumbs to render the leaf row.
-fn format_leaf_line(node: &hxy_plugin_host::template::Node, fmt: crate::settings::NumericFormat) -> String {
+fn format_leaf_line(
+    node: &hxy_plugin_host::template::Node,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
+) -> String {
     let ty = hxy_plugin_host::node_display_type(node);
-    match format_node_value(node, fmt) {
+    match format_node_value(node, fmts, inverse) {
         Some(v) => format!("{} {} = {}", ty, node.name, v),
         None => format!("{} {}", ty, node.name),
     }
@@ -1599,7 +1637,8 @@ fn array_element_row(
     leaf: &hxy_plugin_host::template::Node,
     source: &dyn hxy_core::HexSource,
     byte: u64,
-    fmt: crate::settings::NumericFormat,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
 ) -> Option<String> {
     use hxy_plugin_host::template::NodeType;
 
@@ -1629,7 +1668,7 @@ fn array_element_row(
         .iter()
         .find_map(|(k, v)| (k == hxy_plugin_host::ENDIAN_ATTR).then_some(v.as_str()))
         .unwrap_or("little");
-    let value = decode_scalar_bytes(kind, &bytes, endian, leaf.display, fmt)?;
+    let value = decode_scalar_bytes(kind, &bytes, endian, leaf.display, fmts, inverse)?;
     let type_label = scalar_kind_name(kind);
     Some(format!("{type_label} {}[{index}] = {value}", leaf.name))
 }
@@ -1672,8 +1711,10 @@ fn decode_scalar_bytes(
     bytes: &[u8],
     endian: &str,
     display: Option<hxy_plugin_host::template::DisplayHint>,
-    fmt: crate::settings::NumericFormat,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
 ) -> Option<String> {
+    use crate::settings::IntValueType;
     use hxy_plugin_host::template::ScalarKind as K;
     let big = endian == "big";
     let read_u = |b: &[u8]| -> u64 {
@@ -1692,14 +1733,16 @@ fn decode_scalar_bytes(
         ((raw << shift) as i64) >> shift
     };
     Some(match kind {
-        K::U8K => format_unsigned_int(display, u64::from(*bytes.first()?), 1, fmt),
-        K::S8K => format_signed_int(display, i64::from(*bytes.first()? as i8), 1, fmt),
-        K::U16K => format_unsigned_int(display, read_u(bytes), 2, fmt),
-        K::U32K => format_unsigned_int(display, read_u(bytes), 4, fmt),
-        K::U64K => format_unsigned_int(display, read_u(bytes), 8, fmt),
-        K::S16K => format_signed_int(display, read_i(bytes), 2, fmt),
-        K::S32K => format_signed_int(display, read_i(bytes), 4, fmt),
-        K::S64K => format_signed_int(display, read_i(bytes), 8, fmt),
+        K::U8K => format_unsigned_int(display, u64::from(*bytes.first()?), 1, fmts.slot(IntValueType::U8), inverse),
+        K::S8K => {
+            format_signed_int(display, i64::from(*bytes.first()? as i8), 1, fmts.slot(IntValueType::S8), inverse)
+        }
+        K::U16K => format_unsigned_int(display, read_u(bytes), 2, fmts.slot(IntValueType::U16), inverse),
+        K::U32K => format_unsigned_int(display, read_u(bytes), 4, fmts.slot(IntValueType::U32), inverse),
+        K::U64K => format_unsigned_int(display, read_u(bytes), 8, fmts.slot(IntValueType::U64), inverse),
+        K::S16K => format_signed_int(display, read_i(bytes), 2, fmts.slot(IntValueType::S16), inverse),
+        K::S32K => format_signed_int(display, read_i(bytes), 4, fmts.slot(IntValueType::S32), inverse),
+        K::S64K => format_signed_int(display, read_i(bytes), 8, fmts.slot(IntValueType::S64), inverse),
         K::U128K | K::S128K => {
             // 128-bit ints don't have a u128/i128 path through `read_u`
             // / `read_i`. Render as `0x` + raw bytes in source-endian
@@ -1736,9 +1779,10 @@ fn decode_scalar_bytes(
 /// leaking the user-format detail into the call.
 fn format_node_value(
     node: &hxy_plugin_host::template::Node,
-    fmt: crate::settings::NumericFormat,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
 ) -> Option<String> {
-    format_value(node, fmt)
+    format_value(node, fmts, inverse)
 }
 
 /// Per-parent child index. Built once at TemplateState construction
@@ -1907,7 +1951,7 @@ mod tests {
 
     #[test]
     fn unsigned_int_decimal_default() {
-        let s = format_unsigned_int(None, 42, 1, fmt_always(crate::settings::NumericBase::Decimal));
+        let s = format_unsigned_int(None, 42, 1, fmt_always(crate::settings::NumericBase::Decimal), false);
         assert_eq!(s, "42");
     }
 
@@ -1915,22 +1959,19 @@ mod tests {
     fn unsigned_int_hex_padded_per_width() {
         // u8 -> 2 hex digits, u32 -> 8, u64 -> 16. Width comes from
         // the byte_width arg, not the magnitude.
-        assert_eq!(format_unsigned_int(None, 0xAB, 1, fmt_always(crate::settings::NumericBase::Hex)), "0xAB");
-        assert_eq!(format_unsigned_int(None, 0xAB, 4, fmt_always(crate::settings::NumericBase::Hex)), "0x000000AB");
-        assert_eq!(
-            format_unsigned_int(None, 0xDEAD_BEEF, 8, fmt_always(crate::settings::NumericBase::Hex)),
-            "0x00000000DEADBEEF"
-        );
+        let hex = fmt_always(crate::settings::NumericBase::Hex);
+        assert_eq!(format_unsigned_int(None, 0xAB, 1, hex, false), "0xAB");
+        assert_eq!(format_unsigned_int(None, 0xAB, 4, hex, false), "0x000000AB");
+        assert_eq!(format_unsigned_int(None, 0xDEAD_BEEF, 8, hex, false), "0x00000000DEADBEEF");
     }
 
     #[test]
     fn signed_int_hex_uses_bit_pattern() {
         // -1 as i32 -> 0xFFFFFFFF (matches what the user reads off
         // the hex view), not -0x1 (signed-magnitude).
-        let s = format_signed_int(None, -1, 4, fmt_always(crate::settings::NumericBase::Hex));
-        assert_eq!(s, "0xFFFFFFFF");
-        let s = format_signed_int(None, -1, 1, fmt_always(crate::settings::NumericBase::Hex));
-        assert_eq!(s, "0xFF");
+        let hex = fmt_always(crate::settings::NumericBase::Hex);
+        assert_eq!(format_signed_int(None, -1, 4, hex, false), "0xFFFFFFFF");
+        assert_eq!(format_signed_int(None, -1, 1, hex, false), "0xFF");
     }
 
     #[test]
@@ -1939,20 +1980,48 @@ mod tests {
         // the user's setting is Always(Decimal) -- the template
         // author's intent wins.
         use hxy_plugin_host::template::DisplayHint;
-        let s = format_unsigned_int(Some(DisplayHint::Hex), 16, 4, fmt_always(crate::settings::NumericBase::Decimal));
-        assert_eq!(s, "0x00000010");
+        let dec = fmt_always(crate::settings::NumericBase::Decimal);
+        let hex = fmt_always(crate::settings::NumericBase::Hex);
+        assert_eq!(format_unsigned_int(Some(DisplayHint::Hex), 16, 4, dec, false), "0x00000010");
         // Conversely, `[[decimal]]` overrides Always(Hex).
-        let s = format_unsigned_int(Some(DisplayHint::Decimal), 16, 4, fmt_always(crate::settings::NumericBase::Hex));
-        assert_eq!(s, "16");
+        assert_eq!(format_unsigned_int(Some(DisplayHint::Decimal), 16, 4, hex, false), "16");
     }
 
     #[test]
     fn threshold_picks_base_per_value_magnitude() {
         // small under threshold -> decimal, big over -> hex.
         let fmt = fmt_threshold(256);
-        assert_eq!(format_unsigned_int(None, 100, 4, fmt), "100");
-        assert_eq!(format_unsigned_int(None, 256, 4, fmt), "0x00000100");
-        assert_eq!(format_unsigned_int(None, 0xDEAD, 4, fmt), "0x0000DEAD");
+        assert_eq!(format_unsigned_int(None, 100, 4, fmt, false), "100");
+        assert_eq!(format_unsigned_int(None, 256, 4, fmt, false), "0x00000100");
+        assert_eq!(format_unsigned_int(None, 0xDEAD, 4, fmt, false), "0x0000DEAD");
+    }
+
+    #[test]
+    fn inverse_modifier_flips_picked_base() {
+        // When the user holds the inverse modifier, the picked
+        // base toggles. The toggle applies even on top of a
+        // template display-hint -- the user is asking to peek
+        // at the alternate base, regardless of the author's
+        // chosen default.
+        let dec = fmt_always(crate::settings::NumericBase::Decimal);
+        assert_eq!(format_unsigned_int(None, 16, 4, dec, false), "16");
+        assert_eq!(format_unsigned_int(None, 16, 4, dec, true), "0x00000010");
+        // Threshold form: inverse swaps each branch.
+        let fmt = fmt_threshold(256);
+        assert_eq!(format_unsigned_int(None, 100, 4, fmt, true), "0x00000064");
+        assert_eq!(format_unsigned_int(None, 256, 4, fmt, true), "256");
+    }
+
+    #[test]
+    fn template_value_formats_per_type_lookup() {
+        use crate::settings::IntValueType;
+        use crate::settings::NumericBase;
+        use crate::settings::NumericFormat;
+        let mut fmts = crate::settings::TemplateValueFormats::default();
+        // Override just u32 to decimal; u8 keeps its hex default.
+        *fmts.slot_mut(IntValueType::U32) = NumericFormat::Always(NumericBase::Decimal);
+        assert_eq!(fmts.slot(IntValueType::U8), NumericFormat::Always(NumericBase::Hex));
+        assert_eq!(fmts.slot(IntValueType::U32), NumericFormat::Always(NumericBase::Decimal));
     }
 }
 

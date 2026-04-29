@@ -98,6 +98,140 @@ impl NumericFormat {
 /// without churning every call to `OffsetBase::toggle()`.
 pub type OffsetBase = NumericBase;
 
+/// Per-integer-type formats for template scalar field values.
+/// The shape is one [`NumericFormat`] per signed / unsigned
+/// width so the user can keep, say, `u8` in hex (single bytes
+/// often read as flags / magic) while having `u32` in decimal
+/// (counters, lengths). Each slot still defers to a template's
+/// explicit `[[hex]]` / `[[decimal]]` hint when set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateValueFormats {
+    #[serde(default = "default_u8_format")]
+    pub u8: NumericFormat,
+    #[serde(default = "default_u16_format")]
+    pub u16: NumericFormat,
+    #[serde(default = "default_u32_format")]
+    pub u32: NumericFormat,
+    #[serde(default = "default_u64_format")]
+    pub u64: NumericFormat,
+    #[serde(default = "default_signed_format")]
+    pub s8: NumericFormat,
+    #[serde(default = "default_signed_format")]
+    pub s16: NumericFormat,
+    #[serde(default = "default_signed_format")]
+    pub s32: NumericFormat,
+    #[serde(default = "default_signed_format")]
+    pub s64: NumericFormat,
+}
+
+impl Default for TemplateValueFormats {
+    fn default() -> Self {
+        Self {
+            u8: default_u8_format(),
+            u16: default_u16_format(),
+            u32: default_u32_format(),
+            u64: default_u64_format(),
+            s8: default_signed_format(),
+            s16: default_signed_format(),
+            s32: default_signed_format(),
+            s64: default_signed_format(),
+        }
+    }
+}
+
+/// Identity for the eight integer slots in
+/// [`TemplateValueFormats`]. Used by the settings UI to walk the
+/// slots in a single loop, and by the panel formatters to look up
+/// the right slot per `Value::*Val` arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntValueType {
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+}
+
+impl IntValueType {
+    /// All eight variants in display order (unsigned widths
+    /// first, then signed widths). The settings panel iterates
+    /// this; the panel formatters use [`Self::format_for`].
+    pub fn all() -> &'static [Self] {
+        &[Self::U8, Self::U16, Self::U32, Self::U64, Self::S8, Self::S16, Self::S32, Self::S64]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::S8 => "s8",
+            Self::S16 => "s16",
+            Self::S32 => "s32",
+            Self::S64 => "s64",
+        }
+    }
+}
+
+impl TemplateValueFormats {
+    /// Borrow the [`NumericFormat`] for one int slot.
+    pub fn slot(&self, ty: IntValueType) -> NumericFormat {
+        match ty {
+            IntValueType::U8 => self.u8,
+            IntValueType::U16 => self.u16,
+            IntValueType::U32 => self.u32,
+            IntValueType::U64 => self.u64,
+            IntValueType::S8 => self.s8,
+            IntValueType::S16 => self.s16,
+            IntValueType::S32 => self.s32,
+            IntValueType::S64 => self.s64,
+        }
+    }
+
+    /// Mutable handle to one slot, for the settings UI to bind
+    /// directly into.
+    pub fn slot_mut(&mut self, ty: IntValueType) -> &mut NumericFormat {
+        match ty {
+            IntValueType::U8 => &mut self.u8,
+            IntValueType::U16 => &mut self.u16,
+            IntValueType::U32 => &mut self.u32,
+            IntValueType::U64 => &mut self.u64,
+            IntValueType::S8 => &mut self.s8,
+            IntValueType::S16 => &mut self.s16,
+            IntValueType::S32 => &mut self.s32,
+            IntValueType::S64 => &mut self.s64,
+        }
+    }
+}
+
+fn default_u8_format() -> NumericFormat {
+    // Single bytes are usually flags or magic ints -- hex reads
+    // better than decimal at that scale.
+    NumericFormat::Always(NumericBase::Hex)
+}
+fn default_u16_format() -> NumericFormat {
+    // 16-bit unsigned often packs flags too.
+    NumericFormat::Always(NumericBase::Hex)
+}
+fn default_u32_format() -> NumericFormat {
+    // u32 is typically a length / counter -- decimal stays
+    // readable even for medium values.
+    NumericFormat::Always(NumericBase::Decimal)
+}
+fn default_u64_format() -> NumericFormat {
+    NumericFormat::Always(NumericBase::Decimal)
+}
+fn default_signed_format() -> NumericFormat {
+    // Signed values almost always read as decimal; hex of a
+    // negative bit pattern is a developer-debug view, not a
+    // default.
+    NumericFormat::Always(NumericBase::Decimal)
+}
+
 /// Where to paint byte highlight color: as a background fill or as a
 /// tint on the glyphs themselves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,14 +327,15 @@ pub struct AppSettings {
     #[serde(default)]
     pub numeric_format: NumericFormat,
 
-    /// Format used for *template scalar field values* (the Value
-    /// column in the template panel, the breadcrumb tooltip, the
-    /// visualizer table). Templates that explicitly set a `[[hex]]`
-    /// / `[[decimal]]` display hint on a field still take
-    /// precedence; this setting picks the base for fields that
-    /// didn't opt in.
-    #[serde(default = "default_template_value_format")]
-    pub template_value_format: NumericFormat,
+    /// Per-integer-type formats used everywhere a template
+    /// scalar field's value is rendered (Value column in the
+    /// template panel, the breadcrumb tooltip, the visualizer
+    /// table). Templates that explicitly set a `[[hex]]` /
+    /// `[[decimal]]` display hint on a field still win over
+    /// these per-type defaults; the user setting only governs
+    /// fields without an explicit hint.
+    #[serde(default)]
+    pub template_value_formats: TemplateValueFormats,
 
     /// When true, render a tint on each byte based on its value class
     /// (null, all-bits, printable ASCII, whitespace, control, extended)
@@ -381,14 +516,6 @@ fn default_address_separator_char() -> char {
     '_'
 }
 
-/// Decimal feels right for the typical scalar field's "Value"
-/// column -- chunk lengths, counters, magic-number indices --
-/// and templates that *want* hex still announce it via a
-/// display hint. The numeric_format default (which biases hex
-/// for offset / length cells) doesn't apply here.
-fn default_template_value_format() -> NumericFormat {
-    NumericFormat::Always(NumericBase::Decimal)
-}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -399,7 +526,7 @@ impl Default for AppSettings {
             check_for_updates: true,
             offset_base: OffsetBase::default(),
             numeric_format: NumericFormat::default(),
-            template_value_format: default_template_value_format(),
+            template_value_formats: TemplateValueFormats::default(),
             byte_value_highlight: true,
             byte_highlight_mode: ByteHighlightMode::default(),
             byte_highlight_scheme: ByteHighlightScheme::default(),

@@ -70,6 +70,7 @@ toolbar-run-template = Run template...
 settings-offset-base = Offset base
 settings-numeric-format = Length / offset format
 settings-template-value-format = Template value format
+settings-template-value-format-collapsed-label = Per-type formats
 settings-numeric-format-always = Always
 settings-numeric-format-threshold = Switch at threshold
 settings-numeric-format-small-label = Below

@@ -3416,7 +3416,7 @@ fn render_file_tab(
     );
 
     #[cfg(not(target_arch = "wasm32"))]
-    render_template_panel(ui, id, file, state.app.numeric_format, state.app.template_value_format);
+    render_template_panel(ui, id, file, state.app.numeric_format, &state.app.template_value_formats);
 
     let copy_request = egui::CentralPanel::default()
         .frame(egui::Frame::new())
@@ -3445,7 +3445,7 @@ fn render_template_panel(
     id: FileId,
     file: &mut OpenFile,
     numeric_format: crate::settings::NumericFormat,
-    template_value_format: crate::settings::NumericFormat,
+    template_value_formats: &crate::settings::TemplateValueFormats,
 ) {
     let has_any = !file.templates.is_empty() || !file.templates_running.is_empty();
     if !has_any || !file.template_panel_visible {
@@ -3458,7 +3458,7 @@ fn render_template_panel(
         .min_size(160.0)
         .show_inside(ui, |ui| {
             let events =
-                crate::panels::template::show(ui, file, whole_file_len, numeric_format, template_value_format);
+                crate::panels::template::show(ui, file, whole_file_len, numeric_format, template_value_formats);
             for e in events {
                 apply_template_event(ui, file, e);
             }
@@ -4920,11 +4920,16 @@ impl TabViewer for HxyTabViewer<'_> {
                 // can borrow `OpenFile` immutably without contending
                 // with the `&mut` on the panel field.
                 let numeric_format = self.state.app.numeric_format;
-                let template_value_format = self.state.app.template_value_format;
+                let template_value_formats = self.state.app.template_value_formats;
                 if let Some(file) = self.files.get_mut(&pinned) {
                     let mut taken = std::mem::take(&mut file.visualizer_panel);
-                    let events =
-                        crate::visualizers::show(ui, Some(&*file), &mut taken, numeric_format, template_value_format);
+                    let events = crate::visualizers::show(
+                        ui,
+                        Some(&*file),
+                        &mut taken,
+                        numeric_format,
+                        &template_value_formats,
+                    );
                     file.visualizer_panel = taken;
                     for ev in events {
                         match ev {
@@ -4935,7 +4940,8 @@ impl TabViewer for HxyTabViewer<'_> {
                     }
                 } else {
                     let mut empty = crate::visualizers::VisualizerPanel::default();
-                    let _ = crate::visualizers::show(ui, None, &mut empty, numeric_format, template_value_format);
+                    let _ =
+                        crate::visualizers::show(ui, None, &mut empty, numeric_format, &template_value_formats);
                 }
             }
             Tab::Memory => {
@@ -5773,6 +5779,29 @@ fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericForma
     });
 }
 
+/// Per-integer-type editor for [`crate::settings::TemplateValueFormats`].
+/// Renders inline as a collapsing header so the eight rows
+/// don't dominate the General settings tab; expanding it
+/// reveals one [`numeric_format_row`] per integer slot
+/// (u8 / u16 / u32 / u64 / s8 / s16 / s32 / s64).
+fn template_value_formats_row(ui: &mut egui::Ui, fmts: &mut crate::settings::TemplateValueFormats) {
+    use crate::settings::IntValueType;
+
+    egui::CollapsingHeader::new(hxy_i18n::t("settings-template-value-format-collapsed-label"))
+        .id_salt("hxy-template-value-formats")
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new("hxy-template-value-formats-grid").num_columns(2).striped(true).show(ui, |ui| {
+                for ty in IntValueType::all() {
+                    ui.monospace(ty.label());
+                    let id_prefix = format!("hxy-template-value-format-{}", ty.label());
+                    numeric_format_row(ui, fmts.slot_mut(*ty), &id_prefix);
+                    ui.end_row();
+                }
+            });
+        });
+}
+
 fn base_combo(ui: &mut egui::Ui, id: String, base: &mut crate::settings::NumericBase) {
     use crate::settings::NumericBase;
     egui::ComboBox::from_id_salt(id)
@@ -5898,7 +5927,7 @@ fn settings_ui(
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-template-value-format"));
-        numeric_format_row(ui, &mut settings.template_value_format, "hxy-template-value-format");
+        template_value_formats_row(ui, &mut settings.template_value_formats);
         ui.end_row();
 
         ui.label(hxy_i18n::t("settings-address-separator"));

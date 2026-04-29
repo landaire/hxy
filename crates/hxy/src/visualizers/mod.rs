@@ -298,7 +298,7 @@ pub fn show(
     file: Option<&OpenFile>,
     panel: &mut VisualizerPanel,
     numeric_format: crate::settings::NumericFormat,
-    template_value_format: crate::settings::NumericFormat,
+    template_value_formats: &crate::settings::TemplateValueFormats,
 ) -> Vec<VisualizerEvent> {
     let mut events = Vec::new();
     ui.horizontal(|ui| {
@@ -370,6 +370,7 @@ pub fn show(
     };
 
     let cache = panel.cache.entry(active_key).or_default();
+    let inverse_format = ui.input(|i| i.modifiers.alt);
     let ctx = VisualizerContext {
         bytes: &bytes,
         spec: &target.spec,
@@ -378,7 +379,8 @@ pub fn show(
         source: file.editor.source().clone(),
         ui_id: ui.id().with(active_key),
         numeric_format,
-        template_value_format,
+        template_value_formats,
+        inverse_format,
     };
     render_kind(ui, &ctx, cache);
     events
@@ -419,10 +421,14 @@ pub struct VisualizerContext<'a> {
     /// (offsets, lengths, end positions). Same setting the
     /// template panel and breadcrumb tooltip use.
     pub numeric_format: crate::settings::NumericFormat,
-    /// User-configured base / threshold for template scalar
-    /// field values. Used by the table visualizer's Value
-    /// column so it stays consistent with the template panel.
-    pub template_value_format: crate::settings::NumericFormat,
+    /// Per-integer-type formats for template scalar field
+    /// values. Used by the table visualizer's Value column so
+    /// it stays consistent with the template panel.
+    pub template_value_formats: &'a crate::settings::TemplateValueFormats,
+    /// True while the inverse-format modifier (Alt / Option) is
+    /// held, mirroring the behaviour the template panel and
+    /// hover tooltip use.
+    pub inverse_format: bool,
 }
 
 fn render_kind(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCache) {

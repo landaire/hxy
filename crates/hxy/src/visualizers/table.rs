@@ -54,13 +54,21 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
                 for child in &children {
                     ui.label(&child.name);
                     ui.label(hxy_plugin_host::node_display_type(child));
-                    ui.monospace(crate::view::format::format_numeric(child.span.offset, ctx.numeric_format));
-                    ui.monospace(crate::view::format::format_numeric(child.span.length, ctx.numeric_format));
-                    ui.label(format_value_for_table(child, ctx.template_value_format).unwrap_or_default());
+                    ui.monospace(format_span(child.span.offset, ctx.numeric_format, ctx.inverse_format));
+                    ui.monospace(format_span(child.span.length, ctx.numeric_format, ctx.inverse_format));
+                    ui.label(
+                        format_value_for_table(child, ctx.template_value_formats, ctx.inverse_format)
+                            .unwrap_or_default(),
+                    );
                     ui.end_row();
                 }
             });
     });
+}
+
+fn format_span(value: u64, fmt: crate::settings::NumericFormat, inverse: bool) -> String {
+    let base = if inverse { fmt.pick(value).toggle() } else { fmt.pick(value) };
+    crate::view::format::format_offset(value, base)
 }
 
 /// Per-cell value formatter for the table visualizer. Mostly
@@ -69,10 +77,14 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
 /// as in the main panel; the only divergence is `BytesVal`, which
 /// the table renders as a compact `[N bytes]` summary instead of
 /// the longer `'\xAB\xCD...'` preview the panel uses.
-fn format_value_for_table(node: &Node, fmt: crate::settings::NumericFormat) -> Option<String> {
+fn format_value_for_table(
+    node: &Node,
+    fmts: &crate::settings::TemplateValueFormats,
+    inverse: bool,
+) -> Option<String> {
     use hxy_plugin_host::template::Value;
     if let Some(Value::BytesVal(b)) = node.value.as_ref() {
         return Some(format!("[{} bytes]", b.len()));
     }
-    crate::panels::template::format_value(node, fmt)
+    crate::panels::template::format_value(node, fmts, inverse)
 }

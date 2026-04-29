@@ -226,7 +226,8 @@ s_t s @ 0x00;
         &MemorySource::new(vec![0xAA, 0xBB]),
         0,
         hxy_lib::panels::template::BreadcrumbDetail::Full,
-        hxy_lib::settings::NumericFormat::default(),
+        &hxy_lib::settings::TemplateValueFormats::default(),
+        false,
     )
     .expect("breadcrumb at byte 0");
     let leaf_label = crumbs.last().expect("at least one row");
