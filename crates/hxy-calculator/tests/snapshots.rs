@@ -98,9 +98,9 @@ fn evaluate_with_resolver_snapshots() {
         "0x1 + png.length",
         "png#2.length",
         "png.length / 1KiB",
-        "offset(png.signature)",
-        "len(png.signature)",
-        "offset(png.length) + len(png.length)",
+        "png.signature::offset",
+        "png.signature::len",
+        "png.length::offset + png.length::len",
     ];
     for case in cases {
         let value = evaluate_str_with(case, &StubResolver).expect(case);

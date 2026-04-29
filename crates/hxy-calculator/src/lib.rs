@@ -32,7 +32,7 @@ pub use eval::evaluate_with;
 pub use parser::Base;
 pub use parser::BinOp;
 pub use parser::Expr;
-pub use parser::Function;
+pub use parser::MetaKind;
 pub use parser::ParseError;
 pub use parser::Path;
 pub use parser::PathSegment;

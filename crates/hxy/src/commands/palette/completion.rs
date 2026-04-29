@@ -2,18 +2,18 @@
 //!
 //! `compute_suggestion` is the single entry point: it inspects the
 //! palette's current query string, decides what kind of completion
-//! makes sense at the cursor (function name, template stem, child
-//! field), asks the supplied [`PathResolver`] for candidates, and
-//! returns the suffix the host should stage as the inline ghost
-//! text. The egui-palette widget renders that suffix selected so a
-//! matching keystroke consumes one char and a non-matching one
-//! wipes it -- standard browser-URL UX.
+//! makes sense at the cursor (template stem, child field, meta
+//! accessor), asks the supplied [`PathResolver`] for candidates,
+//! and returns the suffix the host should stage as the inline
+//! ghost text. The egui-palette widget renders that suffix
+//! selected so a matching keystroke consumes one char and a
+//! non-matching one wipes it -- standard browser-URL UX.
 //!
 //! Completion only fires for `@<expr>` / `=<expr>` queries in the
 //! main mode. Other queries pass through with no ghost text.
 
 use hxy_calculator::Expr;
-use hxy_calculator::Function;
+use hxy_calculator::MetaKind;
 use hxy_calculator::Path;
 use hxy_calculator::PathResolver;
 
@@ -23,16 +23,14 @@ use hxy_calculator::PathResolver;
 /// the kind.
 #[derive(Debug, PartialEq, Eq)]
 enum Kind {
-    /// Beginning of expression, after a binary operator, or
-    /// after `(` not bound to a known function. Candidates:
-    /// function names + template stems.
+    /// Beginning of expression or after a binary operator.
+    /// Candidates: template stems.
     Top,
-    /// After `(` immediately following a function name. Only
-    /// template stems make sense here -- function calls take a
-    /// path argument, not another function call.
-    FuncArg,
     /// After `parent.`. Candidates: direct children of `parent`.
     Segment { parent: Path },
+    /// After `parent::`. Candidates: meta accessors (`offset`,
+    /// `len`).
+    Meta,
 }
 
 /// Compute an inline completion for the palette's current query.
@@ -83,17 +81,21 @@ fn analyse(input: &str) -> Option<(&str, Kind)> {
     if prefix_start == 0 {
         return Some((prefix, Kind::Top));
     }
+    // `::` is two chars; check both before falling through to the
+    // single-char preceding-byte match.
+    if prefix_start >= 2 && bytes[prefix_start - 1] == b':' && bytes[prefix_start - 2] == b':' {
+        return Some((prefix, Kind::Meta));
+    }
     let preceding = bytes[prefix_start - 1];
     let kind = match preceding {
         b'.' => {
             let parent = extract_path_before_dot(input, prefix_start - 1)?;
             Kind::Segment { parent }
         }
-        b'(' => Kind::FuncArg,
-        b'+' | b'-' | b'*' | b'/' | b'%' | b' ' | b'\t' => Kind::Top,
-        // After `)`, `]`, `#`, `[`, or any other non-ident
-        // character we'd be in the middle of an
-        // operator-position or array-index slot; no name
+        b'+' | b'-' | b'*' | b'/' | b'%' | b' ' | b'\t' | b'(' => Kind::Top,
+        // After `)`, `]`, `#`, `[`, a single `:`, or any other
+        // non-ident character we'd be in an operator-position,
+        // array-index slot, or partway through `::`; no name
         // completion is appropriate.
         _ => return None,
     };
@@ -133,13 +135,9 @@ fn extract_path_before_dot(input: &str, dot_idx: usize) -> Option<Path> {
 
 fn candidates_for(kind: Kind, resolver: &dyn PathResolver) -> Vec<String> {
     match kind {
-        Kind::Top => {
-            let mut out: Vec<String> = Function::all().iter().map(|f| f.as_str().to_owned()).collect();
-            out.extend(resolver.template_stems());
-            out
-        }
-        Kind::FuncArg => resolver.template_stems(),
+        Kind::Top => resolver.template_stems(),
         Kind::Segment { parent } => resolver.list_children(&parent),
+        Kind::Meta => MetaKind::all().iter().map(|m| m.as_str().to_owned()).collect(),
     }
 }
 
@@ -218,13 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn function_name_top_level() {
-        // `=of` -> ghost `fset`
-        assert_eq!(compute_suggestion("=of", &stub()).as_deref(), Some("fset"));
-        assert_eq!(compute_suggestion("=l", &stub()).as_deref(), Some("en"));
-    }
-
-    #[test]
     fn template_stem_top_level() {
         // `=p` -> ghost `ng` (alphabetically the only `p*` stem)
         assert_eq!(compute_suggestion("=p", &stub()).as_deref(), Some("ng"));
@@ -232,9 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn template_stem_inside_function_call() {
-        // `=offset(p` -> ghost `ng`
-        assert_eq!(compute_suggestion("=offset(p", &stub()).as_deref(), Some("ng"));
+    fn template_stem_after_open_paren() {
+        // `=(p` -> ghost `ng`. The `(` is just a grouping; what
+        // follows is a fresh top-level expression, so completion
+        // ranks template stems alongside what would normally be
+        // available at the start of an expression.
+        assert_eq!(compute_suggestion("=(p", &stub()).as_deref(), Some("ng"));
     }
 
     #[test]
@@ -253,7 +247,6 @@ mod tests {
         // nothing too.
         assert_eq!(compute_suggestion("=png.id", &stub()), None);
         assert_eq!(compute_suggestion("=PNG", &stub()), None);
-        assert_eq!(compute_suggestion("=OF", &stub()), None);
     }
 
     #[test]
@@ -263,9 +256,30 @@ mod tests {
     }
 
     #[test]
+    fn meta_after_double_colon() {
+        // `=png::o` -> ghost `ffset`; `=png.IDAT::l` -> ghost `en`.
+        assert_eq!(compute_suggestion("=png::o", &stub()).as_deref(), Some("ffset"));
+        assert_eq!(compute_suggestion("=png.IDAT::l", &stub()).as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn meta_partial_with_no_match_returns_none() {
+        // `=png::z` -- nothing in {offset, len} starts with `z`.
+        assert_eq!(compute_suggestion("=png::z", &stub()), None);
+    }
+
+    #[test]
+    fn no_completion_after_single_colon() {
+        // A lone `:` -- partway through typing `::` -- shouldn't
+        // suggest anything. The user hasn't committed to the meta
+        // accessor yet.
+        assert_eq!(compute_suggestion("=png:", &stub()), None);
+    }
+
+    #[test]
     fn no_completion_inside_number() {
-        // `=0x` is a number prefix; offering a function name
-        // would replace the digits.
+        // `=0x` is a number prefix; offering a stem here would
+        // replace the digits.
         assert_eq!(compute_suggestion("=0x", &stub()), None);
         assert_eq!(compute_suggestion("=42", &stub()), None);
     }
@@ -284,5 +298,4 @@ mod tests {
         assert_eq!(compute_suggestion("=foo]", &stub()), None);
         assert_eq!(compute_suggestion("=foo)", &stub()), None);
     }
-
 }

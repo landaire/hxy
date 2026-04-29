@@ -2,4 +2,4 @@
 source: crates/hxy-calculator/tests/snapshots.rs
 expression: "format!(\"{} = {}\", case, value.raw())"
 ---
-len(png.signature) = 8
+png.signature::offset = 0

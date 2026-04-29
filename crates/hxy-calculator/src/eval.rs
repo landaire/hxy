@@ -16,7 +16,7 @@ use crate::ResolveError;
 use crate::Value;
 use crate::parser::BinOp;
 use crate::parser::Expr;
-use crate::parser::Function;
+use crate::parser::MetaKind;
 use crate::parser::Path;
 use crate::parser::UnaryOp;
 
@@ -43,23 +43,19 @@ pub fn evaluate_with(expr: &Expr, resolver: &dyn PathResolver) -> Result<Value, 
     eval_inner(expr, resolver).map(Value)
 }
 
-fn eval_function(func: Function, path: &Path, resolver: &dyn PathResolver) -> Result<i128, EvalError> {
+fn eval_path(path: &Path, resolver: &dyn PathResolver) -> Result<i128, EvalError> {
     let field = resolver.lookup(path)?;
-    let raw: u64 = match func {
-        Function::Offset => field.offset,
-        Function::Len => field.length,
-    };
-    Ok(i128::from(raw))
+    match path.meta {
+        None => field.value.ok_or_else(|| EvalError::Resolve(ResolveError::NotAScalar { path: path.display() })),
+        Some(MetaKind::Offset) => Ok(i128::from(field.offset)),
+        Some(MetaKind::Len) => Ok(i128::from(field.length)),
+    }
 }
 
 fn eval_inner(expr: &Expr, resolver: &dyn PathResolver) -> Result<i128, EvalError> {
     match expr {
         Expr::Literal(v) => Ok(*v),
-        Expr::Path(p) => {
-            let field = resolver.lookup(p)?;
-            field.value.ok_or_else(|| EvalError::Resolve(ResolveError::NotAScalar { path: p.display() }))
-        }
-        Expr::Call(func, p) => Ok(eval_function(*func, p, resolver)?),
+        Expr::Path(p) => eval_path(p, resolver),
         Expr::Unary(op, inner) => {
             let v = eval_inner(inner, resolver)?;
             match op {
@@ -147,8 +143,9 @@ mod tests {
 
     /// Tiny stub resolver that fakes a `png.length` field at
     /// offset `0x100` with span `8` bytes and scalar value `42`.
-    /// Lets the eval tests cover both the bare-path and the
-    /// function-call paths without spinning up a real template.
+    /// Path matching ignores the `meta` slot so the same fake
+    /// field serves both `png.length` (scalar) and
+    /// `png.length::offset` / `png.length::len` (span lookups).
     struct FixedResolver;
     impl PathResolver for FixedResolver {
         fn lookup(&self, path: &Path) -> Result<crate::FieldRef, ResolveError> {
@@ -171,23 +168,23 @@ mod tests {
     }
 
     #[test]
-    fn function_offset_returns_span_offset() {
-        let expr = parse("offset(png.length)").unwrap();
+    fn meta_offset_returns_span_offset() {
+        let expr = parse("png.length::offset").unwrap();
         let value = evaluate_with(&expr, &FixedResolver).unwrap();
         assert_eq!(value.raw(), 0x100);
     }
 
     #[test]
-    fn function_len_returns_span_length() {
-        let expr = parse("len(png.length)").unwrap();
+    fn meta_len_returns_span_length() {
+        let expr = parse("png.length::len").unwrap();
         let value = evaluate_with(&expr, &FixedResolver).unwrap();
         assert_eq!(value.raw(), 8);
     }
 
     #[test]
-    fn functions_compose_with_arithmetic() {
-        // offset(png.length) + len(png.length) = 0x100 + 8
-        let expr = parse("offset(png.length) + len(png.length)").unwrap();
+    fn meta_composes_with_arithmetic() {
+        // png.length::offset + png.length::len = 0x100 + 8
+        let expr = parse("png.length::offset + png.length::len").unwrap();
         let value = evaluate_with(&expr, &FixedResolver).unwrap();
         assert_eq!(value.raw(), 0x100 + 8);
     }

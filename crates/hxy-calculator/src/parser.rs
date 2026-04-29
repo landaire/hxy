@@ -11,7 +11,8 @@
 //! number      = '0x' hexdigits | digits         (underscores allowed)
 //! unit        = 'B' | 'KB' | 'KiB' | 'MB' | 'MiB' | 'GB' | 'GiB'
 //!             | 'TB' | 'TiB'                    (case insensitive)
-//! path        = ident ('#' digits)? (('.' ident) | ('[' digits ']'))*
+//! path        = ident ('#' digits)? (('.' ident) | ('[' digits ']'))* meta?
+//! meta        = '::' ('offset' | 'len')
 //! ident       = [A-Za-z_][A-Za-z0-9_]*
 //! ```
 //!
@@ -19,7 +20,10 @@
 //! evaluation time -- the parser only captures structure. The
 //! `'#' digits` suffix on the root segment selects a specific run
 //! when the same template ran multiple times against the active
-//! file (1-indexed; absent = most recent).
+//! file (1-indexed; absent = most recent). The `'::' meta` suffix
+//! reaches into the resolved field's span instead of its scalar
+//! value: `png.IDAT::offset` is the byte offset, `png.IDAT::len`
+//! is the byte length.
 //!
 //! Closing `)` is parsed via `opt`, so an unclosed paren simply
 //! means "the inner expression ends where input ends" -- mirrors
@@ -56,26 +60,25 @@ pub enum Expr {
     /// Reference to a template field, resolved at eval time by the
     /// caller-supplied [`crate::PathResolver`]. The parser only
     /// captures structure; whether `png.length` actually exists
-    /// (and what its scalar value is) is the resolver's job.
+    /// (and what its scalar value is) is the resolver's job. When
+    /// the path has a [`Path::meta`] suffix the evaluator returns
+    /// the field's offset / length instead of its value.
     Path(Path),
-    /// Built-in unary function applied to a template field.
-    /// `offset(png.signature)` returns the byte offset;
-    /// `len(png.signature)` returns the byte length.
-    Call(Function, Path),
 }
 
-/// Built-in calculator functions. All are unary and take a
-/// [`Path`] argument; they project a single integer (offset or
-/// length) out of the resolved [`crate::FieldRef`].
+/// `::offset` / `::len` suffix on a path. Keeps "navigate to a
+/// field" and "extract a span property of that field" in a single
+/// AST node so the resolver still hands back one [`crate::FieldRef`]
+/// regardless of how the expression chose to project it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Function {
+pub enum MetaKind {
     Offset,
     Len,
 }
 
-impl Function {
-    /// Short canonical spelling. Used in error / display strings
-    /// and as the keyword the parser matches.
+impl MetaKind {
+    /// Canonical spelling, also the keyword the parser matches
+    /// after `::`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Offset => "offset",
@@ -83,17 +86,13 @@ impl Function {
         }
     }
 
-    /// Every known function. Useful for completion -- the host can
-    /// rank these alongside template names without having to
-    /// hand-maintain a parallel list.
+    /// Every recognised meta accessor. Used by completion to
+    /// suggest after the user types `::`.
     pub fn all() -> &'static [Self] {
         &[Self::Offset, Self::Len]
     }
 
-    /// Match a lowercased identifier against the known function
-    /// names. Returns `None` for anything else so `primary` can
-    /// fall through to a path lookup.
-    fn from_lowercased(name: &str) -> Option<Self> {
+    fn from_name(name: &str) -> Option<Self> {
         match name {
             "offset" => Some(Self::Offset),
             "len" => Some(Self::Len),
@@ -107,12 +106,16 @@ impl Function {
 /// `"png"` case-insensitively); `instance` selects which run to
 /// resolve when the same template fired more than once
 /// (1-indexed, `None` = most recent). `segments` walks the
-/// resulting field tree.
+/// resulting field tree. `meta`, when set, switches the
+/// expression's value from "the field's scalar value" to a span
+/// property (offset / length) -- the resolver still hands back
+/// one [`crate::FieldRef`]; the evaluator picks which slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path {
     pub root: String,
     pub instance: Option<u32>,
     pub segments: Vec<PathSegment>,
+    pub meta: Option<MetaKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +147,10 @@ impl Path {
                     s.push(']');
                 }
             }
+        }
+        if let Some(m) = self.meta {
+            s.push_str("::");
+            s.push_str(m.as_str());
         }
         s
     }
@@ -303,29 +310,8 @@ fn primary(input: &mut &str) -> ModalResult<Expr> {
     if input.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         return number_with_unit(input);
     }
-    // An identifier followed by `(` is a built-in function call.
-    // Anything else is a path. We commit to the function-call
-    // branch only after the `(` shows up so a real path whose root
-    // happens to be `offset` / `len` / `sizeof` (e.g. a template
-    // field literally named `len`) still parses as a path lookup.
-    let head = identifier(input)?;
-    skip_ws(input);
-    if input.starts_with('(')
-        && let Some(func) = Function::from_lowercased(&head.to_ascii_lowercase())
-    {
-        "(".parse_next(input)?;
-        skip_ws(input);
-        let arg = path(input)?;
-        skip_ws(input);
-        ")".parse_next(input)?;
-        return Ok(Expr::Call(func, arg));
-    }
-    // Fall through: build a path starting with the already-consumed
-    // identifier. Reusing `path()` directly would re-parse the head,
-    // so we splice the suffix in by hand.
-    let instance = opt(instance_suffix).parse_next(input)?;
-    let segments: Vec<PathSegment> = repeat(0.., path_segment).parse_next(input)?;
-    Ok(Expr::Path(Path { root: head, instance, segments }))
+    let p = path(input)?;
+    Ok(Expr::Path(p))
 }
 
 fn paren_expr(input: &mut &str) -> ModalResult<Expr> {
@@ -384,7 +370,18 @@ fn path(input: &mut &str) -> ModalResult<Path> {
     let root = identifier(input)?;
     let instance = opt(instance_suffix).parse_next(input)?;
     let segments: Vec<PathSegment> = repeat(0.., path_segment).parse_next(input)?;
-    Ok(Path { root, instance, segments })
+    let meta = opt(meta_suffix).parse_next(input)?;
+    Ok(Path { root, instance, segments, meta })
+}
+
+fn meta_suffix(input: &mut &str) -> ModalResult<MetaKind> {
+    "::".parse_next(input)?;
+    let name = identifier(input)?;
+    // Unknown name after `::` -- backtrack so `opt(meta_suffix)`
+    // restores the input. Top-level parse will then surface a
+    // `TrailingInput` error pointing at `::<name>`, which reads
+    // more clearly than a generic syntax error.
+    MetaKind::from_name(&name).ok_or_else(|| ErrMode::Backtrack(ContextError::new()))
 }
 
 fn instance_suffix(input: &mut &str) -> ModalResult<u32> {
@@ -535,23 +532,20 @@ mod tests {
         Expr::Path(p)
     }
 
+    fn plain_path(root: &str, segments: Vec<PathSegment>) -> Path {
+        Path { root: root.into(), instance: None, segments, meta: None }
+    }
+
     #[test]
     fn bare_identifier_is_path() {
-        assert_eq!(
-            parse("png"),
-            Ok(path_expr(Path { root: "png".into(), instance: None, segments: vec![] })),
-        );
+        assert_eq!(parse("png"), Ok(path_expr(plain_path("png", vec![]))));
     }
 
     #[test]
     fn dotted_path() {
         assert_eq!(
             parse("png.length"),
-            Ok(path_expr(Path {
-                root: "png".into(),
-                instance: None,
-                segments: vec![PathSegment::Name("length".into())],
-            })),
+            Ok(path_expr(plain_path("png", vec![PathSegment::Name("length".into())]))),
         );
     }
 
@@ -559,15 +553,14 @@ mod tests {
     fn indexed_path() {
         assert_eq!(
             parse("png.chunks[0].length"),
-            Ok(path_expr(Path {
-                root: "png".into(),
-                instance: None,
-                segments: vec![
+            Ok(path_expr(plain_path(
+                "png",
+                vec![
                     PathSegment::Name("chunks".into()),
                     PathSegment::Index(0),
                     PathSegment::Name("length".into()),
                 ],
-            })),
+            ))),
         );
     }
 
@@ -579,6 +572,7 @@ mod tests {
                 root: "png".into(),
                 instance: Some(2),
                 segments: vec![PathSegment::Name("length".into())],
+                meta: None,
             })),
         );
     }
@@ -586,73 +580,102 @@ mod tests {
     #[test]
     fn arithmetic_with_path() {
         let lhs = lit(1);
-        let rhs = path_expr(Path {
-            root: "png".into(),
-            instance: None,
-            segments: vec![PathSegment::Name("length".into())],
-        });
+        let rhs = path_expr(plain_path("png", vec![PathSegment::Name("length".into())]));
         assert_eq!(parse("0x1 + png.length"), Ok(bin(BinOp::Add, lhs, rhs)));
     }
 
     #[test]
-    fn function_call_offset() {
+    fn meta_offset_suffix() {
         assert_eq!(
-            parse("offset(png.signature)"),
-            Ok(Expr::Call(
-                Function::Offset,
-                Path {
-                    root: "png".into(),
-                    instance: None,
-                    segments: vec![PathSegment::Name("signature".into())],
-                },
-            )),
+            parse("png.signature::offset"),
+            Ok(path_expr(Path {
+                root: "png".into(),
+                instance: None,
+                segments: vec![PathSegment::Name("signature".into())],
+                meta: Some(MetaKind::Offset),
+            })),
         );
     }
 
     #[test]
-    fn function_calls_compose_with_arithmetic() {
-        // 0x1 + len(png.IDAT) -> Add(1, Call(Len, png.IDAT))
-        let inner = Path {
+    fn meta_len_suffix() {
+        assert_eq!(
+            parse("png.IDAT::len"),
+            Ok(path_expr(Path {
+                root: "png".into(),
+                instance: None,
+                segments: vec![PathSegment::Name("IDAT".into())],
+                meta: Some(MetaKind::Len),
+            })),
+        );
+    }
+
+    #[test]
+    fn meta_on_indexed_segment() {
+        assert_eq!(
+            parse("png.chunks[0]::len"),
+            Ok(path_expr(Path {
+                root: "png".into(),
+                instance: None,
+                segments: vec![PathSegment::Name("chunks".into()), PathSegment::Index(0)],
+                meta: Some(MetaKind::Len),
+            })),
+        );
+    }
+
+    #[test]
+    fn meta_composes_with_arithmetic() {
+        // png.IDAT::offset + png.IDAT::len
+        let lhs = path_expr(Path {
             root: "png".into(),
             instance: None,
             segments: vec![PathSegment::Name("IDAT".into())],
-        };
-        assert_eq!(
-            parse("0x1 + len(png.IDAT)"),
-            Ok(bin(BinOp::Add, lit(1), Expr::Call(Function::Len, inner))),
-        );
-    }
-
-    #[test]
-    fn function_call_case_insensitive() {
-        // OFFSET and Offset both pick the Offset variant.
-        let arg = Path { root: "png".into(), instance: None, segments: vec![] };
-        assert_eq!(parse("OFFSET(png)"), Ok(Expr::Call(Function::Offset, arg.clone())));
-        assert_eq!(parse("Offset(png)"), Ok(Expr::Call(Function::Offset, arg)));
-    }
-
-    #[test]
-    fn ident_named_like_function_but_no_parens_is_path() {
-        // `len` standalone is a bare path -- the resolver may or
-        // may not have a top-level field by that name. The parser
-        // doesn't commit to the function branch until it sees `(`.
-        assert_eq!(
-            parse("len"),
-            Ok(Expr::Path(Path { root: "len".into(), instance: None, segments: vec![] })),
-        );
-    }
-
-    #[test]
-    fn function_call_whitespace_inside_parens() {
-        let arg = Path {
+            meta: Some(MetaKind::Offset),
+        });
+        let rhs = path_expr(Path {
             root: "png".into(),
             instance: None,
-            segments: vec![PathSegment::Name("length".into())],
-        };
+            segments: vec![PathSegment::Name("IDAT".into())],
+            meta: Some(MetaKind::Len),
+        });
+        assert_eq!(parse("png.IDAT::offset + png.IDAT::len"), Ok(bin(BinOp::Add, lhs, rhs)));
+    }
+
+    #[test]
+    fn meta_on_root_path() {
+        // `png::len` -- bare root, span length of the auto-descended
+        // root struct (resolver decides what that means).
         assert_eq!(
-            parse("offset(  png.length  )"),
-            Ok(Expr::Call(Function::Offset, arg)),
+            parse("png::len"),
+            Ok(path_expr(Path {
+                root: "png".into(),
+                instance: None,
+                segments: vec![],
+                meta: Some(MetaKind::Len),
+            })),
         );
+    }
+
+    #[test]
+    fn meta_unknown_name_is_trailing_input() {
+        // `::foo` isn't a recognised meta accessor; the parser
+        // backtracks out of `meta_suffix` and the leftover
+        // `::foo` surfaces as a TrailingInput error.
+        assert!(matches!(parse("png::foo"), Err(ParseError::TrailingInput { .. })));
+    }
+
+    #[test]
+    fn meta_is_case_sensitive() {
+        // `::OFFSET` -- not the canonical lowercase spelling.
+        assert!(matches!(parse("png::OFFSET"), Err(ParseError::TrailingInput { .. })));
+    }
+
+    #[test]
+    fn ident_named_like_meta_alone_is_path() {
+        // `len` and `offset` standalone are bare paths -- the
+        // meta accessor only fires after `::`.
+        assert_eq!(parse("len"), Ok(path_expr(plain_path("len", vec![]))));
+        assert_eq!(parse("offset"), Ok(path_expr(plain_path("offset", vec![]))));
     }
 
     #[test]
@@ -665,7 +688,8 @@ mod tests {
                 PathSegment::Index(3),
                 PathSegment::Name("length".into()),
             ],
+            meta: Some(MetaKind::Offset),
         };
-        assert_eq!(p.display(), "png#2.chunks[3].length");
+        assert_eq!(p.display(), "png#2.chunks[3].length::offset");
     }
 }

@@ -401,8 +401,8 @@ mod tests {
 
     #[test]
     fn parse_offset_expr_uses_resolver_for_paths() {
-        assert_eq!(parse_offset_expr("offset(png.IDAT)", &FakeResolver), Ok(Number::Absolute(0x100)));
-        assert_eq!(parse_offset_expr("len(png.IDAT) + 1", &FakeResolver), Ok(Number::Absolute(0x41)));
+        assert_eq!(parse_offset_expr("png.IDAT::offset", &FakeResolver), Ok(Number::Absolute(0x100)));
+        assert_eq!(parse_offset_expr("png.IDAT::len + 1", &FakeResolver), Ok(Number::Absolute(0x41)));
     }
 
     #[test]
@@ -443,9 +443,9 @@ mod tests {
     #[test]
     fn parse_range_expr_with_template_fields() {
         // Range derived from template field spans:
-        // offset(png.IDAT) ..= offset(png.IDAT) + len(png.IDAT) - 1
+        // png.IDAT::offset ..= png.IDAT::offset + png.IDAT::len - 1
         let r = parse_range_expr(
-            "offset(png.IDAT)..=offset(png.IDAT) + len(png.IDAT) - 1",
+            "png.IDAT::offset..=png.IDAT::offset + png.IDAT::len - 1",
             0x10_000,
             &FakeResolver,
         )

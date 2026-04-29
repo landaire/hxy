@@ -2,4 +2,4 @@
 source: crates/hxy-calculator/tests/snapshots.rs
 expression: "format!(\"{} = {}\", case, value.raw())"
 ---
-offset(png.length) + len(png.length) = 264
+png.length::offset + png.length::len = 264
