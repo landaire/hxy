@@ -133,6 +133,22 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                         }
                     }
                 }
+                PaletteCommand::ToggleVisualizer => {
+                    if let Some(id) = crate::app::active_file_id(app) {
+                        if app.dock.find_tab(&crate::tabs::Tab::Visualizer(id)).is_some() {
+                            // Close + clear the persisted "open"
+                            // flag so the panel stays closed across
+                            // template re-runs and restarts.
+                            if let Some(path) = app.dock.find_tab(&crate::tabs::Tab::Visualizer(id)) {
+                                let _ = app.dock.remove_tab(path);
+                            }
+                            crate::tabs::close::set_visualizer_open(app, id, false);
+                        } else {
+                            crate::tabs::close::set_visualizer_open(app, id, true);
+                            app.show_visualizer_for(id);
+                        }
+                    }
+                }
             }
         }
         Action::CopyText(text) => {

@@ -760,20 +760,19 @@ impl HxyApp {
         self.dock.set_focused_node_and_surface(node_path);
     }
 
-    /// Open the visualizer panel only when (a) the file actually
-    /// has at least one visualizer-bearing field in its currently
-    /// loaded templates, and (b) the user hasn't dismissed the
-    /// panel for this file. Called after each successful template
-    /// run by [`crate::templates::runner`].
+    /// After a template completes, restore the visualizer panel only
+    /// when the user previously had it open for this file -- via
+    /// either an explicit click this session or a persisted
+    /// `OpenTabState::visualizer_open` from the prior session. Closed
+    /// is the default; a freshly opened file with visualizer-bearing
+    /// fields stays quiet until the user asks for the panel.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn auto_open_visualizer_for(&mut self, file_id: FileId) {
-        let has_visualizer = match self.files.get(&file_id) {
-            Some(file) if !file.visualizer_panel.dismissed => {
-                !crate::visualizers::collect_targets(file).is_empty()
-            }
+        let should_open = match self.files.get(&file_id) {
+            Some(file) if file.visualizer_panel.open => !crate::visualizers::collect_targets(file).is_empty(),
             _ => false,
         };
-        if has_visualizer {
+        if should_open {
             self.show_visualizer_for(file_id);
         }
     }
@@ -1174,7 +1173,7 @@ impl HxyApp {
                     as_workspace: pushed_workspace,
                     templates: Vec::new(),
                     active_template_idx: None,
-                    visualizer_dismissed: false,
+                    visualizer_open: false,
                 });
             }
         }
@@ -1710,9 +1709,9 @@ impl HxyApp {
             .open_tabs
             .iter()
             .filter(|t| !t.templates.is_empty())
-            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx, t.visualizer_dismissed))
+            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx, t.visualizer_open))
             .collect();
-        for (source, templates, active_idx, visualizer_dismissed) in entries {
+        for (source, templates, active_idx, visualizer_open) in entries {
             let Some(file_id) = self
                 .files
                 .iter()
@@ -1721,13 +1720,14 @@ impl HxyApp {
             else {
                 continue;
             };
-            // Restore the visualizer panel's dismissed flag *before*
-            // the template auto-rerun fires. Once the worker
-            // completes, `auto_open_visualizer_for` consults this
-            // flag; without the restore, every relaunch would pop the
-            // panel back even if the user had explicitly closed it.
+            // Restore the visualizer panel's open flag *before* the
+            // template auto-rerun fires. Once the worker completes,
+            // `auto_open_visualizer_for` consults this flag; without
+            // the restore, the panel would always come up closed and
+            // the user would have to reopen it every relaunch even
+            // when they had it open last session.
             if let Some(file) = self.files.get_mut(&file_id) {
-                file.visualizer_panel.dismissed = visualizer_dismissed;
+                file.visualizer_panel.open = visualizer_open;
             }
             // The tab's first-frame open already enqueued a "would
             // you like to run X.bt?" prompt via `suggest_templates_for`.
@@ -1995,7 +1995,7 @@ impl HxyApp {
                             as_workspace: false,
                             templates: Vec::new(),
                             active_template_idx: None,
-                            visualizer_dismissed: false,
+                            visualizer_open: false,
                         });
                     }
                 }
@@ -2349,15 +2349,15 @@ impl eframe::App for HxyApp {
             compute_entropy_for(ui.ctx(), self, file_id);
         }
         // Visualizer panel header X-clicks: remove the dock tab
-        // and remember the dismissal so a re-run on the same file
-        // doesn't pop the panel back open. Persisted so the
-        // dismissal also survives a restart.
+        // and clear the user's "open" flag so a re-run on the same
+        // file doesn't pop the panel back. Persisted so the closure
+        // also survives a restart.
         #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut pending_visualizer_dismiss) {
             if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
                 let _ = self.dock.remove_tab(path);
             }
-            crate::tabs::close::mark_visualizer_dismissed(self, file_id, true);
+            crate::tabs::close::set_visualizer_open(self, file_id, false);
         }
         // In-row visualizer-icon clicks: pop or focus the panel
         // for each file whose template-panel handler set the
@@ -3608,14 +3608,14 @@ fn apply_template_event(
         }
         TemplateEvent::OpenVisualizer(node_idx) => {
             // Set the active visualizer key + flag the panel so the
-            // post-dock-pass drain pops the dock tab. Clearing the
-            // dismissed flag here reverses a prior X-click: the user
-            // explicitly clicked the row icon, so they want the
-            // panel back regardless of their earlier dismissal.
+            // post-dock-pass drain pops the dock tab. Mark the panel
+            // as user-opened so the choice rides through template
+            // re-runs and (via `sync_tab_state` mirroring the flag
+            // into `OpenTabState`) survives a restart.
             let Some(active_id) = file.active_template else { return };
             file.visualizer_panel.active =
                 Some(crate::visualizers::VisualizerKey { instance: active_id, node: node_idx });
-            file.visualizer_panel.dismissed = false;
+            file.visualizer_panel.open = true;
             file.visualizer_panel.pending_show = true;
         }
     }
@@ -4822,7 +4822,7 @@ struct HxyTabViewer<'a> {
     /// dock-pass borrow on `app.dock` blocks the renderer from
     /// removing the tab inline, so it queues the file id here and
     /// the post-dock drain calls `remove_tab` + sets the file's
-    /// `visualizer_panel.dismissed` flag.
+    /// `visualizer_panel.open` flag.
     #[cfg(not(target_arch = "wasm32"))]
     pending_visualizer_dismiss: &'a mut Vec<FileId>,
     /// Shared byte cache, plumbed through so the Settings tab can
@@ -5147,16 +5147,15 @@ impl TabViewer for HxyTabViewer<'_> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Tab::Visualizer(file_id) = tab {
-            // Sticky dismiss: remember that the user closed this
-            // file's visualizer panel so the next template re-run
-            // doesn't auto-pop it back open. Mirror to the persisted
-            // tab state so the dismissal survives a restart.
+            // Clear the user's "open" flag so the next template re-run
+            // doesn't auto-pop the panel back. Mirrored to the
+            // persisted tab state so the closure survives a restart.
             if let Some(file) = self.files.get_mut(file_id) {
-                file.visualizer_panel.dismissed = true;
+                file.visualizer_panel.open = false;
                 if let Some(source) = file.source_kind.clone()
                     && let Some(entry) = self.state.open_tabs.iter_mut().find(|t| t.source == source)
                 {
-                    entry.visualizer_dismissed = true;
+                    entry.visualizer_open = false;
                 }
             }
         }

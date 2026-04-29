@@ -300,6 +300,12 @@ pub enum PaletteCommand {
     /// hides the tab when it's already in the dock so the same
     /// command works as a quick close.
     ToggleSettings,
+    /// Show or hide the visualizer panel for the active file. Listed
+    /// only when the active file's parsed templates contain at least
+    /// one `[[hex::visualize(...)]]` target -- the panel stays
+    /// closed by default, so this is the primary discoverable path
+    /// for opening it.
+    ToggleVisualizer,
     /// Toggle the byte-cache debug Memory panel. Listed in the
     /// palette only when `AppSettings::debug_memory_panel_enabled`
     /// is on.

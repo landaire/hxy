@@ -19,10 +19,11 @@
 //! visualizer doesn't drop the cache for another.
 //!
 //! The [`Tab::Visualizer`](crate::tabs::Tab::Visualizer) dock tab is
-//! opened automatically the first time a parsed template on a file
-//! contains a visualizer attribute. Closing the tab is sticky for
-//! the file's lifetime so re-runs on the same file don't reopen it
-//! against the user's wishes -- see [`VisualizerPanel::dismissed`].
+//! opt-in: it stays closed by default and only opens when the user
+//! explicitly asks for it (per-row icon click, palette command, or
+//! a previous session restoring an "open" state). The user's choice
+//! persists across template re-runs and across app restarts -- see
+//! [`VisualizerPanel::open`].
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -215,10 +216,13 @@ pub struct VisualizerCache {
 #[derive(Default)]
 pub struct VisualizerPanel {
     pub cache: HashMap<VisualizerKey, VisualizerCache>,
-    /// True after the user explicitly closed the dock tab. Suppresses
-    /// the auto-open path that would otherwise re-show the tab on
-    /// the next template re-run.
-    pub dismissed: bool,
+    /// True when the user has explicitly opened the visualizer dock
+    /// tab for this file. Default `false` keeps the panel closed,
+    /// even when a template emits visualizer attributes; the panel
+    /// only pops on (a) explicit user action this session, or (b) a
+    /// restored value from a previous session via
+    /// `OpenTabState::visualizer_open`.
+    pub open: bool,
     /// Key of the visualizer currently rendering in the body. `None`
     /// = pick the first available target.
     pub active: Option<VisualizerKey>,
@@ -453,7 +457,7 @@ fn render_kind(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut Visualize
 
 pub enum VisualizerEvent {
     /// User X-clicked the panel header. Caller closes the dock tab
-    /// and sets `panel.dismissed = true`.
+    /// and sets `panel.open = false`.
     Dismiss,
 }
 

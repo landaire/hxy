@@ -67,6 +67,16 @@ pub struct HistoryPaletteContext {
     /// gate / preview template-relative entries (next-field jump,
     /// etc.) without re-borrowing `app.files`.
     pub template: Option<TemplateCtx>,
+    /// True when the active file has at least one
+    /// `[[hex::visualize(...)]]` target on its parsed templates --
+    /// gates the "Show Visualizer" palette entry so it stays out of
+    /// sight on files where it would do nothing.
+    pub has_visualizer: bool,
+    /// FileId of the active tab when one is focused. Held on the
+    /// context so `build_palette_entries` (which only borrows the
+    /// app immutably) can route per-file commands without needing
+    /// `&mut HxyApp` to look up the focused tab.
+    pub active_file_id: Option<crate::files::FileId>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -125,6 +135,8 @@ pub fn history_palette_context(app: &mut HxyApp) -> HistoryPaletteContext {
         has_disk_source: file.root_path().is_some(),
         watch_mode,
         template: file.active_template().map(|t| TemplateCtx { field_count: t.state.leaf_boundaries.len() }),
+        has_visualizer: !crate::visualizers::collect_targets(file).is_empty(),
+        active_file_id: Some(id),
     }
 }
 
@@ -525,6 +537,27 @@ pub fn build_palette_entries(
                         Action::InvokeCommand(PaletteCommand::ToggleEntropy),
                     )
                     .with_icon(icon::CHART_LINE),
+                );
+            }
+
+            // Visualizer entry only shows when the active file's
+            // parsed templates contain visualizer-bearing fields. The
+            // panel stays closed by default, so this is the primary
+            // path for popping it the first time.
+            if history_ctx.has_visualizer
+                && let Some(active_id) = history_ctx.active_file_id
+            {
+                let visualizer_visible = app.dock.find_tab(&Tab::Visualizer(active_id)).is_some();
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t(if visualizer_visible {
+                            "palette-tool-close-visualizer"
+                        } else {
+                            "palette-tool-show-visualizer"
+                        }),
+                        Action::InvokeCommand(PaletteCommand::ToggleVisualizer),
+                    )
+                    .with_icon(icon::SHAPES),
                 );
             }
 
