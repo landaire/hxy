@@ -332,3 +332,55 @@ S s;
     assert_eq!(last.offset, 4);
     assert!(matches!(last.value, Some(Value::UInt { value: 0xBB, .. })));
 }
+
+#[test]
+fn builtin_std_mem_read_string_predicate_stops_dynamic_array() {
+    // The PNG hexpat (and friends) inline `builtin::std::mem::*` calls
+    // in `[while(cond)]` array predicates to skip the std-library
+    // wrapper. The path dispatcher disables leaf fallback for any
+    // path rooted in `builtin`, so missing alias arms in `call_builtin`
+    // silently return Void -- the predicate never falsifies and the
+    // loop runs to EOF, "losing" everything past the first chunk
+    // header (notably IDAT in PNG).
+    //
+    // Build a tiny tag stream: each element is a 4-byte tag followed
+    // by 4 bytes of payload, terminated by a "STOP" tag. We expect
+    // the array to read exactly the elements before "STOP".
+    let src = "\
+struct chunk_t {
+    char tag[4];
+    u32 payload;
+};
+
+struct chunks_t {
+    chunk_t chunks[while(builtin::std::mem::read_string($, 4) != \"STOP\")];
+    chunk_t terminator;
+};
+
+chunks_t all @ 0x00;
+";
+    let mut bytes = Vec::new();
+    for tag in ["AAAA", "BBBB", "CCCC"] {
+        bytes.extend_from_slice(tag.as_bytes());
+        bytes.extend_from_slice(&[0u8; 4]);
+    }
+    bytes.extend_from_slice(b"STOP");
+    bytes.extend_from_slice(&[0u8; 4]);
+
+    let result = run(src, bytes);
+    assert_no_terminal_error(&result);
+    let chunks: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.name == "tag" && matches!(&n.value, Some(Value::Str(s)) if s.len() == 4))
+        .collect();
+    let tags: Vec<&str> = chunks
+        .iter()
+        .filter_map(|n| if let Some(Value::Str(s)) = &n.value { Some(s.as_str()) } else { None })
+        .collect();
+    assert_eq!(
+        tags,
+        vec!["AAAA", "BBBB", "CCCC", "STOP"],
+        "[while(builtin::std::mem::read_string ...)] should stop at STOP, then `terminator` reads it"
+    );
+}

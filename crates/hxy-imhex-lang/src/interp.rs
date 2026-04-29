@@ -3876,10 +3876,23 @@ impl<S: HexSource> Interpreter<S> {
             // Random-access reads. `std::mem::read_unsigned(off, n)`
             // / `read_signed(off, n)` return n-byte ints from the
             // source. `read_string(off, n)` returns n bytes lossy
-            // utf-8.
-            "std::mem::read_unsigned" | "read_unsigned" => self.std_read_int(args, false)?,
-            "std::mem::read_signed" | "read_signed" => self.std_read_int(args, true)?,
-            "std::mem::read_string" | "read_string" => self.std_read_string(args)?,
+            // utf-8. The `builtin::` spellings get equal billing
+            // because templates often inline them in tight predicates
+            // (e.g. PNG's
+            // `chunks[while(builtin::std::mem::read_string($+4, 4) != "IEND")]`)
+            // to skip the std-library wrapper. Without these aliases
+            // the path dispatcher (which disables leaf fallback for
+            // any path rooted in `builtin`) drops the call to a Void
+            // return and the predicate is never falsified.
+            "std::mem::read_unsigned" | "read_unsigned" | "builtin::std::mem::read_unsigned" => {
+                self.std_read_int(args, false)?
+            }
+            "std::mem::read_signed" | "read_signed" | "builtin::std::mem::read_signed" => {
+                self.std_read_int(args, true)?
+            }
+            "std::mem::read_string" | "read_string" | "builtin::std::mem::read_string" => {
+                self.std_read_string(args)?
+            }
             // String helpers. `length` works on chars; the rest
             // operate on raw byte content. Approximations only.
             "std::string::length" | "std::string::strlen" => {
