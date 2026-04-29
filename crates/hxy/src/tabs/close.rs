@@ -115,10 +115,11 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
             }
             // Sticky dismiss: a re-run on the same file
             // shouldn't pop the panel back open after the user
-            // explicitly closed it via Cmd+W.
-            if let Some(file) = app.files.get_mut(&file_id) {
-                file.visualizer_panel.dismissed = true;
-            }
+            // explicitly closed it via Cmd+W. Mirrored into the
+            // persisted tab state so the dismissal survives a
+            // restart, not just a template re-run within the
+            // same session.
+            mark_visualizer_dismissed(app, file_id, true);
         }
         Tab::PluginMount(mount_id) => {
             if let Some(path) = app.dock.find_tab(&tab) {
@@ -310,6 +311,19 @@ pub fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Set `visualizer_panel.dismissed` on the file and mirror it into
+/// the matching `OpenTabState` so the dismissal survives a restart,
+/// not just a template re-run within the same session.
+pub fn mark_visualizer_dismissed(app: &mut HxyApp, file_id: FileId, dismissed: bool) {
+    let Some(file) = app.files.get_mut(&file_id) else { return };
+    file.visualizer_panel.dismissed = dismissed;
+    let Some(source) = file.source_kind.clone() else { return };
+    let mut state = app.state.write();
+    if let Some(entry) = state.open_tabs.iter_mut().find(|t| t.source == source) {
+        entry.visualizer_dismissed = dismissed;
+    }
+}
+
 /// Sync the current editor selection / scroll back into the
 /// persisted [`crate::state::OpenTabState`] entry so the next
 /// session restores the user's view. Also mirrors the file's
@@ -333,4 +347,5 @@ pub fn sync_tab_state(state: &mut PersistedState, file: &OpenFile) {
         .collect();
     entry.active_template_idx =
         file.active_template.and_then(|active| file.templates.iter().position(|t| t.id == active));
+    entry.visualizer_dismissed = file.visualizer_panel.dismissed;
 }

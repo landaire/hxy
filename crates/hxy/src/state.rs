@@ -73,6 +73,14 @@ pub struct OpenTabState {
     /// templates were running). Restored after auto-rerun completes.
     #[serde(default)]
     pub active_template_idx: Option<usize>,
+    /// Whether the user dismissed this tab's visualizer panel
+    /// (X-clicked the dock tab or pressed Cmd+W on it). Mirrors
+    /// `OpenFile::visualizer_panel.dismissed` and gates the
+    /// auto-open path that fires after a template completes; without
+    /// this, dismissing the panel and restarting the app would just
+    /// pop it back open on the next auto-rerun.
+    #[serde(default)]
+    pub visualizer_dismissed: bool,
 }
 
 #[derive(Clone, Default)]

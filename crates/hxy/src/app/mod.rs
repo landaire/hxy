@@ -1174,6 +1174,7 @@ impl HxyApp {
                     as_workspace: pushed_workspace,
                     templates: Vec::new(),
                     active_template_idx: None,
+                    visualizer_dismissed: false,
                 });
             }
         }
@@ -1703,15 +1704,15 @@ impl HxyApp {
         // Snapshot the work list so the per-template loop doesn't have
         // to keep re-acquiring `self.state` against the runner's own
         // writes.
-        let entries: Vec<(TabSource, Vec<crate::state::PersistedTemplateInstance>, Option<usize>)> = self
+        let entries: Vec<(TabSource, Vec<crate::state::PersistedTemplateInstance>, Option<usize>, bool)> = self
             .state
             .read()
             .open_tabs
             .iter()
             .filter(|t| !t.templates.is_empty())
-            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx))
+            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx, t.visualizer_dismissed))
             .collect();
-        for (source, templates, active_idx) in entries {
+        for (source, templates, active_idx, visualizer_dismissed) in entries {
             let Some(file_id) = self
                 .files
                 .iter()
@@ -1720,6 +1721,14 @@ impl HxyApp {
             else {
                 continue;
             };
+            // Restore the visualizer panel's dismissed flag *before*
+            // the template auto-rerun fires. Once the worker
+            // completes, `auto_open_visualizer_for` consults this
+            // flag; without the restore, every relaunch would pop the
+            // panel back even if the user had explicitly closed it.
+            if let Some(file) = self.files.get_mut(&file_id) {
+                file.visualizer_panel.dismissed = visualizer_dismissed;
+            }
             // The tab's first-frame open already enqueued a "would
             // you like to run X.bt?" prompt via `suggest_templates_for`.
             // The user already picked a template last session (we're
@@ -1986,6 +1995,7 @@ impl HxyApp {
                             as_workspace: false,
                             templates: Vec::new(),
                             active_template_idx: None,
+                            visualizer_dismissed: false,
                         });
                     }
                 }
@@ -2340,15 +2350,14 @@ impl eframe::App for HxyApp {
         }
         // Visualizer panel header X-clicks: remove the dock tab
         // and remember the dismissal so a re-run on the same file
-        // doesn't pop the panel back open.
+        // doesn't pop the panel back open. Persisted so the
+        // dismissal also survives a restart.
         #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut pending_visualizer_dismiss) {
             if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
                 let _ = self.dock.remove_tab(path);
             }
-            if let Some(file) = self.files.get_mut(&file_id) {
-                file.visualizer_panel.dismissed = true;
-            }
+            crate::tabs::close::mark_visualizer_dismissed(self, file_id, true);
         }
         // In-row visualizer-icon clicks: pop or focus the panel
         // for each file whose template-panel handler set the
@@ -5132,9 +5141,15 @@ impl TabViewer for HxyTabViewer<'_> {
         if let Tab::Visualizer(file_id) = tab {
             // Sticky dismiss: remember that the user closed this
             // file's visualizer panel so the next template re-run
-            // doesn't auto-pop it back open.
+            // doesn't auto-pop it back open. Mirror to the persisted
+            // tab state so the dismissal survives a restart.
             if let Some(file) = self.files.get_mut(file_id) {
                 file.visualizer_panel.dismissed = true;
+                if let Some(source) = file.source_kind.clone()
+                    && let Some(entry) = self.state.open_tabs.iter_mut().find(|t| t.source == source)
+                {
+                    entry.visualizer_dismissed = true;
+                }
             }
         }
         if let Tab::Workspace(workspace_id) = tab {

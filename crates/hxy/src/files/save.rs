@@ -128,6 +128,7 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
                 as_workspace: false,
                 templates: Vec::new(),
                 active_template_idx: None,
+                visualizer_dismissed: false,
             });
         }
     }
