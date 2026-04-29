@@ -269,7 +269,7 @@ patterns-settings-update = Check for updates
 patterns-settings-downloading = Downloading... { $bytes } bytes received
 
 # Open-file template prompts
-toast-template-suggestion = Run { $name }?
+toast-template-group-title = Run a template?
 toast-template-run = Run
 toast-template-dismiss = Dismiss
 

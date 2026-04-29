@@ -41,6 +41,11 @@ pub struct TemplateEntry {
     /// One or more magic byte prefixes. Each entry is the raw bytes
     /// from an `ID Bytes:` field (e.g. `[0x50, 0x4B]` for `PK`).
     pub magic: Vec<Vec<u8>>,
+    /// Author-provided one-liner pulled from the template header
+    /// (`// Description: ...` for 010, `#pragma description ...` for
+    /// ImHex). Surfaced in the run-template prompt so the user can
+    /// tell similarly-named templates apart at a glance.
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -176,19 +181,25 @@ fn parse_template(path: &Path, format: TemplateFormat) -> Option<TemplateEntry> 
     let text = std::str::from_utf8(head).ok()?;
     let name = path.file_name()?.to_string_lossy().into_owned();
 
-    let (extensions, magic) = match format {
+    let (extensions, magic, description) = match format {
         TemplateFormat::Bt010 => parse_bt_header(text),
         TemplateFormat::ImHex => parse_imhex_header(text),
     };
     if extensions.is_empty() && magic.is_empty() {
         return None;
     }
-    Some(TemplateEntry { path: path.to_path_buf(), name, extensions, magic })
+    Some(TemplateEntry { path: path.to_path_buf(), name, extensions, magic, description })
 }
 
-fn parse_bt_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
+fn parse_bt_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>, Option<String>) {
     let mut extensions = Vec::new();
     let mut magic = Vec::new();
+    // 010 Editor's "New Template" wizard emits `Purpose:` for the
+    // human description; older / hand-rolled templates sometimes use
+    // `Description:`. Prefer whichever appears first, so a template
+    // that fills in `Purpose:` and leaves `Description:` blank picks
+    // the populated one.
+    let mut description: Option<String> = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
         let Some(body) = trimmed.strip_prefix("//") else { continue };
@@ -197,9 +208,14 @@ fn parse_bt_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
             extensions.extend(parse_extensions(rest));
         } else if let Some(rest) = header_value(body, "ID Bytes") {
             magic.extend(parse_id_bytes(rest));
+        } else if description.is_none() {
+            let rest = header_value(body, "Purpose").or_else(|| header_value(body, "Description"));
+            if let Some(rest) = rest {
+                description = clean_description(rest);
+            }
         }
     }
-    (extensions, magic)
+    (extensions, magic, description)
 }
 
 /// Read ImHex `#pragma MIME` and `#pragma magic` directives. Magic
@@ -207,9 +223,10 @@ fn parse_bt_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
 /// the magic-prefix matcher in [`TemplateLibrary::suggest`] doesn't
 /// model offsets. Wildcard nibbles (`0?`) in patterns are skipped
 /// rather than matched fuzzily.
-fn parse_imhex_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
+fn parse_imhex_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>, Option<String>) {
     let mut extensions = Vec::new();
     let mut magic = Vec::new();
+    let mut description: Option<String> = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("#pragma") else { continue };
@@ -222,9 +239,14 @@ fn parse_imhex_header(text: &str) -> (Vec<String>, Vec<Vec<u8>>) {
             && let Some(bytes) = parse_imhex_magic(value.trim())
         {
             magic.push(bytes);
+        } else if description.is_none()
+            && let Some(value) = rest.strip_prefix("description")
+            && value.starts_with(|c: char| c.is_whitespace())
+        {
+            description = clean_description(value.trim());
         }
     }
-    (extensions, magic)
+    (extensions, magic, description)
 }
 
 /// Map common MIME types to a file extension hint. The table is
@@ -361,6 +383,21 @@ fn strip_inline_comment(s: &str) -> &str {
         Some(i) => s[..i].trim_end(),
         None => s.trim_end(),
     }
+}
+
+/// Normalise a description value pulled from a header. Strips
+/// surrounding quotes (ImHex authors often quote, 010 authors rarely
+/// do), trims whitespace, and discards empty results so callers see
+/// `None` rather than `Some("")`.
+fn clean_description(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(trimmed)
+        .trim();
+    if unquoted.is_empty() { None } else { Some(unquoted.to_owned()) }
 }
 
 /// Extract the filename arguments of every `#include "..."` directive
@@ -612,12 +649,14 @@ mod tests {
             name: "PNG.bt".into(),
             extensions: vec!["bin".into()],
             magic: vec![vec![0x89, 0x50, 0x4E, 0x47]],
+            description: None,
         };
         let other = TemplateEntry {
             path: PathBuf::from("FOO.bt"),
             name: "FOO.bt".into(),
             extensions: vec!["bin".into()],
             magic: vec![vec![0x00, 0x01]],
+            description: None,
         };
         let lib = TemplateLibrary { entries: vec![other, png] };
         let head = [0x89, 0x50, 0x4E, 0x47, 0x0D];
@@ -626,7 +665,7 @@ mod tests {
 
     #[test]
     fn imhex_magic_pragma_at_offset_zero() {
-        let (exts, magic) = parse_imhex_header("#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n");
+        let (exts, magic, _) = parse_imhex_header("#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n");
         assert_eq!(exts, vec!["zip"]);
         assert_eq!(magic, vec![vec![0x50, 0x4B, 0x03, 0x04]]);
     }
@@ -635,11 +674,61 @@ mod tests {
     fn imhex_magic_pragma_skips_non_zero_offsets_and_wildcards() {
         // Offset != 0 is silently skipped: the magic-prefix matcher
         // can't anchor anywhere else.
-        let (_, magic) = parse_imhex_header("#pragma magic [ AA BB ] @ 0x10\n");
+        let (_, magic, _) = parse_imhex_header("#pragma magic [ AA BB ] @ 0x10\n");
         assert!(magic.is_empty());
         // Wildcard nibbles drop the whole pattern.
-        let (_, magic) = parse_imhex_header("#pragma magic [ 0? FF ] @ 0x00\n");
+        let (_, magic, _) = parse_imhex_header("#pragma magic [ 0? FF ] @ 0x00\n");
         assert!(magic.is_empty());
+    }
+
+    #[test]
+    fn imhex_description_pragma_round_trips() {
+        let (_, _, desc) = parse_imhex_header("#pragma description PNG image format\n#pragma magic [ 89 50 ] @ 0x00\n");
+        assert_eq!(desc.as_deref(), Some("PNG image format"));
+
+        let (_, _, quoted) =
+            parse_imhex_header("#pragma description \"With spaces and quotes\"\n#pragma magic [ 89 50 ] @ 0x00\n");
+        assert_eq!(quoted.as_deref(), Some("With spaces and quotes"));
+    }
+
+    #[test]
+    fn bt_description_header_round_trips() {
+        let (_, _, desc) = parse_bt_header(
+            "// File Mask: *.zip\n// Description: Pulls apart ZIP central directory\n// ID Bytes: 50 4B\n",
+        );
+        assert_eq!(desc.as_deref(), Some("Pulls apart ZIP central directory"));
+    }
+
+    #[test]
+    fn bt_purpose_header_in_010_wizard_layout() {
+        // Mirrors the header the 010 Editor wizard emits, including
+        // the leading banner line and surrounding blank-value rows
+        // we've seen in the WoWs Index fixture.
+        let header = "//------------------------------------------------\n\
+                      //--- 010 Editor v11.0.1 Binary Template\n\
+                      //\n\
+                      //      File: WoWs Index\n\
+                      //   Authors: \n\
+                      //   Version: \n\
+                      //   Purpose: Reads asset descriptors from WoWs index files\n\
+                      //  Category: \n\
+                      // File Mask: assets.bin\n\
+                      //  ID Bytes: \n\
+                      //   History: \n\
+                      //------------------------------------------------\n";
+        let (exts, _, desc) = parse_bt_header(header);
+        assert_eq!(exts, vec!["assets.bin".to_owned()]);
+        assert_eq!(desc.as_deref(), Some("Reads asset descriptors from WoWs index files"));
+    }
+
+    #[test]
+    fn bt_blank_purpose_does_not_shadow_description() {
+        // Older templates fill in `Description:` and leave `Purpose:`
+        // blank. Empty values shouldn't lock out a real value that
+        // appears later in the header.
+        let (_, _, desc) =
+            parse_bt_header("//   Purpose: \n// Description: Falls back when Purpose is empty\n");
+        assert_eq!(desc.as_deref(), Some("Falls back when Purpose is empty"));
     }
 
     #[test]
@@ -728,6 +817,7 @@ mod tests {
             name: "ZIP.bt".into(),
             extensions: vec!["zip".into()],
             magic: vec![vec![0x50, 0x4B]],
+            description: None,
         };
         let lib = TemplateLibrary { entries: vec![zip] };
         assert_eq!(lib.suggest(Some("zip"), &[0, 0, 0]).unwrap().name, "ZIP.bt");

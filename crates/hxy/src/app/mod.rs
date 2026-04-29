@@ -1377,10 +1377,10 @@ impl HxyApp {
     }
 
     /// Look at the just-opened file's extension + first bytes and
-    /// raise a template-prompt toast for every plausible match. The
-    /// toast layer collapses sibling prompts when the user accepts
-    /// one, so opening a `.zip` with both a `.bt` and a `.hexpat`
-    /// match shows both options but cleans up after the choice.
+    /// raise a single template-prompt panel listing every plausible
+    /// match. Multiple candidates render as rows in one anchored
+    /// window; accepting any row dispatches that template and closes
+    /// the panel.
     #[cfg(not(target_arch = "wasm32"))]
     fn suggest_templates_for(&mut self, id: FileId) {
         let Some(file) = self.files.get(&id) else { return };
@@ -1410,14 +1410,20 @@ impl HxyApp {
             })
             .cloned()
             .collect();
-        // Cap at three so the corner doesn't fill with toasts on a
+        // Cap at three rows so the panel stays scannable on a
         // popular extension. The palette still surfaces the full
         // list for power users.
         let group = id.get();
-        for entry in candidates.into_iter().take(3) {
-            let label = hxy_i18n::t_args("toast-template-suggestion", &[("name", &entry.name)]);
-            self.toasts.push_template_prompt(group, id, entry.path.clone(), label);
-        }
+        let entries: Vec<crate::toasts::TemplatePromptEntry> = candidates
+            .into_iter()
+            .take(3)
+            .map(|entry| crate::toasts::TemplatePromptEntry {
+                template_path: entry.path,
+                name: entry.name,
+                description: entry.description,
+            })
+            .collect();
+        self.toasts.set_template_prompt(group, id, entries);
     }
 
     /// Allocate a `FileId`, build an `OpenFile`, run handler / template
