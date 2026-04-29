@@ -1018,7 +1018,11 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             let minimap_width = if minimap { (char_w * 8.0).max(48.0) } else { 0.0 };
             let v_scrollbar_width = ui.style().spacing.scroll.bar_width.max(10.0);
             let h_scrollbar_height = ui.style().spacing.scroll.bar_width.max(10.0);
-            let header_height = row_height * 0.75;
+            // Slightly taller than a single row so the centered column
+            // label has visible padding on both sides; at `row_height *
+            // 0.75` the galley overflowed the band and the descenders
+            // sat right on the divider.
+            let header_height = row_height + 4.0;
             let avail = ui.available_rect_before_wrap();
 
             let scroll_w = (avail.width() - layout.address_w - minimap_width - v_scrollbar_width).max(1.0);
@@ -2947,7 +2951,9 @@ fn paint_column_header(
     formatter: Option<&dyn Fn(usize) -> String>,
 ) {
     let cols = usize::from(layout.columns.get());
-    let header_height = row_height * 0.75;
+    // Use the band's actual height so the centered cells stay
+    // aligned with whatever the caller sized the header to.
+    let header_height = header_rect.height();
     let painter = ui.painter_at(header_rect);
     // Opaque background so a row scrolled up to the top edge of the
     // viewport doesn't bleed colored byte tints up into the header
@@ -2972,11 +2978,16 @@ fn paint_column_header(
             None => format!("{:X}", col % 16),
         };
         let galley = glyphs.label_galley(&painter, font_id, &label);
+        // Anchor by the galley's *ink* center (mesh_bounds) rather than
+        // its layout box. ASCII letters/digits leave empty space below
+        // the baseline for descenders that aren't there, so centering
+        // the layout box would bias the visible glyph upward.
+        let ink_offset = galley.mesh_bounds.center().to_vec2();
         let cell = layout.hex_cell_rect(origin, col, header_height);
-        let cell_pos = Align2::CENTER_CENTER.anchor_size(cell.center(), galley.size()).min;
+        let cell_pos = cell.center() - ink_offset;
         painter.galley_with_override_text_color(cell_pos, galley.clone(), color);
         let ascii_cell = layout.ascii_cell_rect(origin, col, header_height);
-        let ascii_pos = Align2::CENTER_CENTER.anchor_size(ascii_cell.center(), galley.size()).min;
+        let ascii_pos = ascii_cell.center() - ink_offset;
         painter.galley_with_override_text_color(ascii_pos, galley, color);
     }
     // Anchor the divider fully *above* the header / scroll-viewport
