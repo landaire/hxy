@@ -33,6 +33,8 @@ tab-settings = Settings
 tab-welcome = Welcome
 tab-console = Console
 tab-inspector = Inspector
+tab-plugins = Plugins
+tab-search-results = Search results
 
 # Console tab
 console-empty = No plugin output yet. Template diagnostics will appear here.
@@ -72,7 +74,7 @@ palette-plugin-prompt-empty = (type an answer)
 
 # Command palette
 palette-hint-main = Search commands, files, templates...
-palette-hint-quick-open = Switch to open file...
+palette-hint-quick-open = Switch to open tab...
 palette-hint-templates = Filter templates...
 palette-hint-templates-at-selection = Filter templates (binds to selection)...
 palette-hint-uninstall = Uninstall which template?

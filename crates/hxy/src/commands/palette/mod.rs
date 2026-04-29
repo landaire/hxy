@@ -401,6 +401,12 @@ pub enum PaletteCommand {
 pub enum Action {
     InvokeCommand(PaletteCommand),
     FocusFile(FileId),
+    /// Move dock focus to a non-file tab kind (Settings, Console,
+    /// Inspector, Plugins, Memory, SearchResults, Compare, Entropy,
+    /// Visualizer, PluginMount, Welcome). File / Workspace tabs go
+    /// through `FocusFile` so the workspace-nesting logic in
+    /// `focus_file_tab` lands on the inner editor sub-tab.
+    FocusTab(crate::tabs::Tab),
     /// Run `path` against the active file. `range` is the byte slice
     /// the template binds to; `None` means the whole file.
     RunTemplate {

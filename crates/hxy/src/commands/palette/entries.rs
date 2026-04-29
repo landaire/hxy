@@ -213,6 +213,47 @@ pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, re
     );
 }
 
+/// Build a QuickOpen palette entry for a tool / panel tab kind.
+/// Returns `None` for `Tab::File` and `Tab::Workspace` because the
+/// surrounding QuickOpen loop already lists every `OpenFile` (which
+/// covers both plain file tabs and workspace-nested editor / entry
+/// sub-tabs) via [`Action::FocusFile`]. Adding the outer-dock entry
+/// for those would duplicate rows.
+fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entry<Action>> {
+    use egui_phosphor::regular as icon;
+
+    let (title, icon_glyph): (String, &'static str) = match tab {
+        Tab::File(_) | Tab::Workspace(_) => return None,
+        Tab::Welcome => (hxy_i18n::t("tab-welcome"), icon::HOUSE),
+        Tab::Settings => (hxy_i18n::t("tab-settings"), icon::GEAR),
+        Tab::Console => (hxy_i18n::t("tab-console"), icon::TERMINAL),
+        Tab::Inspector => (hxy_i18n::t("tab-inspector"), icon::EYE),
+        Tab::Plugins => (hxy_i18n::t("tab-plugins"), icon::PUZZLE_PIECE),
+        Tab::Memory => (hxy_i18n::t("tab-memory"), icon::CHART_BAR),
+        Tab::SearchResults => (hxy_i18n::t("tab-search-results"), icon::MAGNIFYING_GLASS),
+        Tab::Entropy(file_id) => {
+            let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
+            (hxy_i18n::t_args("tab-entropy", &[("name", name)]), icon::CHART_LINE)
+        }
+        Tab::Visualizer(file_id) => {
+            let name = app.files.get(&file_id).map(|f| f.display_name.as_str()).unwrap_or("");
+            (hxy_i18n::t_args("tab-visualizer", &[("name", name)]), icon::SHAPES)
+        }
+        Tab::Compare(compare_id) => match app.compares.get(&compare_id) {
+            Some(s) => (
+                hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]),
+                icon::GIT_DIFF,
+            ),
+            None => return None,
+        },
+        Tab::PluginMount(mount_id) => match app.mounts.get(&mount_id) {
+            Some(m) => (m.display_name.clone(), icon::TREE_STRUCTURE),
+            None => return None,
+        },
+    };
+    Some(egui_palette::Entry::new(title, Action::FocusTab(tab)).with_icon(icon_glyph))
+}
+
 pub fn build_palette_entries(
     ctx: &egui::Context,
     app: &HxyApp,
@@ -840,6 +881,11 @@ pub fn build_palette_entries(
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
                 out.push(entry);
+            }
+            for (_, tab) in app.dock.iter_all_tabs() {
+                if let Some(entry) = quick_open_entry_for_tab(app, *tab) {
+                    out.push(entry);
+                }
             }
             let open_paths: std::collections::HashSet<std::path::PathBuf> =
                 app.files.values().filter_map(|f| f.root_path().cloned()).collect();

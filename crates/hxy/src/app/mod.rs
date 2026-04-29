@@ -1025,6 +1025,18 @@ impl HxyApp {
         })
     }
 
+    /// Move dock focus to `tab`, if it lives in the outer dock. No-op
+    /// when the tab is gone (closed since the caller picked it up).
+    /// Use `focus_file_tab` instead for `Tab::File` / `Tab::Workspace`,
+    /// which need the workspace-nesting fallback.
+    pub(crate) fn focus_tab(&mut self, tab: Tab) {
+        if let Some(path) = self.dock.find_tab(&tab) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+        }
+    }
+
     /// Move dock focus to the tab backing `file_id`, if found.
     pub(crate) fn focus_file_tab(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::File(file_id)) {
@@ -4777,7 +4789,7 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Settings => hxy_i18n::t("tab-settings").into(),
             Tab::Console => hxy_i18n::t("tab-console").into(),
             Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
-            Tab::Plugins => "Plugins".into(),
+            Tab::Plugins => hxy_i18n::t("tab-plugins").into(),
             Tab::Memory => hxy_i18n::t("tab-memory").into(),
             Tab::Entropy(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
@@ -4812,7 +4824,9 @@ impl TabViewer for HxyTabViewer<'_> {
                 None => format!("mount-{}", mount_id.get()).into(),
             },
             #[cfg(not(target_arch = "wasm32"))]
-            Tab::SearchResults => format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS).into(),
+            Tab::SearchResults => {
+                format!("{} {}", egui_phosphor::regular::MAGNIFYING_GLASS, hxy_i18n::t("tab-search-results")).into()
+            }
             Tab::Workspace(workspace_id) => match self.workspaces.get(workspace_id) {
                 Some(w) => match self.files.get(&w.editor_id) {
                     Some(f) => {
