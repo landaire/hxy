@@ -4426,6 +4426,20 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
         &template_ctx,
         &offset_ctx,
     );
+    // Stage inline ghost-completion for the calculator query
+    // before handing off to egui_palette. Computed against the
+    // active file's templates so `png.<seg>` knows what fields
+    // the parsed PNG actually has.
+    {
+        let templates: &[crate::files::TemplateInstance] = app
+            .last_active_file
+            .and_then(|id| app.files.get(&id))
+            .map(|f| f.templates.as_slice())
+            .unwrap_or(&[]);
+        let resolver = crate::commands::palette::calculator::TemplateFieldResolver::new(templates);
+        app.palette.inner.completion_suggestion =
+            crate::commands::palette::completion::compute_suggestion(&app.palette.inner.query, &resolver);
+    }
     let Some(outcome) = crate::commands::palette::show(ctx, &mut app.palette, entries) else { return };
     match outcome {
         crate::commands::palette::Outcome::Dismissed(reason) => dismiss_palette(app, reason),

@@ -83,6 +83,7 @@ pub fn build_offset_entries(
     mode: Mode,
     query: &str,
     offset_ctx: &OffsetPaletteContext,
+    resolver: &dyn hxy_calculator::PathResolver,
 ) {
     use egui_phosphor::regular as icon;
 
@@ -90,7 +91,7 @@ pub fn build_offset_entries(
         return;
     }
     match mode {
-        Mode::GoToOffset => match crate::commands::goto::parse_number(query).and_then(|n| {
+        Mode::GoToOffset => match crate::commands::goto::parse_offset_expr(query, resolver).and_then(|n| {
             n.resolve(offset_ctx.cursor, offset_ctx.source_len).ok_or(crate::commands::goto::ParseError::OutOfRange)
         }) {
             Ok(target) => {
@@ -105,8 +106,9 @@ pub fn build_offset_entries(
             }
             Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
         },
-        Mode::SelectFromOffset => match crate::commands::goto::parse_number(query) {
-            Ok(crate::commands::goto::Number::Absolute(count)) if count > 0 => {
+        Mode::SelectFromOffset => match crate::commands::goto::parse_count_expr(query, resolver) {
+            Ok(0) => super::entries::invalid_entry(out, query, "count must be nonzero"),
+            Ok(count) => {
                 let start = offset_ctx.cursor;
                 let available = offset_ctx.source_len.saturating_sub(start);
                 if available == 0 {
@@ -127,15 +129,9 @@ pub fn build_offset_entries(
                     .with_subtitle(format!("0x{start:X} .. 0x{end_exclusive:X}")),
                 );
             }
-            Ok(crate::commands::goto::Number::Absolute(_)) => {
-                super::entries::invalid_entry(out, query, "count must be nonzero")
-            }
-            Ok(crate::commands::goto::Number::Relative(_)) => {
-                super::entries::invalid_entry(out, query, "count must be absolute (no + / - prefix)")
-            }
             Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
         },
-        Mode::SelectRange => match crate::commands::goto::parse_range(query, offset_ctx.source_len) {
+        Mode::SelectRange => match crate::commands::goto::parse_range_expr(query, offset_ctx.source_len, resolver) {
             Ok(range) => {
                 out.push(
                     egui_palette::Entry::new(

@@ -83,6 +83,13 @@ impl Function {
         }
     }
 
+    /// Every known function. Useful for completion -- the host can
+    /// rank these alongside template names without having to
+    /// hand-maintain a parallel list.
+    pub fn all() -> &'static [Self] {
+        &[Self::Offset, Self::Len]
+    }
+
     /// Match a lowercased identifier against the known function
     /// names. Returns `None` for anything else so `primary` can
     /// fall through to a path lookup.

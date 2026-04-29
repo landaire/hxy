@@ -57,6 +57,24 @@ use thiserror::Error;
 /// once regardless of which view the expression demands.
 pub trait PathResolver {
     fn lookup(&self, path: &Path) -> Result<FieldRef, ResolveError>;
+
+    /// Distinct template-stem names available for completion.
+    /// Returns an empty list by default so resolvers that don't
+    /// support multi-template lookup don't have to think about
+    /// completion. Order is up to the implementation; the host
+    /// typically sorts alphabetically before showing them.
+    fn template_stems(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Names of `path`'s direct children, used for completion of
+    /// `path.<segment>` queries. The default returns an empty list
+    /// (no completion). Implementations should treat the same
+    /// "auto-descend through a single root" rule as [`Self::lookup`]
+    /// so the user's mental path matches what completion offers.
+    fn list_children(&self, _path: &Path) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// What a [`PathResolver`] returns for a successfully-located

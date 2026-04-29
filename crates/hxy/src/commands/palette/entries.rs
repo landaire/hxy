@@ -154,18 +154,18 @@ pub fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
 /// supported window, and emits an [`Action::SetPollInterval`].
 /// `0` is preserved as the "disable polling" sentinel and
 /// labeled distinctly so the user knows what they're picking.
-fn build_poll_interval_entries(out: &mut Vec<egui_palette::Entry<Action>>, query: &str) {
+fn build_poll_interval_entries(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    query: &str,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
     use crate::files::watch::PollingPrefs;
     use egui_phosphor::regular as icon;
     if query.is_empty() {
         return;
     }
-    let parsed = match crate::commands::goto::parse_number(query) {
-        Ok(crate::commands::goto::Number::Absolute(n)) => n,
-        Ok(crate::commands::goto::Number::Relative(_)) => {
-            invalid_entry(out, query, "interval must be absolute (no + / - prefix)");
-            return;
-        }
+    let parsed = match crate::commands::goto::parse_count_expr(query, resolver) {
+        Ok(n) => n,
         Err(e) => {
             invalid_entry(out, query, &e.to_string());
             return;
@@ -228,8 +228,8 @@ pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, re
 fn build_calculator_entry(
     out: &mut Vec<egui_palette::Entry<Action>>,
     expr: &str,
-    app: &HxyApp,
     offset_ctx: &OffsetPaletteContext,
+    resolver: &dyn hxy_calculator::PathResolver,
 ) {
     use egui_phosphor::regular as icon;
 
@@ -244,15 +244,7 @@ fn build_calculator_entry(
         invalid_entry(out, trimmed, &hxy_i18n::t("palette-invalid-no-active-file"));
         return;
     }
-    // `last_active_file` was refreshed earlier this frame by
-    // `offset_palette_context` (which is the only call site that
-    // can mutate it before us). Reading it here keeps
-    // `build_palette_entries` on a `&HxyApp` borrow.
-    let active_file = app.last_active_file.and_then(|id| app.files.get(&id));
-    let templates: &[crate::files::TemplateInstance] =
-        active_file.map(|f| f.templates.as_slice()).unwrap_or(&[]);
-    let resolver = super::calculator::TemplateFieldResolver::new(templates);
-    let value = match hxy_calculator::evaluate_str_with(trimmed, &resolver) {
+    let value = match hxy_calculator::evaluate_str_with(trimmed, resolver) {
         Ok(v) => v,
         Err(e) => {
             invalid_entry(out, trimmed, &e.to_string());
@@ -287,6 +279,62 @@ fn build_calculator_entry(
         .with_icon(icon::CALCULATOR)
         .with_subtitle(format!("{trimmed} = {raw}")),
     );
+}
+
+/// Resolve a `=<expression>` query into "Copy result" entries.
+/// Mirrors [`build_calculator_entry`] but emits *two* rows --
+/// decimal and hex -- so the user can pick the format that
+/// matches whatever they're pasting into. Both rows route
+/// through the same [`Action::CopyText`] dispatch.
+fn build_calculator_copy_entries(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    expr: &str,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
+    use egui_phosphor::regular as icon;
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-copy-result-prompt"), Action::NoOp).with_icon(icon::CALCULATOR),
+        );
+        return;
+    }
+    let value = match hxy_calculator::evaluate_str_with(trimmed, resolver) {
+        Ok(v) => v,
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    let raw = value.raw();
+    let decimal = format!("{raw}");
+    let hex = format_signed_hex(raw);
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args("palette-copy-decimal-fmt", &[("value", &decimal)]),
+            Action::CopyText(decimal.clone()),
+        )
+        .with_icon(icon::COPY)
+        .with_subtitle(hex.clone()),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args("palette-copy-hex-fmt", &[("value", &hex)]),
+            Action::CopyText(hex),
+        )
+        .with_icon(icon::COPY)
+        .with_subtitle(decimal),
+    );
+}
+
+/// Format a signed `i128` as a `0x...` literal. Negative values
+/// get a leading `-` rather than a two's-complement bit pattern;
+/// `-16` renders `-0x10`, not a 128-bit value with the high bits
+/// set. Most paste targets (debuggers, hex editors, code) expect
+/// the signed-magnitude form.
+fn format_signed_hex(value: i128) -> String {
+    if value < 0 { format!("-0x{:X}", value.unsigned_abs()) } else { format!("0x{value:X}") }
 }
 
 /// Build a QuickOpen palette entry for a tool / panel tab kind.
@@ -342,6 +390,19 @@ pub fn build_palette_entries(
 
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
     let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
+    // Calculator-resolver scoped to the active file's templates.
+    // Cheap to construct (just borrows the slice); used by every
+    // mode that accepts an expression. When no file is active or
+    // the file has no templates, the resolver still handles plain
+    // arithmetic / units -- only path lookups error.
+    let calc_resolver = {
+        let templates: &[crate::files::TemplateInstance] = app
+            .last_active_file
+            .and_then(|id| app.files.get(&id))
+            .map(|f| f.templates.as_slice())
+            .unwrap_or(&[]);
+        super::calculator::TemplateFieldResolver::new(templates)
+    };
     match app.palette.mode {
         Mode::Main => {
             // `@<expression>` is a calculator-driven Go to Offset
@@ -354,7 +415,11 @@ pub fn build_palette_entries(
             // matched grab bag of unrelated commands underneath
             // would be noise.
             if let Some(rest) = app.palette.inner.query.trim_start().strip_prefix('@') {
-                build_calculator_entry(&mut out, rest, app, offset_ctx);
+                build_calculator_entry(&mut out, rest, offset_ctx, &calc_resolver);
+                return out;
+            }
+            if let Some(rest) = app.palette.inner.query.trim_start().strip_prefix('=') {
+                build_calculator_copy_entries(&mut out, rest, &calc_resolver);
                 return out;
             }
             out.push(
@@ -1185,7 +1250,7 @@ pub fn build_palette_entries(
             if !offset_ctx.available {
                 invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
             } else {
-                super::offset::build_offset_entries(&mut out, app.palette.mode, query, offset_ctx);
+                super::offset::build_offset_entries(&mut out, app.palette.mode, query, offset_ctx, &calc_resolver);
             }
         }
         Mode::SetColumnsLocal | Mode::SetColumnsGlobal => {
@@ -1193,12 +1258,12 @@ pub fn build_palette_entries(
             if matches!(app.palette.mode, Mode::SetColumnsLocal) && !offset_ctx.available {
                 invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
             } else {
-                super::columns::build_columns_entries(&mut out, app.palette.mode, query);
+                super::columns::build_columns_entries(&mut out, app.palette.mode, query, &calc_resolver);
             }
         }
         Mode::SetPollInterval => {
             let query = app.palette.inner.query.trim();
-            build_poll_interval_entries(&mut out, query);
+            build_poll_interval_entries(&mut out, query, &calc_resolver);
         }
         Mode::PluginCascade => {
             if let Some(cascade) = app.palette.plugin_cascade.as_ref() {
@@ -1235,4 +1300,19 @@ pub fn build_palette_entries(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_signed_hex;
+
+    #[test]
+    fn signed_hex_positive_zero_negative() {
+        assert_eq!(format_signed_hex(0), "0x0");
+        assert_eq!(format_signed_hex(0x100), "0x100");
+        assert_eq!(format_signed_hex(-16), "-0x10");
+        // i128::MIN must not panic on `unsigned_abs` -- it's the
+        // one value where naive `abs()` would.
+        assert_eq!(format_signed_hex(i128::MIN), format!("-0x{:X}", (i128::MIN as u128).wrapping_neg()));
+    }
 }

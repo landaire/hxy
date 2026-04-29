@@ -93,8 +93,12 @@ palette-select-from-offset-entry = Select bytes from current offset...
 palette-select-range-entry = Select range...
 palette-go-to-offset-fmt = Go to offset { $offset }
 palette-go-to-offset-prompt = Go to offset (type an expression)...
-palette-go-to-offset-shortcut-hint = or type @<expression> here, e.g. @0x100 + 1MiB
+palette-go-to-offset-shortcut-hint = or type @<expr> to jump or =<expr> to copy result
 palette-calculator-out-of-range = { $value } is past end of file ({ $max })
+palette-copy-result-prompt = Copy result (type an expression)...
+palette-copy-decimal-fmt = Copy { $value } (decimal)
+palette-copy-hex-fmt = Copy { $value } (hex)
+palette-copy-result-shortcut-hint = or type =<expression> here, e.g. =0x100 + 1MiB
 palette-select-from-offset-fmt = Select { $count } bytes from { $start }
 palette-select-range-fmt = Select { $start } .. { $end } ({ $count } bytes)
 palette-invalid-fmt = Invalid: { $reason }

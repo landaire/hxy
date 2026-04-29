@@ -134,6 +134,10 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 }
             }
         }
+        Action::CopyText(text) => {
+            app.palette.close();
+            ctx.copy_text(text);
+        }
         Action::FocusFile(id) => {
             app.palette.close();
             app.focus_file_tab(id);

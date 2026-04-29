@@ -9,6 +9,7 @@
 pub mod apply;
 pub mod calculator;
 pub mod columns;
+pub mod completion;
 pub mod entries;
 pub mod offset;
 
@@ -401,6 +402,11 @@ pub enum PaletteCommand {
 #[derive(Clone)]
 pub enum Action {
     InvokeCommand(PaletteCommand),
+    /// Copy `text` to the system clipboard and dismiss the palette.
+    /// Used by the `=<expression>` shortcut to surface the
+    /// calculated value in two formats (decimal / hex) without
+    /// bolting on a separate per-format command for each.
+    CopyText(String),
     FocusFile(FileId),
     /// Move dock focus to a non-file tab kind (Settings, Console,
     /// Inspector, Plugins, Memory, SearchResults, Compare, Entropy,
@@ -549,7 +555,10 @@ pub fn show(
             | Mode::SetColumnsGlobal
             | Mode::PluginPrompt
             | Mode::SetPollInterval
-    ) || (matches!(state.mode, Mode::Main) && state.inner.query.trim_start().starts_with('@'));
+    ) || (matches!(state.mode, Mode::Main) && {
+        let q = state.inner.query.trim_start();
+        q.starts_with('@') || q.starts_with('=')
+    });
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),
         egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),

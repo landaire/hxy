@@ -53,6 +53,18 @@ pub enum ParseError {
     MissingSeparator,
     #[error("both endpoints are relative; at least one must be absolute")]
     BothRelative,
+    /// A calculator expression failed to parse or evaluate. The
+    /// inner string is the formatted calculator error so the
+    /// palette's "Invalid: ..." row reads naturally
+    /// ("Invalid: division by zero" / "Invalid: syntax error
+    /// at position 5" / etc.).
+    #[error("{0}")]
+    Calc(String),
+    /// Used by argument-style modes that don't accept a leading
+    /// `+`/`-` (e.g. column count, poll interval). The whole
+    /// expression must evaluate to a non-negative integer.
+    #[error("expected an absolute count (no leading + / -)")]
+    NotAbsolute,
 }
 
 pub fn parse_number(input: &str) -> Result<Number, ParseError> {
@@ -128,6 +140,84 @@ pub fn parse_range(input: &str, source_len: u64) -> Result<ResolvedRange, ParseE
     };
     let start = parse_number(raw_start)?;
     let end = parse_number(raw_end)?;
+    resolve_range(start, end, source_len, inclusive)
+}
+
+/// Parse `input` as a full calculator expression and classify
+/// the result as absolute or relative based on the AST's outer
+/// shape. A leading unary `+` / `-` (i.e. `Expr::Unary` at the
+/// root, including `-(complex_expr)` and `+(complex_expr)`)
+/// flags the value as a cursor-relative delta; anything else
+/// (literals, paths, function calls, binary ops at the root) is
+/// absolute. This lets `+10` and `-0x100` keep their
+/// cursor-relative meaning while still letting `0x100 + 1MiB`,
+/// `png.length`, `offset(png.IDAT)` etc. flow through as plain
+/// expressions.
+pub fn parse_offset_expr(input: &str, resolver: &dyn hxy_calculator::PathResolver) -> Result<Number, ParseError> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    let expr = hxy_calculator::parse(s).map_err(|e| ParseError::Calc(e.to_string()))?;
+    let value = hxy_calculator::evaluate_with(&expr, resolver).map_err(|e| ParseError::Calc(e.to_string()))?;
+    let raw = value.raw();
+    if matches!(expr, hxy_calculator::Expr::Unary(_, _)) {
+        let signed = i64::try_from(raw).map_err(|_| ParseError::OutOfRange)?;
+        return Ok(Number::Relative(signed));
+    }
+    let abs = u64::try_from(raw).map_err(|_| ParseError::OutOfRange)?;
+    Ok(Number::Absolute(abs))
+}
+
+/// Parse `input` as an absolute, non-negative count expression.
+/// Mirrors [`parse_offset_expr`] but rejects relative outputs
+/// (a leading `+` / `-`) up-front so a column-count or poll-
+/// interval input can't accidentally be interpreted as a cursor
+/// delta.
+pub fn parse_count_expr(input: &str, resolver: &dyn hxy_calculator::PathResolver) -> Result<u64, ParseError> {
+    match parse_offset_expr(input, resolver)? {
+        Number::Absolute(v) => Ok(v),
+        Number::Relative(_) => Err(ParseError::NotAbsolute),
+    }
+}
+
+/// Range variant of [`parse_offset_expr`]. Splits on `..=`,
+/// `..`, or `,` (in that order so the longer separator wins),
+/// runs [`parse_offset_expr`] on each side, then resolves
+/// relative endpoints against the absolute one -- same algorithm
+/// as the original [`parse_range`]. Each side may be a full
+/// calculator expression (`(5 + 1)..=(0x100 + 1MiB)`,
+/// `offset(png.IDAT)..=offset(png.IDAT) + len(png.IDAT) - 1`).
+pub fn parse_range_expr(
+    input: &str,
+    source_len: u64,
+    resolver: &dyn hxy_calculator::PathResolver,
+) -> Result<ResolvedRange, ParseError> {
+    let s = input.trim();
+    let (raw_start, raw_end, inclusive) = if let Some((a, b)) = s.split_once("..=") {
+        (a.trim(), b.trim(), true)
+    } else if let Some((a, b)) = s.split_once("..") {
+        (a.trim(), b.trim(), false)
+    } else if let Some((a, b)) = s.split_once(',') {
+        (a.trim(), b.trim(), false)
+    } else {
+        return Err(ParseError::MissingSeparator);
+    };
+    let start = parse_offset_expr(raw_start, resolver)?;
+    let end = parse_offset_expr(raw_end, resolver)?;
+    resolve_range(start, end, source_len, inclusive)
+}
+
+/// Resolve a `(start, end)` pair into a [`ResolvedRange`]. Shared
+/// between [`parse_range`] and [`parse_range_expr`] so the
+/// relative-anchor / endpoint-swap / inclusive-bump logic stays
+/// in one place.
+fn resolve_range(
+    start: Number,
+    end: Number,
+    source_len: u64,
+    inclusive: bool,
+) -> Result<ResolvedRange, ParseError> {
     let (start_abs, end_abs) = match (start, end) {
         (Number::Absolute(s), Number::Absolute(e)) => (s, e),
         (Number::Absolute(s), Number::Relative(d)) => {
@@ -150,10 +240,6 @@ pub fn parse_range(input: &str, source_len: u64) -> Result<ResolvedRange, ParseE
     if start_abs > max || end_abs > max {
         return Err(ParseError::OutOfRange);
     }
-    // Accept either ordering and normalise so lo <= hi, then turn
-    // an inclusive end into the equivalent exclusive index by
-    // adding one byte. `..=source_len` would overflow the buffer so
-    // reject it explicitly.
     let (lo, hi) = if start_abs <= end_abs { (start_abs, end_abs) } else { (end_abs, start_abs) };
     let end_exclusive = if inclusive {
         if hi >= source_len {
@@ -256,5 +342,115 @@ mod tests {
     #[test]
     fn parse_range_requires_separator() {
         assert_eq!(parse_range("100", 4096), Err(ParseError::MissingSeparator));
+    }
+
+    /// Stub resolver that returns canned offset / length for a
+    /// `png.IDAT` field; everything else errors. Used to exercise
+    /// the calc-based parsers' path / function paths without
+    /// pulling a full template runtime in.
+    struct FakeResolver;
+    impl hxy_calculator::PathResolver for FakeResolver {
+        fn lookup(&self, path: &hxy_calculator::Path) -> Result<hxy_calculator::FieldRef, hxy_calculator::ResolveError> {
+            if path.root == "png"
+                && path.instance.is_none()
+                && path.segments == [hxy_calculator::PathSegment::Name("IDAT".into())]
+            {
+                Ok(hxy_calculator::FieldRef { offset: 0x100, length: 0x40, value: Some(0x40) })
+            } else {
+                Err(hxy_calculator::ResolveError::UnknownTemplate { name: path.root.clone() })
+            }
+        }
+    }
+
+    #[test]
+    fn parse_offset_expr_plain_literal_is_absolute() {
+        assert_eq!(parse_offset_expr("100", &hxy_calculator::NullResolver), Ok(Number::Absolute(100)));
+        assert_eq!(parse_offset_expr("0x100", &hxy_calculator::NullResolver), Ok(Number::Absolute(256)));
+    }
+
+    #[test]
+    fn parse_offset_expr_unary_outermost_is_relative() {
+        // Same shape as the old parse_number relative inputs.
+        assert_eq!(parse_offset_expr("+10", &hxy_calculator::NullResolver), Ok(Number::Relative(10)));
+        assert_eq!(parse_offset_expr("-0x10", &hxy_calculator::NullResolver), Ok(Number::Relative(-16)));
+    }
+
+    #[test]
+    fn parse_offset_expr_calc_expression_is_absolute() {
+        // Binary at the root -> absolute. The `+ 5` makes the
+        // outer node Add, not Unary.
+        assert_eq!(parse_offset_expr("0x100 + 1KiB", &hxy_calculator::NullResolver), Ok(Number::Absolute(256 + 1024)));
+    }
+
+    #[test]
+    fn parse_offset_expr_negative_absolute_is_out_of_range() {
+        // `-10 + 5` evaluates to -5 with Add at the root, so it's
+        // classified as absolute -- and absolute can't be
+        // negative, so it bails as OutOfRange. Users who want
+        // relative for a mixed-sign expression wrap it:
+        // `-(10 + 5)` or `+(5 - 10)`.
+        assert_eq!(parse_offset_expr("-10 + 5", &hxy_calculator::NullResolver), Err(ParseError::OutOfRange));
+    }
+
+    #[test]
+    fn parse_offset_expr_explicit_relative_via_parens() {
+        // Wrapping a complex expression in unary makes it relative.
+        assert_eq!(parse_offset_expr("-(0x10 + 0x20)", &hxy_calculator::NullResolver), Ok(Number::Relative(-48)));
+        assert_eq!(parse_offset_expr("+(1 KiB)", &hxy_calculator::NullResolver), Ok(Number::Relative(1024)));
+    }
+
+    #[test]
+    fn parse_offset_expr_uses_resolver_for_paths() {
+        assert_eq!(parse_offset_expr("offset(png.IDAT)", &FakeResolver), Ok(Number::Absolute(0x100)));
+        assert_eq!(parse_offset_expr("len(png.IDAT) + 1", &FakeResolver), Ok(Number::Absolute(0x41)));
+    }
+
+    #[test]
+    fn parse_count_expr_rejects_relative() {
+        assert_eq!(parse_count_expr("+10", &hxy_calculator::NullResolver), Err(ParseError::NotAbsolute));
+        assert_eq!(parse_count_expr("-10", &hxy_calculator::NullResolver), Err(ParseError::NotAbsolute));
+        assert_eq!(parse_count_expr("16", &hxy_calculator::NullResolver), Ok(16));
+        assert_eq!(parse_count_expr("1 KiB", &hxy_calculator::NullResolver), Ok(1024));
+    }
+
+    #[test]
+    fn parse_range_expr_inclusive_with_calc_expressions() {
+        // Both sides are full calculator expressions; `..=` makes
+        // it inclusive.
+        let r = parse_range_expr("(5 + 1)..=(10 * 2)", 4096, &hxy_calculator::NullResolver).unwrap();
+        assert_eq!(r.start, 6);
+        assert_eq!(r.end_exclusive, 21);
+        assert_eq!(r.len(), 15);
+    }
+
+    #[test]
+    fn parse_range_expr_no_parens_calc_expressions() {
+        // `..` splits before the calculator parses, so unparen'd
+        // expressions on each side work too.
+        let r = parse_range_expr("0x10 + 1..=0x20 + 0x10", 4096, &hxy_calculator::NullResolver).unwrap();
+        assert_eq!(r.start, 0x11);
+        // Inclusive end => +1.
+        assert_eq!(r.end_exclusive, 0x30 + 1);
+    }
+
+    #[test]
+    fn parse_range_expr_relative_endpoint_resolves_against_other() {
+        let r = parse_range_expr("0x100..+0x40", 4096, &hxy_calculator::NullResolver).unwrap();
+        assert_eq!(r.start, 0x100);
+        assert_eq!(r.end_exclusive, 0x140);
+    }
+
+    #[test]
+    fn parse_range_expr_with_template_fields() {
+        // Range derived from template field spans:
+        // offset(png.IDAT) ..= offset(png.IDAT) + len(png.IDAT) - 1
+        let r = parse_range_expr(
+            "offset(png.IDAT)..=offset(png.IDAT) + len(png.IDAT) - 1",
+            0x10_000,
+            &FakeResolver,
+        )
+        .unwrap();
+        assert_eq!(r.start, 0x100);
+        assert_eq!(r.end_exclusive, 0x100 + 0x40);
     }
 }

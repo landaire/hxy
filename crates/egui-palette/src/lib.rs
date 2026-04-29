@@ -68,6 +68,27 @@ pub struct State {
     /// hide the entry the moment it didn't happen to be a subsequence
     /// of the entry's human-readable title.
     pub bypass_filter: bool,
+    /// Browser-URL-style ghost text shown after the user's `query`,
+    /// pre-selected so the next keystroke either consumes a char
+    /// of it (selection-replace with a matching char) or wipes it
+    /// (typing a non-matching char or pressing Backspace). The
+    /// host (re)computes this each frame from the current `query`
+    /// and writes it here before calling [`show`]. The widget
+    /// renders the buffer as `query + suggestion`, sets the
+    /// selection over the suggestion portion, and -- on the next
+    /// frame -- syncs `query` to whatever the user committed.
+    /// Right-arrow / End / Tab commit the suggestion; any other
+    /// edit replaces or shrinks it.
+    pub completion_suggestion: Option<String>,
+    /// Latched when the user explicitly rejects the inline ghost
+    /// (Backspace deletes the selected suggestion, or the cursor
+    /// moves off the end without typing). Stays set until the
+    /// user types another char at the end of `query`. While set,
+    /// `show` ignores the `completion_suggestion` the host
+    /// staged so the user's next Backspace eats from their typed
+    /// prefix instead of being intercepted by a re-rendered
+    /// ghost.
+    completion_dismissed: bool,
     /// Snapshot of `query` from the previous frame. When the
     /// palette detects `query != last_query` it snaps `selected`
     /// back to the top (best match), matching VS Code / Zed UX.
@@ -85,11 +106,15 @@ impl State {
         self.selected = 0;
         self.pending_focus = true;
         self.bypass_filter = false;
+        self.completion_suggestion = None;
+        self.completion_dismissed = false;
     }
 
     pub fn close(&mut self) {
         self.open = false;
         self.bypass_filter = false;
+        self.completion_suggestion = None;
+        self.completion_dismissed = false;
     }
 }
 
@@ -545,8 +570,50 @@ pub fn show_with_style<A: Clone>(
                 ui.set_min_width(panel_width);
                 ui.set_max_width(panel_width);
 
-                let text_edit =
-                    egui::TextEdit::singleline(&mut state.query).hint_text(hint).desired_width(f32::INFINITY);
+                // Inline ghost completion: when the host has
+                // staged a suggestion -- and the user hasn't
+                // explicitly dismissed completion via Backspace
+                // / mid-click -- render the buffer as
+                // `query + suggestion` with the suggestion
+                // portion pre-selected. egui's TextEdit handles
+                // selection-replacement natively, so the next
+                // keystroke either consumes one char of the
+                // suggestion (matching keystroke) or wipes it
+                // (non-matching or Backspace). Right-arrow / End
+                // collapse the selection to its end, committing
+                // the suggestion into `query`.
+                //
+                // The `completion_dismissed` latch breaks the
+                // loop where re-staging a suggestion every frame
+                // would intercept every Backspace -- the user
+                // could never delete past the ghost into their
+                // own text.
+                let staged = state.completion_suggestion.take();
+                let suggestion = if state.completion_dismissed { None } else { staged };
+                let display_buffer: String = match &suggestion {
+                    Some(s) => format!("{}{s}", state.query),
+                    None => state.query.clone(),
+                };
+                let text_edit_id = egui::Id::new("egui_palette_text_edit");
+                let suggestion_range: Option<(usize, usize)> = suggestion.as_ref().map(|s| {
+                    let start = state.query.chars().count();
+                    let end = start + s.chars().count();
+                    (start, end)
+                });
+                if let Some((start, end)) = suggestion_range {
+                    let mut tx_state = egui::TextEdit::load_state(ui.ctx(), text_edit_id).unwrap_or_default();
+                    tx_state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::two(
+                        egui::text::CCursor::new(start),
+                        egui::text::CCursor::new(end),
+                    )));
+                    egui::TextEdit::store_state(ui.ctx(), text_edit_id, tx_state);
+                }
+                let prev_query_chars = state.query.chars().count();
+                let mut buffer = display_buffer.clone();
+                let text_edit = egui::TextEdit::singleline(&mut buffer)
+                    .id(text_edit_id)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY);
                 let resp = ui.add(text_edit);
                 if state.pending_focus {
                     resp.request_focus();
@@ -554,6 +621,69 @@ pub fn show_with_style<A: Clone>(
                 } else if !resp.has_focus() {
                     resp.request_focus();
                 }
+                // Reconcile post-frame buffer / cursor with the
+                // intended query, and update the
+                // `completion_dismissed` latch.
+                let post_state = egui::TextEdit::load_state(ui.ctx(), text_edit_id);
+                let buffer_chars = buffer.chars().count();
+                let display_chars = display_buffer.chars().count();
+                state.query = if buffer != display_buffer {
+                    // Edit happened (typed, deleted, pasted).
+                    let backspaced_suggestion =
+                        suggestion.is_some() && buffer == state.query;
+                    if backspaced_suggestion {
+                        // User explicitly cleared the ghost.
+                        // Latch dismissal so the next Backspace
+                        // eats their typed prefix instead.
+                        state.completion_dismissed = true;
+                    } else if buffer_chars > prev_query_chars {
+                        // Net growth -- user typed at the end
+                        // (or selection-replaced with a matching
+                        // char that grew the buffer). Re-arm
+                        // completion.
+                        state.completion_dismissed = false;
+                    }
+                    buffer
+                } else if let Some((start, end)) = suggestion_range {
+                    // Buffer unchanged, but a suggestion was
+                    // pending. Distinguish (a) "user did
+                    // nothing" -- selection still over the
+                    // suggestion, (b) "user committed" -- cursor
+                    // collapsed at the end of the buffer
+                    // (Right/End), and (c) "user navigated
+                    // mid-buffer" -- cursor collapsed somewhere
+                    // else. Only the third case latches
+                    // dismissal; if the cursor info is
+                    // unavailable for some reason (no stored
+                    // state, focus not yet established) we keep
+                    // the suggestion alive rather than
+                    // accidentally dismissing on the very first
+                    // frame the ghost appears.
+                    if let Some(r) = post_state.as_ref().and_then(|st| st.cursor.char_range()) {
+                        let lo = r.primary.index.min(r.secondary.index);
+                        let hi = r.primary.index.max(r.secondary.index);
+                        let still_selected = lo == start && hi == end;
+                        let committed = r.is_empty() && r.primary.index == display_chars;
+                        if still_selected {
+                            state.query.clone()
+                        } else if committed {
+                            buffer
+                        } else {
+                            state.completion_dismissed = true;
+                            state.query.clone()
+                        }
+                    } else {
+                        state.query.clone()
+                    }
+                } else {
+                    // No suggestion was rendered this frame; just
+                    // sync the buffer. Dismissal flips off as soon
+                    // as the user types more (length grows).
+                    if buffer_chars > prev_query_chars {
+                        state.completion_dismissed = false;
+                    }
+                    buffer
+                };
 
                 ui.add_space(6.0);
                 // Sync selection from hover only while the pointer is

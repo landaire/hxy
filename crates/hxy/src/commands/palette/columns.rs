@@ -11,7 +11,12 @@ use crate::commands::palette::Mode;
 /// above this overflows even ultrawide monitors at sane font sizes.
 pub const PALETTE_MAX_COLUMNS: u16 = 64;
 
-pub fn build_columns_entries(out: &mut Vec<egui_palette::Entry<Action>>, mode: Mode, query: &str) {
+pub fn build_columns_entries(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    mode: Mode,
+    query: &str,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
     use egui_phosphor::regular as icon;
 
     if query.is_empty() {
@@ -22,12 +27,8 @@ pub fn build_columns_entries(out: &mut Vec<egui_palette::Entry<Action>>, mode: M
         Mode::SetColumnsGlobal => ColumnScope::Global,
         _ => return,
     };
-    let parsed = match crate::commands::goto::parse_number(query) {
-        Ok(crate::commands::goto::Number::Absolute(n)) => n,
-        Ok(crate::commands::goto::Number::Relative(_)) => {
-            super::entries::invalid_entry(out, query, "column count must be absolute (no + / - prefix)");
-            return;
-        }
+    let parsed = match crate::commands::goto::parse_count_expr(query, resolver) {
+        Ok(n) => n,
         Err(e) => {
             super::entries::invalid_entry(out, query, &e.to_string());
             return;
