@@ -174,7 +174,16 @@ pub fn show(
     let children = children_by_parent(&state.tree.nodes);
     let visible = build_visible(state, &children);
 
-    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    // Round to the GUI grid (multiples of 1/32 pt) so consecutive
+    // row tops stay aligned with the device pixel grid. Without
+    // this, a fractional body-text height (zoom != 1.0 produces
+    // these readily) accumulates across rows and every other row
+    // ends up sub-pixel-offset, which makes egui's debug overlay
+    // light up the cells with "Unaligned" watermarks.
+    let row_height = {
+        use egui::emath::GuiRounding;
+        (ui.text_style_height(&egui::TextStyle::Body) + 4.0).round_ui()
+    };
     let mut any_hover: Option<TemplateNodeIdx> = None;
     // Source access for synthesized ScalarArrayElement rows. Decoded
     // values come back as strings via [`decode_scalar_bytes`]. Pulled
@@ -446,30 +455,44 @@ impl TableDelegate for TemplateTableDelegate<'_> {
 
     fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
         let Some(row) = self.visible.get(cell.row_nr as usize) else { return };
-        ui.add_space(6.0);
-        match row {
-            RowKind::Node { idx, depth, is_parent, collapsed } => {
-                self.render_node_cell(ui, cell.col_nr, *idx, *depth, *is_parent, *collapsed);
+        // egui_table's `auto_size_mode = Always` redistributes the
+        // remaining width across resizable columns, which produces
+        // fractional column widths when the parent width doesn't
+        // divide cleanly. Each cell's max_rect inherits those
+        // fractional bounds, child widgets get fractional rects,
+        // and egui's debug overlay watermarks them as "Unaligned".
+        // Snap the cell's bounds to the GUI grid here so every
+        // child widget allocates from aligned coordinates.
+        let aligned = {
+            use egui::emath::GuiRounding;
+            ui.max_rect().round_ui()
+        };
+        ui.scope_builder(egui::UiBuilder::new().max_rect(aligned).layout(*ui.layout()), |ui| {
+            ui.add_space(6.0);
+            match row {
+                RowKind::Node { idx, depth, is_parent, collapsed } => {
+                    self.render_node_cell(ui, cell.col_nr, *idx, *depth, *is_parent, *collapsed);
+                }
+                RowKind::DeferredArray { array_id, count, stride, first_offset, element_type, depth } => {
+                    self.render_deferred_cell(
+                        ui,
+                        cell.col_nr,
+                        *array_id,
+                        *count,
+                        *stride,
+                        *first_offset,
+                        element_type,
+                        *depth,
+                    );
+                }
+                RowKind::ArrayElement { array_id, index, depth } => {
+                    self.render_array_element_cell(ui, cell.col_nr, *array_id, *index, *depth);
+                }
+                RowKind::ScalarArrayElement { parent_idx, index, depth } => {
+                    self.render_scalar_array_element_cell(ui, cell.col_nr, *parent_idx, *index, *depth);
+                }
             }
-            RowKind::DeferredArray { array_id, count, stride, first_offset, element_type, depth } => {
-                self.render_deferred_cell(
-                    ui,
-                    cell.col_nr,
-                    *array_id,
-                    *count,
-                    *stride,
-                    *first_offset,
-                    element_type,
-                    *depth,
-                );
-            }
-            RowKind::ArrayElement { array_id, index, depth } => {
-                self.render_array_element_cell(ui, cell.col_nr, *array_id, *index, *depth);
-            }
-            RowKind::ScalarArrayElement { parent_idx, index, depth } => {
-                self.render_scalar_array_element_cell(ui, cell.col_nr, *parent_idx, *index, *depth);
-            }
-        }
+        });
     }
 
     fn default_row_height(&self) -> f32 {
