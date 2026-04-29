@@ -94,6 +94,11 @@ pub struct StringsResult {
     pub computed_at: jiff::Timestamp,
     pub source_len: u64,
     pub config: StringsConfig,
+    /// Sort order the `entries` slice is currently in. Tracked here
+    /// so the renderer can detect when the panel's `sort` has
+    /// drifted and reshuffle in place. The extractor emits entries
+    /// in offset-ascending order, which is the default.
+    pub sorted_by: SortOrder,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +113,52 @@ pub struct StringsComputation {
     pub started: std::time::Instant,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SortColumn {
+    #[default]
+    Offset,
+    End,
+    Length,
+    Text,
+}
+
+/// Sort direction + the column it's applied to. Click a header to
+/// either flip direction (when the column is already active) or
+/// switch to that column (always asc on switch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SortOrder {
+    Asc(SortColumn),
+    Desc(SortColumn),
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        Self::Asc(SortColumn::Offset)
+    }
+}
+
+impl SortOrder {
+    pub fn column(self) -> SortColumn {
+        match self {
+            Self::Asc(c) | Self::Desc(c) => c,
+        }
+    }
+
+    pub fn is_descending(self) -> bool {
+        matches!(self, Self::Desc(_))
+    }
+
+    /// Click feedback: clicking the active column flips direction;
+    /// clicking a different column switches to it asc.
+    pub fn cycle(self, target: SortColumn) -> Self {
+        if self.column() == target {
+            if self.is_descending() { Self::Asc(target) } else { Self::Desc(target) }
+        } else {
+            Self::Asc(target)
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct StringsPanel {
     pub config: StringsConfig,
@@ -117,6 +168,9 @@ pub struct StringsPanel {
     /// Held on the panel rather than recomputed each frame so it
     /// survives view scroll / repaint.
     pub filter: String,
+    /// Active sort applied to `last_result.entries`. Defaults to
+    /// ascending offset, matching the order the extractor produces.
+    pub sort: SortOrder,
 }
 
 /// Synchronous strings extractor. Reads the configured range from
@@ -154,7 +208,14 @@ pub fn extract(source: &dyn HexSource, config: &StringsConfig) -> Result<Strings
             truncated = true;
         }
     }
-    Ok(StringsResult { entries, truncated, computed_at: jiff::Timestamp::now(), source_len, config: config.clone() })
+    Ok(StringsResult {
+        entries,
+        truncated,
+        computed_at: jiff::Timestamp::now(),
+        source_len,
+        config: config.clone(),
+        sorted_by: SortOrder::default(),
+    })
 }
 
 /// Spin up a strings worker. Returns the in-flight handle the host
@@ -429,7 +490,6 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
     };
 
     let filter = panel.filter.trim().to_lowercase();
-    let mut shown: usize = 0;
     let total = result.entries.len();
 
     let summary = if filter.is_empty() {
@@ -448,37 +508,148 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
         );
     }
 
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("strings-results-grid")
-            .num_columns(4)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new(hxy_i18n::t("strings-col-offset")).strong());
-                ui.label(egui::RichText::new(hxy_i18n::t("strings-col-end")).strong());
-                ui.label(egui::RichText::new(hxy_i18n::t("strings-col-length")).strong());
-                ui.label(egui::RichText::new(hxy_i18n::t("strings-col-text")).strong());
-                ui.end_row();
+    // Re-sort the entries vector in place when the panel's sort
+    // order has drifted from what the result was last sorted by.
+    // Stored on the result rather than recomputed each frame so a
+    // re-render with the same sort doesn't pay the sort cost.
+    if result.sorted_by != panel.sort {
+        let order = panel.sort;
+        let result_mut = panel.last_result.as_mut().expect("matched as Some above");
+        sort_entries(&mut result_mut.entries, order);
+        result_mut.sorted_by = order;
+    }
+    let result = panel.last_result.as_ref().expect("matched as Some above");
 
-                for entry in &result.entries {
-                    if !filter.is_empty() && !entry.text.to_lowercase().contains(&filter) {
-                        continue;
-                    }
-                    if ui.link(format!("0x{:X}", entry.offset)).clicked() {
-                        events.push(StringsEvent::Jump { offset: entry.offset, end: entry.end });
-                    }
-                    ui.monospace(format!("0x{:X}", entry.end));
-                    ui.monospace(format!("{}", entry.length()));
-                    ui.label(egui::RichText::new(&entry.text).monospace());
-                    ui.end_row();
-                    shown += 1;
-                }
-            });
-        if shown == 0 && !filter.is_empty() {
+    // Filter is applied as a Vec<usize> of indices into the
+    // (possibly re-sorted) entries vector so the egui_table delegate
+    // can map row_nr -> entry without rescanning each frame.
+    let visible: Vec<usize> = if filter.is_empty() {
+        (0..result.entries.len()).collect()
+    } else {
+        result
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.text.to_lowercase().contains(&filter).then_some(i))
+            .collect()
+    };
+
+    if visible.is_empty() {
+        if !filter.is_empty() {
             ui.label(hxy_i18n::t("strings-no-matches"));
         }
-    });
+        return events;
+    }
+
+    let mut delegate = StringsTableDelegate {
+        entries: &result.entries,
+        visible: &visible,
+        sort: panel.sort,
+        pending_sort: None,
+        events: &mut events,
+    };
+
+    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+    let table = egui_table::Table::new()
+        .id_salt("hxy-strings-table")
+        .num_rows(visible.len() as u64)
+        .columns(vec![
+            egui_table::Column::new(110.0).range(70.0..=200.0).resizable(true).id(egui::Id::new("strings-col-offset")),
+            egui_table::Column::new(110.0).range(70.0..=200.0).resizable(true).id(egui::Id::new("strings-col-end")),
+            egui_table::Column::new(80.0).range(50.0..=160.0).resizable(true).id(egui::Id::new("strings-col-length")),
+            egui_table::Column::new(360.0).range(80.0..=2000.0).resizable(true).id(egui::Id::new("strings-col-text")),
+        ])
+        .headers(vec![egui_table::HeaderRow::new(row_height + 2.0)])
+        .auto_size_mode(egui_table::AutoSizeMode::Always);
+    table.show(ui, &mut delegate);
+
+    if let Some(new_sort) = delegate.pending_sort {
+        panel.sort = new_sort;
+    }
 
     events
+}
+
+/// Sort `entries` in place by the given order. Pulled out so the
+/// renderer can re-sort lazily when the panel's sort changes.
+fn sort_entries(entries: &mut [StringEntry], order: SortOrder) {
+    use std::cmp::Ordering;
+    let cmp = |a: &StringEntry, b: &StringEntry| -> Ordering {
+        match order.column() {
+            SortColumn::Offset => a.offset.cmp(&b.offset),
+            SortColumn::End => a.end.cmp(&b.end),
+            SortColumn::Length => a.length().cmp(&b.length()),
+            SortColumn::Text => a.text.cmp(&b.text),
+        }
+    };
+    if order.is_descending() {
+        entries.sort_by(|a, b| cmp(a, b).reverse());
+    } else {
+        entries.sort_by(cmp);
+    }
+}
+
+struct StringsTableDelegate<'a> {
+    entries: &'a [StringEntry],
+    visible: &'a [usize],
+    sort: SortOrder,
+    /// Set by `header_cell_ui` when the user clicked a column
+    /// header. The caller writes it back onto the panel after
+    /// `Table::show` returns.
+    pending_sort: Option<SortOrder>,
+    events: &'a mut Vec<StringsEvent>,
+}
+
+impl egui_table::TableDelegate for StringsTableDelegate<'_> {
+    fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
+        let (label_key, sort_col) = match cell.col_range.start {
+            0 => ("strings-col-offset", SortColumn::Offset),
+            1 => ("strings-col-end", SortColumn::End),
+            2 => ("strings-col-length", SortColumn::Length),
+            3 => ("strings-col-text", SortColumn::Text),
+            _ => return,
+        };
+        let mut text = hxy_i18n::t(label_key);
+        if self.sort.column() == sort_col {
+            let glyph =
+                if self.sort.is_descending() { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_UP };
+            text.push(' ');
+            text.push_str(glyph);
+        }
+        ui.add_space(6.0);
+        let resp = ui.add(egui::Label::new(egui::RichText::new(text).strong()).sense(egui::Sense::click()));
+        if resp.clicked() {
+            self.pending_sort = Some(self.sort.cycle(sort_col));
+        }
+    }
+
+    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
+        let row = cell.row_nr as usize;
+        let Some(entry_idx) = self.visible.get(row).copied() else { return };
+        let Some(entry) = self.entries.get(entry_idx) else { return };
+        ui.add_space(4.0);
+        match cell.col_nr {
+            0 => {
+                if ui.link(egui::RichText::new(format!("0x{:X}", entry.offset)).monospace()).clicked() {
+                    self.events.push(StringsEvent::Jump { offset: entry.offset, end: entry.end });
+                }
+            }
+            1 => {
+                ui.monospace(format!("0x{:X}", entry.end));
+            }
+            2 => {
+                ui.monospace(format!("{}", entry.length()));
+            }
+            3 => {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&entry.text).monospace())
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .selectable(true),
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 fn format_bytes(n: u64) -> String {
