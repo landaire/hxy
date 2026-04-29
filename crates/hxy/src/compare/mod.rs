@@ -264,7 +264,7 @@ impl CompareSession {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx_clone = ctx.clone();
         let deadline_dur = deadline.as_duration();
-        std::thread::spawn(move || {
+        crate::background::submit(move || {
             let deadline_at = std::time::Instant::now() + deadline_dur;
             let ops = capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at));
             let hunks: Vec<DiffHunk> = ops.into_iter().map(diff_op_to_hunk).collect();

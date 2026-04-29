@@ -80,7 +80,7 @@ impl FetchHandle {
 pub fn spawn_fetch(ctx: &egui::Context, dest: PathBuf) -> FetchHandle {
     let (sender, inbox) = UiInbox::channel();
     let ctx_for_thread = ctx.clone();
-    std::thread::spawn(move || {
+    crate::background::submit(move || {
         let result = run_fetch(&dest, |status| {
             // Best-effort: if the inbox went away the user closed
             // the app and we don't care about delivery anymore.

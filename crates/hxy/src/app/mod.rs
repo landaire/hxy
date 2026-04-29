@@ -440,6 +440,11 @@ impl HxyApp {
         install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         cc.egui_ctx.set_global_style(crate::style::hxy_style());
+        // Spin up the shared CPU-bound worker pool eagerly so the
+        // first template / diff / entropy job doesn't pay thread
+        // creation latency on the UI hot path.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::background::init();
         let (initial_zoom, initial_window, show_patterns_prompt, initial_polling) = {
             let s = state.read();
             // First-launch download dialog when the corpus isn't on

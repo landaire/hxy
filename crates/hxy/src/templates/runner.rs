@@ -170,7 +170,7 @@ pub fn run_template_from_path(
     file.active_template = Some(instance_id);
 
     let base = bound_range.start().get();
-    std::thread::spawn(move || {
+    crate::background::submit(move || {
         let outcome = match runtime.parse(bound_source, &template_source) {
             Ok(parsed) => {
                 let adjusted: Arc<dyn ParsedTemplate> = Arc::new(OffsetAdjustedTemplate { inner: parsed, base });

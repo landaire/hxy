@@ -3007,6 +3007,7 @@ dependencies = [
  "base64",
  "blake3",
  "clap",
+ "crossbeam-channel",
  "dhat",
  "dirs",
  "eframe",

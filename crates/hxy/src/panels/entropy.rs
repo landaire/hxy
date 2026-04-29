@@ -177,7 +177,7 @@ pub fn spawn_compute(
 ) -> EntropyComputation {
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
     let started = std::time::Instant::now();
-    std::thread::spawn(move || {
+    crate::background::submit(move || {
         let outcome = match compute_entropy(&*source, window_bytes) {
             Ok(points) => EntropyOutcome::Ok(EntropyState {
                 points,
