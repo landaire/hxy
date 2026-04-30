@@ -396,6 +396,99 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     app.apply_reload_decision(ctx, pending.file_id, decision);
 }
 
+/// Modal asking the user whether to apply a plugin-supplied virtual
+/// base address to the file's display. Fires once per (file,
+/// plugin) pair the first time the host sees a hint with no
+/// recorded choice; the answer rides on
+/// [`crate::state::OpenTabState::virtual_base_choice`] so we don't
+/// re-prompt across reopens.
+pub fn render_virtual_base_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pending_virtual_base_prompt.is_none() {
+        return;
+    }
+    let (file_id, display_name, hint) = {
+        let p = app.pending_virtual_base_prompt.as_ref().unwrap();
+        (p.file_id, p.display_name.clone(), p.hint)
+    };
+    let mut decision: Option<bool> = None;
+    let mut open = true;
+    let screen_center = ctx.content_rect().center();
+    egui::Window::new(hxy_i18n::t("virtual-base-prompt-title"))
+        .id(egui::Id::new("hxy_virtual_base_prompt_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(screen_center)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.label(hxy_i18n::t_args(
+                "virtual-base-prompt-body",
+                &[("name", &display_name), ("base", &format!("0x{hint:X}"))],
+            ));
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(hxy_i18n::t("virtual-base-prompt-templates-note"))
+                    .color(ui.visuals().warn_fg_color),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(hxy_i18n::t("virtual-base-prompt-apply"))
+                    .on_hover_text(hxy_i18n::t("virtual-base-prompt-apply-tooltip"))
+                    .clicked()
+                {
+                    decision = Some(true);
+                }
+                if ui
+                    .button(hxy_i18n::t("virtual-base-prompt-decline"))
+                    .on_hover_text(hxy_i18n::t("virtual-base-prompt-decline-tooltip"))
+                    .clicked()
+                {
+                    decision = Some(false);
+                }
+            });
+        });
+    if !open && decision.is_none() {
+        // Closing the window without picking is treated as
+        // "decline for now" -- record it so the prompt doesn't
+        // boomerang back next frame. The user can still flip the
+        // choice manually once the address-based commands land.
+        decision = Some(false);
+    }
+    let Some(accepted) = decision else { return };
+    let pending = app.pending_virtual_base_prompt.take().expect("checked above");
+    let choice = if accepted {
+        crate::state::VirtualBaseChoice::Accepted(pending.hint)
+    } else {
+        crate::state::VirtualBaseChoice::Declined
+    };
+    // Apply to live OpenFile.
+    if let Some(file) = app.files.get_mut(&file_id) {
+        file.virtual_base = if accepted { Some(pending.hint) } else { None };
+    }
+    // Persist so we don't re-prompt next launch. Looks the file
+    // up by its current `source_kind` -- if the entry isn't in
+    // `open_tabs` yet (rare race), the choice is lost and the
+    // prompt will fire again, which is acceptable.
+    let source = app.files.get(&file_id).and_then(|f| f.source_kind.clone());
+    if let Some(source) = source {
+        let mut g = app.state.write();
+        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
+            entry.virtual_base_choice = Some(choice);
+        }
+    }
+    app.console_log(
+        ConsoleSeverity::Info,
+        format!("Virtual base {}", pending.display_name),
+        if accepted {
+            format!("applied 0x{:X}", pending.hint)
+        } else {
+            "declined; addresses stay as file offsets".to_owned()
+        },
+    );
+}
+
 /// Modal asking the user whether to restore an unsaved-edits sidecar
 /// found on open. Clean sidecars get the short path; modified /
 /// unknown ones get a yellow warning banner plus a worded

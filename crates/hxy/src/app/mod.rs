@@ -337,6 +337,15 @@ pub struct HxyApp {
     /// auto-reload mode is `Ask`.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_reload_prompt: Option<PendingReloadPrompt>,
+    /// Modal asking the user whether to apply a plugin-supplied
+    /// virtual base address to a freshly-opened file. `Some` between
+    /// the moment the file opens and the moment the user picks
+    /// Accept / Decline; persisted choice rides on
+    /// [`crate::state::OpenTabState::virtual_base_choice`] so the
+    /// prompt fires only once per file across the lifetime of the
+    /// tab entry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_virtual_base_prompt: Option<PendingVirtualBasePrompt>,
     /// Workspace-entry tabs whose underlying VFS entry vanished
     /// after a reload. Each one prompts the user with "close the
     /// tab or keep its in-memory bytes?" -- the view may still
@@ -416,6 +425,19 @@ pub(crate) struct PendingReloadPrompt {
     /// Drives the wording of the "discard local edits" warning
     /// inside the dialog so the user knows what's at stake.
     pub(crate) has_unsaved: bool,
+}
+
+/// Modal prompting the user to apply a plugin-supplied virtual
+/// base address to a freshly-opened file. Set when a VFS-entry
+/// open captures a `virtual_base_hint` and the file's persisted
+/// `virtual_base_choice` is still `None`. The dialog renders one
+/// per frame and writes the user's choice into `OpenTabState`,
+/// applying the base to the live `OpenFile` on Accept.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PendingVirtualBasePrompt {
+    pub(crate) file_id: FileId,
+    pub(crate) display_name: String,
+    pub(crate) hint: u64,
 }
 
 /// One choice from the reload-prompt dialog. Routed back into
@@ -583,6 +605,8 @@ impl HxyApp {
             },
             #[cfg(not(target_arch = "wasm32"))]
             pending_reload_prompt: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_virtual_base_prompt: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_orphan_entries: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1860,9 +1884,7 @@ impl HxyApp {
                     Some(tab.scroll_offset),
                     target,
                 );
-                if let Some(file) = self.files.get_mut(&opened_id) {
-                    file.virtual_base_hint = virtual_base_hint;
-                }
+                record_virtual_base_hint(self, opened_id, virtual_base_hint);
                 Ok(())
             }
             TabSource::Anonymous { id, title } => {
@@ -2590,6 +2612,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_reload_prompt_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        crate::app::dialogs::render_virtual_base_prompt_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_orphaned_entry_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::files::snapshot_ui::render_snapshot_dialog(ui.ctx(), self);
@@ -3154,6 +3178,52 @@ pub(crate) fn drain_strings_runs(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Stash a plugin-supplied virtual base hint on `file_id` and either
+/// apply the user's previously-recorded choice (Accepted / Declined
+/// from `OpenTabState`) or queue the first-time prompt. Called from
+/// every VFS-entry open path -- restore-from-disk, live click into a
+/// workspace, live click into a plugin mount -- so the prompt fires
+/// exactly once per (file, plugin) lifetime.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn record_virtual_base_hint(app: &mut HxyApp, file_id: FileId, hint: Option<u64>) {
+    let Some(file) = app.files.get_mut(&file_id) else { return };
+    file.virtual_base_hint = hint;
+    let Some(hint) = hint else { return };
+    let display_name = file.display_name.clone();
+    // Look up persisted choice. The OpenTabState entry is keyed by
+    // the file's source; if no record exists yet (a freshly-opened
+    // tab the host hasn't pushed into open_tabs) treat that as
+    // "never asked" too.
+    let source = file.source_kind.clone();
+    let prior = source
+        .as_ref()
+        .and_then(|src| app.state.read().open_tabs.iter().find(|t| &t.source == src).cloned());
+    match prior.and_then(|t| t.virtual_base_choice) {
+        Some(crate::state::VirtualBaseChoice::Accepted(base)) => {
+            // User already said yes; restore the applied base
+            // without re-prompting. We trust the persisted value
+            // even if the plugin's hint shifted -- letting the
+            // plugin override would erase the user's control.
+            if let Some(file) = app.files.get_mut(&file_id) {
+                file.virtual_base = Some(base);
+            }
+        }
+        Some(crate::state::VirtualBaseChoice::Declined) => {
+            // User already said no; respect that.
+        }
+        None => {
+            // First time we're seeing this file with a hint; queue
+            // the modal. Only one prompt is in flight at a time --
+            // if another is already queued, the second hint is
+            // dropped and the user can re-trigger by reopening.
+            if app.pending_virtual_base_prompt.is_none() {
+                app.pending_virtual_base_prompt =
+                    Some(PendingVirtualBasePrompt { file_id, display_name, hint });
+            }
+        }
+    }
+}
+
 /// Re-run the file's source-derived analyses after the bytes
 /// were swapped out from under us (reload from disk, save flushing
 /// edits + reopening). Templates always re-fire; entropy / strings
@@ -3562,9 +3632,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
                 let opened_id =
                     app.open_with_target(name, Some(source), stream, None, None, OpenTarget::Workspace(workspace_id));
-                if let Some(file) = app.files.get_mut(&opened_id) {
-                    file.virtual_base_hint = virtual_base_hint;
-                }
+                record_virtual_base_hint(app, opened_id, virtual_base_hint);
             }
             PendingVfsOpen::PluginMount { mount_id, entry_path } => {
                 let Some(entry) = app.mounts.get(&mount_id) else { continue };
@@ -3592,9 +3660,7 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                 // before `open` -- it routes via push_to_focused_leaf.
                 crate::tabs::dock_ops::focus_content_leaf(app);
                 let opened_id = app.open(name, Some(source), stream, None, None, false);
-                if let Some(file) = app.files.get_mut(&opened_id) {
-                    file.virtual_base_hint = virtual_base_hint;
-                }
+                record_virtual_base_hint(app, opened_id, virtual_base_hint);
             }
         }
     }

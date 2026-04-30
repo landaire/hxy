@@ -293,6 +293,16 @@ toast-template-group-title = Run a template?
 toast-template-run = Run
 toast-template-dismiss = Dismiss
 
+# Virtual-base-address prompt (fires when a VFS plugin advertises a load
+# address for an opened entry, such as an Xbox memory region).
+virtual-base-prompt-title = Apply virtual base address?
+virtual-base-prompt-body = This file's plugin reports virtual base { $base }. With this applied, every offset hxy displays for { $name } is rendered as the virtual address (file offset + base), and "Go to address" / "Copy as address" palette commands target the virtual coordinate space.
+virtual-base-prompt-templates-note = Note: templates and patterns that compute byte references against load addresses may need this enabled to evaluate correctly.
+virtual-base-prompt-apply = Apply
+virtual-base-prompt-apply-tooltip = Treat this file's bytes as starting at the reported virtual base. The choice is remembered across reopens.
+virtual-base-prompt-decline = Use file offsets
+virtual-base-prompt-decline-tooltip = Leave the file's offsets alone (0-based file offsets). The choice is remembered across reopens.
+
 # Reload-on-disk-change dialog
 reload-prompt-title = File changed on disk
 reload-prompt-body-modified-clean = { $name } was modified outside hxy. Reload from disk?
