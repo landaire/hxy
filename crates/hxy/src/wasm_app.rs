@@ -67,6 +67,26 @@ impl HxyApp {
         }
     }
 
+    /// Snapshot the active file's display name and byte source for
+    /// the wasm save flow. Reads the entire source through the
+    /// editor (so any in-memory patches are included). Returns
+    /// `None` when no file is focused or the source can't be read.
+    /// Bytes are buffered up front because the `rfd::save_file`
+    /// future runs on a separate `spawn_local` task and can't
+    /// re-borrow `&self.files`.
+    fn active_file_bytes(&self) -> Option<(String, Vec<u8>)> {
+        let id = self.last_active_file?;
+        let file = self.files.get(&id)?;
+        let len = file.editor.source().len().get();
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).ok()?;
+            file.editor.source().read(range).ok()?
+        };
+        Some((file.display_name.clone(), bytes))
+    }
+
     /// Open an in-memory byte buffer as a fresh file tab. Used by
     /// the rfd file picker and any future drag-and-drop / paste
     /// path. Returns the new tab's id.
@@ -124,6 +144,28 @@ impl eframe::App for HxyApp {
                         ctx_clone.request_repaint();
                     });
                 }
+                // Save the active file's current bytes (post any
+                // in-memory edits) as a browser download. rfd's
+                // wasm save backend doesn't pop a save-as dialog
+                // -- it returns a writable handle whose `.write`
+                // call triggers the download with the suggested
+                // filename baked in.
+                let snapshot = self.active_file_bytes();
+                ui.add_enabled_ui(snapshot.is_some(), |ui| {
+                    if ui.button("Save as...").clicked()
+                        && let Some((name, bytes)) = snapshot
+                    {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let Some(handle) = rfd::AsyncFileDialog::new().set_file_name(&name).save_file().await
+                            else {
+                                return;
+                            };
+                            if let Err(e) = handle.write(&bytes).await {
+                                tracing::warn!(error = %e, "wasm save");
+                            }
+                        });
+                    }
+                });
                 ui.label(crate::APP_NAME);
             });
         });
