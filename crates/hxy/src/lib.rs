@@ -14,7 +14,6 @@ pub mod window;
 
 pub mod background;
 pub mod commands;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod compare;
 pub mod panels;
 #[cfg(not(target_arch = "wasm32"))]

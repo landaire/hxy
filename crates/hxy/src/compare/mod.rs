@@ -12,9 +12,12 @@
 //! will want a follow-up block-hash strategy but the [`DiffResult`]
 //! shape is the same either way.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 pub mod pane;
+// Picker uses sync `rfd::FileDialog` + `std::fs::read` and the
+// command-palette compare-flow types -- both desktop-only. The
+// wasm equivalent goes through `app::HxyApp`'s
+// `rfd::AsyncFileDialog` plumbing.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod picker;
 pub mod tab;
 
