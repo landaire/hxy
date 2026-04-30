@@ -289,15 +289,23 @@ impl eframe::App for HxyApp {
         }
         egui::Panel::top("hxy_top_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open file...").clicked() {
+                if ui.button("New").clicked() {
+                    self.open_bytes("Untitled".to_owned(), Vec::new());
+                }
+                if ui.button("Open files...").clicked() {
                     let ctx_clone = ctx.clone();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let Some(handle) = rfd::AsyncFileDialog::new().pick_file().await else {
+                        // Multi-pick: each picked file lands as
+                        // its own tab. The browser file picker
+                        // returns an empty list on cancel.
+                        let Some(handles) = rfd::AsyncFileDialog::new().pick_files().await else {
                             return;
                         };
-                        let bytes = handle.read().await;
-                        let name = handle.file_name();
-                        push_open_request(name, bytes);
+                        for handle in handles {
+                            let bytes = handle.read().await;
+                            let name = handle.file_name();
+                            push_open_request(name, bytes);
+                        }
                         ctx_clone.request_repaint();
                     });
                 }
