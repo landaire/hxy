@@ -30,6 +30,12 @@ pub const TOGGLE_EDIT_MODE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::
 
 pub const NEW_FILE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 pub const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
+/// Pop the most recently closed tab off the in-memory ring buffer
+/// and reopen it. Mirrors browser / IDE behavior; the buffer carries
+/// the same per-tab state shape session restore uses, so the
+/// reopened tab lands with its prior selection / scroll / templates.
+pub const REOPEN_CLOSED_TAB: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::T);
 pub const SAVE_FILE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 pub const SAVE_FILE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 

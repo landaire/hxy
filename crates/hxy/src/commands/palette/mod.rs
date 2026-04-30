@@ -445,6 +445,11 @@ pub enum PaletteCommand {
     /// active file so two side-by-side entropy panels (one
     /// per file) toggle independently.
     ToggleEntropy,
+    /// Pop the most recently closed tab off the in-memory ring
+    /// buffer and reopen it through the same restore path session
+    /// startup uses. Listed in the palette only when the buffer
+    /// is non-empty so the row doesn't sit there inert.
+    ReopenClosedTab,
 }
 
 #[derive(Clone)]

@@ -169,6 +169,9 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::CalculateChecksumsSelection => {
                     crate::app::run_checksums_for_active(ctx, app, crate::app::StringsScope::Selection);
                 }
+                PaletteCommand::ReopenClosedTab => {
+                    crate::tabs::close::reopen_last_closed_tab(ctx, app);
+                }
             }
         }
         Action::CopyText(text) => {

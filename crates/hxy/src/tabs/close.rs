@@ -7,10 +7,30 @@ use hxy_vfs::TabSource;
 
 use crate::app::HxyApp;
 use crate::commands::shortcuts::CLOSE_TAB;
+use crate::commands::shortcuts::REOPEN_CLOSED_TAB;
 use crate::files::FileId;
 use crate::files::OpenFile;
+use crate::state::OpenTabState;
 use crate::state::PersistedState;
 use crate::tabs::Tab;
+
+/// Upper bound on the in-memory ring buffer of recently-closed tabs.
+/// Older entries fall off the back when this is exceeded; matches the
+/// "recently closed" depth used by browsers / editors with a similar
+/// shortcut.
+pub const CLOSED_TABS_CAPACITY: usize = 32;
+
+/// One closed-file capture sitting on the reopen ring buffer. Carries
+/// the same [`OpenTabState`] shape session restore consumes -- so
+/// reopening drives the existing restore path rather than a parallel
+/// codepath. `display_name` is held alongside so the palette / menu
+/// item can show what's about to be reopened without re-resolving
+/// the source.
+#[derive(Clone, Debug)]
+pub struct ClosedTabSnapshot {
+    pub state: OpenTabState,
+    pub display_name: String,
+}
 
 /// One tab the user has asked to close, gated on its dirty buffer.
 /// Carries enough metadata to render the prompt without re-reading
@@ -28,12 +48,91 @@ enum CloseTabAction {
     Cancel,
 }
 
+/// Push a snapshot of the persisted [`OpenTabState`] for `source` onto
+/// the reopen stack. Idempotent -- nothing is pushed when the source
+/// has no entry in `state.open_tabs` (an in-flight open that never
+/// persisted, or a non-restorable singleton tab). Carries
+/// `display_name` alongside so palette / menu rows can show what's
+/// about to be reopened without re-resolving the source.
+///
+/// Drops the oldest entry once the stack reaches
+/// [`CLOSED_TABS_CAPACITY`] -- the buffer is meant to undo recent
+/// closes, not to be a permanent history.
+pub(crate) fn remember_closed(app: &mut HxyApp, source: &TabSource, display_name: String) {
+    let state = {
+        let g = app.state.read();
+        g.open_tabs.iter().find(|t| &t.source == source).cloned()
+    };
+    let Some(state) = state else { return };
+    if app.closed_tabs.len() >= CLOSED_TABS_CAPACITY {
+        app.closed_tabs.pop_front();
+    }
+    app.closed_tabs.push_back(ClosedTabSnapshot { state, display_name });
+}
+
+/// Pop the most recently closed tab off the ring buffer and drive it
+/// back through the same restore path session startup uses. Returns
+/// `false` when the buffer is empty or the restore failed (parent
+/// VFS mount gone, file deleted on disk, plugin uninstalled); the
+/// snapshot in that case is discarded -- a single user gesture
+/// pops one entry.
+///
+/// The `ctx` is needed to fire any persisted template auto-reruns
+/// for the just-restored tab (the runner wires its result inbox
+/// against an [`egui::Context`]). Call sites without a context
+/// handy can use [`crate::tabs::close::dispatch_close_shortcut`]
+/// which already threads the per-frame ctx.
+pub fn reopen_last_closed_tab(ctx: &egui::Context, app: &mut HxyApp) -> bool {
+    let Some(snapshot) = app.closed_tabs.pop_back() else { return false };
+    let source = snapshot.state.source.clone();
+    // Pre-seed `open_tabs` with the captured state so the standard
+    // `open()` path skips its default-init branch (it only pushes a
+    // fresh entry when no row matches the source). Carries the
+    // captured templates / visualizer flag / virtual_base_choice
+    // through to the live tab.
+    {
+        let mut g = app.state.write();
+        g.open_tabs.retain(|t| t.source != source);
+        g.open_tabs.push(snapshot.state.clone());
+    }
+    let must_mount = matches!(&source, TabSource::VfsEntry { .. });
+    if let Err(e) = app.restore_one_tab(&snapshot.state, must_mount) {
+        tracing::warn!(error = %e, "reopen closed tab");
+        let mut g = app.state.write();
+        g.open_tabs.retain(|t| t.source != source);
+        return false;
+    }
+    // Auto-rerun the just-restored tab's persisted templates so the
+    // tree / visualizer / colored-byte tinting come back exactly
+    // where the user left them. Scoped to this one source rather
+    // than the global `pending_template_restore` flag, which would
+    // also re-fire every other open file's templates.
+    app.restore_persisted_templates_for_source(ctx, &source);
+    true
+}
+
 /// Drop a single file tab (Tab::File or workspace entry) by id, free
 /// its `OpenFile`, and clear the matching persisted `OpenTabState`
 /// so the tab doesn't reappear on next launch. Callers responsible
 /// for gating on dirtiness -- this helper is the unconditional path
 /// the modal's "Don't Save" branch uses.
 pub fn close_file_tab_by_id(app: &mut HxyApp, id: FileId) {
+    // Snapshot the live OpenTabState before any of the dock teardown
+    // below clears `state.open_tabs`. The reopen-last-closed stack
+    // pops this back when the user hits Cmd+Shift+T, which then
+    // re-runs `restore_one_tab` against the same shape the launch
+    // path uses. Sync first so the snapshot reflects "right now"
+    // rather than the most recent per-frame sync_tab_state pass.
+    if let Some(file) = app.files.get(&id)
+        && let Some(source) = file.source_kind.clone()
+    {
+        let display_name = file.display_name.clone();
+        {
+            let mut g = app.state.write();
+            sync_tab_state(&mut g, file);
+        }
+        remember_closed(app, &source, display_name);
+    }
     if let Some(path) = app.dock.find_tab(&Tab::File(id)) {
         let _ = app.dock.remove_tab(path);
     }
@@ -144,11 +243,13 @@ pub fn request_close_active_tab(app: &mut HxyApp) {
                 let _ = app.dock.remove_tab(path);
             }
             if let Some(removed) = app.mounts.remove(&mount_id) {
+                let display_name = removed.display_name.clone();
                 let target = TabSource::PluginMount {
                     plugin_name: removed.plugin_name,
                     token: removed.token,
                     title: removed.display_name,
                 };
+                remember_closed(app, &target, display_name);
                 app.state.write().open_tabs.retain(|t| t.source != target);
             }
         }
@@ -253,6 +354,23 @@ pub fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::files::Works
             to_drop.push(*file_id);
         }
     }
+    // Snapshot the editor file onto the reopen stack so Cmd+Shift+T
+    // can bring the workspace back. Inner-entry tabs aren't captured
+    // individually -- they ride along with the editor's
+    // `as_workspace = true` restore, which re-mounts the parent and
+    // re-grafts any persisted child entries automatically. Capturing
+    // each child separately would queue up duplicates in the reopen
+    // buffer for what the user perceives as a single close.
+    if let Some(file) = app.files.get(&workspace.editor_id)
+        && let Some(source) = file.source_kind.clone()
+    {
+        let display_name = file.display_name.clone();
+        {
+            let mut g = app.state.write();
+            sync_tab_state(&mut g, file);
+        }
+        remember_closed(app, &source, display_name);
+    }
     let mut paths_to_recheck: Vec<std::path::PathBuf> = Vec::new();
     {
         let mut state = app.state.write();
@@ -273,10 +391,16 @@ pub fn close_workspace_by_id(app: &mut HxyApp, workspace_id: crate::files::Works
     }
 }
 
-/// Cmd+W shortcut dispatcher.
+/// Cmd+W (close active tab) and Cmd+Shift+T (reopen last closed
+/// tab) dispatchers. Both consumed in this pass so the close /
+/// reopen pair owns its keystrokes regardless of frame ordering.
 pub fn dispatch_close_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    if ctx.input_mut(|i| i.consume_shortcut(&CLOSE_TAB)) {
+    let (close, reopen) = ctx.input_mut(|i| (i.consume_shortcut(&CLOSE_TAB), i.consume_shortcut(&REOPEN_CLOSED_TAB)));
+    if close {
         request_close_active_tab(app);
+    }
+    if reopen {
+        reopen_last_closed_tab(ctx, app);
     }
 }
 

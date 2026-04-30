@@ -366,6 +366,17 @@ pub struct HxyApp {
     /// picks. `None` hides the dialog.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_snapshot_dialog: Option<crate::files::snapshot_ui::SnapshotDialogState>,
+    /// LIFO buffer of recently-closed tab states. Cmd+Shift+T pops
+    /// the most recent entry and replays it through the same
+    /// `restore_one_tab` path the launch flow uses, so selection,
+    /// scroll, templates, visualizer state, and virtual-base choice
+    /// all come back as the user left them. Capped at
+    /// [`crate::tabs::close::CLOSED_TABS_CAPACITY`] so a long session
+    /// can't grow unbounded. Session-only -- not persisted; quitting
+    /// drops the stack the same way every other unclosed buffer
+    /// goes through the normal `state.open_tabs` restore path.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) closed_tabs: std::collections::VecDeque<crate::tabs::close::ClosedTabSnapshot>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -631,6 +642,8 @@ impl HxyApp {
             pending_orphan_entries: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_snapshot_dialog: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            closed_tabs: std::collections::VecDeque::with_capacity(crate::tabs::close::CLOSED_TABS_CAPACITY),
         }
     }
 
@@ -1791,59 +1804,71 @@ impl HxyApp {
         // Snapshot the work list so the per-template loop doesn't have
         // to keep re-acquiring `self.state` against the runner's own
         // writes.
-        let entries: Vec<(TabSource, Vec<crate::state::PersistedTemplateInstance>, Option<usize>, bool)> = self
-            .state
-            .read()
-            .open_tabs
-            .iter()
-            .filter(|t| !t.templates.is_empty())
-            .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx, t.visualizer_open))
-            .collect();
-        for (source, templates, active_idx, visualizer_open) in entries {
-            let Some(file_id) =
-                self.files.iter().find(|(_, f)| f.source_kind.as_ref() == Some(&source)).map(|(&id, _)| id)
-            else {
-                continue;
+        let sources: Vec<TabSource> =
+            self.state.read().open_tabs.iter().filter(|t| !t.templates.is_empty()).map(|t| t.source.clone()).collect();
+        for source in sources {
+            self.restore_persisted_templates_for_source(ctx, &source);
+        }
+    }
+
+    /// Replay one source's persisted templates (and visualizer flag)
+    /// out of `state.open_tabs`. Shared by the launch-time restore
+    /// loop (which calls it for every entry with non-empty templates)
+    /// and the `Reopen Last Closed` path (which only wants to
+    /// re-fire the just-restored tab, not every other open file's
+    /// templates).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn restore_persisted_templates_for_source(&mut self, ctx: &egui::Context, source: &TabSource) {
+        let (templates, active_idx, visualizer_open) = {
+            let g = self.state.read();
+            let Some(entry) = g.open_tabs.iter().find(|t| &t.source == source) else { return };
+            (entry.templates.clone(), entry.active_template_idx, entry.visualizer_open)
+        };
+        if templates.is_empty() {
+            return;
+        }
+        let Some(file_id) = self.files.iter().find(|(_, f)| f.source_kind.as_ref() == Some(source)).map(|(&id, _)| id)
+        else {
+            return;
+        };
+        // Restore the visualizer panel's open flag *before* the
+        // template auto-rerun fires. Once the worker completes,
+        // `auto_open_visualizer_for` consults this flag; without
+        // the restore, the panel would always come up closed and
+        // the user would have to reopen it every relaunch even
+        // when they had it open last session.
+        if let Some(file) = self.files.get_mut(&file_id) {
+            file.visualizer_panel.open = visualizer_open;
+        }
+        // The tab's first-frame open already enqueued a "would
+        // you like to run X.bt?" prompt via `suggest_templates_for`.
+        // The user already picked a template last session (we're
+        // about to auto-rerun it); nagging them again is wrong,
+        // so dismiss the prompt before it gets a paint.
+        self.toasts.dismiss_for_file(file_id);
+        for t in &templates {
+            let restore = crate::templates::runner::RestoreContext {
+                expected_fingerprint: t.source_fingerprint,
+                overrides: t.node_color_overrides.iter().map(|(&k, &v)| (k, v)).collect(),
             };
-            // Restore the visualizer panel's open flag *before* the
-            // template auto-rerun fires. Once the worker completes,
-            // `auto_open_visualizer_for` consults this flag; without
-            // the restore, the panel would always come up closed and
-            // the user would have to reopen it every relaunch even
-            // when they had it open last session.
-            if let Some(file) = self.files.get_mut(&file_id) {
-                file.visualizer_panel.open = visualizer_open;
-            }
-            // The tab's first-frame open already enqueued a "would
-            // you like to run X.bt?" prompt via `suggest_templates_for`.
-            // The user already picked a template last session (we're
-            // about to auto-rerun it); nagging them again is wrong,
-            // so dismiss the prompt before it gets a paint.
-            self.toasts.dismiss_for_file(file_id);
-            for t in &templates {
-                let restore = crate::templates::runner::RestoreContext {
-                    expected_fingerprint: t.source_fingerprint,
-                    overrides: t.node_color_overrides.iter().map(|(&k, &v)| (k, v)).collect(),
-                };
-                crate::templates::runner::run_template_from_path(
-                    ctx,
-                    self,
-                    file_id,
-                    t.source_path.clone(),
-                    Some(t.range),
-                    restore,
-                );
-            }
-            // The runner sets `active_template` to the most recently
-            // queued instance; override it with the persisted choice
-            // so the panel comes back focused on the same tab the
-            // user closed it on.
-            if let Some(idx) = active_idx
-                && let Some(file) = self.files.get_mut(&file_id)
-                && let Some(running) = file.templates_running.get(idx)
-            {
-                file.active_template = Some(running.id);
-            }
+            crate::templates::runner::run_template_from_path(
+                ctx,
+                self,
+                file_id,
+                t.source_path.clone(),
+                Some(t.range),
+                restore,
+            );
+        }
+        // The runner sets `active_template` to the most recently
+        // queued instance; override it with the persisted choice
+        // so the panel comes back focused on the same tab the
+        // user closed it on.
+        if let Some(idx) = active_idx
+            && let Some(file) = self.files.get_mut(&file_id)
+            && let Some(running) = file.templates_running.get(idx)
+        {
+            file.active_template = Some(running.id);
         }
     }
 
@@ -4674,6 +4699,9 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
             crate::menu::MenuAction::Save => crate::files::save::save_active_file(app, false),
             crate::menu::MenuAction::SaveAs => crate::files::save::save_active_file(app, true),
             crate::menu::MenuAction::CloseTab => crate::tabs::close::request_close_active_tab(app),
+            crate::menu::MenuAction::ReopenClosedTab => {
+                crate::tabs::close::reopen_last_closed_tab(ctx, app);
+            }
             crate::menu::MenuAction::ToggleEditMode => toggle_active_edit_mode(app),
             crate::menu::MenuAction::Undo => undo_active_file(app),
             crate::menu::MenuAction::Redo => redo_active_file(app),
@@ -4716,6 +4744,7 @@ fn sync_native_menu_state(app: &mut HxyApp) {
         menu.set_undo_enabled(can_undo);
         menu.set_redo_enabled(can_redo);
         menu.set_paste_enabled(can_paste);
+        menu.set_reopen_enabled(!app.closed_tabs.is_empty());
     }
 }
 
@@ -4847,6 +4876,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     use crate::commands::shortcuts::PASTE;
     use crate::commands::shortcuts::PASTE_AS_HEX;
     use crate::commands::shortcuts::REDO;
+    use crate::commands::shortcuts::REOPEN_CLOSED_TAB;
     use crate::commands::shortcuts::SAVE_FILE;
     use crate::commands::shortcuts::SAVE_FILE_AS;
     use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
@@ -4889,6 +4919,17 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
                     ui.close();
                     crate::tabs::close::request_close_active_tab(app);
                 }
+                let reopen_text = ui.ctx().format_shortcut(&REOPEN_CLOSED_TAB);
+                let can_reopen = !app.closed_tabs.is_empty();
+                ui.add_enabled_ui(can_reopen, |ui| {
+                    if ui
+                        .add(egui::Button::new(hxy_i18n::t("menu-file-reopen-closed")).shortcut_text(reopen_text))
+                        .clicked()
+                    {
+                        ui.close();
+                        crate::tabs::close::reopen_last_closed_tab(ui.ctx(), app);
+                    }
+                });
                 ui.separator();
                 if ui.button(hxy_i18n::t("menu-file-quit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

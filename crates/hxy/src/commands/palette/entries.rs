@@ -18,6 +18,7 @@ use crate::commands::shortcuts::NEW_FILE;
 use crate::commands::shortcuts::PASTE;
 use crate::commands::shortcuts::PASTE_AS_HEX;
 use crate::commands::shortcuts::REDO;
+use crate::commands::shortcuts::REOPEN_CLOSED_TAB;
 use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
 use crate::commands::shortcuts::UNDO;
 use crate::files::copy::CopyKind;
@@ -465,6 +466,21 @@ pub fn build_palette_entries(
                         Action::SwitchMode(Mode::Recent),
                     )
                     .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                );
+            }
+            // Reopen-last-closed-tab: surfaced only when the in-memory
+            // ring buffer is non-empty so the row never sits inert.
+            // Subtitle previews the most recent capture so the user
+            // can tell which tab Cmd+Shift+T is about to bring back.
+            if let Some(last) = app.closed_tabs.back() {
+                out.push(
+                    egui_palette::Entry::new(
+                        hxy_i18n::t("palette-reopen-closed-tab"),
+                        Action::InvokeCommand(PaletteCommand::ReopenClosedTab),
+                    )
+                    .with_icon(icon::ARROW_U_UP_LEFT)
+                    .with_subtitle(last.display_name.clone())
+                    .with_shortcut(fmt(&REOPEN_CLOSED_TAB)),
                 );
             }
             // BrowseVfs only does something when the active file has

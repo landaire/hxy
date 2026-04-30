@@ -36,6 +36,10 @@ pub enum MenuAction {
     /// Close the focused tab. File tabs with unsaved edits trigger
     /// the "Save before closing?" modal; others close immediately.
     CloseTab,
+    /// Pop the most recently closed tab off the in-memory ring
+    /// buffer and reopen it. No-op when the buffer is empty;
+    /// the menu item is greyed out in that state.
+    ReopenClosedTab,
     /// Flip the active tab between read-only and mutable.
     ToggleEditMode,
     Undo,
@@ -63,6 +67,9 @@ pub struct MenuState {
     /// Save and Save As; greyed out unless the active tab is dirty
     /// or has a path to write to.
     save_items: Vec<MenuItem>,
+    /// Reopen Closed Tab entries; greyed out when the ring buffer
+    /// of closed snapshots is empty.
+    reopen_items: Vec<MenuItem>,
     /// Toggle Edit Mode entries; greyed out when no file is active.
     edit_mode_items: Vec<MenuItem>,
     /// Undo entry; greyed out when the active tab has no undo history.
@@ -129,6 +136,14 @@ impl MenuState {
         let close_tab = MenuItem::new("Close", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyW)));
         file_menu.append(&close_tab).expect("append close tab");
         actions.insert(close_tab.id().0.clone(), MenuAction::CloseTab);
+        let reopen_tab = MenuItem::new(
+            "Reopen Closed Tab",
+            false,
+            Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyT)),
+        );
+        file_menu.append(&reopen_tab).expect("append reopen closed tab");
+        actions.insert(reopen_tab.id().0.clone(), MenuAction::ReopenClosedTab);
+        let reopen_items = vec![reopen_tab];
 
         let edit_menu = Submenu::new("Edit", true);
         menu.append(&edit_menu).expect("append edit menu");
@@ -218,11 +233,21 @@ impl MenuState {
             bytes_items,
             scalar_items,
             save_items,
+            reopen_items,
             edit_mode_items,
             undo_items,
             redo_items,
             paste_items,
             _menu: menu,
+        }
+    }
+
+    /// Toggle the Reopen Closed Tab entry's enabled state. Driven by
+    /// the per-frame `sync_native_menu_state` reading
+    /// `app.closed_tabs.is_empty()`.
+    pub fn set_reopen_enabled(&self, enabled: bool) {
+        for item in &self.reopen_items {
+            item.set_enabled(enabled);
         }
     }
 
