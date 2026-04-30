@@ -2,7 +2,6 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod files;
 pub mod search;
@@ -36,17 +35,6 @@ pub mod menu;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-// Browser build of `HxyApp`. Stepping stone -- see
-// `crate::wasm_app` for why this exists. Each commit folds more
-// of its content into `crate::app::HxyApp` (gated to non-wasm
-// where appropriate); the file goes away once nothing
-// wasm-specific remains here that isn't already in `app`.
-#[cfg(target_arch = "wasm32")]
-mod wasm_app;
-
-#[cfg(not(target_arch = "wasm32"))]
 pub use app::HxyApp;
-#[cfg(target_arch = "wasm32")]
-pub use wasm_app::HxyApp;
 
 pub const APP_NAME: &str = "hxy";

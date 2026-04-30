@@ -10,8 +10,6 @@
 //! of the two endpoints may be relative; if both are, the resolved
 //! range has no unambiguous anchor and parsing fails.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use thiserror::Error;
 
 /// One parsed number with its absolute / relative flavour intact so
