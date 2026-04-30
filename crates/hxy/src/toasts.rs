@@ -7,8 +7,6 @@
 //! template -- accepting one closes the panel; descriptions are
 //! truncated and revealed in full on hover.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;

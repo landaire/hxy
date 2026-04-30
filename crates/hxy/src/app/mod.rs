@@ -1,9 +1,13 @@
-//! Main application type (desktop build).
+//! Main application type.
 //!
-//! The wasm browser build has its own slimmer `HxyApp` in
-//! [`crate::wasm_app`]; both are re-exported as `HxyApp` from
-//! `lib.rs` so the rest of the crate (and the entry points in
-//! `main.rs` / `wasm.rs`) refer to one symbolic type.
+//! Both the native desktop build and the browser wasm build will
+//! eventually use the same `HxyApp` -- the same dock, the same tab
+//! viewer, the same command palette, the same status bar. Today
+//! the wasm build still uses a slimmer `HxyApp` in
+//! [`crate::wasm_app`] while we incrementally fold the desktop
+//! code here behind cfg gates; once everything wasm-relevant has
+//! migrated in, the wasm_app module goes away and `lib.rs`
+//! re-exports `app::HxyApp` for both targets.
 
 #![cfg(not(target_arch = "wasm32"))]
 
