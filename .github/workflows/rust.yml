@@ -79,12 +79,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
-      # Only the leaf crates that are actually wasm-targetable are
-      # checked here -- the `hxy` app pulls in desktop-only modules
-      # (file IO, plugin host, IPC) and `hxy-plugin-host` depends on
-      # wasmtime, which doesn't build for wasm32-unknown-unknown.
+      # `hxy-plugin-host` depends on wasmtime which doesn't build
+      # for wasm32-unknown-unknown; it stays excluded. Every other
+      # crate (including `hxy` itself, which has its own wasm
+      # `HxyApp` re-exported from `lib.rs`) is checked.
       - run: cargo check --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown
+      - run: cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm
       - run: cargo clippy --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown -- -D warnings
+        env:
+          RUSTFLAGS: ""
+      - run: cargo clippy -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
         env:
           RUSTFLAGS: ""
 

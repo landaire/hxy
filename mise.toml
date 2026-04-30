@@ -6,7 +6,7 @@ run = "cargo fmt -- --config unstable_features=true --config imports_granularity
 description = "Runs cargo-check against all features and WASM target"
 run = [
     "cargo check --all-features",
-    "cargo check -p hxy-app --target wasm32-unknown-unknown --no-default-features --features wasm",
+    "cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm",
 ]
 
 [tasks.fix]
@@ -23,7 +23,7 @@ depends_post = ["fmt"]
 description = "Runs clippy fix, fmt, and checks WASM target"
 run = [
     "cargo clippy --fix --all-features --allow-dirty",
-    "cargo check -p hxy-app --target wasm32-unknown-unknown --no-default-features --features wasm",
+    "cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm",
 ]
 depends_post = ["fmt"]
 

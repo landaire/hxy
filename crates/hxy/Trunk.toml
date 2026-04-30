@@ -4,3 +4,8 @@
 # deployment serves stable URLs and the service worker (if we
 # add one later) doesn't have to chase rotating filenames.
 filehash = false
+# Pin the output under this crate's directory rather than
+# letting Trunk place it at the workspace root. Keeps the
+# Pages deploy workflow's `path` reliable across Trunk
+# versions.
+dist = "dist"

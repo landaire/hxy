@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Cancel an in-flight deploy if a fresh push lands -- we always
+# want the latest main on Pages, not whatever finished racing.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.92.0"
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-pages-${{ hashFiles('**/Cargo.lock') }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Download Trunk
+        run: wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
+
+      # `--public-url /hxy/` matches the path the Pages site is
+      # served from (`https://<user>.github.io/hxy/`). Trunk
+      # injects it into the `<base data-trunk-public-url />` tag
+      # so all asset URLs resolve under the sub-path.
+      - name: Build with Trunk
+        run: cd crates/hxy && ../../trunk build --release --public-url /hxy/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/hxy/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
