@@ -27,11 +27,13 @@
 // no inner `#![cfg]` -- clippy flags it as a duplicated attribute.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use egui_dock::DockArea;
 use egui_dock::DockState;
 use egui_dock::TabViewer;
+use egui_dock::tab_viewer::OnCloseResponse;
 use hxy_core::ByteCache;
 use hxy_core::ByteOffset;
 use hxy_core::CacheLimit;
@@ -48,6 +50,22 @@ use crate::search::find_prev;
 use crate::state::SharedPersistedState;
 use crate::tabs::Tab;
 
+/// Browser-side closed-tab snapshot. Holds the actual bytes
+/// because there's no disk to re-read from on Cmd+Shift+T --
+/// the desktop equivalent only saves a `TabSource` and re-opens
+/// the file on restore. Selection / scroll come along so the
+/// reopened tab lands where the user left it. See
+/// `feedback_wasm_persistence_policy` in memory: in-memory
+/// closed-tab buffer is the only state we keep across closes.
+struct ClosedTab {
+    name: String,
+    bytes: Vec<u8>,
+    selection: Option<Selection>,
+    scroll_offset: f32,
+}
+
+const CLOSED_TABS_CAPACITY: usize = 32;
+
 pub struct HxyApp {
     dock: DockState<Tab>,
     files: HashMap<FileId, OpenFile>,
@@ -56,6 +74,9 @@ pub struct HxyApp {
     byte_cache: Arc<ByteCache>,
     last_active_file: Option<FileId>,
     applied_zoom: f32,
+    /// LIFO buffer of recently-closed file tabs the user can pop
+    /// back via Cmd+Shift+T. Capped at [`CLOSED_TABS_CAPACITY`].
+    closed_tabs: VecDeque<ClosedTab>,
 }
 
 impl HxyApp {
@@ -73,6 +94,55 @@ impl HxyApp {
             byte_cache: ByteCache::new(limit),
             last_active_file: None,
             applied_zoom: initial_zoom,
+            closed_tabs: VecDeque::with_capacity(CLOSED_TABS_CAPACITY),
+        }
+    }
+
+    /// Close `id`'s file tab. Reads back the live bytes through
+    /// the editor (so any in-memory edits are captured) and
+    /// pushes the snapshot onto `closed_tabs` for Cmd+Shift+T.
+    /// No-op when `id` isn't an open file.
+    fn close_file_tab(&mut self, id: FileId) {
+        let Some(file) = self.files.get(&id) else { return };
+        let len = file.editor.source().len().get();
+        let bytes = if len == 0 {
+            Vec::new()
+        } else if let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+        {
+            file.editor.source().read(range).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let snap = ClosedTab {
+            name: file.display_name.clone(),
+            bytes,
+            selection: file.editor.selection(),
+            scroll_offset: file.editor.scroll_offset(),
+        };
+        if self.closed_tabs.len() >= CLOSED_TABS_CAPACITY {
+            self.closed_tabs.pop_front();
+        }
+        self.closed_tabs.push_back(snap);
+        if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+            let _ = self.dock.remove_tab(path);
+        }
+        if let Some(removed) = self.files.remove(&id) {
+            removed.release_cache();
+        }
+        if self.last_active_file == Some(id) {
+            self.last_active_file = None;
+        }
+    }
+
+    /// Pop the most recently closed tab off the LIFO buffer and
+    /// re-open it as a fresh `Tab::File`, restoring its
+    /// selection + scroll. No-op when the buffer is empty.
+    fn reopen_last_closed(&mut self) {
+        let Some(snap) = self.closed_tabs.pop_back() else { return };
+        let id = self.open_bytes(snap.name, snap.bytes);
+        if let Some(file) = self.files.get_mut(&id) {
+            file.editor.set_selection(snap.selection);
+            file.editor.set_scroll_to(snap.scroll_offset);
         }
     }
 
@@ -139,13 +209,18 @@ impl eframe::App for HxyApp {
             let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
             self.open_bytes(name, bytes);
         }
-        // Cmd+F (Ctrl+F on non-mac) toggles the per-file search
-        // bar. egui's `Modifiers::COMMAND` already maps to the
-        // platform's primary modifier so the shortcut works on
-        // every browser. Consumed here so the hex view's input
-        // dispatcher doesn't see it as a typed character.
-        let toggle_find =
-            ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)));
+        // Keyboard shortcuts. Cmd/Ctrl maps to egui's
+        // `Modifiers::COMMAND` regardless of platform.
+        let (toggle_find, close_tab, reopen_tab) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
+                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
+                i.consume_shortcut(&egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                    egui::Key::T,
+                )),
+            )
+        });
         if toggle_find
             && let Some(id) = self.last_active_file
             && let Some(file) = self.files.get_mut(&id)
@@ -154,6 +229,12 @@ impl eframe::App for HxyApp {
             if file.search.open {
                 file.search.refresh_pattern();
             }
+        }
+        if close_tab && let Some(id) = self.last_active_file {
+            self.close_file_tab(id);
+        }
+        if reopen_tab {
+            self.reopen_last_closed();
         }
         egui::Panel::top("hxy_top_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -200,13 +281,21 @@ impl eframe::App for HxyApp {
         for (name, bytes) in drain_open_requests() {
             self.open_bytes(name, bytes);
         }
+        let mut pending_close: Vec<FileId> = Vec::new();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let style = crate::style::hxy_dock_style(ui.style());
             DockArea::new(&mut self.dock).style(style).show_inside(
                 ui,
-                &mut WasmTabViewer { files: &mut self.files, last_active_file: &mut self.last_active_file },
+                &mut WasmTabViewer {
+                    files: &mut self.files,
+                    last_active_file: &mut self.last_active_file,
+                    pending_close: &mut pending_close,
+                },
             );
         });
+        for id in pending_close {
+            self.close_file_tab(id);
+        }
     }
 }
 
@@ -217,10 +306,32 @@ impl eframe::App for HxyApp {
 struct WasmTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     last_active_file: &'a mut Option<FileId>,
+    /// Drained after the dock pass: each entry is a File tab the
+    /// user X-clicked. The host then runs `close_file_tab`, which
+    /// captures the byte snapshot for the reopen buffer and frees
+    /// the `OpenFile`.
+    pending_close: &'a mut Vec<FileId>,
 }
 
 impl TabViewer for WasmTabViewer<'_> {
     type Tab = Tab;
+
+    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
+        matches!(tab, Tab::File(_))
+    }
+
+    fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
+        if let Tab::File(id) = tab {
+            self.pending_close.push(*id);
+            // We close the tab ourselves after the dock pass so
+            // the snapshot capture sees the still-live OpenFile.
+            // Returning `Ignore` keeps the dock from removing the
+            // tab right now; the host's drain does it.
+            OnCloseResponse::Ignore
+        } else {
+            OnCloseResponse::Close
+        }
+    }
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
