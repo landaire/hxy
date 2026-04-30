@@ -37,6 +37,22 @@ pub struct MountedVfs {
     /// read-only mounts. The save flow uses this to push patched
     /// bytes back through the plugin via xbdm `setmem`.
     pub writer: Option<Arc<dyn VfsWriter>>,
+    /// Optional virtual-base lookup. Plugins that track load
+    /// addresses for the bytes they expose (xbox-neighborhood
+    /// memory regions, in-process binaries) populate this so the
+    /// host can offer a "treat addresses as virtual?" affordance
+    /// when the user opens the entry. `None` for handlers whose
+    /// content has no natural load address (zip, plain
+    /// filesystem-style mounts).
+    pub virtual_base: Option<Arc<dyn VirtualBaseQuery>>,
+}
+
+/// Per-path virtual base lookup. Implementors return the load
+/// address associated with the bytes at `path` if any. Implemented
+/// by the plugin host for plugin-backed mounts; not implemented by
+/// the built-in handlers (zip, etc.).
+pub trait VirtualBaseQuery: Send + Sync {
+    fn virtual_base(&self, path: &str) -> Option<u64>;
 }
 
 /// In-place ranged writeback. Sits alongside [`vfs::FileSystem`]

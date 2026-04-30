@@ -274,10 +274,10 @@ impl GuestMount for Mount {
     fn metadata(&self, path: String) -> Result<Metadata, String> {
         let normalized = if path.is_empty() { "/" } else { path.as_str() };
         if self.is_dir(normalized) {
-            return Ok(Metadata { file_type: FileType::Directory, length: 0 });
+            return Ok(Metadata { file_type: FileType::Directory, length: 0, virtual_base: None });
         }
         if let Some(node) = self.lookup(normalized) {
-            return Ok(Metadata { file_type: FileType::RegularFile, length: node.length });
+            return Ok(Metadata { file_type: FileType::RegularFile, length: node.length, virtual_base: None });
         }
         Err(format!("no such path: {normalized}"))
     }

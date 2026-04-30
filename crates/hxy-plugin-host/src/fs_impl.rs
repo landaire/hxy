@@ -32,6 +32,7 @@ use vfs::VfsResult;
 use vfs::error::VfsErrorKind;
 
 use crate::bindings::handler_world::exports::hxy::vfs::handler::FileType as WitFileType;
+use crate::handler::MountedFileMeta;
 use crate::handler::PluginFileSystem;
 use crate::handler::PluginFsInner;
 
@@ -46,6 +47,55 @@ pub(crate) const FILE_BLOCK_SIZE: u64 = 64 * 1024;
 /// evicting least-recently-used blocks. Tuned for browsing a few
 /// large files at a time without runaway memory.
 pub(crate) const FILE_BLOCK_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+impl PluginFileSystem {
+    /// Resolve metadata for `path`, returning the host-side
+    /// [`MountedFileMeta`] (with `virtual_base` preserved). Cached
+    /// per-mount so the VFS panel's per-frame walk doesn't keep
+    /// crossing the wasm boundary.
+    pub(crate) fn metadata_cached(&self, path: &str) -> VfsResult<MountedFileMeta> {
+        if let Ok(cache) = self.meta_cache.lock()
+            && let Some(&meta) = cache.get(path)
+        {
+            return Ok(meta);
+        }
+        let started = std::time::Instant::now();
+        let mut g = self.inner.lock().map_err(poisoned)?;
+        let g = &mut *g;
+        let mount_guest = g.plugin.hxy_vfs_handler().mount();
+        let result = mount_guest
+            .call_metadata(&mut g.store, g.mount, path)
+            .map_err(|e| other(format!("plugin metadata call trap: {e}")))?
+            .map_err(|e| other(format!("plugin metadata: {e}")));
+        match &result {
+            Ok(meta) => tracing::debug!(
+                target: "hxy_plugin_host::mount",
+                plugin = %self.plugin_name,
+                path = %path,
+                len = meta.length,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "metadata ok"
+            ),
+            Err(e) => tracing::warn!(
+                target: "hxy_plugin_host::mount",
+                plugin = %self.plugin_name,
+                path = %path,
+                error = %e,
+                "metadata err"
+            ),
+        }
+        let meta = result?;
+        let file_type = match meta.file_type {
+            WitFileType::RegularFile => VfsFileType::File,
+            WitFileType::Directory => VfsFileType::Directory,
+        };
+        let resolved = MountedFileMeta { file_type, len: meta.length, virtual_base: meta.virtual_base };
+        if let Ok(mut cache) = self.meta_cache.lock() {
+            cache.insert(path.to_owned(), resolved);
+        }
+        Ok(resolved)
+    }
+}
 
 impl fmt::Debug for PluginFileSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,50 +178,14 @@ impl FileSystem for PluginFileSystem {
     }
 
     fn metadata(&self, path: &str) -> VfsResult<VfsMetadata> {
-        // Cache hit. The tree-walk hits this once per child per
-        // frame; even though the plugin probably has its own per-
-        // mount cache, every miss still crosses the wasm boundary,
-        // which adds up at 60 fps.
-        if let Ok(cache) = self.meta_cache.lock()
-            && let Some(&(file_type, len)) = cache.get(path)
-        {
-            return Ok(VfsMetadata { file_type, len, created: None, modified: None, accessed: None });
-        }
-        let started = std::time::Instant::now();
-        let mut g = self.inner.lock().map_err(poisoned)?;
-        let g = &mut *g;
-        let mount_guest = g.plugin.hxy_vfs_handler().mount();
-        let result = mount_guest
-            .call_metadata(&mut g.store, g.mount, path)
-            .map_err(|e| other(format!("plugin metadata call trap: {e}")))?
-            .map_err(|e| other(format!("plugin metadata: {e}")));
-        match &result {
-            Ok(meta) => tracing::debug!(
-                target: "hxy_plugin_host::mount",
-                plugin = %self.plugin_name,
-                path = %path,
-                len = meta.length,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                "metadata ok"
-            ),
-            Err(e) => tracing::warn!(
-                target: "hxy_plugin_host::mount",
-                plugin = %self.plugin_name,
-                path = %path,
-                error = %e,
-                "metadata err"
-            ),
-        }
-        let meta = result?;
-        let file_type = match meta.file_type {
-            WitFileType::RegularFile => VfsFileType::File,
-            WitFileType::Directory => VfsFileType::Directory,
-        };
-        let len = meta.length;
-        if let Ok(mut cache) = self.meta_cache.lock() {
-            cache.insert(path.to_owned(), (file_type, len));
-        }
-        Ok(VfsMetadata { file_type, len, created: None as Option<SystemTime>, modified: None, accessed: None })
+        let cached = self.metadata_cached(path)?;
+        Ok(VfsMetadata {
+            file_type: cached.file_type,
+            len: cached.len,
+            created: None as Option<SystemTime>,
+            modified: None,
+            accessed: None,
+        })
     }
 
     fn exists(&self, path: &str) -> VfsResult<bool> {

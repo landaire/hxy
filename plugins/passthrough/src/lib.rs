@@ -78,8 +78,10 @@ impl GuestMount for Mount {
 
     fn metadata(&self, path: String) -> Result<Metadata, String> {
         match path.as_str() {
-            "" | "/" => Ok(Metadata { file_type: FileType::Directory, length: 0 }),
-            "/data.bin" => Ok(Metadata { file_type: FileType::RegularFile, length: source::len() }),
+            "" | "/" => Ok(Metadata { file_type: FileType::Directory, length: 0, virtual_base: None }),
+            "/data.bin" => {
+                Ok(Metadata { file_type: FileType::RegularFile, length: source::len(), virtual_base: None })
+            }
             other => Err(format!("no such path: {other}")),
         }
     }

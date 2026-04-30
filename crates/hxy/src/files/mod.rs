@@ -311,6 +311,20 @@ pub struct OpenFile {
     /// worker. Default selection ticks SHA-256 + BLAKE3.
     #[cfg(not(target_arch = "wasm32"))]
     pub checksums_panel: crate::panels::checksums::ChecksumsPanel,
+    /// Virtual base address the user has accepted for this file.
+    /// `Some(addr)` makes every UI surface that displays an offset
+    /// for this file render `addr + offset`, and gates the
+    /// "Go to address" / "Copy ... as address" palette commands.
+    /// `None` means addresses are file offsets.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub virtual_base: Option<u64>,
+    /// Plugin-supplied virtual base hint that fires the first-open
+    /// prompt. Distinct from [`Self::virtual_base`] so we can
+    /// remember the plugin's suggestion even when the user has
+    /// declined it (no re-prompt on subsequent opens). `None` when
+    /// the file's source has no plugin hint.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub virtual_base_hint: Option<u64>,
     /// Identifier for this file's bytes inside the shared byte
     /// cache. Allocated once on construction and reused for every
     /// [`CachedSource`] handle the file or its template runs build.
@@ -627,6 +641,10 @@ impl OpenFile {
             strings_panel: crate::panels::strings::StringsPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
             checksums_panel: crate::panels::checksums::ChecksumsPanel::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            virtual_base: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            virtual_base_hint: None,
             source_id,
             byte_cache: byte_cache.clone(),
         }

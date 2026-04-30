@@ -20,6 +20,7 @@ pub use error::HandlerError;
 pub use handler::MountedVfs;
 pub use handler::VfsHandler;
 pub use handler::VfsWriter;
+pub use handler::VirtualBaseQuery;
 pub use registry::VfsRegistry;
 pub use tab_source::AnonymousId;
 pub use tab_source::TabSource;

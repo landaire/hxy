@@ -27,6 +27,15 @@ interface handler {
     record metadata {
         file-type: file-type,
         length: u64,
+        /// Optional virtual base address the plugin associates with
+        /// this file's bytes. When set, byte 0 of the file's content
+        /// corresponds to virtual address `virtual-base`, and the
+        /// host can offer the user a "treat addresses as virtual?"
+        /// affordance. Used by plugins like xbox-neighborhood that
+        /// expose memory regions where the load address is part of
+        /// the file's identity. Plain filesystem-style plugins
+        /// (passthrough, etc.) leave this `none`.
+        virtual-base: option<u64>,
     }
 
     resource mount {

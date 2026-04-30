@@ -258,12 +258,20 @@ impl GuestMount for Mount {
 
     fn metadata(&self, path: String) -> Result<Metadata, String> {
         if path == "/" || path.is_empty() {
-            return Ok(Metadata { file_type: hxy_plugin_api::handler::FileType::Directory, length: 0 });
+            return Ok(Metadata {
+                file_type: hxy_plugin_api::handler::FileType::Directory,
+                length: 0,
+                virtual_base: None,
+            });
         }
         let expected = format!("/{}.txt", self.token);
         if path == expected {
             let len = self.token.len() as u64;
-            Ok(Metadata { file_type: hxy_plugin_api::handler::FileType::RegularFile, length: len })
+            Ok(Metadata {
+                file_type: hxy_plugin_api::handler::FileType::RegularFile,
+                length: len,
+                virtual_base: None,
+            })
         } else {
             Err(format!("no such path: {path}"))
         }

@@ -1214,6 +1214,7 @@ impl HxyApp {
                     templates: Vec::new(),
                     active_template_idx: None,
                     visualizer_open: false,
+                    virtual_base_choice: None,
                 });
             }
         }
@@ -1849,7 +1850,9 @@ impl HxyApp {
                     .workspace_for_source(parent.as_ref())
                     .map(OpenTarget::Workspace)
                     .unwrap_or(OpenTarget::Toplevel);
-                self.open_with_target(
+                let virtual_base_hint =
+                    parent_mount.virtual_base.as_ref().and_then(|q| q.virtual_base(entry_path));
+                let opened_id = self.open_with_target(
                     name,
                     Some(tab.source.clone()),
                     source,
@@ -1857,6 +1860,9 @@ impl HxyApp {
                     Some(tab.scroll_offset),
                     target,
                 );
+                if let Some(file) = self.files.get_mut(&opened_id) {
+                    file.virtual_base_hint = virtual_base_hint;
+                }
                 Ok(())
             }
             TabSource::Anonymous { id, title } => {
@@ -2039,6 +2045,7 @@ impl HxyApp {
                             templates: Vec::new(),
                             active_template_idx: None,
                             visualizer_open: false,
+                    virtual_base_choice: None,
                         });
                     }
                 }
@@ -3550,9 +3557,14 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                         continue;
                     }
                 };
+                let virtual_base_hint = mount.virtual_base.as_ref().and_then(|q| q.virtual_base(&entry_path));
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
-                app.open_with_target(name, Some(source), stream, None, None, OpenTarget::Workspace(workspace_id));
+                let opened_id =
+                    app.open_with_target(name, Some(source), stream, None, None, OpenTarget::Workspace(workspace_id));
+                if let Some(file) = app.files.get_mut(&opened_id) {
+                    file.virtual_base_hint = virtual_base_hint;
+                }
             }
             PendingVfsOpen::PluginMount { mount_id, entry_path } => {
                 let Some(entry) = app.mounts.get(&mount_id) else { continue };
@@ -3572,13 +3584,17 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
                         continue;
                     }
                 };
+                let virtual_base_hint = mount.virtual_base.as_ref().and_then(|q| q.virtual_base(&entry_path));
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
                 let source = TabSource::VfsEntry { parent: Box::new(parent_source), entry_path };
                 // The click happened in the tool panel, so focus is
                 // there too. Move focus back to the editing area
                 // before `open` -- it routes via push_to_focused_leaf.
                 crate::tabs::dock_ops::focus_content_leaf(app);
-                app.open(name, Some(source), stream, None, None, false);
+                let opened_id = app.open(name, Some(source), stream, None, None, false);
+                if let Some(file) = app.files.get_mut(&opened_id) {
+                    file.virtual_base_hint = virtual_base_hint;
+                }
             }
         }
     }

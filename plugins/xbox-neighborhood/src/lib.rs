@@ -270,7 +270,16 @@ impl ConsoleMount {
             let name = info.name.clone();
             cache.insert(
                 format!("/memory/modules/{name}"),
-                Metadata { file_type: FileType::RegularFile, length: info.size as u64 },
+                Metadata {
+                    file_type: FileType::RegularFile,
+                    length: info.size as u64,
+                    // The module's reported load address is the
+                    // file's natural virtual base -- pointers
+                    // inside the module bytes are relative to it,
+                    // so users want to see addresses in that
+                    // space.
+                    virtual_base: Some(info.base as u64),
+                },
             );
             by_name.insert(name, info);
         }
@@ -293,7 +302,15 @@ impl ConsoleMount {
             let name = format!("{:08x}", region.base);
             cache.insert(
                 format!("/memory/maps/{name}"),
-                Metadata { file_type: FileType::RegularFile, length: region.size as u64 },
+                Metadata {
+                    file_type: FileType::RegularFile,
+                    length: region.size as u64,
+                    // Memory regions are inherently address-bound:
+                    // their identity in the path is the load
+                    // address. Surface it so the host can offer
+                    // virtual-addressing on open.
+                    virtual_base: Some(region.base as u64),
+                },
             );
             by_name.insert(name, region);
         }
@@ -348,7 +365,7 @@ impl GuestMount for ConsoleMount {
                 for synthetic in ["physical", "memory"] {
                     cache.insert(
                         format!("/{synthetic}"),
-                        Metadata { file_type: FileType::Directory, length: 0 },
+                        Metadata { file_type: FileType::Directory, length: 0, virtual_base: None },
                     );
                 }
                 Ok(vec!["physical".to_string(), "memory".to_string()])
@@ -363,7 +380,7 @@ impl GuestMount for ConsoleMount {
                 for name in &names {
                     cache.insert(
                         format!("/physical/{name}"),
-                        Metadata { file_type: FileType::Directory, length: 0 },
+                        Metadata { file_type: FileType::Directory, length: 0, virtual_base: None },
                     );
                 }
                 Ok(names)
@@ -373,7 +390,7 @@ impl GuestMount for ConsoleMount {
                 for child in ["maps", "modules"] {
                     cache.insert(
                         format!("/memory/{child}"),
-                        Metadata { file_type: FileType::Directory, length: 0 },
+                        Metadata { file_type: FileType::Directory, length: 0, virtual_base: None },
                     );
                 }
                 Ok(vec!["maps".to_string(), "modules".to_string()])
@@ -401,7 +418,7 @@ impl GuestMount for ConsoleMount {
                     } else {
                         FileType::RegularFile
                     };
-                    cache.insert(child_path, Metadata { file_type, length: entry.size });
+                    cache.insert(child_path, Metadata { file_type, length: entry.size, virtual_base: None });
                 }
                 Ok(entries.into_iter().map(|e: DirEntry| e.name).collect())
             }
@@ -416,7 +433,7 @@ impl GuestMount for ConsoleMount {
             | PathKind::PhysicalRoot
             | PathKind::MemoryRoot
             | PathKind::MemoryCategory => {
-                return Ok(Metadata { file_type: FileType::Directory, length: 0 });
+                return Ok(Metadata { file_type: FileType::Directory, length: 0, virtual_base: None });
             }
             _ => {}
         }
@@ -445,7 +462,7 @@ impl GuestMount for ConsoleMount {
         // Return a placeholder rather than spending a round trip; the
         // user can still open the file and any listing of the parent
         // will fix the cache.
-        Ok(Metadata { file_type: FileType::RegularFile, length: 0 })
+        Ok(Metadata { file_type: FileType::RegularFile, length: 0, virtual_base: None })
     }
 
     fn read_file(&self, path: String) -> Result<Vec<u8>, String> {

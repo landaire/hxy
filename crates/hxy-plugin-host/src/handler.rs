@@ -259,11 +259,12 @@ impl VfsHandler for PluginHandler {
             block_cache: Arc::clone(&block_cache),
             plugin_name: self.name.clone(),
         });
+        let meta_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let fs = Box::new(PluginFileSystem {
             inner,
             plugin_name: self.name.clone(),
             dir_cache: Mutex::new(std::collections::HashMap::new()),
-            meta_cache: Mutex::new(std::collections::HashMap::new()),
+            meta_cache: Arc::clone(&meta_cache),
             block_cache,
         });
         Ok(MountedVfs {
@@ -276,6 +277,7 @@ impl VfsHandler for PluginHandler {
             // needing a per-mount capability negotiation.
             capabilities: VfsCapabilities::READ_WRITE,
             writer: Some(writer),
+            virtual_base: Some(Arc::new(PluginVirtualBaseProvider { meta_cache })),
         })
     }
 }
@@ -316,11 +318,12 @@ impl PluginHandler {
             block_cache: Arc::clone(&block_cache),
             plugin_name: self.name.clone(),
         });
+        let meta_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let fs = Box::new(PluginFileSystem {
             inner,
             plugin_name: self.name.clone(),
             dir_cache: Mutex::new(std::collections::HashMap::new()),
-            meta_cache: Mutex::new(std::collections::HashMap::new()),
+            meta_cache: Arc::clone(&meta_cache),
             block_cache,
         });
         Ok(MountedVfs {
@@ -333,7 +336,38 @@ impl PluginHandler {
             // needing a per-mount capability negotiation.
             capabilities: VfsCapabilities::READ_WRITE,
             writer: Some(writer),
+            virtual_base: Some(Arc::new(PluginVirtualBaseProvider { meta_cache })),
         })
+    }
+}
+
+/// Cached metadata for one path inside a plugin VFS mount. Mirrors
+/// the WIT `metadata` record shape: a file/directory marker, the
+/// length the host needs to size its readers against, and an
+/// optional virtual base address the plugin associates with the
+/// file's bytes (for load-address-bearing files like Xbox memory
+/// regions). Cloned freely; held inside the per-mount `meta_cache`.
+#[derive(Clone, Copy, Debug)]
+pub struct MountedFileMeta {
+    pub file_type: vfs::VfsFileType,
+    pub len: u64,
+    pub virtual_base: Option<u64>,
+}
+
+/// `VirtualBaseQuery` impl that reads from a shared `meta_cache`.
+/// Constructed alongside the `PluginFileSystem` so both share the
+/// same cache; a metadata fetch through the FS populates the entry
+/// the query later reads. Returns `None` for paths the host hasn't
+/// touched yet -- the host always queries after opening, so a miss
+/// here implies the entry doesn't actually exist.
+pub(crate) struct PluginVirtualBaseProvider {
+    pub(crate) meta_cache: Arc<Mutex<std::collections::HashMap<String, MountedFileMeta>>>,
+}
+
+impl hxy_vfs::VirtualBaseQuery for PluginVirtualBaseProvider {
+    fn virtual_base(&self, path: &str) -> Option<u64> {
+        let cache = self.meta_cache.lock().ok()?;
+        cache.get(path).and_then(|m| m.virtual_base)
     }
 }
 
@@ -356,10 +390,14 @@ pub(crate) struct PluginFileSystem {
     pub(crate) inner: Arc<Mutex<PluginFsInner>>,
     pub(crate) plugin_name: String,
     pub(crate) dir_cache: Mutex<std::collections::HashMap<String, Vec<String>>>,
-    /// Cached `(file_type, length)` per path; full `VfsMetadata`
-    /// isn't `Clone`, so the timestamps are dropped (we don't have
-    /// them anyway -- the plugin doesn't currently surface them).
-    pub(crate) meta_cache: Mutex<std::collections::HashMap<String, (vfs::VfsFileType, u64)>>,
+    /// Cached metadata per path. `virtual_base` rides alongside the
+    /// VFS-trait fields so the host can surface a plugin-supplied
+    /// load address (xbox-neighborhood memory regions, in-process
+    /// futures) without an extra round trip through the wasm
+    /// boundary. Shared via `Arc` with [`PluginVirtualBaseProvider`]
+    /// so the host can read out a path's virtual base without
+    /// re-issuing a wasm call after open.
+    pub(crate) meta_cache: Arc<Mutex<std::collections::HashMap<String, MountedFileMeta>>>,
     /// Byte-bounded LRU of fixed-size file blocks shared across
     /// every `RangedReader` opened against this mount. See
     /// [`crate::fs_impl::FileBlockCache`].

@@ -81,6 +81,24 @@ pub struct OpenTabState {
     /// on its own, pop the panel.
     #[serde(default)]
     pub visualizer_open: bool,
+    /// User's answer to the "treat addresses as virtual?" prompt
+    /// the host shows the first time it opens a file whose source
+    /// (plugin or manual `Open File with options...`) advertises a
+    /// virtual base. `None` means we haven't asked yet; persisted
+    /// `Some(_)` skips the prompt on subsequent opens.
+    #[serde(default)]
+    pub virtual_base_choice: Option<VirtualBaseChoice>,
+}
+
+/// User's decision on whether to apply a virtual-base hint to a
+/// file's address display. Persisted in [`OpenTabState`] so the
+/// host doesn't re-prompt on every reopen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VirtualBaseChoice {
+    /// User confirmed virtual addressing with this base.
+    Accepted(u64),
+    /// User declined; addresses stay as file offsets.
+    Declined,
 }
 
 #[derive(Clone, Default)]
