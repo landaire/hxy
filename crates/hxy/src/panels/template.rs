@@ -151,9 +151,22 @@ pub fn show(
     let state = &active.state;
 
     if !state.tree.diagnostics.is_empty() {
+        // Auto-expand only when at least one diagnostic is at the
+        // Error level. Info / Warning runs are usually noise (a
+        // template that "completed with N notes" doesn't deserve
+        // a panel takeover); errors get the eyeball treatment
+        // because they probably indicate a malformed file or a
+        // template bug worth reading. The Console auto-opens for
+        // the same severity threshold via console_log, so the
+        // user gets a coherent "something went wrong" surface.
+        let has_error = state
+            .tree
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, hxy_plugin_host::template::Severity::Error));
         egui::CollapsingHeader::new(format!("Diagnostics ({})", state.tree.diagnostics.len()))
             .id_salt(("hxy_tmpl_diag", id_seed))
-            .default_open(true)
+            .default_open(has_error)
             .show(ui, |ui| {
                 for d in &state.tree.diagnostics {
                     let icon = match d.severity {
