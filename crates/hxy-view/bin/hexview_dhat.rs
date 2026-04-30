@@ -38,10 +38,8 @@ fn main() {
     let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0xABu8; 64 * 1024 * 1024]));
     let state = State { source, selection: None };
 
-    let mut harness: Harness<'_, State> = Harness::builder()
-        .with_size(egui::Vec2::new(1200.0, 800.0))
-        .with_pixels_per_point(1.0)
-        .build_ui_state(
+    let mut harness: Harness<'_, State> =
+        Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).with_pixels_per_point(1.0).build_ui_state(
             |ui, st: &mut State| {
                 // Byte-value highlighting on so the tint-batching path is
                 // exercised; default-off would emit zero `rect_filled`s

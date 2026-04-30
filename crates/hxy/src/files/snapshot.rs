@@ -317,7 +317,8 @@ mod tests {
         }
         // Re-open; the sidecar files are still in place so
         // restore() should find both entries.
-        let mut store = SnapshotStore { next_id: 1, snapshots: Vec::new(), sidecar_dir: Some(tmp.path().to_path_buf()) };
+        let mut store =
+            SnapshotStore { next_id: 1, snapshots: Vec::new(), sidecar_dir: Some(tmp.path().to_path_buf()) };
         let bytes = std::fs::read(tmp.path().join("index.json")).unwrap();
         let parsed: PersistedIndex = serde_json::from_slice(&bytes).unwrap();
         store.next_id = parsed.next_id;

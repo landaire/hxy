@@ -248,7 +248,8 @@ fn build_calculator_entry(
     let trimmed = expr.trim();
     if trimmed.is_empty() {
         out.push(
-            egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-prompt"), Action::NoOp).with_icon(icon::CALCULATOR),
+            egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-prompt"), Action::NoOp)
+                .with_icon(icon::CALCULATOR),
         );
         return;
     }
@@ -308,7 +309,8 @@ fn build_calculator_copy_entries(
     let trimmed = expr.trim();
     if trimmed.is_empty() {
         out.push(
-            egui_palette::Entry::new(hxy_i18n::t("palette-copy-result-prompt"), Action::NoOp).with_icon(icon::CALCULATOR),
+            egui_palette::Entry::new(hxy_i18n::t("palette-copy-result-prompt"), Action::NoOp)
+                .with_icon(icon::CALCULATOR),
         );
         return;
     }
@@ -331,12 +333,9 @@ fn build_calculator_copy_entries(
         .with_subtitle(hex.clone()),
     );
     out.push(
-        egui_palette::Entry::new(
-            hxy_i18n::t_args("palette-copy-hex-fmt", &[("value", &hex)]),
-            Action::CopyText(hex),
-        )
-        .with_icon(icon::COPY)
-        .with_subtitle(decimal),
+        egui_palette::Entry::new(hxy_i18n::t_args("palette-copy-hex-fmt", &[("value", &hex)]), Action::CopyText(hex))
+            .with_icon(icon::COPY)
+            .with_subtitle(decimal),
     );
 }
 
@@ -416,11 +415,8 @@ pub fn build_palette_entries(
     // the file has no templates, the resolver still handles plain
     // arithmetic / units -- only path lookups error.
     let calc_resolver = {
-        let templates: &[crate::files::TemplateInstance] = app
-            .last_active_file
-            .and_then(|id| app.files.get(&id))
-            .map(|f| f.templates.as_slice())
-            .unwrap_or(&[]);
+        let templates: &[crate::files::TemplateInstance] =
+            app.last_active_file.and_then(|id| app.files.get(&id)).map(|f| f.templates.as_slice()).unwrap_or(&[]);
         super::calculator::TemplateFieldResolver::new(templates)
     };
     match app.palette.mode {
@@ -495,11 +491,15 @@ pub fn build_palette_entries(
             let console_visible = app.dock.find_tab(&Tab::Console).is_some();
             let inspector_visible = app.dock.find_tab(&Tab::Inspector).is_some();
             let plugins_visible = app.dock.find_tab(&Tab::Plugins).is_some();
-            let entropy_visible = history_ctx.has_active_file
-                && app.dock.iter_all_tabs().any(|(_, t)| matches!(t, Tab::Entropy(_)));
+            let entropy_visible =
+                history_ctx.has_active_file && app.dock.iter_all_tabs().any(|(_, t)| matches!(t, Tab::Entropy(_)));
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t(if console_visible { "palette-tool-close-console" } else { "palette-tool-show-console" }),
+                    hxy_i18n::t(if console_visible {
+                        "palette-tool-close-console"
+                    } else {
+                        "palette-tool-show-console"
+                    }),
                     Action::InvokeCommand(PaletteCommand::ToggleConsole),
                 )
                 .with_icon(icon::TERMINAL),
@@ -517,7 +517,11 @@ pub fn build_palette_entries(
             );
             out.push(
                 egui_palette::Entry::new(
-                    hxy_i18n::t(if plugins_visible { "palette-tool-close-plugins" } else { "palette-tool-show-plugins" }),
+                    hxy_i18n::t(if plugins_visible {
+                        "palette-tool-close-plugins"
+                    } else {
+                        "palette-tool-show-plugins"
+                    }),
                     Action::InvokeCommand(PaletteCommand::TogglePlugins),
                 )
                 .with_icon(icon::PUZZLE_PIECE),
@@ -594,10 +598,7 @@ pub fn build_palette_entries(
                 if let Some(sel) = template_ctx.selection {
                     let subtitle = hxy_i18n::t_args(
                         "palette-strings-selection-subtitle",
-                        &[
-                            ("start", &format!("{:#x}", sel.start().get())),
-                            ("end", &format!("{:#x}", sel.end().get())),
-                        ],
+                        &[("start", &format!("{:#x}", sel.start().get())), ("end", &format!("{:#x}", sel.end().get()))],
                     );
                     out.push(
                         egui_palette::Entry::new(
@@ -632,10 +633,7 @@ pub fn build_palette_entries(
                 if let Some(sel) = template_ctx.selection {
                     let subtitle = hxy_i18n::t_args(
                         "palette-checksums-selection-subtitle",
-                        &[
-                            ("start", &format!("{:#x}", sel.start().get())),
-                            ("end", &format!("{:#x}", sel.end().get())),
-                        ],
+                        &[("start", &format!("{:#x}", sel.start().get())), ("end", &format!("{:#x}", sel.end().get()))],
                     );
                     out.push(
                         egui_palette::Entry::new(
@@ -875,10 +873,7 @@ pub fn build_palette_entries(
                 );
 
                 let active_subtitle = |label_key: &str, marker: &str| -> String {
-                    hxy_i18n::t_args(
-                        "palette-watch-subtitle",
-                        &[("mode", &hxy_i18n::t(label_key)), ("marker", marker)],
-                    )
+                    hxy_i18n::t_args("palette-watch-subtitle", &[("mode", &hxy_i18n::t(label_key)), ("marker", marker)])
                 };
                 let mark_for = |this_mode: crate::settings::AutoReloadMode| -> &'static str {
                     if Some(this_mode) == history_ctx.watch_mode { "*" } else { "" }

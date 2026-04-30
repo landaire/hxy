@@ -233,10 +233,9 @@ pub fn render_snapshot_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                                     .as_mut()
                                     .map(|(_, b)| b)
                                     .expect("renaming_this implies renaming is Some");
-                                let text =
-                                    ui.add(egui::TextEdit::singleline(buf).desired_width(180.0)).on_hover_text(
-                                        hxy_i18n::t("snapshot-rename-hint"),
-                                    );
+                                let text = ui
+                                    .add(egui::TextEdit::singleline(buf).desired_width(180.0))
+                                    .on_hover_text(hxy_i18n::t("snapshot-rename-hint"));
                                 if text.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     rename_commit = Some((snap.id, buf.clone()));
                                 }
@@ -299,9 +298,7 @@ pub fn render_snapshot_dialog(ctx: &egui::Context, app: &mut HxyApp) {
         let initial = snapshot_specs.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
         state.renaming = Some((id, initial));
     }
-    if rename_cancel
-        && let Some(state) = app.pending_snapshot_dialog.as_mut()
-    {
+    if rename_cancel && let Some(state) = app.pending_snapshot_dialog.as_mut() {
         state.renaming = None;
     }
     if let Some((id, name)) = rename_commit {
@@ -394,9 +391,11 @@ fn snapshot_pair_picker(
 ) {
     let label = match current {
         Some(SnapshotComparePick::Current) => hxy_i18n::t("snapshot-pick-current"),
-        Some(SnapshotComparePick::Snapshot(id)) => {
-            specs.iter().find(|s| s.id == *id).map(|s| s.name.clone()).unwrap_or_else(|| hxy_i18n::t("snapshot-pick-empty"))
-        }
+        Some(SnapshotComparePick::Snapshot(id)) => specs
+            .iter()
+            .find(|s| s.id == *id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| hxy_i18n::t("snapshot-pick-empty")),
         None => hxy_i18n::t("snapshot-pick-empty"),
     };
     egui::ComboBox::from_id_salt(salt).selected_text(label).show_ui(ui, |ui| {
@@ -406,4 +405,3 @@ fn snapshot_pair_picker(
         }
     });
 }
-

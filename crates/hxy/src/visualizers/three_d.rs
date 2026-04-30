@@ -13,11 +13,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
     ui.heading(hxy_i18n::t("visualizer-3d-heading"));
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new(hxy_i18n::t_args(
-            "visualizer-3d-info",
-            &[("bytes", &ctx.bytes.len().to_string())],
-        ))
-        .weak(),
+        egui::RichText::new(hxy_i18n::t_args("visualizer-3d-info", &[("bytes", &ctx.bytes.len().to_string())])).weak(),
     );
     ui.add_space(8.0);
     ui.colored_label(ui.visuals().warn_fg_color, hxy_i18n::t("visualizer-3d-not-yet"));

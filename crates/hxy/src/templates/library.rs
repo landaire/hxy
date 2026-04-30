@@ -665,7 +665,8 @@ mod tests {
 
     #[test]
     fn imhex_magic_pragma_at_offset_zero() {
-        let (exts, magic, _) = parse_imhex_header("#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n");
+        let (exts, magic, _) =
+            parse_imhex_header("#pragma MIME application/zip\n#pragma magic [ 50 4B 03 04 ] @ 0x00\n");
         assert_eq!(exts, vec!["zip"]);
         assert_eq!(magic, vec![vec![0x50, 0x4B, 0x03, 0x04]]);
     }
@@ -726,8 +727,7 @@ mod tests {
         // Older templates fill in `Description:` and leave `Purpose:`
         // blank. Empty values shouldn't lock out a real value that
         // appears later in the header.
-        let (_, _, desc) =
-            parse_bt_header("//   Purpose: \n// Description: Falls back when Purpose is empty\n");
+        let (_, _, desc) = parse_bt_header("//   Purpose: \n// Description: Falls back when Purpose is empty\n");
         assert_eq!(desc.as_deref(), Some("Falls back when Purpose is empty"));
     }
 

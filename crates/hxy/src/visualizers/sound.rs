@@ -91,11 +91,9 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
     ui.colored_label(ui.visuals().warn_fg_color, hxy_i18n::t("visualizer-sound-no-playback"));
 
     let points: PlotPoints = cache.samples.iter().enumerate().map(|(i, v)| [i as f64, *v]).collect();
-    Plot::new(ctx.ui_id.with("sound"))
-        .height(ui.available_height() - 4.0)
-        .show(ui, |plot_ui| {
-            plot_ui.line(Line::new("waveform", points));
-        });
+    Plot::new(ctx.ui_id.with("sound")).height(ui.available_height() - 4.0).show(ui, |plot_ui| {
+        plot_ui.line(Line::new("waveform", points));
+    });
 }
 
 fn downsample_for_plot(bytes: &[u8], format: SampleFormat, channels: u16) -> Vec<f64> {
@@ -125,4 +123,3 @@ fn downsample_for_plot(bytes: &[u8], format: SampleFormat, channels: u16) -> Vec
     }
     out
 }
-

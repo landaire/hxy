@@ -64,10 +64,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
         match Bitness::parse(isa) {
             Some(b) => disassemble_x86(ctx.bytes, b, base_address, cache),
             None => {
-                cache.error = Some(hxy_i18n::t_args(
-                    "visualizer-disasm-unsupported-isa",
-                    &[("isa", isa)],
-                ));
+                cache.error = Some(hxy_i18n::t_args("visualizer-disasm-unsupported-isa", &[("isa", isa)]));
             }
         }
     }
@@ -79,20 +76,14 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
     ui.label(
         egui::RichText::new(hxy_i18n::t_args(
             "visualizer-disasm-info",
-            &[
-                ("isa", isa),
-                ("base", &format!("{base_address:#x}")),
-                ("count", &cache.instruction_count.to_string()),
-            ],
+            &[("isa", isa), ("base", &format!("{base_address:#x}")), ("count", &cache.instruction_count.to_string())],
         ))
         .weak(),
     );
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_sized(
             ui.available_size(),
-            egui::TextEdit::multiline(&mut cache.listing.as_str())
-                .font(egui::TextStyle::Monospace)
-                .code_editor(),
+            egui::TextEdit::multiline(&mut cache.listing.as_str()).font(egui::TextStyle::Monospace).code_editor(),
         );
     });
 }
@@ -111,11 +102,8 @@ fn disassemble_x86(bytes: &[u8], bitness: Bitness, base_address: u64, cache: &mu
         formatter.format(&instr, &mut text);
         let start = (instr.ip() - base_address) as usize;
         let end = start + instr.len();
-        let hex_bytes: String = bytes[start..end.min(bytes.len())]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let hex_bytes: String =
+            bytes[start..end.min(bytes.len())].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
         listing.push_str(&format!("{ip:016x}  {hex_bytes:<24}  {text}\n"));
         count += 1;
     }

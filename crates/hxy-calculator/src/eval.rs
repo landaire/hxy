@@ -149,10 +149,7 @@ mod tests {
     struct FixedResolver;
     impl PathResolver for FixedResolver {
         fn lookup(&self, path: &Path) -> Result<crate::FieldRef, ResolveError> {
-            if path.root == "png"
-                && path.instance.is_none()
-                && path.segments == [PathSegment::Name("length".into())]
-            {
+            if path.root == "png" && path.instance.is_none() && path.segments == [PathSegment::Name("length".into())] {
                 Ok(crate::FieldRef { offset: 0x100, length: 8, value: Some(42) })
             } else {
                 Err(ResolveError::UnknownTemplate { name: path.root.clone() })

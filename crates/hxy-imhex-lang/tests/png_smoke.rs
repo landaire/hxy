@@ -39,7 +39,8 @@ fn png_template_walks_all_chunks() {
     let program = parse(tokens).unwrap_or_else(|e| panic!("parse: {e}"));
     let pragmas = extract_pragmas(&src);
     let resolver = chained_resolver([root.join("includes"), root.clone()]);
-    let mut interp = Interpreter::new(MemorySource::new(bytes)).with_import_resolver(resolver).with_step_limit(1_000_000);
+    let mut interp =
+        Interpreter::new(MemorySource::new(bytes)).with_import_resolver(resolver).with_step_limit(1_000_000);
     if let Some(e) = pragmas.endian {
         interp = interp.with_default_endian(e);
     }
@@ -88,9 +89,7 @@ fn png_template_walks_all_chunks() {
     let renamed_chunks: Vec<&str> = result
         .nodes
         .iter()
-        .filter_map(|n| {
-            n.attrs.iter().find_map(|(k, v)| (k == "hxy_name" && !v.is_empty()).then_some(v.as_str()))
-        })
+        .filter_map(|n| n.attrs.iter().find_map(|(k, v)| (k == "hxy_name" && !v.is_empty()).then_some(v.as_str())))
         .collect();
     assert!(renamed_chunks.contains(&"IDAT"), "expected hxy_name=IDAT among renamed chunks, got {renamed_chunks:?}");
     assert!(renamed_chunks.contains(&"IEND"), "expected hxy_name=IEND among renamed chunks, got {renamed_chunks:?}");
@@ -111,9 +110,7 @@ fn png_template_walks_all_chunks() {
     );
 
     // Comment promotion: ihdr_t has `u32 width [[comment("Image width")]]`.
-    let any_comment = result
-        .nodes
-        .iter()
-        .any(|n| n.attrs.iter().any(|(k, v)| k == "hxy_comment" && v == "Image width"));
+    let any_comment =
+        result.nodes.iter().any(|n| n.attrs.iter().any(|(k, v)| k == "hxy_comment" && v == "Image width"));
     assert!(any_comment, "expected width field to carry hxy_comment=\"Image width\"");
 }

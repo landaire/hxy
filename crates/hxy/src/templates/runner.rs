@@ -130,11 +130,8 @@ pub fn run_template_from_path(
     file.last_template_path = Some(path.clone());
     let instance_id = file.fresh_template_instance_id();
     let full_file = bound_range.start().get() == 0 && bound_range.len().get() == source_len.get();
-    let bound_source: Arc<dyn HexSource> = if full_file {
-        source
-    } else {
-        Arc::new(SubrangeSource::new(source, bound_range))
-    };
+    let bound_source: Arc<dyn HexSource> =
+        if full_file { source } else { Arc::new(SubrangeSource::new(source, bound_range)) };
     // Hash the expanded source the worker is about to consume. This
     // is the byte content the resulting node tree's indices reflect,
     // so it's the right key for "are last session's overrides still
@@ -161,11 +158,7 @@ pub fn run_template_from_path(
         range: bound_range,
         source_fingerprint,
         pending_overrides,
-        run: crate::files::TemplateRun {
-            inbox,
-            template_name: tpl_name.clone(),
-            started: jiff::Timestamp::now(),
-        },
+        run: crate::files::TemplateRun { inbox, template_name: tpl_name.clone(), started: jiff::Timestamp::now() },
     });
     file.active_template = Some(instance_id);
 
@@ -396,10 +389,7 @@ impl HexSource for SubrangeSource {
 
     fn read(&self, range: ByteRange) -> Result<Vec<u8>, hxy_core::Error> {
         if range.end().get() > self.len.get() {
-            return Err(hxy_core::Error::OutOfBounds {
-                range,
-                len: ByteOffset::new(self.len.get()),
-            });
+            return Err(hxy_core::Error::OutOfBounds { range, len: ByteOffset::new(self.len.get()) });
         }
         let inner_start = ByteOffset::new(self.base.get() + range.start().get());
         let inner_end = ByteOffset::new(self.base.get() + range.end().get());

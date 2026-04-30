@@ -74,11 +74,7 @@ fn build_texture(ui: &egui::Ui, ctx: &VisualizerContext) -> (Option<egui::Textur
     let scale = (max_count as f32).ln().max(1.0);
     let mut pixels = Vec::with_capacity(actual_cols * HEIGHT * 4);
     for &c in &grid {
-        let v = if c == 0 {
-            0
-        } else {
-            ((c as f32).ln() / scale * 255.0).clamp(0.0, 255.0).round() as u8
-        };
+        let v = if c == 0 { 0 } else { ((c as f32).ln() / scale * 255.0).clamp(0.0, 255.0).round() as u8 };
         pixels.extend_from_slice(&heat(v));
     }
     let img = egui::ColorImage::from_rgba_unmultiplied([actual_cols, HEIGHT], &pixels);
@@ -100,4 +96,3 @@ fn heat(v: u8) -> [u8; 4] {
     let lerp = |a: u8, b: u8| ((a as f32) * (1.0 - t) + (b as f32) * t).round() as u8;
     [lerp(STOPS[i][0], STOPS[i + 1][0]), lerp(STOPS[i][1], STOPS[i + 1][1]), lerp(STOPS[i][2], STOPS[i + 1][2]), 0xff]
 }
-

@@ -1,11 +1,21 @@
 // HXY theme: violet glass, pink signal, lime data accents.
 // Keeps hex-view colors untouched; applies only to egui UI chrome/components.
 
-use egui::{
-    Color32, CornerRadius, Margin, Stroke, Style, Vec2, Visuals,
-    epaint::Shadow,
-    style::{Interaction, ScrollStyle, Selection, Spacing, TextCursorStyle, WidgetVisuals, Widgets},
-};
+use egui::Color32;
+use egui::CornerRadius;
+use egui::Margin;
+use egui::Stroke;
+use egui::Style;
+use egui::Vec2;
+use egui::Visuals;
+use egui::epaint::Shadow;
+use egui::style::Interaction;
+use egui::style::ScrollStyle;
+use egui::style::Selection;
+use egui::style::Spacing;
+use egui::style::TextCursorStyle;
+use egui::style::WidgetVisuals;
+use egui::style::Widgets;
 
 // Core surfaces
 const SURFACE: Color32 = Color32::from_rgb(10, 11, 16); // #0A0B10

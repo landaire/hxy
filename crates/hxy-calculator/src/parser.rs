@@ -245,10 +245,7 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
     };
     skip_ws(&mut cursor);
     if !cursor.is_empty() {
-        return Err(ParseError::TrailingInput {
-            pos: original.len() - cursor.len(),
-            tail: cursor.to_owned(),
-        });
+        return Err(ParseError::TrailingInput { pos: original.len() - cursor.len(), tail: cursor.to_owned() });
     }
     Ok(expr)
 }
@@ -278,16 +275,11 @@ fn multiplicative(input: &mut &str) -> ModalResult<Expr> {
     let mut left = unary(input)?;
     loop {
         skip_ws(input);
-        let op = match opt(alt((
-            "*".value(BinOp::Mul),
-            "/".value(BinOp::Div),
-            "%".value(BinOp::Mod),
-        )))
-        .parse_next(input)?
-        {
-            Some(o) => o,
-            None => break,
-        };
+        let op =
+            match opt(alt(("*".value(BinOp::Mul), "/".value(BinOp::Div), "%".value(BinOp::Mod)))).parse_next(input)? {
+                Some(o) => o,
+                None => break,
+            };
         skip_ws(input);
         let right = unary(input)?;
         left = Expr::Binary(op, Box::new(left), Box::new(right));
@@ -327,11 +319,7 @@ fn paren_expr(input: &mut &str) -> ModalResult<Expr> {
     let _: Option<&str> = opt(")").parse_next(input)?;
     skip_ws(input);
     if let Some(unit) = opt(unit_suffix).parse_next(input)? {
-        return Ok(Expr::Binary(
-            BinOp::Mul,
-            Box::new(inner),
-            Box::new(Expr::Literal(unit.multiplier())),
-        ));
+        return Ok(Expr::Binary(BinOp::Mul, Box::new(inner), Box::new(Expr::Literal(unit.multiplier()))));
     }
     Ok(inner)
 }
@@ -360,8 +348,7 @@ fn is_digit_separator(c: char) -> bool {
 
 fn hex_number(input: &mut &str) -> ModalResult<i128> {
     alt(("0x", "0X")).parse_next(input)?;
-    let digits: &str =
-        take_while(1.., |c: char| c.is_ascii_hexdigit() || is_digit_separator(c)).parse_next(input)?;
+    let digits: &str = take_while(1.., |c: char| c.is_ascii_hexdigit() || is_digit_separator(c)).parse_next(input)?;
     if !digits.chars().any(|c| c.is_ascii_hexdigit()) {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
@@ -370,8 +357,7 @@ fn hex_number(input: &mut &str) -> ModalResult<i128> {
 }
 
 fn decimal_number(input: &mut &str) -> ModalResult<i128> {
-    let digits: &str =
-        take_while(1.., |c: char| c.is_ascii_digit() || is_digit_separator(c)).parse_next(input)?;
+    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit() || is_digit_separator(c)).parse_next(input)?;
     if !digits.chars().any(|c| c.is_ascii_digit()) {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
@@ -515,10 +501,7 @@ mod tests {
     #[test]
     fn implicit_close_paren() {
         // (5 * (5 + 10  -- both inner and outer close at EOF
-        assert_eq!(
-            parse("(5 * (5 + 10"),
-            Ok(bin(BinOp::Mul, lit(5), bin(BinOp::Add, lit(5), lit(10)))),
-        );
+        assert_eq!(parse("(5 * (5 + 10"), Ok(bin(BinOp::Mul, lit(5), bin(BinOp::Add, lit(5), lit(10)))),);
     }
 
     #[test]
@@ -546,10 +529,7 @@ mod tests {
     #[test]
     fn paren_unit_suffix() {
         // (1 + 1) MiB == 2 * 1MiB
-        assert_eq!(
-            parse("(1 + 1) MiB"),
-            Ok(bin(BinOp::Mul, bin(BinOp::Add, lit(1), lit(1)), lit(1024 * 1024))),
-        );
+        assert_eq!(parse("(1 + 1) MiB"), Ok(bin(BinOp::Mul, bin(BinOp::Add, lit(1), lit(1)), lit(1024 * 1024))),);
     }
 
     fn path_expr(p: Path) -> Expr {
@@ -567,10 +547,7 @@ mod tests {
 
     #[test]
     fn dotted_path() {
-        assert_eq!(
-            parse("png.length"),
-            Ok(path_expr(plain_path("png", vec![PathSegment::Name("length".into())]))),
-        );
+        assert_eq!(parse("png.length"), Ok(path_expr(plain_path("png", vec![PathSegment::Name("length".into())]))),);
     }
 
     #[test]
@@ -579,11 +556,7 @@ mod tests {
             parse("png.chunks[0].length"),
             Ok(path_expr(plain_path(
                 "png",
-                vec![
-                    PathSegment::Name("chunks".into()),
-                    PathSegment::Index(0),
-                    PathSegment::Name("length".into()),
-                ],
+                vec![PathSegment::Name("chunks".into()), PathSegment::Index(0), PathSegment::Name("length".into()),],
             ))),
         );
     }
@@ -671,12 +644,7 @@ mod tests {
         // root struct (resolver decides what that means).
         assert_eq!(
             parse("png::len"),
-            Ok(path_expr(Path {
-                root: "png".into(),
-                instance: None,
-                segments: vec![],
-                meta: Some(MetaKind::Len),
-            })),
+            Ok(path_expr(Path { root: "png".into(), instance: None, segments: vec![], meta: Some(MetaKind::Len) })),
         );
     }
 

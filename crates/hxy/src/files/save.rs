@@ -75,17 +75,18 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
     // in-memory wrapping path if reopening for streaming
     // somehow fails (file deleted between rename and reopen, FD
     // limit, ...).
-    let post_save_source: std::sync::Arc<dyn hxy_core::HexSource> =
-        match crate::files::streaming::open_filesystem(&path) {
-            Ok((s, _)) => {
-                drop(bytes);
-                s
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, path = %path.display(), "post-save streaming reopen failed; staying in-memory");
-                std::sync::Arc::new(hxy_core::MemorySource::new(bytes))
-            }
-        };
+    let post_save_source: std::sync::Arc<dyn hxy_core::HexSource> = match crate::files::streaming::open_filesystem(
+        &path,
+    ) {
+        Ok((s, _)) => {
+            drop(bytes);
+            s
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, path = %path.display(), "post-save streaming reopen failed; staying in-memory");
+            std::sync::Arc::new(hxy_core::MemorySource::new(bytes))
+        }
+    };
     if let Some(file) = app.files.get_mut(&id) {
         file.byte_cache.drop_source(file.source_id);
         let cached = file.rewrap_for_view(post_save_source);
@@ -129,7 +130,7 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
                 templates: Vec::new(),
                 active_template_idx: None,
                 visualizer_open: false,
-                    virtual_base_choice: None,
+                virtual_base_choice: None,
             });
         }
     }

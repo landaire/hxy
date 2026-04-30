@@ -17,17 +17,8 @@ fn run(template: &str, bytes: Vec<u8>) -> hxy_imhex_lang::RunResult {
     interp.run(&program)
 }
 
-fn find_attr<'a>(
-    nodes: &'a [hxy_imhex_lang::NodeOut],
-    field: &str,
-    key: &str,
-) -> Option<&'a str> {
-    nodes
-        .iter()
-        .find(|n| n.name == field)?
-        .attrs
-        .iter()
-        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+fn find_attr<'a>(nodes: &'a [hxy_imhex_lang::NodeOut], field: &str, key: &str) -> Option<&'a str> {
+    nodes.iter().find(|n| n.name == field)?.attrs.iter().find_map(|(k, v)| (k == key).then_some(v.as_str()))
 }
 
 #[test]
@@ -41,8 +32,7 @@ fn visualize_attribute_canonicalised_and_packed() {
     "#;
     let result = run(template, vec![0u8; 4]);
     assert!(result.terminal_error.is_none(), "interp failed: {:?}", result.terminal_error);
-    let value = find_attr(&result.nodes, "data", "hxy_visualize")
-        .expect("data field carries hxy_visualize attribute");
+    let value = find_attr(&result.nodes, "data", "hxy_visualize").expect("data field carries hxy_visualize attribute");
     assert_eq!(value, "image");
 }
 
@@ -55,8 +45,7 @@ fn visualize_attribute_packs_multi_arg_format() {
     "#;
     let result = run(template, vec![0u8; 12]);
     assert!(result.terminal_error.is_none(), "interp failed: {:?}", result.terminal_error);
-    let value = find_attr(&result.nodes, "data", "hxy_visualize")
-        .expect("data field carries hxy_visualize attribute");
+    let value = find_attr(&result.nodes, "data", "hxy_visualize").expect("data field carries hxy_visualize attribute");
     let expected = format!("bitmap{ARG_SEP}RGBA8{ARG_SEP}1{ARG_SEP}3");
     assert_eq!(value, expected);
 }

@@ -74,7 +74,6 @@ hxy-010-lang = { workspace = true }
 hxy-imhex-lang = { workspace = true }
 hxy-calculator = { workspace = true }
 suture = { workspace = true, features = ["serde", "blake3"] }
-arboard = { version = "3.6.1", default-features = false }
 base64 = { workspace = true }
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
 egui-toast = "0.20.0"
@@ -125,6 +124,10 @@ interprocess = "2.4.2"
 notify = "8"
 notify-debouncer-full = "0.5"
 crossbeam-channel = "0.5"
+# arboard reads from the OS clipboard for Cmd+Shift+V (paste-as-hex);
+# wasm has no platform backend so the dep is desktop-only and the
+# `read_text` helper is `cfg(not(target_arch = "wasm32"))`-gated.
+arboard = { version = "3.6.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.18"

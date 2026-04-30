@@ -247,11 +247,8 @@ pub fn show(
     }
 
     let line_color = ui.visuals().widgets.active.fg_stroke.color;
-    let max_offset = state
-        .points
-        .last()
-        .map(|p| (p.offset + state.window_bytes) as f64)
-        .unwrap_or(state.source_len as f64);
+    let max_offset =
+        state.points.last().map(|p| (p.offset + state.window_bytes) as f64).unwrap_or(state.source_len as f64);
     let plot_points: PlotPoints = state
         .points
         .iter()
@@ -278,9 +275,8 @@ pub fn show(
         let raw = value.max(0.0) as u64;
         format!("0x{raw:X}")
     };
-    let x_axis_fmt = move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
-        format_hex_offset(mark.value)
-    };
+    let x_axis_fmt =
+        move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String { format_hex_offset(mark.value) };
     let label_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
         format!("offset {}\nH = {:.2} bits/byte", format_hex_offset(point.x), point.y)
     };

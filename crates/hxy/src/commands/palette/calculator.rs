@@ -86,12 +86,8 @@ impl PathResolver for TemplateFieldResolver<'_> {
         // its children. Resolution failures fall through to an
         // empty list -- completion never errors loudly.
         let cursor: Option<u32> = if path.segments.is_empty() {
-            let top: Vec<u32> = nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| n.parent.is_none())
-                .map(|(i, _)| i as u32)
-                .collect();
+            let top: Vec<u32> =
+                nodes.iter().enumerate().filter(|(_, n)| n.parent.is_none()).map(|(i, _)| i as u32).collect();
             if top.len() == 1 { Some(top[0]) } else { None }
         } else {
             match walk_segments(nodes, &path.segments, path) {
@@ -183,15 +179,10 @@ fn walk_segments(nodes: &[Node], segments: &[PathSegment], path: &Path) -> Resul
                     None if at_first_segment && cursor.is_none() => {
                         let top = top_level(nodes);
                         if top.len() == 1 {
-                            find_child_by_name(nodes, Some(top[0]), name).ok_or(ResolveError::FieldNotFound {
-                                parent: parent_label,
-                                component: name.clone(),
-                            })?
+                            find_child_by_name(nodes, Some(top[0]), name)
+                                .ok_or(ResolveError::FieldNotFound { parent: parent_label, component: name.clone() })?
                         } else {
-                            return Err(ResolveError::FieldNotFound {
-                                parent: parent_label,
-                                component: name.clone(),
-                            });
+                            return Err(ResolveError::FieldNotFound { parent: parent_label, component: name.clone() });
                         }
                     }
                     None => {
@@ -201,19 +192,15 @@ fn walk_segments(nodes: &[Node], segments: &[PathSegment], path: &Path) -> Resul
                 cursor = Some(resolved);
             }
             PathSegment::Index(n) => {
-                let parent_idx = cursor.ok_or(ResolveError::IndexOutOfBounds {
-                    parent: parent_label.clone(),
-                    index: *n,
-                    len: 0,
-                })?;
+                let parent_idx =
+                    cursor.ok_or(ResolveError::IndexOutOfBounds { parent: parent_label.clone(), index: *n, len: 0 })?;
                 let kids = children_of(nodes, parent_idx);
-                let target = (*n as usize).checked_sub(0).filter(|&i| i < kids.len()).ok_or(
-                    ResolveError::IndexOutOfBounds {
+                let target =
+                    (*n as usize).checked_sub(0).filter(|&i| i < kids.len()).ok_or(ResolveError::IndexOutOfBounds {
                         parent: parent_label,
                         index: *n,
                         len: kids.len() as u64,
-                    },
-                )?;
+                    })?;
                 cursor = Some(kids[target]);
             }
         }
@@ -239,12 +226,7 @@ fn top_level(nodes: &[Node]) -> Vec<u32> {
 }
 
 fn children_of(nodes: &[Node], parent: u32) -> Vec<u32> {
-    nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.parent == Some(parent))
-        .map(|(i, _)| i as u32)
-        .collect()
+    nodes.iter().enumerate().filter(|(_, n)| n.parent == Some(parent)).map(|(i, _)| i as u32).collect()
 }
 
 /// Find the first child of `parent` (or top-level when `parent`
@@ -252,11 +234,7 @@ fn children_of(nodes: &[Node], parent: u32) -> Vec<u32> {
 /// template field names like `IDAT` shouldn't accidentally match
 /// `idat`.
 fn find_child_by_name(nodes: &[Node], parent: Option<u32>, name: &str) -> Option<u32> {
-    nodes
-        .iter()
-        .enumerate()
-        .find(|(_, n)| n.parent == parent && n.name == name)
-        .map(|(i, _)| i as u32)
+    nodes.iter().enumerate().find(|(_, n)| n.parent == parent && n.name == name).map(|(i, _)| i as u32)
 }
 
 /// Project a node's value into an `i128` when it's an integer
@@ -309,9 +287,7 @@ fn scalar_to_i128(node: &Node) -> Option<i128> {
 }
 
 fn is_big_endian(node: &Node) -> bool {
-    node.attributes
-        .iter()
-        .any(|(k, v)| k == hxy_plugin_host::template::ENDIAN_ATTR && v.eq_ignore_ascii_case("big"))
+    node.attributes.iter().any(|(k, v)| k == hxy_plugin_host::template::ENDIAN_ATTR && v.eq_ignore_ascii_case("big"))
 }
 
 #[cfg(test)]
@@ -510,10 +486,7 @@ mod tests {
     /// the span-based functions can read it.
     #[test]
     fn empty_segments_resolve_to_single_root() {
-        let nodes = vec![
-            struct_node_at("PNG", None, 0, 1024),
-            scalar_node("length", Some(0), wit::Value::U64Val(8)),
-        ];
+        let nodes = vec![struct_node_at("PNG", None, 0, 1024), scalar_node("length", Some(0), wit::Value::U64Val(8))];
         let inst = instance("png.bt", nodes, 1);
         let resolver = TemplateFieldResolver::new(std::slice::from_ref(&inst));
         let field = resolver.lookup(&parse_path("png")).unwrap();

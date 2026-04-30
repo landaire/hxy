@@ -200,7 +200,8 @@ impl MenuState {
         let console = MenuItem::new("Toggle Console", true, None);
         let inspector = MenuItem::new("Toggle Inspector", true, None);
         let plugins = MenuItem::new("Toggle Plugins", true, None);
-        let settings = MenuItem::new("Toggle Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
+        let settings =
+            MenuItem::new("Toggle Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
         view_menu.append(&console).expect("append console");
         view_menu.append(&inspector).expect("append inspector");
         view_menu.append(&plugins).expect("append plugins");

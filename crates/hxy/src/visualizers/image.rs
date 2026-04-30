@@ -35,8 +35,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
                 let rgba = img.to_rgba8();
                 let (w, h) = rgba.dimensions();
                 let pixels = rgba.into_raw();
-                let color_image =
-                    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
+                let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
                 let texture = ui.ctx().load_texture(
                     format!("hxy-visualizer-image-{:?}", ctx.ui_id),
                     color_image,
@@ -83,4 +82,3 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
         ui.add(egui::Image::new(texture).fit_to_exact_size(display));
     });
 }
-

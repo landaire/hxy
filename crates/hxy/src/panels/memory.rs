@@ -45,9 +45,7 @@ impl<'a> ViewLabels<'a> {
                 Some(name) => hxy_i18n::t_args("memory-panel-row-template", &[("name", name)]),
                 None => hxy_i18n::t_args("memory-panel-row-unknown", &[("id", &format!("{}", key.0))]),
             },
-            Attribution::Plugin(key) => {
-                hxy_i18n::t_args("memory-panel-row-plugin", &[("name", &format!("{}", key.0))])
-            }
+            Attribution::Plugin(key) => hxy_i18n::t_args("memory-panel-row-plugin", &[("name", &format!("{}", key.0))]),
         }
     }
 }
@@ -80,10 +78,7 @@ pub fn memory_ui(ui: &mut egui::Ui, byte_cache: &Arc<ByteCache>, labels: &ViewLa
     egui::Grid::new("hxy-memory-panel-rows").num_columns(2).striped(true).show(ui, |ui| {
         for entry in &stats.by_attribution {
             ui.label(labels.label_for(entry.attribution));
-            ui.label(hxy_i18n::t_args(
-                "memory-panel-bytes-mib",
-                &[("mib", &format!("{:.1}", mib_of(entry.bytes)))],
-            ));
+            ui.label(hxy_i18n::t_args("memory-panel-bytes-mib", &[("mib", &format!("{:.1}", mib_of(entry.bytes)))]));
             ui.end_row();
         }
     });

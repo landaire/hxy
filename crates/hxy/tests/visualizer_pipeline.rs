@@ -37,11 +37,7 @@ fn visualize_attribute_arrives_at_host_in_canonical_form() {
     let parsed = runtime.parse(source, template).expect("parse");
     let tree = parsed.execute(&[]).expect("execute");
 
-    let data_node = tree
-        .nodes
-        .iter()
-        .find(|n| n.name == "data")
-        .expect("data node");
+    let data_node = tree.nodes.iter().find(|n| n.name == "data").expect("data node");
     let raw = data_node
         .attributes
         .iter()
@@ -60,10 +56,8 @@ fn image_visualizer_decodes_a_real_png() {
     // (the same call the visualizer makes) and assert we get a valid
     // RGBA buffer back -- if this stops working the GUI image
     // visualizer would also stop working.
-    let png_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("img/command_palette.png");
+    let png_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("img/command_palette.png");
     assert!(png_path.is_file(), "test fixture missing: {}", png_path.display());
     let bytes = std::fs::read(&png_path).expect("read png");
     let img = image::load_from_memory(&bytes).expect("decode png");

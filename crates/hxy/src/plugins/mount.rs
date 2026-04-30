@@ -285,7 +285,7 @@ pub fn install_mount_tab(
                 templates: Vec::new(),
                 active_template_idx: None,
                 visualizer_open: false,
-                    virtual_base_choice: None,
+                virtual_base_choice: None,
             });
         }
     }

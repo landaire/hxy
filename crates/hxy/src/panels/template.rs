@@ -159,11 +159,8 @@ pub fn show(
         // template bug worth reading. The Console auto-opens for
         // the same severity threshold via console_log, so the
         // user gets a coherent "something went wrong" surface.
-        let has_error = state
-            .tree
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.severity, hxy_plugin_host::template::Severity::Error));
+        let has_error =
+            state.tree.diagnostics.iter().any(|d| matches!(d.severity, hxy_plugin_host::template::Severity::Error));
         egui::CollapsingHeader::new(format!("Diagnostics ({})", state.tree.diagnostics.len()))
             .id_salt(("hxy_tmpl_diag", id_seed))
             .default_open(has_error)
@@ -254,9 +251,7 @@ pub fn show(
     let current_selected: Option<u32> = state.selected_node.map(|n| n.0);
     let scroll_to_row_nr: Option<u64> = current_selected
         .filter(|_| current_selected != last_selected)
-        .and_then(|target| {
-            visible.iter().position(|r| matches!(r, RowKind::Node { idx, .. } if idx.0 == target))
-        })
+        .and_then(|target| visible.iter().position(|r| matches!(r, RowKind::Node { idx, .. } if idx.0 == target)))
         .map(|pos| pos as u64);
     ui.ctx().data_mut(|d| match current_selected {
         Some(idx) => {
@@ -660,11 +655,7 @@ impl TemplateTableDelegate<'_> {
         if shift_clicked && has_override {
             self.events.push(TemplateEvent::ResetColor(idx));
         }
-        let tooltip = if has_override {
-            "Click to edit, shift-click to reset"
-        } else {
-            "Click to override color"
-        };
+        let tooltip = if has_override { "Click to edit, shift-click to reset" } else { "Click to override color" };
         resp.on_hover_text(tooltip);
     }
 
@@ -763,8 +754,14 @@ impl TemplateTableDelegate<'_> {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                if let Some(text) = decode_scalar_bytes(kind, &bytes, endian, parent.display, self.template_value_formats, self.inverse_format)
-                {
+                if let Some(text) = decode_scalar_bytes(
+                    kind,
+                    &bytes,
+                    endian,
+                    parent.display,
+                    self.template_value_formats,
+                    self.inverse_format,
+                ) {
                     ui.add(egui::Label::new(text).truncate());
                 }
             }
@@ -923,11 +920,7 @@ const BYTES_VALUE_PREVIEW_BYTES: usize = 16;
 fn quote_string_preview(s: &str) -> String {
     let mut chars = s.chars();
     let preview: String = chars.by_ref().take(STRING_VALUE_PREVIEW_CHARS).collect();
-    if chars.next().is_none() {
-        format!("{preview:?}")
-    } else {
-        format!("{preview:?}... ({} bytes)", s.len())
-    }
+    if chars.next().is_none() { format!("{preview:?}") } else { format!("{preview:?}... ({} bytes)", s.len()) }
 }
 
 /// Render a byte slice as `'\xAB\xCD...'` so the user can tell it apart
@@ -1014,10 +1007,7 @@ fn looks_like_text(head: &str) -> bool {
         return false;
     }
     let total = trimmed.chars().count();
-    let printable = trimmed
-        .chars()
-        .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
-        .count();
+    let printable = trimmed.chars().filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).count();
     printable * 2 >= total
 }
 
@@ -1035,11 +1025,7 @@ fn looks_like_text(head: &str) -> bool {
 /// on the value's magnitude. Hex output for signed types uses
 /// the bit pattern (`-1_i32` -> `0xFFFFFFFF`) so it lines up
 /// with what the user would read off the hex view.
-pub fn format_value(
-    node: &Node,
-    fmts: &crate::settings::TemplateValueFormats,
-    inverse: bool,
-) -> Option<String> {
+pub fn format_value(node: &Node, fmts: &crate::settings::TemplateValueFormats, inverse: bool) -> Option<String> {
     use crate::settings::IntValueType;
     use hxy_plugin_host::template::Value;
     let v = node.value.as_ref()?;
@@ -1131,10 +1117,7 @@ fn format_signed_int(
 /// `Binary` / `Ascii`) passes through unchanged so non-numeric
 /// hints keep their special formatting even with the modifier
 /// down.
-fn flip_if(
-    base: Option<crate::settings::NumericBase>,
-    flip: bool,
-) -> Option<crate::settings::NumericBase> {
+fn flip_if(base: Option<crate::settings::NumericBase>, flip: bool) -> Option<crate::settings::NumericBase> {
     match base {
         Some(b) if flip => Some(b.toggle()),
         other => other,
@@ -1194,8 +1177,7 @@ pub fn new_state_from(
 ) -> TemplateState {
     let children_of = build_children_index(&tree);
     let (leaf_boundaries, leaf_node_indices) = collect_leaves(&tree, &children_of);
-    let leaf_slot_by_node: HashMap<u32, usize> =
-        leaf_node_indices.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+    let leaf_slot_by_node: HashMap<u32, usize> = leaf_node_indices.iter().enumerate().map(|(i, &n)| (n, i)).collect();
     let leaf_colors = resolve_leaf_colors(&tree, &leaf_node_indices, &node_color_overrides);
     let collapsed = initial_collapsed(&tree, &children_of);
     let byte_palette_override = build_byte_palette_override(tree.byte_palette.as_deref());
@@ -1481,10 +1463,7 @@ fn render_visualizer_marker(
 /// `0x` prefix): `RRGGBB` and `AARRGGBB`. `None` when the attribute
 /// is missing or doesn't parse.
 fn parse_color_attr(node: &Node) -> Option<egui::Color32> {
-    let raw = node
-        .attributes
-        .iter()
-        .find_map(|(k, v)| (k == hxy_plugin_host::COLOR_ATTR).then_some(v.as_str()))?;
+    let raw = node.attributes.iter().find_map(|(k, v)| (k == hxy_plugin_host::COLOR_ATTR).then_some(v.as_str()))?;
     parse_hex_color(raw)
 }
 
@@ -1747,9 +1726,7 @@ fn decode_scalar_bytes(
     };
     Some(match kind {
         K::U8K => format_unsigned_int(display, u64::from(*bytes.first()?), 1, fmts.slot(IntValueType::U8), inverse),
-        K::S8K => {
-            format_signed_int(display, i64::from(*bytes.first()? as i8), 1, fmts.slot(IntValueType::S8), inverse)
-        }
+        K::S8K => format_signed_int(display, i64::from(*bytes.first()? as i8), 1, fmts.slot(IntValueType::S8), inverse),
         K::U16K => format_unsigned_int(display, read_u(bytes), 2, fmts.slot(IntValueType::U16), inverse),
         K::U32K => format_unsigned_int(display, read_u(bytes), 4, fmts.slot(IntValueType::U32), inverse),
         K::U64K => format_unsigned_int(display, read_u(bytes), 8, fmts.slot(IntValueType::U64), inverse),
@@ -1875,11 +1852,7 @@ fn collect_leaves(
         if overlaps {
             continue;
         }
-        accepted.push((
-            hxy_core::ByteOffset::new(new_start),
-            hxy_core::ByteLen::new(node.span.length),
-            idx as u32,
-        ));
+        accepted.push((hxy_core::ByteOffset::new(new_start), hxy_core::ByteLen::new(node.span.length), idx as u32));
     }
     accepted.sort_by_key(|(start, _, _)| start.get());
     let boundaries = accepted.iter().map(|(s, l, _)| (*s, *l)).collect();
@@ -2037,4 +2010,3 @@ mod tests {
         assert_eq!(fmts.slot(IntValueType::U32), NumericFormat::Always(NumericBase::Decimal));
     }
 }
-

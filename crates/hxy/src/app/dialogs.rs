@@ -315,11 +315,7 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                 } else {
                     ("reload-prompt-reload", "reload-prompt-reload-tooltip")
                 };
-                if ui
-                    .button(hxy_i18n::t(reload_label_key))
-                    .on_hover_text(hxy_i18n::t(reload_tooltip_key))
-                    .clicked()
-                {
+                if ui.button(hxy_i18n::t(reload_label_key)).on_hover_text(hxy_i18n::t(reload_tooltip_key)).clicked() {
                     action = Some(ReloadAction::Reload(ReloadDecision::DiscardEdits));
                 }
                 // "Keep my edits" only makes sense when there
@@ -407,16 +403,9 @@ pub fn render_open_with_options_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut decision: Option<bool> = None;
     let mut open = true;
     let screen_center = ctx.content_rect().center();
-    let mut current_input = app
-        .pending_open_with_options
-        .as_ref()
-        .map(|p| p.virtual_base_input.clone())
-        .unwrap_or_default();
-    let path_display = app
-        .pending_open_with_options
-        .as_ref()
-        .map(|p| p.path.display().to_string())
-        .unwrap_or_default();
+    let mut current_input =
+        app.pending_open_with_options.as_ref().map(|p| p.virtual_base_input.clone()).unwrap_or_default();
+    let path_display = app.pending_open_with_options.as_ref().map(|p| p.path.display().to_string()).unwrap_or_default();
     let parse_error = parse_virtual_base_input(&current_input).err();
     egui::Window::new(hxy_i18n::t("open-with-options-title"))
         .id(egui::Id::new("hxy_open_with_options_dialog"))
@@ -440,10 +429,7 @@ pub fn render_open_with_options_dialog(ctx: &egui::Context, app: &mut HxyApp) {
                 ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
             }
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(hxy_i18n::t("open-with-options-base-hint"))
-                    .weak(),
-            );
+            ui.label(egui::RichText::new(hxy_i18n::t("open-with-options-base-hint")).weak());
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let can_open = parse_error.is_none();

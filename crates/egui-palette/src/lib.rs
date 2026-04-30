@@ -629,8 +629,7 @@ pub fn show_with_style<A: Clone>(
                 let display_chars = display_buffer.chars().count();
                 state.query = if buffer != display_buffer {
                     // Edit happened (typed, deleted, pasted).
-                    let backspaced_suggestion =
-                        suggestion.is_some() && buffer == state.query;
+                    let backspaced_suggestion = suggestion.is_some() && buffer == state.query;
                     if backspaced_suggestion {
                         // User explicitly cleared the ghost.
                         // Latch dismissal so the next Backspace

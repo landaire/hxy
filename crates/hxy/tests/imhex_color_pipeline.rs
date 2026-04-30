@@ -42,15 +42,9 @@ chunk_t c @ 0x00;
 
     // 1. The wit::Node tree should carry the canonical hxy_color
     //    attribute on the length field.
-    let length_node = tree
-        .nodes
-        .iter()
-        .find(|n| n.name == "length")
-        .expect("length node in result tree");
-    let color_value = length_node
-        .attributes
-        .iter()
-        .find_map(|(k, v)| (k == hxy_plugin_host::COLOR_ATTR).then_some(v.as_str()));
+    let length_node = tree.nodes.iter().find(|n| n.name == "length").expect("length node in result tree");
+    let color_value =
+        length_node.attributes.iter().find_map(|(k, v)| (k == hxy_plugin_host::COLOR_ATTR).then_some(v.as_str()));
     assert_eq!(
         color_value,
         Some("17BECF"),
@@ -64,21 +58,14 @@ chunk_t c @ 0x00;
     use hxy_lib::panels::template::new_state_from;
     let state = new_state_from(parsed, tree.clone(), std::collections::HashMap::new());
 
-    let length_idx = tree
-        .nodes
-        .iter()
-        .position(|n| n.name == "length")
-        .expect("length node index") as u32;
-    let slot = *state
-        .leaf_slot_by_node
-        .get(&length_idx)
-        .unwrap_or_else(|| {
-            panic!(
-                "length node (idx {length_idx}) is not in leaf_slot_by_node; \
+    let length_idx = tree.nodes.iter().position(|n| n.name == "length").expect("length node index") as u32;
+    let slot = *state.leaf_slot_by_node.get(&length_idx).unwrap_or_else(|| {
+        panic!(
+            "length node (idx {length_idx}) is not in leaf_slot_by_node; \
                  leaves = {:?}",
-                state.leaf_node_indices
-            )
-        });
+            state.leaf_node_indices
+        )
+    });
     let resolved = state.leaf_colors[slot];
     let expected = egui::Color32::from_rgb(0x17, 0xBE, 0xCF);
     assert_eq!(
@@ -119,11 +106,7 @@ s_t s @ 0x00;
     let parsed = runtime.parse(source, src).expect("parse");
     let tree: wit::ResultTree = parsed.execute(&[]).expect("execute");
 
-    let keyword_idx = tree
-        .nodes
-        .iter()
-        .position(|n| n.name == "keyword")
-        .expect("keyword node");
+    let keyword_idx = tree.nodes.iter().position(|n| n.name == "keyword").expect("keyword node");
     // The lang emits the parent + child element nodes (their names
     // are "[0]", "[1]", ...).
     let element_count =
@@ -168,10 +151,7 @@ s_t s @ 0x00;
     let tree: wit::ResultTree = parsed.execute(&[]).expect("execute");
 
     let width = tree.nodes.iter().find(|n| n.name == "width").expect("width node");
-    let comment = width
-        .attributes
-        .iter()
-        .find_map(|(k, v)| (k == hxy_plugin_host::COMMENT_ATTR).then_some(v.as_str()));
+    let comment = width.attributes.iter().find_map(|(k, v)| (k == hxy_plugin_host::COMMENT_ATTR).then_some(v.as_str()));
     assert_eq!(comment, Some("Image width"), "wit::Node 'width' missing hxy_comment; attrs={:?}", width.attributes);
 
     // Sibling without [[comment]] should NOT have hxy_comment.
@@ -254,7 +234,8 @@ outer_t o @ 0x00;
     let tree: wit::ResultTree = parsed.execute(&[]).expect("execute");
 
     use hxy_lib::files::TemplateNodeIdx;
-    use hxy_lib::panels::template::{new_state_from, visible_node_indices};
+    use hxy_lib::panels::template::new_state_from;
+    use hxy_lib::panels::template::visible_node_indices;
     let mut state = new_state_from(parsed, tree.clone(), std::collections::HashMap::new());
     // Default: outer_t is collapsed -- only the root row is visible.
     assert_eq!(visible_node_indices(&state), vec![TemplateNodeIdx(0)]);
@@ -292,9 +273,9 @@ outer_t o @ 0x00;
     use hxy_lib::panels::template::new_state_from;
     let state = new_state_from(parsed, tree.clone(), std::collections::HashMap::new());
 
-    for (idx, _) in tree.nodes.iter().enumerate().filter(|(idx, _)| {
-        tree.nodes.iter().any(|n| n.parent == Some(*idx as u32))
-    }) {
+    for (idx, _) in
+        tree.nodes.iter().enumerate().filter(|(idx, _)| tree.nodes.iter().any(|n| n.parent == Some(*idx as u32)))
+    {
         assert!(
             state.collapsed.contains(&TemplateNodeIdx(idx as u32)),
             "parent node at idx {idx} should start collapsed"

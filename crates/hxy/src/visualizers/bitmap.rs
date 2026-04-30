@@ -66,8 +66,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
         cache.size = (0, 0);
         match decode(ctx) {
             Ok((w, h, rgba)) => {
-                let color =
-                    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
                 let texture = ui.ctx().load_texture(
                     format!("hxy-visualizer-bitmap-{:?}", ctx.ui_id),
                     color,

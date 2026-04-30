@@ -73,10 +73,7 @@ impl Default for ChecksumConfig {
         let mut algorithms = BTreeSet::new();
         algorithms.insert(Algorithm::Sha256);
         algorithms.insert(Algorithm::Blake3);
-        Self {
-            algorithms,
-            range: ByteRange::new(ByteOffset::new(0), ByteOffset::new(0)).expect("empty range valid"),
-        }
+        Self { algorithms, range: ByteRange::new(ByteOffset::new(0), ByteOffset::new(0)).expect("empty range valid") }
     }
 }
 
@@ -199,12 +196,7 @@ pub fn compute(source: &dyn HexSource, config: &ChecksumConfig) -> Result<Checks
     }
     let values: BTreeMap<Algorithm, String> =
         hashers.into_iter().map(|(alg, hasher)| (alg, hasher.finalize_hex())).collect();
-    Ok(ChecksumResult {
-        values,
-        computed_at: jiff::Timestamp::now(),
-        source_len,
-        config: config.clone(),
-    })
+    Ok(ChecksumResult { values, computed_at: jiff::Timestamp::now(), source_len, config: config.clone() })
 }
 
 /// Spin up a checksum worker on the shared background pool.
@@ -330,32 +322,29 @@ fn show_inner(
     };
 
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("checksums-results-grid")
-            .num_columns(3)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new(hxy_i18n::t("checksums-col-algorithm")).strong());
-                ui.label(egui::RichText::new(hxy_i18n::t("checksums-col-value")).strong());
-                ui.label("");
-                ui.end_row();
-                for (alg, value) in &result.values {
-                    ui.label(alg.label());
-                    // Extend wrap mode keeps the hex digest on one
-                    // line; the outer ScrollArea handles overflow
-                    // when the panel is narrow. `selectable(true)`
-                    // lets the user double-click to grab the value
-                    // without taking the dedicated Copy button path.
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(value).monospace())
-                            .wrap_mode(egui::TextWrapMode::Extend)
-                            .selectable(true),
-                    );
-                    if ui.small_button(hxy_i18n::t("checksums-copy")).clicked() {
-                        events.push(ChecksumsEvent::Copy(value.clone()));
-                    }
-                    ui.end_row();
+        egui::Grid::new("checksums-results-grid").num_columns(3).striped(true).show(ui, |ui| {
+            ui.label(egui::RichText::new(hxy_i18n::t("checksums-col-algorithm")).strong());
+            ui.label(egui::RichText::new(hxy_i18n::t("checksums-col-value")).strong());
+            ui.label("");
+            ui.end_row();
+            for (alg, value) in &result.values {
+                ui.label(alg.label());
+                // Extend wrap mode keeps the hex digest on one
+                // line; the outer ScrollArea handles overflow
+                // when the panel is narrow. `selectable(true)`
+                // lets the user double-click to grab the value
+                // without taking the dedicated Copy button path.
+                ui.add(
+                    egui::Label::new(egui::RichText::new(value).monospace())
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .selectable(true),
+                );
+                if ui.small_button(hxy_i18n::t("checksums-copy")).clicked() {
+                    events.push(ChecksumsEvent::Copy(value.clone()));
                 }
-            });
+                ui.end_row();
+            }
+        });
     });
 
     events

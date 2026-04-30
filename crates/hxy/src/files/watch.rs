@@ -48,7 +48,10 @@ pub enum WatchEvent {
     /// a mount surface as a Removed for the old name plus a
     /// Modified for the parent file (which the workspace
     /// re-mount path picks up).
-    Renamed { from: PathBuf, to: PathBuf },
+    Renamed {
+        from: PathBuf,
+        to: PathBuf,
+    },
 }
 
 /// What the watcher reported a change against. Filesystem
@@ -380,8 +383,9 @@ impl FileWatcher {
         }
         let watched_vfs = self.watched_vfs.lock().expect("watched_vfs mutex");
         out.retain(|ev| match ev {
-            WatchEvent::Modified(WatchTarget::Filesystem(p))
-            | WatchEvent::Removed(WatchTarget::Filesystem(p)) => self.watched.contains_key(p.as_path()),
+            WatchEvent::Modified(WatchTarget::Filesystem(p)) | WatchEvent::Removed(WatchTarget::Filesystem(p)) => {
+                self.watched.contains_key(p.as_path())
+            }
             WatchEvent::Modified(WatchTarget::Vfs(id)) | WatchEvent::Removed(WatchTarget::Vfs(id)) => {
                 watched_vfs.contains_key(id)
             }

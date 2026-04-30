@@ -1800,11 +1800,8 @@ impl HxyApp {
             .map(|t| (t.source.clone(), t.templates.clone(), t.active_template_idx, t.visualizer_open))
             .collect();
         for (source, templates, active_idx, visualizer_open) in entries {
-            let Some(file_id) = self
-                .files
-                .iter()
-                .find(|(_, f)| f.source_kind.as_ref() == Some(&source))
-                .map(|(&id, _)| id)
+            let Some(file_id) =
+                self.files.iter().find(|(_, f)| f.source_kind.as_ref() == Some(&source)).map(|(&id, _)| id)
             else {
                 continue;
             };
@@ -1902,25 +1899,23 @@ impl HxyApp {
                 // matching FileId in the dock-layout maps, the
                 // restored snapshot drops the placeholder cleanly
                 // (no zombie tab in the live dock).
-                let (source, _len) =
-                    match crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()) {
-                        Ok(pair) => pair,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                entry = %entry_path,
-                                "vfs entry open failed at restore; preserving tab for next session"
-                            );
-                            return Ok(());
-                        }
-                    };
+                let (source, _len) = match crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            entry = %entry_path,
+                            "vfs entry open failed at restore; preserving tab for next session"
+                        );
+                        return Ok(());
+                    }
+                };
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 let target = self
                     .workspace_for_source(parent.as_ref())
                     .map(OpenTarget::Workspace)
                     .unwrap_or(OpenTarget::Toplevel);
-                let virtual_base_hint =
-                    parent_mount.virtual_base.as_ref().and_then(|q| q.virtual_base(entry_path));
+                let virtual_base_hint = parent_mount.virtual_base.as_ref().and_then(|q| q.virtual_base(entry_path));
                 let opened_id = self.open_with_target(
                     name,
                     Some(tab.source.clone()),
@@ -2112,7 +2107,7 @@ impl HxyApp {
                             templates: Vec::new(),
                             active_template_idx: None,
                             visualizer_open: false,
-                    virtual_base_choice: None,
+                            virtual_base_choice: None,
                         });
                     }
                 }
@@ -2532,9 +2527,11 @@ impl eframe::App for HxyApp {
             let to_show: Vec<FileId> = self
                 .files
                 .iter_mut()
-                .filter_map(|(id, file)| {
-                    if std::mem::take(&mut file.visualizer_panel.pending_show) { Some(*id) } else { None }
-                })
+                .filter_map(
+                    |(id, file)| {
+                        if std::mem::take(&mut file.visualizer_panel.pending_show) { Some(*id) } else { None }
+                    },
+                )
                 .collect();
             for id in to_show {
                 self.show_visualizer_for(id);
@@ -2754,10 +2751,8 @@ fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
     let req = ctx.data_mut(|d| d.remove_temp::<std::path::PathBuf>(egui::Id::new(WELCOME_OPEN_RECENT)));
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = req {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
+        let name =
+            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         app.request_open_filesystem(name, path);
     }
     #[cfg(target_arch = "wasm32")]
@@ -2815,13 +2810,8 @@ pub fn request_reload_active_file(app: &mut HxyApp) {
     };
     let display_name = file.display_name.clone();
     let has_unsaved = file.editor.is_dirty();
-    app.pending_reload_prompt = Some(PendingReloadPrompt {
-        file_id: id,
-        display_name,
-        path,
-        kind: ExternalChangeKind::Modified,
-        has_unsaved,
-    });
+    app.pending_reload_prompt =
+        Some(PendingReloadPrompt { file_id: id, display_name, path, kind: ExternalChangeKind::Modified, has_unsaved });
 }
 
 /// Capture a snapshot of the active file's current bytes with
@@ -3240,8 +3230,7 @@ pub fn start_open_file_with_options(app: &mut HxyApp) {
             return;
         }
     };
-    app.pending_open_with_options =
-        Some(PendingOpenWithOptions { name, path, virtual_base_input: String::new() });
+    app.pending_open_with_options = Some(PendingOpenWithOptions { name, path, virtual_base_input: String::new() });
 }
 
 /// Apply an Open-with-options decision. Opens the file via the
@@ -3262,10 +3251,8 @@ pub fn finish_open_file_with_options(
     // synchronously above, so the file is in `app.files`. Find the
     // newest tab with a matching path and apply.
     let target_source = hxy_vfs::TabSource::Filesystem(path.clone());
-    let opened_id = app
-        .files
-        .iter()
-        .find_map(|(&id, f)| (f.source_kind.as_ref() == Some(&target_source)).then_some(id));
+    let opened_id =
+        app.files.iter().find_map(|(&id, f)| (f.source_kind.as_ref() == Some(&target_source)).then_some(id));
     let Some(id) = opened_id else { return };
     if let Some(file) = app.files.get_mut(&id) {
         file.virtual_base = Some(vbase);
@@ -3294,9 +3281,7 @@ pub(crate) fn record_virtual_base_hint(app: &mut HxyApp, file_id: FileId, hint: 
     // tab the host hasn't pushed into open_tabs) treat that as
     // "never asked" too.
     let source = file.source_kind.clone();
-    let prior = source
-        .as_ref()
-        .and_then(|src| app.state.read().open_tabs.iter().find(|t| &t.source == src).cloned());
+    let prior = source.as_ref().and_then(|src| app.state.read().open_tabs.iter().find(|t| &t.source == src).cloned());
     match prior.and_then(|t| t.virtual_base_choice) {
         Some(crate::state::VirtualBaseChoice::Accepted(base)) => {
             // User already said yes; restore the applied base
@@ -3316,8 +3301,7 @@ pub(crate) fn record_virtual_base_hint(app: &mut HxyApp, file_id: FileId, hint: 
             // if another is already queued, the second hint is
             // dropped and the user can re-trigger by reopening.
             if app.pending_virtual_base_prompt.is_none() {
-                app.pending_virtual_base_prompt =
-                    Some(PendingVirtualBasePrompt { file_id, display_name, hint });
+                app.pending_virtual_base_prompt = Some(PendingVirtualBasePrompt { file_id, display_name, hint });
             }
         }
     }
@@ -3452,7 +3436,9 @@ pub(crate) fn polling_prefs_from_settings(s: &crate::settings::AppSettings) -> c
         None
     } else {
         let dur = std::time::Duration::from_millis(s.file_poll_interval_ms as u64);
-        Some(dur.clamp(crate::files::watch::PollingPrefs::MIN_INTERVAL, crate::files::watch::PollingPrefs::MAX_INTERVAL))
+        Some(
+            dur.clamp(crate::files::watch::PollingPrefs::MIN_INTERVAL, crate::files::watch::PollingPrefs::MAX_INTERVAL),
+        )
     };
     crate::files::watch::PollingPrefs { interval, poll_all: s.file_poll_all }
 }
@@ -3497,8 +3483,7 @@ fn handle_external_change(
     kind: ExternalChangeKind,
 ) {
     use crate::files::watch::WatchTarget;
-    let (affected_ids, label_path, pref_key): (Vec<FileId>, std::path::PathBuf, std::path::PathBuf) = match &target
-    {
+    let (affected_ids, label_path, pref_key): (Vec<FileId>, std::path::PathBuf, std::path::PathBuf) = match &target {
         WatchTarget::Filesystem(path) => {
             let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             let ids: Vec<FileId> = app
@@ -3554,13 +3539,8 @@ fn handle_external_change(
                 if app.pending_reload_prompt.is_some() {
                     continue;
                 }
-                app.pending_reload_prompt = Some(PendingReloadPrompt {
-                    file_id,
-                    display_name,
-                    path: label_path.clone(),
-                    kind,
-                    has_unsaved,
-                });
+                app.pending_reload_prompt =
+                    Some(PendingReloadPrompt { file_id, display_name, path: label_path.clone(), kind, has_unsaved });
             }
         }
     }
@@ -3605,10 +3585,8 @@ fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
         }
     }
     for path in batch {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
+        let name =
+            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         app.request_open_filesystem(name, path);
     }
 }
@@ -4151,11 +4129,7 @@ fn render_template_panel(
 /// that target "the active instance" look it up here so the panel
 /// renderer can stay borrow-clean.
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_template_event(
-    ui: &mut egui::Ui,
-    file: &mut OpenFile,
-    event: crate::panels::template::TemplateEvent,
-) {
+fn apply_template_event(ui: &mut egui::Ui, file: &mut OpenFile, event: crate::panels::template::TemplateEvent) {
     use crate::panels::template::TemplateEvent;
     match event {
         TemplateEvent::HidePanel => {
@@ -5123,11 +5097,8 @@ fn handle_command_palette(ctx: &egui::Context, app: &mut HxyApp) {
     // active file's templates so `png.<seg>` knows what fields
     // the parsed PNG actually has.
     {
-        let templates: &[crate::files::TemplateInstance] = app
-            .last_active_file
-            .and_then(|id| app.files.get(&id))
-            .map(|f| f.templates.as_slice())
-            .unwrap_or(&[]);
+        let templates: &[crate::files::TemplateInstance] =
+            app.last_active_file.and_then(|id| app.files.get(&id)).map(|f| f.templates.as_slice()).unwrap_or(&[]);
         let resolver = crate::commands::palette::calculator::TemplateFieldResolver::new(templates);
         app.palette.inner.completion_suggestion =
             crate::commands::palette::completion::compute_suggestion(&app.palette.inner.query, &resolver);
@@ -5633,10 +5604,8 @@ impl TabViewer for HxyTabViewer<'_> {
                     if file.strings_panel.config.range.is_empty() {
                         let len = file.editor.source().len().get();
                         if len > 0
-                            && let Ok(range) = hxy_core::ByteRange::new(
-                                hxy_core::ByteOffset::new(0),
-                                hxy_core::ByteOffset::new(len),
-                            )
+                            && let Ok(range) =
+                                hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
                         {
                             file.strings_panel.config.range = range;
                             if len <= AUTO_RUN_MAX_BYTES
@@ -5649,12 +5618,9 @@ impl TabViewer for HxyTabViewer<'_> {
                     }
                     let label = file.display_name.clone();
                     let events = match file.virtual_base {
-                        Some(base) => crate::panels::strings::show_with_vaddr(
-                            ui,
-                            Some(&label),
-                            &mut file.strings_panel,
-                            base,
-                        ),
+                        Some(base) => {
+                            crate::panels::strings::show_with_vaddr(ui, Some(&label), &mut file.strings_panel, base)
+                        }
                         None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
                     };
                     for ev in events {
@@ -5685,10 +5651,8 @@ impl TabViewer for HxyTabViewer<'_> {
                     if file.checksums_panel.config.range.is_empty() {
                         let len = file.editor.source().len().get();
                         if len > 0
-                            && let Ok(range) = hxy_core::ByteRange::new(
-                                hxy_core::ByteOffset::new(0),
-                                hxy_core::ByteOffset::new(len),
-                            )
+                            && let Ok(range) =
+                                hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
                         {
                             file.checksums_panel.config.range = range;
                             if len <= AUTO_RUN_MAX_BYTES
@@ -5702,12 +5666,9 @@ impl TabViewer for HxyTabViewer<'_> {
                     }
                     let label = file.display_name.clone();
                     let events = match file.virtual_base {
-                        Some(base) => crate::panels::checksums::show_with_vaddr(
-                            ui,
-                            Some(&label),
-                            &mut file.checksums_panel,
-                            base,
-                        ),
+                        Some(base) => {
+                            crate::panels::checksums::show_with_vaddr(ui, Some(&label), &mut file.checksums_panel, base)
+                        }
                         None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
                     };
                     for ev in events {
@@ -5739,13 +5700,8 @@ impl TabViewer for HxyTabViewer<'_> {
                 let template_value_formats = self.state.app.template_value_formats;
                 if let Some(file) = self.files.get_mut(&pinned) {
                     let mut taken = std::mem::take(&mut file.visualizer_panel);
-                    let events = crate::visualizers::show(
-                        ui,
-                        Some(&*file),
-                        &mut taken,
-                        numeric_format,
-                        &template_value_formats,
-                    );
+                    let events =
+                        crate::visualizers::show(ui, Some(&*file), &mut taken, numeric_format, &template_value_formats);
                     file.visualizer_panel = taken;
                     for ev in events {
                         match ev {
@@ -5756,8 +5712,7 @@ impl TabViewer for HxyTabViewer<'_> {
                     }
                 } else {
                     let mut empty = crate::visualizers::VisualizerPanel::default();
-                    let _ =
-                        crate::visualizers::show(ui, None, &mut empty, numeric_format, &template_value_formats);
+                    let _ = crate::visualizers::show(ui, None, &mut empty, numeric_format, &template_value_formats);
                 }
             }
             Tab::Memory => {
@@ -6837,10 +6792,7 @@ fn settings_ui(
         ui.label(hxy_i18n::t("settings-byte-cache-limit"));
         let mut mib = settings.byte_cache_limit_mib.max(hxy_core::CacheLimit::MIN_MIB);
         let response = ui.add(
-            egui::DragValue::new(&mut mib)
-                .range(hxy_core::CacheLimit::MIN_MIB..=u32::MAX)
-                .speed(8.0)
-                .suffix(" MiB"),
+            egui::DragValue::new(&mut mib).range(hxy_core::CacheLimit::MIN_MIB..=u32::MAX).speed(8.0).suffix(" MiB"),
         );
         response.on_hover_text(hxy_i18n::t("settings-byte-cache-limit-tooltip"));
         if mib != settings.byte_cache_limit_mib {

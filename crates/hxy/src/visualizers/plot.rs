@@ -95,11 +95,9 @@ pub fn show_line(ui: &mut egui::Ui, ctx: &VisualizerContext) {
         return;
     }
     let points: PlotPoints = values.iter().enumerate().map(|(i, v)| [i as f64, *v]).collect();
-    Plot::new(ctx.ui_id.with("line"))
-        .height(ui.available_height() - 4.0)
-        .show(ui, |plot_ui| {
-            plot_ui.line(Line::new("samples", points));
-        });
+    Plot::new(ctx.ui_id.with("line")).height(ui.available_height() - 4.0).show(ui, |plot_ui| {
+        plot_ui.line(Line::new("samples", points));
+    });
 }
 
 pub fn show_bar(ui: &mut egui::Ui, ctx: &VisualizerContext) {
@@ -128,12 +126,9 @@ pub fn show_scatter(ui: &mut egui::Ui, ctx: &VisualizerContext) {
         return;
     }
     let points: PlotPoints = values.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
-    Plot::new(ctx.ui_id.with("scatter"))
-        .height(ui.available_height() - 4.0)
-        .data_aspect(1.0)
-        .show(ui, |plot_ui| {
-            plot_ui.points(Points::new("samples", points).radius(2.0));
-        });
+    Plot::new(ctx.ui_id.with("scatter")).height(ui.available_height() - 4.0).data_aspect(1.0).show(ui, |plot_ui| {
+        plot_ui.points(Points::new("samples", points).radius(2.0));
+    });
 }
 
 pub fn show_chunk_entropy(ui: &mut egui::Ui, ctx: &VisualizerContext) {

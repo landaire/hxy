@@ -52,13 +52,7 @@ pub fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
         let r = s.range();
         (r.start().get(), r.end().get())
     });
-    OffsetPaletteContext {
-        cursor,
-        source_len,
-        available: true,
-        selection,
-        virtual_base: file.virtual_base,
-    }
+    OffsetPaletteContext { cursor, source_len, available: true, selection, virtual_base: file.virtual_base }
 }
 
 /// Copy a formatted offset / length / range from the active tab to

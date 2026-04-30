@@ -106,13 +106,8 @@ pub fn dispatch_tab_focus_toggle(ctx: &egui::Context, app: &mut HxyApp) {
 pub fn handle_pane_pick(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(pending) = app.pending_pane_pick else { return };
     let whitelist = app.pane_pick_target_paths.clone();
-    let outcome = crate::tabs::pane_pick::tick(
-        ctx,
-        &app.dock,
-        pending,
-        &mut app.pane_pick_letters,
-        whitelist.as_deref(),
-    );
+    let outcome =
+        crate::tabs::pane_pick::tick(ctx, &app.dock, pending, &mut app.pane_pick_letters, whitelist.as_deref());
     match outcome {
         crate::tabs::pane_pick::TickOutcome::Continue => {}
         crate::tabs::pane_pick::TickOutcome::Cancel => {

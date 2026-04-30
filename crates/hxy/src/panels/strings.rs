@@ -339,8 +339,7 @@ impl Scanner {
                 Err(e) => {
                     let valid = e.valid_up_to();
                     if valid > 0 {
-                        let s =
-                            std::str::from_utf8(&buf[i..i + valid]).expect("valid_up_to delineates utf-8 prefix");
+                        let s = std::str::from_utf8(&buf[i..i + valid]).expect("valid_up_to delineates utf-8 prefix");
                         self.consume_utf8_str(s, base + i as u64, out);
                     }
                     let after_valid = i + valid;
@@ -474,13 +473,14 @@ fn show_inner(
     let running = panel.running.is_some();
 
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("strings-encoding")
-            .selected_text(panel.config.encoding.label())
-            .show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("strings-encoding").selected_text(panel.config.encoding.label()).show_ui(
+            ui,
+            |ui| {
                 for enc in Encoding::ALL {
                     ui.selectable_value(&mut panel.config.encoding, enc, enc.label());
                 }
-            });
+            },
+        );
         ui.label(hxy_i18n::t("strings-min-length"));
         let mut min: u64 = panel.config.min_length as u64;
         ui.add(egui::DragValue::new(&mut min).range(1..=4096));
@@ -528,10 +528,7 @@ fn show_inner(
     let summary = if filter.is_empty() {
         hxy_i18n::t_args("strings-summary", &[("count", &total.to_string())])
     } else {
-        hxy_i18n::t_args(
-            "strings-summary-filtered",
-            &[("count", &total.to_string()), ("filter", &panel.filter)],
-        )
+        hxy_i18n::t_args("strings-summary-filtered", &[("count", &total.to_string()), ("filter", &panel.filter)])
     };
     ui.label(summary);
     if result.truncated {
@@ -659,11 +656,7 @@ impl egui_table::TableDelegate for StringsTableDelegate<'_> {
                 (key, SortColumn::Offset)
             }
             1 => {
-                let key = if self.virtual_base.is_some() {
-                    "strings-col-end-address"
-                } else {
-                    "strings-col-end"
-                };
+                let key = if self.virtual_base.is_some() { "strings-col-end-address" } else { "strings-col-end" };
                 (key, SortColumn::End)
             }
             2 => ("strings-col-length", SortColumn::Length),
@@ -672,8 +665,11 @@ impl egui_table::TableDelegate for StringsTableDelegate<'_> {
         };
         let mut text = hxy_i18n::t(label_key);
         if self.sort.column() == sort_col {
-            let glyph =
-                if self.sort.is_descending() { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_UP };
+            let glyph = if self.sort.is_descending() {
+                egui_phosphor::regular::CARET_DOWN
+            } else {
+                egui_phosphor::regular::CARET_UP
+            };
             text.push(' ');
             text.push_str(glyph);
         }
@@ -742,11 +738,7 @@ mod tests {
     use super::*;
 
     fn cfg(encoding: Encoding, min_length: usize, len: u64) -> StringsConfig {
-        StringsConfig {
-            encoding,
-            min_length,
-            range: ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap(),
-        }
+        StringsConfig { encoding, min_length, range: ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap() }
     }
 
     fn run(encoding: Encoding, min_length: usize, bytes: &[u8]) -> Vec<StringEntry> {

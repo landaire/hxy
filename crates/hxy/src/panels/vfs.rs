@@ -190,15 +190,13 @@ fn walk(
             let visible_right = ui.clip_rect().right();
             let body_font = egui::TextStyle::Body.resolve(ui.style());
             let weak_color = ui.visuals().weak_text_color();
-            let measured_size_w = ui.fonts_mut(|f| {
-                f.layout_no_wrap(size_text.clone(), body_font.clone(), weak_color).size().x
-            });
+            let measured_size_w =
+                ui.fonts_mut(|f| f.layout_no_wrap(size_text.clone(), body_font.clone(), weak_color).size().x);
             let cursor_x = ui.cursor().min.x;
             let avail_visible = (visible_right - cursor_x).max(0.0);
             let row_h = ui.available_height();
             let show_size = avail_visible >= MIN_NAME_W + measured_size_w + SIZE_GAP;
-            let name_max =
-                if show_size { avail_visible - measured_size_w - SIZE_GAP } else { avail_visible };
+            let name_max = if show_size { avail_visible - measured_size_w - SIZE_GAP } else { avail_visible };
             // `add_sized` centers the widget within the allocated
             // rect, which would shove the filename rightwards. Use an
             // explicit left-to-right layout so the name hugs the

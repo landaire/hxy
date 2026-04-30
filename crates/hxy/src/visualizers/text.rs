@@ -16,10 +16,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
 
     let decoded = match encoding.as_str() {
         "utf-8" | "utf8" => String::from_utf8_lossy(view).into_owned(),
-        "ascii" => view
-            .iter()
-            .map(|&b| if b < 0x80 { b as char } else { '\u{FFFD}' })
-            .collect(),
+        "ascii" => view.iter().map(|&b| if b < 0x80 { b as char } else { '\u{FFFD}' }).collect(),
         "latin-1" | "latin1" | "iso-8859-1" => view.iter().map(|&b| b as char).collect(),
         "utf-16-le" | "utf-16le" | "utf16le" => decode_utf16(view, true),
         "utf-16-be" | "utf-16be" | "utf16be" => decode_utf16(view, false),

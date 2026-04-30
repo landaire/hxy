@@ -249,9 +249,7 @@ impl ToastCenter {
                             .iter()
                             .filter_map(|e| e.description.as_deref())
                             .map(|d| {
-                                ui.fonts_mut(|f| {
-                                    f.layout_no_wrap(d.to_owned(), body_font.clone(), text_color).size().x
-                                })
+                                ui.fonts_mut(|f| f.layout_no_wrap(d.to_owned(), body_font.clone(), text_color).size().x)
                             })
                             .fold(0.0_f32, f32::max);
                         let name_col_w = measured_name_w.min(NAME_COL_MAX);
@@ -304,9 +302,7 @@ impl ToastCenter {
                                         let desc = entry.description.as_deref().unwrap_or("");
                                         let desc_resp = ui.add_sized(
                                             [desc_col_w, ROW_HEIGHT],
-                                            egui::Label::new(RichText::new(desc).weak())
-                                                .selectable(false)
-                                                .truncate(),
+                                            egui::Label::new(RichText::new(desc).weak()).selectable(false).truncate(),
                                         );
                                         if let Some(full) = entry.description.as_deref()
                                             && !full.is_empty()

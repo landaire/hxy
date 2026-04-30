@@ -51,11 +51,7 @@ impl NumericBase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NumericFormat {
     Always(NumericBase),
-    Threshold {
-        small: NumericBase,
-        large: NumericBase,
-        threshold: u64,
-    },
+    Threshold { small: NumericBase, large: NumericBase, threshold: u64 },
 }
 
 impl Default for NumericFormat {
@@ -73,7 +69,11 @@ impl NumericFormat {
         match self {
             Self::Always(b) => b,
             Self::Threshold { small, large, threshold } => {
-                if value >= threshold { large } else { small }
+                if value >= threshold {
+                    large
+                } else {
+                    small
+                }
             }
         }
     }
@@ -85,9 +85,7 @@ impl NumericFormat {
     pub fn toggle(self) -> Self {
         match self {
             Self::Always(b) => Self::Always(b.toggle()),
-            Self::Threshold { small, large, threshold } => {
-                Self::Threshold { small: large, large: small, threshold }
-            }
+            Self::Threshold { small, large, threshold } => Self::Threshold { small: large, large: small, threshold },
         }
     }
 }
@@ -506,7 +504,6 @@ fn default_palette_escape_pops_to_parent() -> bool {
 fn default_address_separator_char() -> char {
     '_'
 }
-
 
 impl Default for AppSettings {
     fn default() -> Self {

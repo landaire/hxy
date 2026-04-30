@@ -2776,8 +2776,7 @@ impl<S: HexSource> Interpreter<S> {
             // demand against the emitted ScalarArray node. Char
             // arrays are always inlined because templates compare
             // them against magic strings.
-            let inline_bytes =
-                matches!(p.class, PrimClass::Char) || total <= ARRAY_INLINE_THRESHOLD_BYTES;
+            let inline_bytes = matches!(p.class, PrimClass::Char) || total <= ARRAY_INLINE_THRESHOLD_BYTES;
             let value = if inline_bytes {
                 let bytes = self.cursor_advance(total)?;
                 if matches!(p.class, PrimClass::Char) && p.width == 1 {
@@ -3948,9 +3947,7 @@ impl<S: HexSource> Interpreter<S> {
             "std::mem::read_signed" | "read_signed" | "builtin::std::mem::read_signed" => {
                 self.std_read_int(args, true)?
             }
-            "std::mem::read_string" | "read_string" | "builtin::std::mem::read_string" => {
-                self.std_read_string(args)?
-            }
+            "std::mem::read_string" | "read_string" | "builtin::std::mem::read_string" => self.std_read_string(args)?,
             // String helpers. `length` works on chars; the rest
             // operate on raw byte content. Approximations only.
             "std::string::length" | "std::string::strlen" => {

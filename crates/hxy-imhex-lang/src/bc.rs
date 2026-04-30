@@ -1936,9 +1936,7 @@ fn no_arg_builtin_op(name: &str) -> Option<Op> {
 
 fn two_arg_read_int_op(name: &str) -> Option<Op> {
     match name {
-        "std::mem::read_unsigned" | "read_unsigned" | "builtin::std::mem::read_unsigned" => {
-            Some(Op::CallReadUnsigned)
-        }
+        "std::mem::read_unsigned" | "read_unsigned" | "builtin::std::mem::read_unsigned" => Some(Op::CallReadUnsigned),
         "std::mem::read_signed" | "read_signed" | "builtin::std::mem::read_signed" => Some(Op::CallReadSigned),
         _ => None,
     }

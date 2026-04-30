@@ -186,8 +186,8 @@ pub fn snapshot(
         // errors on length mismatch. `HashAlgorithm::Blake3` is the
         // tag suture stores alongside the bytes -- we still rely on
         // suture's metadata schema, just not on its `compute()`.
-        let source_digest = SourceDigest::new(HashAlgorithm::Blake3, digest.as_bytes().to_vec())
-            .expect("blake3 digest is 32 bytes");
+        let source_digest =
+            SourceDigest::new(HashAlgorithm::Blake3, digest.as_bytes().to_vec()).expect("blake3 digest is 32 bytes");
         metadata = metadata.with_digest(source_digest);
     }
     Some(PatchSidecar { source_path, metadata, patch, undo_stack, redo_stack })

@@ -1108,14 +1108,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
             // Header tracks horizontal scroll so the column labels
             // line up with the cells beneath them.
-            paint_column_header(
-                ui,
-                header_rect,
-                &layout,
-                &font_id,
-                h_offset,
-                column_header_formatter.as_deref(),
-            );
+            paint_column_header(ui, header_rect, &layout, &font_id, h_offset, column_header_formatter.as_deref());
             // Address column tracks vertical scroll only -- the
             // whole point of pinning it is keeping offsets visible
             // while the user scrolls right.
@@ -1377,14 +1370,7 @@ impl RowLayout {
     /// so adjacent runs of different colors meet without a seam, but
     /// the internal gaps between cells in the span fall inside the
     /// single rect rather than each painting their own bleed.
-    fn hex_tint_span_rect(
-        &self,
-        row_origin: Pos2,
-        from: usize,
-        to: usize,
-        total_cols: usize,
-        row_height: f32,
-    ) -> Rect {
+    fn hex_tint_span_rect(&self, row_origin: Pos2, from: usize, to: usize, total_cols: usize, row_height: f32) -> Rect {
         let from_cell = self.hex_cell_rect(row_origin, from, row_height);
         let to_cell = self.hex_cell_rect(row_origin, to, row_height);
         let left = if from == 0 { from_cell.left() } else { from_cell.left() - self.hex_gap / 2.0 };
@@ -1600,11 +1586,7 @@ impl GlyphCache {
     }
 
     fn ascii_for(&self, byte: u8) -> &std::sync::Arc<egui::Galley> {
-        if (0x20..0x7F).contains(&byte) {
-            &self.ascii_printable[(byte - 0x20) as usize]
-        } else {
-            &self.dot
-        }
+        if (0x20..0x7F).contains(&byte) { &self.ascii_printable[(byte - 0x20) as usize] } else { &self.dot }
     }
 }
 
@@ -2737,11 +2719,12 @@ fn draw_minimap<S: HexSource + ?Sized>(
         && let Some(pos) = pointer
     {
         let started_in_grab = indicator.contains(pos);
-        ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, MinimapDragStart {
-            pointer_y: pos.y,
-            scroll_offset: current_offset,
-            started_in_grab,
-        }));
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                drag_state_id,
+                MinimapDragStart { pointer_y: pos.y, scroll_offset: current_offset, started_in_grab },
+            )
+        });
         if !started_in_grab {
             ui.ctx().data_mut(|d| d.insert_temp(scroll_id, absolute_target(pos)));
             ui.ctx().request_repaint();

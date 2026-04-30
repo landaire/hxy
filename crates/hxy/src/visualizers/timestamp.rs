@@ -18,19 +18,16 @@ use jiff::Timestamp;
 use super::VisualizerContext;
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
-    let format = ctx.spec.args.first().map(|s| s.as_str()).unwrap_or_else(|| {
-        if ctx.bytes.len() >= 8 { "unix64" } else { "unix" }
-    });
+    let format = ctx
+        .spec
+        .args
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| if ctx.bytes.len() >= 8 { "unix64" } else { "unix" });
 
     match decode(ctx.bytes, format) {
         Ok(ts) => {
-            ui.label(
-                egui::RichText::new(hxy_i18n::t_args(
-                    "visualizer-timestamp-info",
-                    &[("format", format)],
-                ))
-                .weak(),
-            );
+            ui.label(egui::RichText::new(hxy_i18n::t_args("visualizer-timestamp-info", &[("format", format)])).weak());
             ui.add_space(4.0);
             ui.label(egui::RichText::new(format!("{ts}")).strong().monospace());
             ui.add_space(2.0);

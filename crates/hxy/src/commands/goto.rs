@@ -212,12 +212,7 @@ pub fn parse_range_expr(
 /// between [`parse_range`] and [`parse_range_expr`] so the
 /// relative-anchor / endpoint-swap / inclusive-bump logic stays
 /// in one place.
-fn resolve_range(
-    start: Number,
-    end: Number,
-    source_len: u64,
-    inclusive: bool,
-) -> Result<ResolvedRange, ParseError> {
+fn resolve_range(start: Number, end: Number, source_len: u64, inclusive: bool) -> Result<ResolvedRange, ParseError> {
     let (start_abs, end_abs) = match (start, end) {
         (Number::Absolute(s), Number::Absolute(e)) => (s, e),
         (Number::Absolute(s), Number::Relative(d)) => {
@@ -350,7 +345,10 @@ mod tests {
     /// pulling a full template runtime in.
     struct FakeResolver;
     impl hxy_calculator::PathResolver for FakeResolver {
-        fn lookup(&self, path: &hxy_calculator::Path) -> Result<hxy_calculator::FieldRef, hxy_calculator::ResolveError> {
+        fn lookup(
+            &self,
+            path: &hxy_calculator::Path,
+        ) -> Result<hxy_calculator::FieldRef, hxy_calculator::ResolveError> {
             if path.root == "png"
                 && path.instance.is_none()
                 && path.segments == [hxy_calculator::PathSegment::Name("IDAT".into())]
@@ -444,12 +442,8 @@ mod tests {
     fn parse_range_expr_with_template_fields() {
         // Range derived from template field spans:
         // png.IDAT::offset ..= png.IDAT::offset + png.IDAT::len - 1
-        let r = parse_range_expr(
-            "png.IDAT::offset..=png.IDAT::offset + png.IDAT::len - 1",
-            0x10_000,
-            &FakeResolver,
-        )
-        .unwrap();
+        let r = parse_range_expr("png.IDAT::offset..=png.IDAT::offset + png.IDAT::len - 1", 0x10_000, &FakeResolver)
+            .unwrap();
         assert_eq!(r.start, 0x100);
         assert_eq!(r.end_exclusive, 0x100 + 0x40);
     }

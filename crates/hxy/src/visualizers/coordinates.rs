@@ -46,10 +46,8 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
         egui::Stroke::new(1.0, grid),
     );
     let prime = to_screen(0.0, 0.0).x;
-    painter.line_segment(
-        [egui::pos2(prime, rect.top()), egui::pos2(prime, rect.bottom())],
-        egui::Stroke::new(1.0, grid),
-    );
+    painter
+        .line_segment([egui::pos2(prime, rect.top()), egui::pos2(prime, rect.bottom())], egui::Stroke::new(1.0, grid));
     let pos = to_screen(lat, lng);
     let dot_color = ui.visuals().selection.bg_fill;
     painter.circle_filled(pos, 6.0, dot_color);
@@ -57,12 +55,12 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
 
 fn resolve_coordinates(ctx: &VisualizerContext) -> Result<(f64, f64), String> {
     if ctx.spec.args.len() >= 2 {
-        let lat: f64 = ctx.spec.args[0]
-            .parse()
-            .map_err(|_| hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lat"), ("got", &ctx.spec.args[0])]))?;
-        let lng: f64 = ctx.spec.args[1]
-            .parse()
-            .map_err(|_| hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lng"), ("got", &ctx.spec.args[1])]))?;
+        let lat: f64 = ctx.spec.args[0].parse().map_err(|_| {
+            hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lat"), ("got", &ctx.spec.args[0])])
+        })?;
+        let lng: f64 = ctx.spec.args[1].parse().map_err(|_| {
+            hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lng"), ("got", &ctx.spec.args[1])])
+        })?;
         return Ok((clamp_lat(lat), clamp_lng(lng)));
     }
     if ctx.bytes.len() >= 16 {

@@ -511,8 +511,7 @@ mod tests {
         let inner: Arc<dyn HexSource> = Arc::new(MemorySource::new(inner_bytes));
         let cache = ByteCache::new(CacheLimit { bytes: CHUNK_SIZE_BYTES * 2 });
         let id = cache.alloc_source_id();
-        let cached =
-            CachedSource::new(cache.clone(), id, Attribution::HexView(HexViewKey(1)), inner.clone());
+        let cached = CachedSource::new(cache.clone(), id, Attribution::HexView(HexViewKey(1)), inner.clone());
         // Read all four chunks; cache holds at most two.
         for c in 0..4u64 {
             let s = c * CHUNK_SIZE_BYTES;

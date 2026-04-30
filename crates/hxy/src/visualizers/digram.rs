@@ -72,13 +72,8 @@ fn build_texture(ui: &egui::Ui, ctx: &VisualizerContext) -> Option<egui::Texture
 /// Doesn't ship a full LUT but reads close enough that low-count
 /// cells are dim and saturated cells are bright yellow.
 fn viridis(v: u8) -> [u8; 4] {
-    const STOPS: [[u8; 3]; 5] = [
-        [0x44, 0x01, 0x54],
-        [0x3b, 0x52, 0x8b],
-        [0x21, 0x90, 0x8c],
-        [0x5e, 0xc9, 0x62],
-        [0xfd, 0xe7, 0x25],
-    ];
+    const STOPS: [[u8; 3]; 5] =
+        [[0x44, 0x01, 0x54], [0x3b, 0x52, 0x8b], [0x21, 0x90, 0x8c], [0x5e, 0xc9, 0x62], [0xfd, 0xe7, 0x25]];
     let segs = STOPS.len() - 1;
     let scaled = (v as f32 / 255.0) * segs as f32;
     let i = scaled.floor() as usize;
@@ -87,4 +82,3 @@ fn viridis(v: u8) -> [u8; 4] {
     let lerp = |a: u8, b: u8| ((a as f32) * (1.0 - t) + (b as f32) * t).round() as u8;
     [lerp(STOPS[i][0], STOPS[i + 1][0]), lerp(STOPS[i][1], STOPS[i + 1][1]), lerp(STOPS[i][2], STOPS[i + 1][2]), 0xff]
 }
-
