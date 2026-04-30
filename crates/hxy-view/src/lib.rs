@@ -2661,7 +2661,15 @@ fn draw_minimap<S: HexSource + ?Sized>(
                     grayscale_for_byte(*byte, dark)
                 }
             });
-            painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h)), 0.0, color);
+            // The hex view paints the same palette color underneath
+            // hex glyphs that occupy a fair chunk of each cell, so
+            // the perceived intensity drops -- the foreground text
+            // breaks up the fill. The minimap fills its cells
+            // edge-to-edge with no overlay, which makes the same
+            // RGB read brighter to the eye. Gamma-multiply by 0.65
+            // here so the two surfaces match perceptually.
+            let muted = color.gamma_multiply(0.65);
+            painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h)), 0.0, muted);
         }
     }
 
