@@ -146,6 +146,38 @@ impl HxyApp {
         }
     }
 
+    /// Format the active file's current selection as a clipboard
+    /// string. `as_hex = false` returns a UTF-8 lossy decode of
+    /// the bytes (matching desktop's `BytesLossyUtf8` copy kind);
+    /// `as_hex = true` formats as space-separated upper-case hex
+    /// pairs (`BytesHexSpaced`). Returns `None` when no file is
+    /// focused or the selection is empty / a caret. The richer
+    /// "Copy as struct / Copy value as ..." formats land later
+    /// alongside the desktop's [`crate::files::copy`] module
+    /// (currently desktop-gated).
+    fn copy_active_selection(&self, as_hex: bool) -> Option<String> {
+        let id = self.last_active_file?;
+        let file = self.files.get(&id)?;
+        let sel = file.editor.selection()?;
+        let range = sel.range();
+        if range.is_empty() {
+            return None;
+        }
+        let bytes = file.editor.source().read(range).ok()?;
+        if as_hex {
+            let mut out = String::with_capacity(bytes.len() * 3);
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                out.push_str(&format!("{b:02X}"));
+            }
+            Some(out)
+        } else {
+            Some(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
+
     /// Snapshot the active file's display name and byte source for
     /// the wasm save flow. Reads the entire source through the
     /// editor (so any in-memory patches are included). Returns
@@ -211,13 +243,18 @@ impl eframe::App for HxyApp {
         }
         // Keyboard shortcuts. Cmd/Ctrl maps to egui's
         // `Modifiers::COMMAND` regardless of platform.
-        let (toggle_find, close_tab, reopen_tab) = ctx.input_mut(|i| {
+        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
                 i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
                 i.consume_shortcut(&egui::KeyboardShortcut::new(
                     egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
                     egui::Key::T,
+                )),
+                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C)),
+                i.consume_shortcut(&egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                    egui::Key::C,
                 )),
             )
         });
@@ -235,6 +272,20 @@ impl eframe::App for HxyApp {
         }
         if reopen_tab {
             self.reopen_last_closed();
+        }
+        if (copy_bytes || copy_hex)
+            && let Some(text) = self.copy_active_selection(copy_hex)
+        {
+            ctx.copy_text(text);
+        }
+        // Route un-consumed keyboard events into the active file's
+        // hex view: arrow navigation, page up/down, hex-nibble
+        // typing in edit mode, etc. The editor only acts when no
+        // other widget holds keyboard focus.
+        if let Some(id) = self.last_active_file
+            && let Some(file) = self.files.get_mut(&id)
+        {
+            file.editor.handle_input(&ctx);
         }
         egui::Panel::top("hxy_top_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
