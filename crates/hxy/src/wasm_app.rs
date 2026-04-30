@@ -97,6 +97,19 @@ impl eframe::App for HxyApp {
             ctx.set_zoom_factor(target_zoom);
             self.applied_zoom = target_zoom;
         }
+        // Drag-and-drop file open. egui's `dropped_files` carries
+        // the file name + bytes for each file the user dropped on
+        // the canvas this frame; on wasm `bytes` is always
+        // populated (browser file API), `path` is `None`.
+        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in dropped {
+            let bytes = match f.bytes {
+                Some(b) => b.to_vec(),
+                None => continue,
+            };
+            let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
+            self.open_bytes(name, bytes);
+        }
         egui::Panel::top("hxy_top_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open file...").clicked() {
