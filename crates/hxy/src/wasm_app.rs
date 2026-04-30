@@ -384,7 +384,7 @@ impl eframe::App for HxyApp {
         }
         // Keyboard shortcuts. Cmd/Ctrl maps to egui's
         // `Modifiers::COMMAND` regardless of platform.
-        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex) = ctx.input_mut(|i| {
+        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
                 i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
@@ -397,6 +397,7 @@ impl eframe::App for HxyApp {
                     egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
                     egui::Key::C,
                 )),
+                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)),
             )
         });
         if toggle_find
@@ -418,6 +419,16 @@ impl eframe::App for HxyApp {
             && let Some(text) = self.copy_active_selection(copy_hex)
         {
             ctx.copy_text(text);
+        }
+        if toggle_edit
+            && let Some(id) = self.last_active_file
+            && let Some(file) = self.files.get_mut(&id)
+        {
+            let next = match file.editor.edit_mode() {
+                crate::files::EditMode::Mutable => crate::files::EditMode::Readonly,
+                crate::files::EditMode::Readonly => crate::files::EditMode::Mutable,
+            };
+            file.editor.set_edit_mode(next);
         }
         // Route un-consumed keyboard events into the active file's
         // hex view: arrow navigation, page up/down, hex-nibble
@@ -506,6 +517,37 @@ impl eframe::App for HxyApp {
         for (name, bytes) in drain_open_requests() {
             self.open_bytes(name, bytes);
         }
+        // Bottom status bar: cursor position + selection length
+        // for the active file; edit-mode indicator. Sized like a
+        // single text row.
+        egui::Panel::bottom("hxy_status_bar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(id) = self.last_active_file
+                    && let Some(file) = self.files.get(&id)
+                {
+                    let mode = match file.editor.edit_mode() {
+                        crate::files::EditMode::Mutable => "edit",
+                        crate::files::EditMode::Readonly => "ro",
+                    };
+                    let len = file.editor.source().len().get();
+                    let (caret, sel_label) = match file.editor.selection() {
+                        Some(s) => {
+                            let r = s.range();
+                            if r.is_empty() {
+                                (s.cursor.get(), String::new())
+                            } else {
+                                let n = r.len().get();
+                                (s.cursor.get(), format!("  sel {n}"))
+                            }
+                        }
+                        None => (0, String::new()),
+                    };
+                    ui.label(format!("[{mode}] @0x{caret:X} / 0x{len:X}{sel_label}"));
+                } else {
+                    ui.label("no file");
+                }
+            });
+        });
         let mut pending_close: Vec<FileId> = Vec::new();
         let mut pending_strings_run: Vec<FileId> = Vec::new();
         let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
