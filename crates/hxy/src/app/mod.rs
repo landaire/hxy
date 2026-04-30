@@ -5371,6 +5371,23 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Strings(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
+                    // A tab restored from the dock snapshot comes
+                    // back with the panel's default empty range.
+                    // Backfill with the whole file the first time the
+                    // panel renders so the user's "Run" click does
+                    // something sensible without forcing them to
+                    // re-invoke the palette command first.
+                    if file.strings_panel.config.range.is_empty() {
+                        let len = file.editor.source().len().get();
+                        if len > 0
+                            && let Ok(range) = hxy_core::ByteRange::new(
+                                hxy_core::ByteOffset::new(0),
+                                hxy_core::ByteOffset::new(len),
+                            )
+                        {
+                            file.strings_panel.config.range = range;
+                        }
+                    }
                     let label = file.display_name.clone();
                     let events = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
                     for ev in events {
@@ -5392,6 +5409,22 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Checksums(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
+                    // Same backfill as the strings tab: a restored
+                    // checksums panel arrives with an empty default
+                    // range, so Run would silently no-op until the
+                    // user re-invoked the palette command. Default to
+                    // the whole file on first render.
+                    if file.checksums_panel.config.range.is_empty() {
+                        let len = file.editor.source().len().get();
+                        if len > 0
+                            && let Ok(range) = hxy_core::ByteRange::new(
+                                hxy_core::ByteOffset::new(0),
+                                hxy_core::ByteOffset::new(len),
+                            )
+                        {
+                            file.checksums_panel.config.range = range;
+                        }
+                    }
                     let label = file.display_name.clone();
                     let events = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
                     for ev in events {
