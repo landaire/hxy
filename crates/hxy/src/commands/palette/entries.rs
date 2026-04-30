@@ -731,6 +731,16 @@ pub fn build_palette_entries(
                     .with_subtitle(hxy_i18n::t("palette-go-to-offset-shortcut-hint"))
                     .with_icon(icon::CROSSHAIR),
                 );
+                if offset_ctx.virtual_base.is_some() {
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t("palette-go-to-address-entry"),
+                            Action::SwitchMode(Mode::GoToAddress),
+                        )
+                        .with_subtitle(hxy_i18n::t("palette-go-to-address-shortcut-hint"))
+                        .with_icon(icon::CROSSHAIR),
+                    );
+                }
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t("palette-select-from-offset-entry"),
@@ -944,6 +954,18 @@ pub fn build_palette_entries(
                         .with_icon(icon::COPY)
                         .with_subtitle(caret_preview),
                     );
+                    if let Some(vbase) = offset_ctx.virtual_base {
+                        let caret_address_preview =
+                            crate::view::format::format_offset_with_vaddr(offset_ctx.cursor, base, vbase);
+                        out.push(
+                            egui_palette::Entry::new(
+                                hxy_i18n::t("palette-copy-caret-address"),
+                                Action::InvokeCommand(PaletteCommand::CopyCaretAddress),
+                            )
+                            .with_icon(icon::COPY)
+                            .with_subtitle(caret_address_preview),
+                        );
+                    }
                     if len > 1 {
                         let len_preview = crate::view::format::format_offset(len, base);
                         let range_preview = format!(
@@ -960,6 +982,22 @@ pub fn build_palette_entries(
                             .with_icon(icon::COPY)
                             .with_subtitle(range_preview),
                         );
+                        if let Some(vbase) = offset_ctx.virtual_base {
+                            let range_address_preview = format!(
+                                "{}-{} ({} bytes)",
+                                crate::view::format::format_offset_with_vaddr(start, base, vbase),
+                                crate::view::format::format_offset_with_vaddr(last_inclusive, base, vbase),
+                                len_preview,
+                            );
+                            out.push(
+                                egui_palette::Entry::new(
+                                    hxy_i18n::t("palette-copy-selection-range-address"),
+                                    Action::InvokeCommand(PaletteCommand::CopySelectionRangeAddress),
+                                )
+                                .with_icon(icon::COPY)
+                                .with_subtitle(range_address_preview),
+                            );
+                        }
                         out.push(
                             egui_palette::Entry::new(
                                 hxy_i18n::t("palette-copy-selection-length"),
@@ -1369,7 +1407,7 @@ pub fn build_palette_entries(
                 out.push(entry);
             }
         }
-        Mode::GoToOffset | Mode::SelectFromOffset | Mode::SelectRange => {
+        Mode::GoToOffset | Mode::GoToAddress | Mode::SelectFromOffset | Mode::SelectRange => {
             let query = app.palette.inner.query.trim();
             if !offset_ctx.available {
                 invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));

@@ -170,6 +170,12 @@ pub enum Mode {
     /// Prompt for a single offset (absolute, or +/- relative to the
     /// current cursor). Enter jumps the caret.
     GoToOffset,
+    /// Like [`Self::GoToOffset`] but interprets the input as a
+    /// virtual address against the active file's accepted base.
+    /// Only reachable when the active file has a virtual base set
+    /// -- the entry is hidden otherwise. Translates `address ->
+    /// file offset` before dispatching.
+    GoToAddress,
     /// Prompt for a byte count starting at the current cursor.
     SelectFromOffset,
     /// Prompt for a `<start>, <end>` (or `<start>..<end>`) range.
@@ -254,6 +260,7 @@ impl Mode {
             | Mode::UninstallPlugin
             | Mode::Recent
             | Mode::GoToOffset
+            | Mode::GoToAddress
             | Mode::SelectFromOffset
             | Mode::SelectRange
             | Mode::SetColumnsLocal
@@ -364,9 +371,17 @@ pub enum PaletteCommand {
     ToggleEditMode,
     /// Copy the active tab's caret offset as a formatted number.
     CopyCaretOffset,
+    /// Copy the active tab's caret position as a virtual address
+    /// (file_offset + virtual_base). Listed only when the file
+    /// has an accepted virtual base.
+    CopyCaretAddress,
     /// Copy `start-end (N bytes)` for the active tab's non-empty
     /// selection.
     CopySelectionRange,
+    /// Copy `start-end (N bytes)` for the selection with the
+    /// virtual base applied. Listed only when the file has an
+    /// accepted virtual base.
+    CopySelectionRangeAddress,
     /// Copy just the selection length (the number of bytes it spans).
     CopySelectionLength,
     /// Copy the active tab's total source length.
@@ -554,6 +569,7 @@ pub fn show(
         Mode::CompareSideARecent | Mode::CompareSideBRecent => hxy_i18n::t("palette-hint-recent"),
         Mode::CompareSideB => hxy_i18n::t("palette-hint-compare-side-b"),
         Mode::GoToOffset => hxy_i18n::t("palette-hint-go-to-offset"),
+        Mode::GoToAddress => hxy_i18n::t("palette-hint-go-to-address"),
         Mode::SelectFromOffset => hxy_i18n::t("palette-hint-select-from-offset"),
         Mode::SelectRange => hxy_i18n::t("palette-hint-select-range"),
         Mode::SetColumnsLocal => hxy_i18n::t("palette-hint-set-columns-local"),

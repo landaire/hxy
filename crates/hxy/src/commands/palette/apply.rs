@@ -99,7 +99,11 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(app),
                 PaletteCommand::ToggleEditMode => crate::app::toggle_active_edit_mode(app),
                 PaletteCommand::CopyCaretOffset => copy_formatted_offset(ctx, app, OffsetCopy::Caret),
+                PaletteCommand::CopyCaretAddress => copy_formatted_offset(ctx, app, OffsetCopy::CaretAddress),
                 PaletteCommand::CopySelectionRange => copy_formatted_offset(ctx, app, OffsetCopy::SelectionRange),
+                PaletteCommand::CopySelectionRangeAddress => {
+                    copy_formatted_offset(ctx, app, OffsetCopy::SelectionRangeAddress)
+                }
                 PaletteCommand::CopySelectionLength => copy_formatted_offset(ctx, app, OffsetCopy::SelectionLength),
                 PaletteCommand::CopyFileLength => copy_formatted_offset(ctx, app, OffsetCopy::FileLength),
                 PaletteCommand::CompareFiles => crate::compare::picker::start_compare_palette_flow(app),

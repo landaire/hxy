@@ -20,6 +20,11 @@ pub struct OffsetPaletteContext {
     /// means no selection exists -- caret-specific copy entries
     /// skip themselves in that case.
     pub selection: Option<(u64, u64)>,
+    /// Active file's accepted virtual base, if any. Gates the
+    /// Go to address / Copy ... as address palette entries and
+    /// drives the address-to-offset translation in
+    /// [`Mode::GoToAddress`].
+    pub virtual_base: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +33,13 @@ pub enum OffsetCopy {
     SelectionRange,
     SelectionLength,
     FileLength,
+    /// Caret position rendered as the active file's virtual
+    /// address (file offset + virtual_base). Only invoked when the
+    /// active file has an accepted virtual base; the entry is
+    /// hidden otherwise.
+    CaretAddress,
+    /// Selection range rendered with virtual_base applied.
+    SelectionRangeAddress,
 }
 
 pub fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
@@ -40,7 +52,13 @@ pub fn offset_palette_context(app: &mut HxyApp) -> OffsetPaletteContext {
         let r = s.range();
         (r.start().get(), r.end().get())
     });
-    OffsetPaletteContext { cursor, source_len, available: true, selection }
+    OffsetPaletteContext {
+        cursor,
+        source_len,
+        available: true,
+        selection,
+        virtual_base: file.virtual_base,
+    }
 }
 
 /// Copy a formatted offset / length / range from the active tab to
@@ -74,6 +92,23 @@ pub fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: Offset
             crate::view::format::format_offset(sel.range().len().get(), base)
         }
         OffsetCopy::FileLength => crate::view::format::format_offset(source_len, base),
+        OffsetCopy::CaretAddress => {
+            let Some(sel) = sel else { return };
+            let Some(vaddr) = file.virtual_base else { return };
+            crate::view::format::format_offset_with_vaddr(sel.cursor.get(), base, vaddr)
+        }
+        OffsetCopy::SelectionRangeAddress => {
+            let Some(sel) = sel else { return };
+            let Some(vaddr) = file.virtual_base else { return };
+            let range = sel.range();
+            let last_inclusive = range.end().get().saturating_sub(1);
+            format!(
+                "{}-{} ({} bytes)",
+                crate::view::format::format_offset_with_vaddr(range.start().get(), base, vaddr),
+                crate::view::format::format_offset_with_vaddr(last_inclusive, base, vaddr),
+                crate::view::format::format_offset(range.len().get(), base),
+            )
+        }
     };
     ctx.copy_text(text);
 }
@@ -106,6 +141,48 @@ pub fn build_offset_entries(
             }
             Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
         },
+        Mode::GoToAddress => {
+            // Parse the user's input as a virtual address against
+            // `cursor + virtual_base`, then translate back to the
+            // file offset. Reuses `parse_offset_expr` so syntax
+            // (hex / decimal / +/- relative) matches Go to offset
+            // exactly; relative offsets pivot on the virtual cursor
+            // so "+0x10" past virtual base 0x12000 lands as
+            // file_offset = (vcursor + 0x10) - vbase.
+            let Some(vbase) = offset_ctx.virtual_base else { return };
+            let virtual_source_end = offset_ctx.source_len.saturating_add(vbase);
+            let virtual_cursor = offset_ctx.cursor.saturating_add(vbase);
+            match crate::commands::goto::parse_offset_expr(query, resolver).and_then(|n| {
+                n.resolve(virtual_cursor, virtual_source_end).ok_or(crate::commands::goto::ParseError::OutOfRange)
+            }) {
+                Ok(target_address) => {
+                    if target_address < vbase {
+                        super::entries::invalid_entry(out, query, "address below virtual base");
+                        return;
+                    }
+                    let file_offset = target_address - vbase;
+                    if file_offset > offset_ctx.source_len {
+                        super::entries::invalid_entry(out, query, "address past end of file");
+                        return;
+                    }
+                    out.push(
+                        egui_palette::Entry::new(
+                            hxy_i18n::t_args(
+                                "palette-go-to-address-fmt",
+                                &[("address", &format!("0x{target_address:X}"))],
+                            ),
+                            Action::GoToOffset(file_offset),
+                        )
+                        .with_icon(icon::CROSSHAIR)
+                        .with_subtitle(hxy_i18n::t_args(
+                            "palette-go-to-address-subtitle",
+                            &[("offset", &format!("0x{file_offset:X}"))],
+                        )),
+                    );
+                }
+                Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
+            }
+        }
         Mode::SelectFromOffset => match crate::commands::goto::parse_count_expr(query, resolver) {
             Ok(0) => super::entries::invalid_entry(out, query, "count must be nonzero"),
             Ok(count) => {
