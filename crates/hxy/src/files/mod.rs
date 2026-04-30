@@ -35,6 +35,7 @@ use std::sync::Arc;
 use hxy_core::Attribution;
 use hxy_core::ByteCache;
 use hxy_core::ByteOffset;
+#[cfg(not(target_arch = "wasm32"))]
 use hxy_core::ByteRange;
 use hxy_core::CachedSource;
 use hxy_core::HexSource;

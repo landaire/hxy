@@ -140,11 +140,10 @@ impl PartialEq for PersistedState {
         let base = self.window == other.window
             && self.app == other.app
             && self.open_tabs == other.open_tabs
-            && self.plugin_grants == other.plugin_grants
             && self.vfs_tree_expanded == other.vfs_tree_expanded;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            base && self.dock_layout_json == other.dock_layout_json
+            base && self.plugin_grants == other.plugin_grants && self.dock_layout_json == other.dock_layout_json
         }
         #[cfg(target_arch = "wasm32")]
         {

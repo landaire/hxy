@@ -2,6 +2,7 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod files;
 pub mod search;
@@ -40,6 +41,17 @@ pub mod menu;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
+// Browser build of `HxyApp`. Temporary stepping stone -- the
+// medium-term plan is to fold it into `crate::app` by pushing
+// cfg gates inward instead of having two implementations of
+// the same symbolic type. See [`crate::wasm_app`] for the
+// rationale.
+#[cfg(target_arch = "wasm32")]
+mod wasm_app;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use app::HxyApp;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_app::HxyApp;
 
 pub const APP_NAME: &str = "hxy";

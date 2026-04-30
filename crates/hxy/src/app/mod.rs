@@ -1,6 +1,12 @@
-//! Main application type.
+//! Main application type (desktop build).
+//!
+//! The wasm browser build has its own slimmer `HxyApp` in
+//! [`crate::wasm_app`]; both are re-exported as `HxyApp` from
+//! `lib.rs` so the rest of the crate (and the entry points in
+//! `main.rs` / `wasm.rs`) refer to one symbolic type.
 
-#[cfg(not(target_arch = "wasm32"))]
+#![cfg(not(target_arch = "wasm32"))]
+
 pub mod dialogs;
 pub mod shortcuts;
 
