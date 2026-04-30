@@ -458,11 +458,27 @@ impl GuestMount for ConsoleMount {
                 return Ok(cached);
             }
         }
-        // Cache miss on a non-synthetic path the host never listed.
-        // Return a placeholder rather than spending a round trip; the
-        // user can still open the file and any listing of the parent
-        // will fix the cache.
-        Ok(Metadata { file_type: FileType::RegularFile, length: 0, virtual_base: None })
+        // Cache miss on a regular xbdm path. Dirlist the parent
+        // through `read_dir` to populate the cache for every
+        // sibling in one round trip, then look `path` up again.
+        // Without this, session restore (which goes straight from
+        // `metadata` to host-side source construction without ever
+        // listing the parent in the new mount session) bakes in a
+        // length-0 placeholder and the host opens an empty tab.
+        // A clean miss after the dirlist means the entry is gone
+        // between sessions; surface that as an error so the host
+        // can preserve the tab for retry next session via its
+        // entry-level error path.
+        if matches!(classify_path(&path), PathKind::Drive(_) | PathKind::Path(_)) {
+            let parent = parent_path(&path);
+            if !parent.is_empty() {
+                self.read_dir(parent)?;
+                if let Some(cached) = self.metadata_cache.borrow().get(&path).cloned() {
+                    return Ok(cached);
+                }
+            }
+        }
+        Err(format!("metadata not available: {path}"))
     }
 
     fn read_file(&self, path: String) -> Result<Vec<u8>, String> {
@@ -687,6 +703,24 @@ fn classify_path(path: &str) -> PathKind<'_> {
         return PathKind::MemoryEntry;
     }
     PathKind::Unknown
+}
+
+/// Parent directory path for `path`, with any trailing `/`
+/// stripped from the input first. Returns `"/"` for top-level
+/// children and `""` when the input has no separator at all
+/// (caller should treat that as "no usable parent").
+///
+/// Used by `metadata` to warm the cache via a `read_dir` of the
+/// containing directory whenever a session-restore call hits a
+/// regular-file path that no `read_dir` has populated this
+/// session.
+fn parent_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some(("", _)) => "/".to_string(),
+        Some((parent, _)) => parent.to_string(),
+        None => String::new(),
+    }
 }
 
 /// Translate a VFS path under `/physical/...` into XBDM's native
