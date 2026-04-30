@@ -396,6 +396,105 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     app.apply_reload_decision(ctx, pending.file_id, decision);
 }
 
+/// Modal collecting an optional virtual base address for an
+/// Open-with-options file pick. Shown after the user has already
+/// chosen a path through the native picker -- the modal body
+/// echoes the path so they can sanity-check before committing.
+pub fn render_open_with_options_dialog(ctx: &egui::Context, app: &mut HxyApp) {
+    if app.pending_open_with_options.is_none() {
+        return;
+    }
+    let mut decision: Option<bool> = None;
+    let mut open = true;
+    let screen_center = ctx.content_rect().center();
+    let mut current_input = app
+        .pending_open_with_options
+        .as_ref()
+        .map(|p| p.virtual_base_input.clone())
+        .unwrap_or_default();
+    let path_display = app
+        .pending_open_with_options
+        .as_ref()
+        .map(|p| p.path.display().to_string())
+        .unwrap_or_default();
+    let parse_error = parse_virtual_base_input(&current_input).err();
+    egui::Window::new(hxy_i18n::t("open-with-options-title"))
+        .id(egui::Id::new("hxy_open_with_options_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(screen_center)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.label(hxy_i18n::t("open-with-options-body"));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&path_display).weak());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(hxy_i18n::t("open-with-options-base-label"));
+                ui.add(egui::TextEdit::singleline(&mut current_input).hint_text("0x80100000").desired_width(220.0));
+            });
+            if let Some(err) = parse_error.as_ref() {
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(hxy_i18n::t("open-with-options-base-hint"))
+                    .weak(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let can_open = parse_error.is_none();
+                if ui.add_enabled(can_open, egui::Button::new(hxy_i18n::t("open-with-options-open"))).clicked() {
+                    decision = Some(true);
+                }
+                if ui.button(hxy_i18n::t("open-with-options-cancel")).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+    // Mirror the in-progress text edit back onto the panel so
+    // multi-frame typing survives the next repaint.
+    if let Some(p) = app.pending_open_with_options.as_mut() {
+        p.virtual_base_input = current_input;
+    }
+    if !open && decision.is_none() {
+        decision = Some(false);
+    }
+    let Some(go) = decision else { return };
+    let pending = app.pending_open_with_options.take().expect("checked above");
+    if !go {
+        return;
+    }
+    let virtual_base = match parse_virtual_base_input(&pending.virtual_base_input) {
+        Ok(v) => v,
+        Err(_) => {
+            // Should be unreachable -- the Open button is disabled
+            // when parsing fails -- but bail rather than blowing up.
+            return;
+        }
+    };
+    crate::app::finish_open_file_with_options(app, pending.name, pending.path, virtual_base);
+}
+
+/// Parse the virtual-base input from the Open-with-options modal.
+/// Empty / whitespace input means "no base"; non-empty must parse
+/// as a hex (with or without `0x`) or decimal `u64`.
+fn parse_virtual_base_input(s: &str) -> Result<Option<u64>, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = if let Some(stripped) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        u64::from_str_radix(stripped, 16)
+    } else {
+        trimmed.parse::<u64>().or_else(|_| u64::from_str_radix(trimmed, 16))
+    };
+    parsed.map(Some).map_err(|e| format!("invalid number: {e}"))
+}
+
 /// Modal asking the user whether to apply a plugin-supplied virtual
 /// base address to the file's display. Fires once per (file,
 /// plugin) pair the first time the host sees a hint with no

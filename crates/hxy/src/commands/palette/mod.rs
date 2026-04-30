@@ -288,6 +288,11 @@ impl Mode {
 pub enum PaletteCommand {
     NewFile,
     OpenFile,
+    /// Like [`Self::OpenFile`] but pops a modal asking for a
+    /// virtual base address before opening. Useful for forensics
+    /// dumps + raw memory images that didn't come through a
+    /// VFS plugin and have no automatic load-address hint.
+    OpenFileWithOptions,
     BrowseVfs,
     /// Toggle the workspace VFS tree on/off without losing the
     /// workspace itself. When the active tab isn't a workspace, the

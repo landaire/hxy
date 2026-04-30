@@ -300,6 +300,17 @@ toast-template-group-title = Run a template?
 toast-template-run = Run
 toast-template-dismiss = Dismiss
 
+# Open File with options... -- pop a modal asking for a virtual base
+# before opening a plain filesystem file.
+palette-open-file-with-options = Open file with options...
+palette-open-file-with-options-subtitle = Pick a file then optionally set a virtual base address before opening.
+open-with-options-title = Open with options
+open-with-options-body = Set a virtual base address for this file? Leave the field blank to open without one.
+open-with-options-base-label = Virtual base:
+open-with-options-base-hint = Hex (with or without 0x) or decimal. Empty = no virtual base.
+open-with-options-open = Open
+open-with-options-cancel = Cancel
+
 # Virtual-base-address prompt (fires when a VFS plugin advertises a load
 # address for an opened entry, such as an Xbox memory region).
 virtual-base-prompt-title = Apply virtual base address?

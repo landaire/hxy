@@ -346,6 +346,13 @@ pub struct HxyApp {
     /// tab entry.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_virtual_base_prompt: Option<PendingVirtualBasePrompt>,
+    /// Open File with options... modal state. `Some` between the
+    /// moment the user picked a file and the moment they confirm
+    /// or cancel the virtual-base entry; the modal renders the
+    /// path verbatim so the user can sanity-check what they're
+    /// about to open.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_open_with_options: Option<PendingOpenWithOptions>,
     /// Workspace-entry tabs whose underlying VFS entry vanished
     /// after a reload. Each one prompts the user with "close the
     /// tab or keep its in-memory bytes?" -- the view may still
@@ -438,6 +445,17 @@ pub(crate) struct PendingVirtualBasePrompt {
     pub(crate) file_id: FileId,
     pub(crate) display_name: String,
     pub(crate) hint: u64,
+}
+
+/// State carried between picking a file in "Open File with
+/// options..." and the modal that prompts for the virtual base.
+/// The modal owns the current text-input value so multi-frame
+/// edits survive repaints.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PendingOpenWithOptions {
+    pub(crate) name: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) virtual_base_input: String,
 }
 
 /// One choice from the reload-prompt dialog. Routed back into
@@ -607,6 +625,8 @@ impl HxyApp {
             pending_reload_prompt: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_virtual_base_prompt: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_open_with_options: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_orphan_entries: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -2614,6 +2634,8 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_virtual_base_prompt_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
+        crate::app::dialogs::render_open_with_options_dialog(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_orphaned_entry_dialog(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::files::snapshot_ui::render_snapshot_dialog(ui.ctx(), self);
@@ -3175,6 +3197,58 @@ pub(crate) fn drain_strings_runs(ctx: &egui::Context, app: &mut HxyApp) {
                 app.console_log(ConsoleSeverity::Error, &ctx_label, msg);
             }
         }
+    }
+}
+
+/// Open File with options... entry point. Pops the native file
+/// picker first (so the user can't be confused by a typed path),
+/// then queues the modal that asks for a virtual base. Cancelling
+/// the picker is a no-op; cancelling the modal still leaves the
+/// file unopened.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_open_file_with_options(app: &mut HxyApp) {
+    let (name, path) = match crate::files::open::pick_file() {
+        Ok(pair) => pair,
+        Err(crate::files::FileOpenError::Cancelled) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "open file with options: pick");
+            return;
+        }
+    };
+    app.pending_open_with_options =
+        Some(PendingOpenWithOptions { name, path, virtual_base_input: String::new() });
+}
+
+/// Apply an Open-with-options decision. Opens the file via the
+/// standard filesystem path, then -- when `virtual_base` is
+/// provided -- sets `OpenFile.virtual_base` and persists the
+/// choice into `OpenTabState` so the user doesn't get re-prompted
+/// on a future plain Open.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn finish_open_file_with_options(
+    app: &mut HxyApp,
+    name: String,
+    path: std::path::PathBuf,
+    virtual_base: Option<u64>,
+) {
+    app.request_open_filesystem(name, path.clone());
+    let Some(vbase) = virtual_base else { return };
+    // request_open_filesystem queues the open; the open landed
+    // synchronously above, so the file is in `app.files`. Find the
+    // newest tab with a matching path and apply.
+    let target_source = hxy_vfs::TabSource::Filesystem(path.clone());
+    let opened_id = app
+        .files
+        .iter()
+        .find_map(|(&id, f)| (f.source_kind.as_ref() == Some(&target_source)).then_some(id));
+    let Some(id) = opened_id else { return };
+    if let Some(file) = app.files.get_mut(&id) {
+        file.virtual_base = Some(vbase);
+        file.virtual_base_hint = Some(vbase);
+    }
+    let mut g = app.state.write();
+    if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == target_source) {
+        entry.virtual_base_choice = Some(crate::state::VirtualBaseChoice::Accepted(vbase));
     }
 }
 

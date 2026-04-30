@@ -454,6 +454,14 @@ pub fn build_palette_entries(
                 )
                 .with_icon(icon::FOLDER_OPEN),
             );
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-open-file-with-options"),
+                    Action::InvokeCommand(PaletteCommand::OpenFileWithOptions),
+                )
+                .with_icon(icon::FOLDER_OPEN)
+                .with_subtitle(hxy_i18n::t("palette-open-file-with-options-subtitle")),
+            );
             if !app.state.read().app.recent_files.is_empty() {
                 out.push(
                     egui_palette::Entry::new(

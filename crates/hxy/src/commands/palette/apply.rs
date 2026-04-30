@@ -43,6 +43,7 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
             match id {
                 PaletteCommand::NewFile => crate::files::new::handle_new_file(app),
                 PaletteCommand::OpenFile => crate::app::apply_command_effect(ctx, app, CommandEffect::OpenFileDialog),
+                PaletteCommand::OpenFileWithOptions => crate::app::start_open_file_with_options(app),
                 PaletteCommand::BrowseVfs => crate::app::apply_command_effect(ctx, app, CommandEffect::MountActiveFile),
                 PaletteCommand::ToggleWorkspaceVfs => crate::tabs::dock_ops::toggle_workspace_vfs(app),
                 PaletteCommand::CloseToolPane => crate::app::close_tool_pane(app),
