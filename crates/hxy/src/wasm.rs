@@ -25,10 +25,17 @@ pub fn start() -> Result<(), JsValue> {
     let state = shared(PersistedState::default());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = eframe::WebRunner::new()
+        let result = eframe::WebRunner::new()
             .start(canvas, eframe::WebOptions::default(), Box::new(move |cc| Ok(Box::new(HxyApp::new(cc, state)))))
-            .await
+            .await;
+        // Drop the index.html loading spinner once eframe has
+        // either finished initializing or returned an error.
+        if let Some(loading) =
+            web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("loading_text"))
         {
+            loading.remove();
+        }
+        if let Err(e) = result {
             tracing::error!("eframe WebRunner failed: {e:?}");
         }
     });

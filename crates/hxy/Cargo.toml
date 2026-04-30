@@ -152,7 +152,7 @@ objc2 = "0.6"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlCanvasElement", "Document"], optional = true }
+web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlCanvasElement", "Document", "Element"], optional = true }
 js-sys = { version = "0.3", optional = true }
 tracing-wasm = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }

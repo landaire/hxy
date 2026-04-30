@@ -1,0 +1,6 @@
+[build]
+# `filehash = true` gives output assets a content-hashed name
+# (`hxy_lib-abcd1234.wasm`). Off here so the GitHub Pages
+# deployment serves stable URLs and the service worker (if we
+# add one later) doesn't have to chase rotating filenames.
+filehash = false
