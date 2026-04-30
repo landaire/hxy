@@ -6245,13 +6245,23 @@ fn status_bar_ui(
             ui.separator();
         }
 
+        // When the file has an accepted virtual base, the status
+        // bar's caret / hover / selection labels render virtual
+        // addresses. The tooltip still shows the alternate base of
+        // whatever's primary, mirroring the no-vaddr behaviour.
+        let format_value = |value: u64, base: crate::settings::OffsetBase| -> String {
+            match file.virtual_base {
+                Some(v) => crate::view::format::format_offset_with_vaddr(value, base, v),
+                None => crate::view::format::format_offset(value, base),
+            }
+        };
         if let Some(hov) = file.hovered {
-            let value = crate::view::format::format_offset(hov.get(), base);
+            let value = format_value(hov.get(), base);
             crate::view::format::copyable_status_label(
                 ui,
                 &format!("Hover: {value}"),
                 &value,
-                Some(crate::view::format::format_offset(hov.get(), base.toggle())),
+                Some(format_value(hov.get(), base.toggle())),
                 new_base,
                 base,
             );
@@ -6263,17 +6273,17 @@ fn status_bar_ui(
             let range = sel.range();
             let last_inclusive = range.end().get().saturating_sub(1);
             let (display, copy, tooltip) = if sel.is_caret() {
-                let v = crate::view::format::format_offset(range.start().get(), base);
-                (format!("Caret: {v}"), v, crate::view::format::format_offset(range.start().get(), base.toggle()))
+                let v = format_value(range.start().get(), base);
+                (format!("Caret: {v}"), v, format_value(range.start().get(), base.toggle()))
             } else {
-                let start = crate::view::format::format_offset(range.start().get(), base);
-                let end = crate::view::format::format_offset(last_inclusive, base);
+                let start = format_value(range.start().get(), base);
+                let end = format_value(last_inclusive, base);
                 let len = crate::view::format::format_offset(range.len().get(), base);
                 let copy_value = format!("{start}-{end} ({len} bytes)");
                 let tooltip = format!(
                     "{}-{}",
-                    crate::view::format::format_offset(range.start().get(), base.toggle()),
-                    crate::view::format::format_offset(last_inclusive, base.toggle()),
+                    format_value(range.start().get(), base.toggle()),
+                    format_value(last_inclusive, base.toggle()),
                 );
                 (format!("Sel: {copy_value}"), copy_value, tooltip)
             };

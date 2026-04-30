@@ -10,6 +10,13 @@ pub fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
     }
 }
 
+/// Format `value` as a virtual address: shifts by `vaddr` before
+/// rendering with `base`. Saturates on overflow rather than wrapping
+/// so an absurd vaddr can't silently produce a tiny address.
+pub fn format_offset_with_vaddr(value: u64, base: crate::settings::OffsetBase, vaddr: u64) -> String {
+    format_offset(value.saturating_add(vaddr), base)
+}
+
 /// Format a byte offset / length / end position using the
 /// user's configured [`NumericFormat`]. Routes through
 /// [`format_offset`] after picking the right base for `value`,
