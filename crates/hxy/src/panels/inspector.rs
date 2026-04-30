@@ -7,8 +7,6 @@
 //! so a future plugin-management hook can add new ones without
 //! touching this module.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::sync::Arc;
 
 /// How to read a multi-byte integer.

@@ -8,8 +8,6 @@
 //! results are cached on the file's [`OpenFile::entropy`]
 //! slot so reopening the panel doesn't recompute.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::sync::Arc;
 
 use egui_plot::Line;

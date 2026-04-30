@@ -7,8 +7,6 @@
 //! each consumer, not actual heap allocator pages. The disclaimer
 //! line on the panel header makes that explicit.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -134,6 +134,22 @@ impl HxyApp {
         }
     }
 
+    /// Open or close `tab` in the dock. If the tab is already
+    /// present, focus it; otherwise push it as a new dock leaf.
+    /// Used by the toolbar Strings / Checksums / Entropy /
+    /// Inspector buttons. The desktop build routes these through
+    /// `dock_ops::push_tool_tab`, which keeps tool panels in a
+    /// dedicated right-hand leaf -- the wasm build doesn't have
+    /// that infrastructure ungated yet, so for now everything
+    /// pushes to the focused leaf.
+    fn toggle_tab(&mut self, tab: Tab) {
+        if let Some(path) = self.dock.find_tab(&tab) {
+            let _ = self.dock.set_active_tab(path);
+            return;
+        }
+        self.dock.push_to_focused_leaf(tab);
+    }
+
     /// Pop the most recently closed tab off the LIFO buffer and
     /// re-open it as a fresh `Tab::File`, restoring its
     /// selection + scroll. No-op when the buffer is empty.
@@ -331,6 +347,31 @@ impl eframe::App for HxyApp {
                         });
                     }
                 });
+                // Per-file analysis tabs. Each toggles the
+                // corresponding panel for the active file (or
+                // focuses an existing tab). Disabled when no file
+                // is open.
+                let active_id = self.last_active_file;
+                ui.add_enabled_ui(active_id.is_some(), |ui| {
+                    if ui.button("Strings").clicked()
+                        && let Some(id) = active_id
+                    {
+                        self.toggle_tab(Tab::Strings(id));
+                    }
+                    if ui.button("Checksums").clicked()
+                        && let Some(id) = active_id
+                    {
+                        self.toggle_tab(Tab::Checksums(id));
+                    }
+                    if ui.button("Entropy").clicked()
+                        && let Some(id) = active_id
+                    {
+                        self.toggle_tab(Tab::Entropy(id));
+                    }
+                });
+                if ui.button("Inspector").clicked() {
+                    self.toggle_tab(Tab::Inspector);
+                }
                 ui.label(crate::APP_NAME);
             });
         });
@@ -348,6 +389,7 @@ impl eframe::App for HxyApp {
                 &mut WasmTabViewer {
                     files: &mut self.files,
                     last_active_file: &mut self.last_active_file,
+                    byte_cache: &self.byte_cache,
                     pending_close: &mut pending_close,
                 },
             );
@@ -365,11 +407,31 @@ impl eframe::App for HxyApp {
 struct WasmTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     last_active_file: &'a mut Option<FileId>,
+    byte_cache: &'a Arc<ByteCache>,
     /// Drained after the dock pass: each entry is a File tab the
     /// user X-clicked. The host then runs `close_file_tab`, which
     /// captures the byte snapshot for the reopen buffer and frees
     /// the `OpenFile`.
     pending_close: &'a mut Vec<FileId>,
+}
+
+/// Read a small window of bytes around the active tab's caret
+/// for the data inspector. Returns `(caret_offset, bytes)` so
+/// the inspector can lay them out as integers / floats / etc.
+/// Returns `None` when the file has no selection or the read
+/// fails.
+fn inspector_window(file: &OpenFile) -> Option<(ByteOffset, Vec<u8>)> {
+    let sel = file.editor.selection()?;
+    let caret = sel.cursor;
+    let total = file.editor.source().len().get();
+    if total == 0 {
+        return None;
+    }
+    let start = caret.get();
+    let end = (start + 16).min(total);
+    let range = hxy_core::ByteRange::new(caret, ByteOffset::new(end)).ok()?;
+    let bytes = file.editor.source().read(range).ok()?;
+    Some((caret, bytes))
 }
 
 impl TabViewer for WasmTabViewer<'_> {
@@ -393,6 +455,10 @@ impl TabViewer for WasmTabViewer<'_> {
     }
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        let panel_title = |id: &FileId, label: &str| -> egui::WidgetText {
+            let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("(missing)");
+            format!("{label} ({name})").into()
+        };
         match tab {
             Tab::Welcome => "Welcome".into(),
             Tab::Settings => "Settings".into(),
@@ -405,6 +471,9 @@ impl TabViewer for WasmTabViewer<'_> {
                 None => format!("file-{}", id.get()).into(),
             },
             Tab::Workspace(id) => format!("workspace-{}", id.get()).into(),
+            Tab::Entropy(id) => panel_title(id, "Entropy"),
+            Tab::Strings(id) => panel_title(id, "Strings"),
+            Tab::Checksums(id) => panel_title(id, "Checksums"),
         }
     }
 
@@ -441,6 +510,56 @@ impl TabViewer for WasmTabViewer<'_> {
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }
+            }
+            Tab::Inspector => {
+                let bytes_for_inspector =
+                    self.last_active_file.and_then(|id| self.files.get(&id)).and_then(|f| inspector_window(f));
+                let (caret, bytes) = match bytes_for_inspector.as_ref() {
+                    Some((c, b)) => (Some(c.get()), b.as_slice()),
+                    None => (None, &[] as &[u8]),
+                };
+                // Default decoders + a transient inspector state
+                // we drop after rendering; the desktop build holds
+                // these on `HxyApp`. Eager allocation each frame is
+                // cheap (the inspector state is small).
+                let mut state = crate::panels::inspector::InspectorState::default();
+                let decoders = crate::panels::inspector::default_decoders();
+                crate::panels::inspector::show(ui, &mut state, &decoders, caret, bytes);
+            }
+            Tab::Strings(file_id) => {
+                let pinned = *file_id;
+                if let Some(file) = self.files.get_mut(&pinned) {
+                    let label = file.display_name.clone();
+                    let _ = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                } else {
+                    ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
+                }
+            }
+            Tab::Checksums(file_id) => {
+                let pinned = *file_id;
+                if let Some(file) = self.files.get_mut(&pinned) {
+                    let label = file.display_name.clone();
+                    let _ = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                } else {
+                    ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
+                }
+            }
+            Tab::Entropy(file_id) => {
+                let pinned = *file_id;
+                let (label, state, running) = match self.files.get(&pinned) {
+                    Some(f) => (Some(f.display_name.as_str()), f.entropy.as_ref(), f.entropy_running.is_some()),
+                    None => (None, None, false),
+                };
+                let mut clicked = false;
+                crate::panels::entropy::show(ui, label, state, running, &mut clicked);
+                // Recompute clicks are wired in a follow-up commit
+                // alongside the toolbar entry-points; for now this
+                // panel is a render-only view of any pre-computed
+                // entropy data on the file.
+            }
+            Tab::Memory => {
+                let labels = crate::panels::memory::ViewLabels::from_files(self.files);
+                crate::panels::memory::memory_ui(ui, self.byte_cache, &labels);
             }
             other => {
                 ui.label(format!("{other:?} (not yet wired on wasm)"));

@@ -6,8 +6,6 @@
 //! default (CRC32, MD5, SHA-1, SHA-256, SHA-512, BLAKE3); selection
 //! is per-tab and persists across the panel's lifetime.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;

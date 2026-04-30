@@ -6,8 +6,6 @@
 //! Results are computed once on demand on the shared background
 //! pool and rendered into a per-file dock tab keyed by [`FileId`].
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::sync::Arc;
 
 use hxy_core::ByteOffset;

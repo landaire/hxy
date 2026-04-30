@@ -120,6 +120,7 @@ adler2 = "2"
 # `compute()` convenience.
 blake3 = "1.8"
 eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts"] }
+sha2 = "0.11.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pattern-corpus download flow: blocking reqwest + rustls keeps
@@ -127,7 +128,6 @@ eframe = { version = "0.34.1", default-features = false, features = ["accesskit"
 # blocking part is fine. zip + sha2 unpack the master tarball
 # and fingerprint it for the periodic-update check.
 reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }
-sha2 = "0.11.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"], optional = true }

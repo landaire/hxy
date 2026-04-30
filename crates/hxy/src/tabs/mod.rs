@@ -64,7 +64,6 @@ pub enum Tab {
     /// compare different files visually -- each panel pins to
     /// its own file's compute results regardless of which tab
     /// has focus.
-    #[cfg(not(target_arch = "wasm32"))]
     Entropy(FileId),
     /// Byte-cache debug panel. Lists per-view tracked-cache byte
     /// usage. Gated by `AppSettings::debug_memory_panel_enabled`
@@ -82,13 +81,11 @@ pub enum Tab {
     /// unix `strings(1)`; the panel owns the encoding / min-length
     /// configuration and the most recent result, both keyed by
     /// [`FileId`] so two files can each surface their own runs.
-    #[cfg(not(target_arch = "wasm32"))]
     Strings(FileId),
     /// Checksum panel for a specific file. The panel owns the
     /// algorithm-selection state, the most recent result, and any
     /// in-flight worker; results are computed in a single streaming
     /// pass over the configured byte range.
-    #[cfg(not(target_arch = "wasm32"))]
     Checksums(FileId),
 }
 

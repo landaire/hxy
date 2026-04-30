@@ -313,13 +313,11 @@ pub struct OpenFile {
     /// `None` until the user invokes "Compute entropy" from the
     /// command palette; cleared when an in-flight compute is
     /// kicked off and replaced when it completes.
-    #[cfg(not(target_arch = "wasm32"))]
     pub entropy: Option<crate::panels::entropy::EntropyState>,
     /// Worker handle for an in-flight entropy compute. Mutually
     /// exclusive with the populated `entropy` slot in practice
     /// -- starting a recompute clears the old result so the
     /// panel renders the "computing..." placeholder cleanly.
-    #[cfg(not(target_arch = "wasm32"))]
     pub entropy_running: Option<crate::panels::entropy::EntropyComputation>,
     /// Per-file visualizer panel state: cached textures, decoded
     /// audio, the user-dismissed flag, the active sub-tab key.
@@ -332,12 +330,10 @@ pub struct OpenFile {
     /// configured range, the most recent result, and any in-flight
     /// extractor. Default-initialised; the panel renders an empty
     /// placeholder until the user runs the extractor.
-    #[cfg(not(target_arch = "wasm32"))]
     pub strings_panel: crate::panels::strings::StringsPanel,
     /// Per-file checksum tool state: enabled algorithm set, the
     /// configured range, the most recent result, and any in-flight
     /// worker. Default selection ticks SHA-256 + BLAKE3.
-    #[cfg(not(target_arch = "wasm32"))]
     pub checksums_panel: crate::panels::checksums::ChecksumsPanel,
     /// Virtual base address the user has accepted for this file.
     /// `Some(addr)` makes every UI surface that displays an offset
@@ -666,15 +662,11 @@ impl OpenFile {
             search: crate::search::SearchState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             snapshots,
-            #[cfg(not(target_arch = "wasm32"))]
             entropy: None,
-            #[cfg(not(target_arch = "wasm32"))]
             entropy_running: None,
             #[cfg(not(target_arch = "wasm32"))]
             visualizer_panel: crate::visualizers::VisualizerPanel::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             strings_panel: crate::panels::strings::StringsPanel::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             checksums_panel: crate::panels::checksums::ChecksumsPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
             virtual_base: None,
