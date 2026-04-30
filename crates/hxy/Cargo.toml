@@ -28,11 +28,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-# Desktop pulls in the eframe winit + wgpu renderer plus the
-# desktop-only async / DB / log subscribers. `wayland` opts into
-# winit's wayland backend on Linux. wasm builds use the `wasm`
-# feature instead, which swaps wgpu for `glow` (WebGL2) since wgpu's
-# wasm backend isn't currently wired through eframe.
+# Both desktop and wasm use eframe's wgpu renderer (WebGPU /
+# WebGL fallback via wgpu-hal in the browser, native backends
+# elsewhere) so the rendering path is identical across targets.
+# `wayland` opts into winit's wayland backend on Linux only.
 desktop = ["dep:tokio", "dep:sqlx", "dep:tracing-subscriber", "eframe/wayland", "eframe/wgpu"]
 wasm = [
     "dep:wasm-bindgen",
@@ -41,15 +40,8 @@ wasm = [
     "dep:js-sys",
     "dep:tracing-wasm",
     "dep:tracing-subscriber",
-    "glow",
+    "eframe/wgpu",
 ]
-# Internal passthrough feature: forwards to `eframe/glow`. Lets
-# `cfg(feature = "glow")` work from this crate (the eframe glow
-# feature changes the `eframe::App::on_exit` trait signature, so
-# the impl needs to follow). The wasm feature pulls this in
-# automatically; users mixing wgpu + glow on desktop can enable
-# it explicitly.
-glow = ["eframe/glow"]
 # dhat heap profiling. Off by default; build with
 # `cargo run --features dhat --release` and set `HXY_DHAT_OUTPUT=/tmp/hxy.json`
 # to record a heap profile that the dhat-rs viewer can load.
