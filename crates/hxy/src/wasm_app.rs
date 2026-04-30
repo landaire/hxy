@@ -134,6 +134,131 @@ impl HxyApp {
         }
     }
 
+    /// Kick a strings-panel worker for `id` against the file's
+    /// current source + config. Stores the in-flight handle on
+    /// `panel.running`; the per-frame drain consumes the result.
+    fn spawn_strings_run(&mut self, ctx: &egui::Context, id: FileId) {
+        let Some(file) = self.files.get_mut(&id) else { return };
+        // Backfill an empty range with the whole file before
+        // dispatching so the user doesn't have to remember to
+        // configure scope first.
+        if file.strings_panel.config.range.is_empty() {
+            let len = file.editor.source().len().get();
+            if let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)) {
+                file.strings_panel.config.range = range;
+            }
+        }
+        let source = file.editor.source().clone();
+        let config = file.strings_panel.config.clone();
+        file.strings_panel.running = Some(crate::panels::strings::spawn_compute(ctx, id, source, config));
+    }
+
+    fn spawn_checksums_run(&mut self, ctx: &egui::Context, id: FileId) {
+        let Some(file) = self.files.get_mut(&id) else { return };
+        if file.checksums_panel.config.range.is_empty() {
+            let len = file.editor.source().len().get();
+            if let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)) {
+                file.checksums_panel.config.range = range;
+            }
+        }
+        let source = file.editor.source().clone();
+        let config = file.checksums_panel.config.clone();
+        file.checksums_panel.running = Some(crate::panels::checksums::spawn_compute(ctx, id, source, config));
+    }
+
+    fn spawn_entropy_run(&mut self, ctx: &egui::Context, id: FileId) {
+        let Some(file) = self.files.get_mut(&id) else { return };
+        let source = file.editor.source().clone();
+        let len = source.len().get();
+        let window = crate::panels::entropy::pick_window_size(len);
+        // Clear any stale result so the panel renders the
+        // "computing..." placeholder cleanly instead of a mix.
+        file.entropy = None;
+        file.entropy_running = Some(crate::panels::entropy::spawn_compute(ctx, id, source, window));
+    }
+
+    fn jump_to_offset(&mut self, id: FileId, offset: u64, end: u64) {
+        let Some(file) = self.files.get_mut(&id) else { return };
+        let total = file.editor.source().len().get();
+        if total == 0 {
+            return;
+        }
+        let last = end.saturating_sub(1).min(total.saturating_sub(1));
+        let anchor = ByteOffset::new(offset.min(total.saturating_sub(1)));
+        let cursor = ByteOffset::new(last);
+        file.editor.set_selection(Some(Selection { anchor, cursor }));
+        if !file.editor.is_offset_visible(anchor) {
+            file.editor.set_scroll_to_byte(anchor);
+        }
+    }
+
+    /// Drain finished panel workers' inboxes into their
+    /// `last_result` / `entropy` slots. Modeled on the desktop's
+    /// per-panel `drain_*_runs` helpers in `app/mod.rs`.
+    fn drain_panel_runs(&mut self, ctx: &egui::Context) {
+        let mut strings_done: Vec<(FileId, crate::panels::strings::StringsOutcome)> = Vec::new();
+        let mut checksums_done: Vec<(FileId, crate::panels::checksums::ChecksumOutcome)> = Vec::new();
+        let mut entropy_done: Vec<(FileId, crate::panels::entropy::EntropyOutcome)> = Vec::new();
+        for (id, file) in self.files.iter_mut() {
+            if let Some(run) = file.strings_panel.running.as_ref() {
+                let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+                if !outcomes.is_empty() {
+                    file.strings_panel.running = None;
+                    for o in outcomes {
+                        strings_done.push((*id, o));
+                    }
+                }
+            }
+            if let Some(run) = file.checksums_panel.running.as_ref() {
+                let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+                if !outcomes.is_empty() {
+                    file.checksums_panel.running = None;
+                    for o in outcomes {
+                        checksums_done.push((*id, o));
+                    }
+                }
+            }
+            if let Some(run) = file.entropy_running.as_ref() {
+                let outcomes: Vec<_> = run.inbox.read(ctx).collect();
+                if !outcomes.is_empty() {
+                    file.entropy_running = None;
+                    for o in outcomes {
+                        entropy_done.push((*id, o));
+                    }
+                }
+            }
+        }
+        for (id, outcome) in strings_done {
+            let Some(file) = self.files.get_mut(&id) else { continue };
+            match outcome {
+                crate::panels::strings::StringsOutcome::Ok(result) => file.strings_panel.last_result = Some(result),
+                crate::panels::strings::StringsOutcome::Err(msg) => {
+                    tracing::warn!(error = %msg, "strings");
+                }
+            }
+        }
+        for (id, outcome) in checksums_done {
+            let Some(file) = self.files.get_mut(&id) else { continue };
+            match outcome {
+                crate::panels::checksums::ChecksumOutcome::Ok(result) => {
+                    file.checksums_panel.last_result = Some(result)
+                }
+                crate::panels::checksums::ChecksumOutcome::Err(msg) => {
+                    tracing::warn!(error = %msg, "checksums");
+                }
+            }
+        }
+        for (id, outcome) in entropy_done {
+            let Some(file) = self.files.get_mut(&id) else { continue };
+            match outcome {
+                crate::panels::entropy::EntropyOutcome::Ok(state) => file.entropy = Some(state),
+                crate::panels::entropy::EntropyOutcome::Err(msg) => {
+                    tracing::warn!(error = %msg, "entropy");
+                }
+            }
+        }
+    }
+
     /// Open or close `tab` in the dock. If the tab is already
     /// present, focus it; otherwise push it as a new dock leaf.
     /// Used by the toolbar Strings / Checksums / Entropy /
@@ -382,6 +507,11 @@ impl eframe::App for HxyApp {
             self.open_bytes(name, bytes);
         }
         let mut pending_close: Vec<FileId> = Vec::new();
+        let mut pending_strings_run: Vec<FileId> = Vec::new();
+        let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
+        let mut pending_checksums_run: Vec<FileId> = Vec::new();
+        let mut pending_checksums_copy: Vec<String> = Vec::new();
+        let mut pending_entropy_recompute: Vec<FileId> = Vec::new();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let style = crate::style::hxy_dock_style(ui.style());
             DockArea::new(&mut self.dock).style(style).show_inside(
@@ -391,12 +521,39 @@ impl eframe::App for HxyApp {
                     last_active_file: &mut self.last_active_file,
                     byte_cache: &self.byte_cache,
                     pending_close: &mut pending_close,
+                    pending_strings_run: &mut pending_strings_run,
+                    pending_strings_jump: &mut pending_strings_jump,
+                    pending_checksums_run: &mut pending_checksums_run,
+                    pending_checksums_copy: &mut pending_checksums_copy,
+                    pending_entropy_recompute: &mut pending_entropy_recompute,
                 },
             );
         });
         for id in pending_close {
             self.close_file_tab(id);
         }
+        for id in pending_strings_run {
+            self.spawn_strings_run(&ctx, id);
+        }
+        for (id, offset, end) in pending_strings_jump {
+            self.jump_to_offset(id, offset, end);
+        }
+        for id in pending_checksums_run {
+            self.spawn_checksums_run(&ctx, id);
+        }
+        for text in pending_checksums_copy {
+            ctx.copy_text(text);
+        }
+        for id in pending_entropy_recompute {
+            self.spawn_entropy_run(&ctx, id);
+        }
+        // Drain completed worker results into the panels'
+        // last_result slots. On wasm `background::submit` runs
+        // inline so the inbox is always already populated by the
+        // time we get here, but keeping the same drain shape
+        // matches the desktop pattern and survives a future
+        // Web Worker switch.
+        self.drain_panel_runs(&ctx);
     }
 }
 
@@ -413,6 +570,20 @@ struct WasmTabViewer<'a> {
     /// captures the byte snapshot for the reopen buffer and frees
     /// the `OpenFile`.
     pending_close: &'a mut Vec<FileId>,
+    /// Strings panel "Run" clicks. Drained after the dock pass to
+    /// kick `panels::strings::spawn_compute` against the file's
+    /// current source + config.
+    pending_strings_run: &'a mut Vec<FileId>,
+    /// `(file_id, offset, end_exclusive)` selection jumps emitted
+    /// by clicking an offset link in the strings panel.
+    pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
+    /// Checksums panel "Run" clicks.
+    pending_checksums_run: &'a mut Vec<FileId>,
+    /// Checksums panel "Copy" clicks. Each entry is the
+    /// pre-formatted hex string ready for `ctx.copy_text`.
+    pending_checksums_copy: &'a mut Vec<String>,
+    /// Entropy panel recompute clicks (one per file).
+    pending_entropy_recompute: &'a mut Vec<FileId>,
 }
 
 /// Read a small window of bytes around the active tab's caret
@@ -529,8 +700,27 @@ impl TabViewer for WasmTabViewer<'_> {
             Tab::Strings(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
+                    // Backfill an empty range with the whole file
+                    // so the panel's Run button has something to
+                    // scope against by default.
+                    if file.strings_panel.config.range.is_empty() {
+                        let len = file.editor.source().len().get();
+                        if let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)) {
+                            file.strings_panel.config.range = range;
+                        }
+                    }
                     let label = file.display_name.clone();
-                    let _ = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                    let events = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                    for ev in events {
+                        match ev {
+                            crate::panels::strings::StringsEvent::Run => {
+                                self.pending_strings_run.push(pinned);
+                            }
+                            crate::panels::strings::StringsEvent::Jump { offset, end } => {
+                                self.pending_strings_jump.push((pinned, offset, end));
+                            }
+                        }
+                    }
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
                 }
@@ -538,8 +728,24 @@ impl TabViewer for WasmTabViewer<'_> {
             Tab::Checksums(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
+                    if file.checksums_panel.config.range.is_empty() {
+                        let len = file.editor.source().len().get();
+                        if let Ok(range) = hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)) {
+                            file.checksums_panel.config.range = range;
+                        }
+                    }
                     let label = file.display_name.clone();
-                    let _ = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                    let events = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                    for ev in events {
+                        match ev {
+                            crate::panels::checksums::ChecksumsEvent::Run => {
+                                self.pending_checksums_run.push(pinned);
+                            }
+                            crate::panels::checksums::ChecksumsEvent::Copy(text) => {
+                                self.pending_checksums_copy.push(text);
+                            }
+                        }
+                    }
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
                 }
@@ -552,10 +758,9 @@ impl TabViewer for WasmTabViewer<'_> {
                 };
                 let mut clicked = false;
                 crate::panels::entropy::show(ui, label, state, running, &mut clicked);
-                // Recompute clicks are wired in a follow-up commit
-                // alongside the toolbar entry-points; for now this
-                // panel is a render-only view of any pre-computed
-                // entropy data on the file.
+                if clicked {
+                    self.pending_entropy_recompute.push(pinned);
+                }
             }
             Tab::Memory => {
                 let labels = crate::panels::memory::ViewLabels::from_files(self.files);
