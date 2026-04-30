@@ -8,7 +8,10 @@
 //! multiplicative = unary (('*' | '/' | '%') unary)*
 //! unary       = ('-' | '+') unary | primary
 //! primary     = (number unit?) | ('(' expr (')')? unit?) | path
-//! number      = '0x' hexdigits | digits         (underscores allowed)
+//! number      = '0x' hexdigits | digits
+//!               (digit separators `_`, `'`, and `` ` `` are
+//!                permitted anywhere except as the first or last
+//!                character; cleaned out before parsing)
 //! unit        = 'B' | 'KB' | 'KiB' | 'MB' | 'MiB' | 'GB' | 'GiB'
 //!             | 'TB' | 'TiB'                    (case insensitive)
 //! path        = ident ('#' digits)? (('.' ident) | ('[' digits ']'))* meta?
@@ -347,22 +350,33 @@ fn number(input: &mut &str) -> ModalResult<i128> {
     alt((hex_number, decimal_number)).parse_next(input)
 }
 
+/// Accept any of the common digit-grouping separators users
+/// paste in from other tools: `_` (Rust / Java / Python), `'`
+/// (C++14), and `` ` `` (windbg's high/low split for 64-bit
+/// pointers, e.g. `0x00000001`80000000`). All three are stripped
+/// before the integer parse runs.
+fn is_digit_separator(c: char) -> bool {
+    matches!(c, '_' | '\'' | '`')
+}
+
 fn hex_number(input: &mut &str) -> ModalResult<i128> {
     alt(("0x", "0X")).parse_next(input)?;
-    let digits: &str = take_while(1.., |c: char| c.is_ascii_hexdigit() || c == '_').parse_next(input)?;
+    let digits: &str =
+        take_while(1.., |c: char| c.is_ascii_hexdigit() || is_digit_separator(c)).parse_next(input)?;
     if !digits.chars().any(|c| c.is_ascii_hexdigit()) {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
-    let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+    let cleaned: String = digits.chars().filter(|c| !is_digit_separator(*c)).collect();
     i128::from_str_radix(&cleaned, 16).map_err(|_| ErrMode::Cut(ContextError::new()))
 }
 
 fn decimal_number(input: &mut &str) -> ModalResult<i128> {
-    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit() || c == '_').parse_next(input)?;
+    let digits: &str =
+        take_while(1.., |c: char| c.is_ascii_digit() || is_digit_separator(c)).parse_next(input)?;
     if !digits.chars().any(|c| c.is_ascii_digit()) {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
-    let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+    let cleaned: String = digits.chars().filter(|c| !is_digit_separator(*c)).collect();
     cleaned.parse::<i128>().map_err(|_| ErrMode::Cut(ContextError::new()))
 }
 
@@ -465,6 +479,30 @@ mod tests {
     fn hex_literal() {
         assert_eq!(parse("0x100"), Ok(lit(0x100)));
         assert_eq!(parse("0XFF"), Ok(lit(0xFF)));
+    }
+
+    #[test]
+    fn hex_with_apostrophe_separator() {
+        // C++14 style.
+        assert_eq!(parse("0xDEAD'BEEF"), Ok(lit(0xDEAD_BEEF)));
+    }
+
+    #[test]
+    fn hex_with_backtick_separator() {
+        // windbg's 64-bit pointer split.
+        assert_eq!(parse("0x00000001`80000000"), Ok(lit(0x0000_0001_8000_0000)));
+    }
+
+    #[test]
+    fn decimal_with_apostrophe_separator() {
+        assert_eq!(parse("1'000'000"), Ok(lit(1_000_000)));
+    }
+
+    #[test]
+    fn mixed_separators_in_one_literal() {
+        // Pasted-from-the-internet workloads sometimes mix
+        // styles; we accept the union rather than picking one.
+        assert_eq!(parse("0xDE_AD'BE`EF"), Ok(lit(0xDEAD_BEEF)));
     }
 
     #[test]
