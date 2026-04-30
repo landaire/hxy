@@ -306,6 +306,16 @@ pub struct HxyApp {
     /// command palette's `Run Template` action takes.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_template_runs: Vec<crate::toasts::PendingTemplateRun>,
+    /// File ids whose bytes were just swapped from outside the
+    /// per-frame update flow (`save_file_by_id` is the current
+    /// caller). Drained at the top of every frame by
+    /// [`drain_byte_change_cascade`], which re-runs the file's
+    /// source-derived analyses (template, entropy, strings,
+    /// checksums) gated by `AUTO_RUN_MAX_BYTES`. Reload's cascade
+    /// happens directly inside [`HxyApp::apply_reload_decision`]
+    /// because that path already has the egui context in scope.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_byte_change_cascade: Vec<FileId>,
     /// Set true at startup when [`Self::restore_open_tabs`] sees any
     /// persisted templates -- consumed once on the first `update()`
     /// frame (when the egui [`egui::Context`] is finally available)
@@ -559,6 +569,8 @@ impl HxyApp {
             pattern_first_run_prompt: show_patterns_prompt,
             #[cfg(not(target_arch = "wasm32"))]
             pending_template_runs: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_byte_change_cascade: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_template_restore: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1381,10 +1393,13 @@ impl HxyApp {
             format!("reloaded {len} byte(s); local edits discarded ({display})")
         };
         self.console_log(ConsoleSeverity::Info, &ctx_label, summary);
-        // Re-run the template, if any. Done last so the post-
-        // reload tree reflects the new bytes -- the runner
-        // takes a fresh source clone.
-        self.rerun_template_for_file(ctx, id);
+        // Re-run every source-derived analysis (template,
+        // visualizer-via-template, strings, checksums, entropy)
+        // against the freshly-swapped bytes. Templates always rerun;
+        // the others gate on `AUTO_RUN_MAX_BYTES` plus prior use to
+        // keep a reload from chewing tens of seconds of CPU on a
+        // multi-GiB dump.
+        cascade_byte_change(ctx, self, id);
         true
     }
 
@@ -1486,7 +1501,7 @@ impl HxyApp {
     /// flight (the worker hasn't seen the old bytes yet either, so
     /// rerunning would just duplicate work).
     #[cfg(not(target_arch = "wasm32"))]
-    fn rerun_template_for_file(&mut self, ctx: &egui::Context, file_id: FileId) {
+    pub(crate) fn rerun_template_for_file(&mut self, ctx: &egui::Context, file_id: FileId) {
         let Some(file) = self.files.get(&file_id) else { return };
         if file.templates.is_empty() || !file.templates_running.is_empty() {
             return;
@@ -2529,6 +2544,8 @@ impl eframe::App for HxyApp {
         drain_strings_runs(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_checksums_runs(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_byte_change_cascade(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -3127,6 +3144,58 @@ pub(crate) fn drain_strings_runs(ctx: &egui::Context, app: &mut HxyApp) {
                 app.console_log(ConsoleSeverity::Error, &ctx_label, msg);
             }
         }
+    }
+}
+
+/// Re-run the file's source-derived analyses after the bytes
+/// were swapped out from under us (reload from disk, save flushing
+/// edits + reopening). Templates always re-fire; entropy / strings
+/// / checksums refresh only when they had a prior result this
+/// session and the file fits inside [`AUTO_RUN_MAX_BYTES`], so a
+/// reload of a 4 GiB dump doesn't pin three background workers
+/// for thirty seconds. The visualizer is derived from the template
+/// tree, so re-running templates is enough to pick up new bytes
+/// there.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn cascade_byte_change(ctx: &egui::Context, app: &mut HxyApp, id: FileId) {
+    // Templates first: this preserves the long-standing reload
+    // behaviour and is the natural source of truth for the
+    // visualizer panel. Un-gated by size to match the existing
+    // contract -- callers that worry about template cost can
+    // gate at the call site.
+    app.rerun_template_for_file(ctx, id);
+
+    let Some(file) = app.files.get(&id) else { return };
+    let len = file.editor.source().len().get();
+    if len == 0 || len > AUTO_RUN_MAX_BYTES {
+        return;
+    }
+    // Skip tools the user hasn't actually used this session: an
+    // entropy panel that's never been computed against this file
+    // doesn't need a fresh result, and silently kicking one off
+    // would waste cycles for an output the user can't see.
+    let has_entropy = file.entropy.is_some() || file.entropy_running.is_some();
+    let has_strings = file.strings_panel.last_result.is_some() || file.strings_panel.running.is_some();
+    let has_checksums = file.checksums_panel.last_result.is_some() || file.checksums_panel.running.is_some();
+    if has_entropy {
+        compute_entropy_for(ctx, app, id);
+    }
+    if has_strings {
+        spawn_strings_with_panel_config(ctx, app, id);
+    }
+    if has_checksums {
+        spawn_checksums_with_panel_config(ctx, app, id);
+    }
+}
+
+/// Drain any pending byte-change cascades scheduled outside the
+/// per-frame update path (`save_file_by_id` is the current
+/// producer). Empty most frames; runs cheaply when populated.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drain_byte_change_cascade(ctx: &egui::Context, app: &mut HxyApp) {
+    let pending = std::mem::take(&mut app.pending_byte_change_cascade);
+    for id in pending {
+        cascade_byte_change(ctx, app, id);
     }
 }
 
@@ -5374,9 +5443,12 @@ impl TabViewer for HxyTabViewer<'_> {
                     // A tab restored from the dock snapshot comes
                     // back with the panel's default empty range.
                     // Backfill with the whole file the first time the
-                    // panel renders so the user's "Run" click does
-                    // something sensible without forcing them to
-                    // re-invoke the palette command first.
+                    // panel renders, and -- when the file fits the
+                    // auto-run gate -- queue an immediate scan so the
+                    // user sees results without having to click Run
+                    // themselves. The panel's own Run button stays
+                    // un-gated; only the implicit restore path waits
+                    // for an explicit click on huge inputs.
                     if file.strings_panel.config.range.is_empty() {
                         let len = file.editor.source().len().get();
                         if len > 0
@@ -5386,6 +5458,12 @@ impl TabViewer for HxyTabViewer<'_> {
                             )
                         {
                             file.strings_panel.config.range = range;
+                            if len <= AUTO_RUN_MAX_BYTES
+                                && file.strings_panel.last_result.is_none()
+                                && file.strings_panel.running.is_none()
+                            {
+                                self.pending_strings_run.push(pinned);
+                            }
                         }
                     }
                     let label = file.display_name.clone();
@@ -5409,11 +5487,12 @@ impl TabViewer for HxyTabViewer<'_> {
             Tab::Checksums(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
-                    // Same backfill as the strings tab: a restored
-                    // checksums panel arrives with an empty default
-                    // range, so Run would silently no-op until the
-                    // user re-invoked the palette command. Default to
-                    // the whole file on first render.
+                    // Mirror the strings restore path: backfill the
+                    // empty default range with the whole file, and
+                    // when the file fits the auto-run gate plus the
+                    // panel still has algorithms ticked, kick off
+                    // the streaming compute so the user sees fresh
+                    // hashes on restart without an extra click.
                     if file.checksums_panel.config.range.is_empty() {
                         let len = file.editor.source().len().get();
                         if len > 0
@@ -5423,6 +5502,13 @@ impl TabViewer for HxyTabViewer<'_> {
                             )
                         {
                             file.checksums_panel.config.range = range;
+                            if len <= AUTO_RUN_MAX_BYTES
+                                && !file.checksums_panel.config.algorithms.is_empty()
+                                && file.checksums_panel.last_result.is_none()
+                                && file.checksums_panel.running.is_none()
+                            {
+                                self.pending_checksums_run.push(pinned);
+                            }
                         }
                     }
                     let label = file.display_name.clone();

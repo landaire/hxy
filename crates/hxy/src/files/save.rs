@@ -133,6 +133,18 @@ pub fn save_file_by_id(app: &mut HxyApp, id: FileId, force_dialog: bool) -> bool
         }
     }
     app.console_log(ConsoleSeverity::Info, &ctx, "saved");
+    // Source got swapped to a fresh streaming reader on the just-
+    // written disk bytes, which means cached results the
+    // entropy / strings / checksum panels produced against the
+    // pre-save patched source no longer reflect what the user is
+    // looking at if they had unsaved edits before the save. Queue
+    // a cascade for the per-frame drain to pick up; the drain has
+    // the egui context that the recompute paths need but
+    // `save_file_by_id` itself does not. Templates also rerun
+    // through the same cascade.
+    if !app.pending_byte_change_cascade.contains(&id) {
+        app.pending_byte_change_cascade.push(id);
+    }
     true
 }
 
@@ -257,6 +269,12 @@ pub fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
         &ctx,
         format!("wrote {total_written}/{total_requested} bytes via plugin writer"),
     );
+    // Source got rebuilt with the post-write bytes -- queue a
+    // cascade so dependent panels refresh against the new source,
+    // same as the filesystem-write path.
+    if !app.pending_byte_change_cascade.contains(&id) {
+        app.pending_byte_change_cascade.push(id);
+    }
     true
 }
 
