@@ -2723,8 +2723,25 @@ impl eframe::App for HxyApp {
         self.save_if_dirty(&snapshot_before);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    // Two on_exit signatures because eframe's trait method changes
+    // shape when the `glow` feature is enabled. With our default
+    // `desktop` feature only, no glow, the no-arg form applies; with
+    // `--all-features` (or the `wasm` feature on alongside desktop)
+    // the trait expects the glow-aware form. Both delegate to the
+    // same shutdown-state handler.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "glow"))]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.on_exit_inner();
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "glow")))]
     fn on_exit(&mut self) {
+        self.on_exit_inner();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HxyApp {
+    fn on_exit_inner(&mut self) {
         // Persist every dirty tab's patch to a sidecar so restart
         // can offer to restore it. Best-effort: errors only log.
         if let Some(dir) = crate::files::save::unsaved_edits_dir() {

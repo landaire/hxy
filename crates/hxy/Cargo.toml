@@ -28,8 +28,28 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tokio", "dep:sqlx", "dep:tracing-subscriber", "eframe/wayland"]
-wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys", "dep:tracing-wasm", "dep:tracing-subscriber"]
+# Desktop pulls in the eframe winit + wgpu renderer plus the
+# desktop-only async / DB / log subscribers. `wayland` opts into
+# winit's wayland backend on Linux. wasm builds use the `wasm`
+# feature instead, which swaps wgpu for `glow` (WebGL2) since wgpu's
+# wasm backend isn't currently wired through eframe.
+desktop = ["dep:tokio", "dep:sqlx", "dep:tracing-subscriber", "eframe/wayland", "eframe/wgpu"]
+wasm = [
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "dep:js-sys",
+    "dep:tracing-wasm",
+    "dep:tracing-subscriber",
+    "glow",
+]
+# Internal passthrough feature: forwards to `eframe/glow`. Lets
+# `cfg(feature = "glow")` work from this crate (the eframe glow
+# feature changes the `eframe::App::on_exit` trait signature, so
+# the impl needs to follow). The wasm feature pulls this in
+# automatically; users mixing wgpu + glow on desktop can enable
+# it explicitly.
+glow = ["eframe/glow"]
 # dhat heap profiling. Off by default; build with
 # `cargo run --features dhat --release` and set `HXY_DHAT_OUTPUT=/tmp/hxy.json`
 # to record a heap profile that the dhat-rs viewer can load.
@@ -40,16 +60,11 @@ dhat = ["dep:dhat"]
 hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
 hxy-view = { workspace = true, features = ["serde"] }
-
-# UI -- eframe configured with default-features = false so we can opt into
-# wayland only on desktop (wayland can't be linked on wasm).
-eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 egui = { workspace = true }
 egui-phosphor = "0.12.0"
 egui_dock = { version = "0.19.1", features = ["serde"] }
 egui_inbox = "0.11.0"
 egui_taffy = "0.12.0"
-wgpu = "29.0.1"
 
 # Platform-neutral utilities
 jiff = { workspace = true }
@@ -104,6 +119,7 @@ adler2 = "2"
 # standalone crate so we don't depend on suture re-exporting a
 # `compute()` convenience.
 blake3 = "1.8"
+eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pattern-corpus download flow: blocking reqwest + rustls keeps
