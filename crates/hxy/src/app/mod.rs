@@ -4840,6 +4840,18 @@ fn copy_active_file(ctx: &egui::Context, app: &mut HxyApp, kind: CopyKind) {
 
 #[cfg(not(target_os = "macos"))]
 fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
+    use crate::commands::shortcuts::CLOSE_TAB;
+    use crate::commands::shortcuts::COPY_BYTES;
+    use crate::commands::shortcuts::COPY_HEX;
+    use crate::commands::shortcuts::NEW_FILE;
+    use crate::commands::shortcuts::PASTE;
+    use crate::commands::shortcuts::PASTE_AS_HEX;
+    use crate::commands::shortcuts::REDO;
+    use crate::commands::shortcuts::SAVE_FILE;
+    use crate::commands::shortcuts::SAVE_FILE_AS;
+    use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
+    use crate::commands::shortcuts::UNDO;
+
     egui::Panel::top("hxy_menu_bar").show_inside(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(hxy_i18n::t("menu-file"), |ui| {
