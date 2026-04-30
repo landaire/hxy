@@ -236,7 +236,29 @@ pub enum ChecksumsEvent {
     Copy(String),
 }
 
+/// Render the per-file Checksums panel without virtual addressing
+/// (range labels show raw file offsets).
 pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut ChecksumsPanel) -> Vec<ChecksumsEvent> {
+    show_inner(ui, file_label, panel, None)
+}
+
+/// Render the per-file Checksums panel with virtual addressing
+/// applied to the range label.
+pub fn show_with_vaddr(
+    ui: &mut egui::Ui,
+    file_label: Option<&str>,
+    panel: &mut ChecksumsPanel,
+    virtual_base: u64,
+) -> Vec<ChecksumsEvent> {
+    show_inner(ui, file_label, panel, Some(virtual_base))
+}
+
+fn show_inner(
+    ui: &mut egui::Ui,
+    file_label: Option<&str>,
+    panel: &mut ChecksumsPanel,
+    virtual_base: Option<u64>,
+) -> Vec<ChecksumsEvent> {
     let mut events: Vec<ChecksumsEvent> = Vec::new();
     ui.horizontal(|ui| {
         ui.heading(hxy_i18n::t("checksums-heading"));
@@ -285,11 +307,12 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut ChecksumsPa
 
     let range = panel.config.range;
     if !range.is_empty() {
+        let base = virtual_base.unwrap_or(0);
         ui.label(hxy_i18n::t_args(
             "checksums-range",
             &[
-                ("start", &format!("0x{:X}", range.start().get())),
-                ("end", &format!("0x{:X}", range.end().get())),
+                ("start", &format!("0x{:X}", range.start().get().saturating_add(base))),
+                ("end", &format!("0x{:X}", range.end().get().saturating_add(base))),
                 ("length", &format_bytes(range.len().get())),
             ],
         ));

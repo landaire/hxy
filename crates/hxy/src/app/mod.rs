@@ -5549,7 +5549,15 @@ impl TabViewer for HxyTabViewer<'_> {
                         }
                     }
                     let label = file.display_name.clone();
-                    let events = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                    let events = match file.virtual_base {
+                        Some(base) => crate::panels::strings::show_with_vaddr(
+                            ui,
+                            Some(&label),
+                            &mut file.strings_panel,
+                            base,
+                        ),
+                        None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
+                    };
                     for ev in events {
                         match ev {
                             crate::panels::strings::StringsEvent::Run => {
@@ -5594,7 +5602,15 @@ impl TabViewer for HxyTabViewer<'_> {
                         }
                     }
                     let label = file.display_name.clone();
-                    let events = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                    let events = match file.virtual_base {
+                        Some(base) => crate::panels::checksums::show_with_vaddr(
+                            ui,
+                            Some(&label),
+                            &mut file.checksums_panel,
+                            base,
+                        ),
+                        None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
+                    };
                     for ev in events {
                         match ev {
                             crate::panels::checksums::ChecksumsEvent::Run => {

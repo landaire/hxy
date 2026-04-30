@@ -410,7 +410,9 @@ strings-summary = { $count } string(s) found.
 strings-summary-filtered = { $count } string(s) found, filtering by "{ $filter }".
 strings-truncated = Result truncated at { $max } hits; narrow the range or raise the minimum length.
 strings-col-offset = Offset
+strings-col-address = Address
 strings-col-end = End
+strings-col-end-address = End address
 strings-col-length = Length
 strings-col-text = Text
 

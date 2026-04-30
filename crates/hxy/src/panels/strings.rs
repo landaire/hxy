@@ -429,10 +429,34 @@ pub enum StringsEvent {
     Jump { offset: u64, end: u64 },
 }
 
-/// Render the per-file Strings panel. Returns user-emitted events
-/// so the host can dispatch them (run / jump) without taking a
-/// `&mut HxyApp` borrow during rendering.
+/// Render the per-file Strings panel without virtual addressing
+/// (offset / end columns show raw file offsets). Returns user-
+/// emitted events so the host can dispatch them (run / jump)
+/// without taking a `&mut HxyApp` borrow during rendering.
 pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPanel) -> Vec<StringsEvent> {
+    show_inner(ui, file_label, panel, None)
+}
+
+/// Render the per-file Strings panel with virtual addressing
+/// applied: offset / end values are rendered as `entry + base`
+/// and the column headers switch to "Address" / "End address".
+/// Use this variant only when the file has an accepted virtual
+/// base; otherwise call [`show`].
+pub fn show_with_vaddr(
+    ui: &mut egui::Ui,
+    file_label: Option<&str>,
+    panel: &mut StringsPanel,
+    virtual_base: u64,
+) -> Vec<StringsEvent> {
+    show_inner(ui, file_label, panel, Some(virtual_base))
+}
+
+fn show_inner(
+    ui: &mut egui::Ui,
+    file_label: Option<&str>,
+    panel: &mut StringsPanel,
+    virtual_base: Option<u64>,
+) -> Vec<StringsEvent> {
     let mut events: Vec<StringsEvent> = Vec::new();
     ui.horizontal(|ui| {
         ui.heading(hxy_i18n::t("strings-heading"));
@@ -471,11 +495,12 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
 
     let range = panel.config.range;
     if !range.is_empty() {
+        let base = virtual_base.unwrap_or(0);
         ui.label(hxy_i18n::t_args(
             "strings-range",
             &[
-                ("start", &format!("0x{:X}", range.start().get())),
-                ("end", &format!("0x{:X}", range.end().get())),
+                ("start", &format!("0x{:X}", range.start().get().saturating_add(base))),
+                ("end", &format!("0x{:X}", range.end().get().saturating_add(base))),
                 ("length", &format_bytes(range.len().get())),
             ],
         ));
@@ -555,6 +580,7 @@ pub fn show(ui: &mut egui::Ui, file_label: Option<&str>, panel: &mut StringsPane
         sort: panel.sort,
         pending_sort: None,
         pending_hover: None,
+        virtual_base,
         events: &mut events,
     };
 
@@ -618,14 +644,28 @@ struct StringsTableDelegate<'a> {
     /// Mirrored back onto `panel.hovered_entry` post-render so the
     /// hex view picks it up.
     pending_hover: Option<ByteRange>,
+    /// Active virtual base. When `Some`, offset / end columns
+    /// render as virtual addresses and headers swap to "Address" /
+    /// "End address" labels.
+    virtual_base: Option<u64>,
     events: &'a mut Vec<StringsEvent>,
 }
 
 impl egui_table::TableDelegate for StringsTableDelegate<'_> {
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
         let (label_key, sort_col) = match cell.col_range.start {
-            0 => ("strings-col-offset", SortColumn::Offset),
-            1 => ("strings-col-end", SortColumn::End),
+            0 => {
+                let key = if self.virtual_base.is_some() { "strings-col-address" } else { "strings-col-offset" };
+                (key, SortColumn::Offset)
+            }
+            1 => {
+                let key = if self.virtual_base.is_some() {
+                    "strings-col-end-address"
+                } else {
+                    "strings-col-end"
+                };
+                (key, SortColumn::End)
+            }
             2 => ("strings-col-length", SortColumn::Length),
             3 => ("strings-col-text", SortColumn::Text),
             _ => return,
@@ -658,14 +698,17 @@ impl egui_table::TableDelegate for StringsTableDelegate<'_> {
             self.pending_hover = Some(range);
         }
         ui.add_space(4.0);
+        let base = self.virtual_base.unwrap_or(0);
         match cell.col_nr {
             0 => {
-                if ui.link(egui::RichText::new(format!("0x{:X}", entry.offset)).monospace()).clicked() {
+                let display = entry.offset.saturating_add(base);
+                if ui.link(egui::RichText::new(format!("0x{display:X}")).monospace()).clicked() {
                     self.events.push(StringsEvent::Jump { offset: entry.offset, end: entry.end });
                 }
             }
             1 => {
-                ui.monospace(format!("0x{:X}", entry.end));
+                let display = entry.end.saturating_add(base);
+                ui.monospace(format!("0x{display:X}"));
             }
             2 => {
                 ui.monospace(format!("{}", entry.length()));

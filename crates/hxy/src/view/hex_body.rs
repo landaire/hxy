@@ -72,10 +72,33 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         None
     };
 
-    let address_separator = state
-        .app
-        .address_separator_enabled
-        .then(|| (hxy_view::address_hex_width(file.editor.source().len()), state.app.address_separator_char));
+    // Virtual base: when the user accepted the plugin's hint (or
+    // set one via Open File with options...), every address the
+    // hex view paints is shifted by the base. The address column
+    // also needs to widen to fit the bigger numbers, and an
+    // Alt-held overlay tags each row with the underlying file
+    // offset so the user can correlate without flipping a setting.
+    let virtual_base = file.virtual_base.unwrap_or(0);
+    let alt_held = ui.input(|i| i.modifiers.alt);
+    let source_len = file.editor.source().len().get();
+    let display_len = hxy_core::ByteLen::new(source_len.saturating_add(virtual_base));
+    let separator_char = state.app.address_separator_enabled.then_some(state.app.address_separator_char);
+    let base_chars = hxy_view::address_hex_width(display_len);
+    let chars_with_separator = if separator_char.is_some() {
+        hxy_view::address_chars_with_separator(base_chars, 4)
+    } else {
+        base_chars
+    };
+    // Reserve room for the "[+0xfile_offset]" annotation when
+    // virtual addressing is active and the user is holding Alt.
+    // Width is approximate -- egui doesn't enforce; the column
+    // gets the worst-case allocation for the file's max offset.
+    let alt_extra = if virtual_base > 0 && alt_held {
+        // " [+" + max(file offset hex chars) + "]"
+        4 + hxy_view::address_hex_width(hxy_core::ByteLen::new(source_len))
+    } else {
+        0
+    };
     let mut view = file
         .editor
         .view()
@@ -86,10 +109,21 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         .minimap_colored(state.app.minimap_colored)
         .hover_span(hover_span)
         .field_boundaries(field_boundaries);
-    if let Some((base_chars, sep)) = address_separator {
+    if virtual_base > 0 || separator_char.is_some() {
         view = view
-            .address_chars(hxy_view::address_chars_with_separator(base_chars, 4))
-            .address_formatter(move |offset, _| hxy_view::format_address_grouped(offset, base_chars, sep, 4));
+            .address_chars(chars_with_separator + alt_extra)
+            .address_formatter(move |offset, _| {
+                let virtual_offset = hxy_core::ByteOffset::new(offset.get().saturating_add(virtual_base));
+                let mut s = match separator_char {
+                    Some(sep) => hxy_view::format_address_grouped(virtual_offset, base_chars, sep, 4),
+                    None => format!("{:0width$X}", virtual_offset.get(), width = base_chars),
+                };
+                if virtual_base > 0 && alt_held {
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, " [+{:X}]", offset.get());
+                }
+                s
+            });
     }
     if let Some((_, colors)) = field_colors {
         view = view.field_colors(colors);
