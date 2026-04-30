@@ -109,7 +109,10 @@ pub struct PersistedState {
     /// User consent decisions for each loaded plugin. Mirrored
     /// into `HxyApp` is unnecessary -- the rest of the app reads /
     /// writes it through the same `state.read()` / `state.write()`
-    /// path the rest of [`PersistedState`] uses.
+    /// path the rest of [`PersistedState`] uses. wasm has no
+    /// plugin host (wasmtime can't run inside the browser sandbox)
+    /// so the field disappears there.
+    #[cfg(not(target_arch = "wasm32"))]
     pub plugin_grants: hxy_plugin_host::PluginGrants,
     /// Cached JSON of the most recent dock-layout snapshot.
     /// Stored as a string rather than the typed
