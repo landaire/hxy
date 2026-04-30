@@ -1885,10 +1885,35 @@ impl HxyApp {
                         Err(crate::files::open::parent_missing(parent.as_ref()))
                     };
                 };
+                // Parent mount is Ready, but the entry-specific
+                // metadata / open call can still fail at restore
+                // time even when mount_by_token reported success --
+                // xbox-neighborhood lazy-loads its module +
+                // memory-region tables on first metadata for a
+                // synthetic path, and a transient session hiccup
+                // (kit was just powered on, network round trip
+                // timing out, region list churned since last
+                // session) bubbles up as an io::Error here.
+                //
+                // Treat that as "preserve the tab so next session
+                // can try again", same shape as the
+                // parent_mount_pending branch above. Returning Ok
+                // keeps the entry in `open_tabs`; without the
+                // matching FileId in the dock-layout maps, the
+                // restored snapshot drops the placeholder cleanly
+                // (no zombie tab in the live dock).
                 let (source, _len) =
-                    crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()).map_err(|e| {
-                        crate::files::FileOpenError::Read { path: entry_path.into(), source: e }
-                    })?;
+                    match crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()) {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                entry = %entry_path,
+                                "vfs entry open failed at restore; preserving tab for next session"
+                            );
+                            return Ok(());
+                        }
+                    };
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 let target = self
                     .workspace_for_source(parent.as_ref())
