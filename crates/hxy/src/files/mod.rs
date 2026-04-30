@@ -25,6 +25,8 @@ pub mod snapshot_ui;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod streaming;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod vfs_open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 
 use std::path::PathBuf;
@@ -46,6 +48,31 @@ use hxy_vfs::VfsHandler;
 pub use hxy_view::EditEntry;
 pub use hxy_view::EditMode;
 pub use hxy_view::WriteError;
+
+/// Whether a tab's byte source has finished loading. Plain
+/// filesystem opens flip straight to `Ready`; VFS-entry tabs
+/// restored from a previous session start as `Loading` while a
+/// background worker fetches their bytes through the plugin
+/// mount, then either swap to `Ready` (worker delivered a real
+/// source) or `Failed` (plugin error / kit offline / entry
+/// gone). The tab strip surfaces the state with a spinner /
+/// warning glyph; the hex view renders a placeholder until the
+/// status is `Ready`.
+#[derive(Clone, Debug, Default)]
+pub enum LoadStatus {
+    /// The byte source is real and the tab is fully usable.
+    #[default]
+    Ready,
+    /// A background worker is fetching the source. The
+    /// `OpenFile` carries a zero-length placeholder source in
+    /// the meantime so the dock layout has something to render.
+    Loading,
+    /// The background worker returned an error. `String` is the
+    /// plugin / IO message rendered in the placeholder so the
+    /// user can see what went wrong without flipping to the
+    /// console.
+    Failed(String),
+}
 
 /// A reason a buffer is hard-readonly: the user cannot toggle the
 /// editor to mutable, and the lock icon's tooltip explains why.
@@ -336,6 +363,13 @@ pub struct OpenFile {
     /// reload / save paths can rebuild a [`CachedSource`] under the
     /// same identity.
     pub byte_cache: Arc<ByteCache>,
+    /// Whether the tab's byte source is ready to read. See
+    /// [`LoadStatus`]: VFS-entry tabs restored from a previous
+    /// session start `Loading` while a worker thread fetches
+    /// their bytes through the plugin mount, and flip to
+    /// `Ready` (or `Failed`) once the worker delivers a
+    /// result. Defaults to `Ready` for all other open paths.
+    pub load_status: LoadStatus,
 }
 
 /// A template library entry pre-matched against a file's first bytes
@@ -647,6 +681,7 @@ impl OpenFile {
             virtual_base_hint: None,
             source_id,
             byte_cache: byte_cache.clone(),
+            load_status: LoadStatus::Ready,
         }
     }
 

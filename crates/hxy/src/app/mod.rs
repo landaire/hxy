@@ -377,6 +377,15 @@ pub struct HxyApp {
     /// goes through the normal `state.open_tabs` restore path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) closed_tabs: std::collections::VecDeque<crate::tabs::close::ClosedTabSnapshot>,
+    /// Inbox for VFS-entry opens deferred to a background thread so
+    /// the UI stays responsive while the plugin's `metadata` /
+    /// `open_file` round trips. Drained per-frame in `update()`;
+    /// each delivered result either swaps the real source into the
+    /// file's editor or stamps `LoadStatus::Failed` on the
+    /// placeholder. Spawn calls grab a fresh sender clone via
+    /// [`egui_inbox::UiInbox::sender`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) vfs_open_inbox: egui_inbox::UiInbox<crate::files::vfs_open::VfsOpenResult>,
 }
 
 /// One entry in the Console tab. `context` identifies the plugin run
@@ -644,6 +653,8 @@ impl HxyApp {
             pending_snapshot_dialog: None,
             #[cfg(not(target_arch = "wasm32"))]
             closed_tabs: std::collections::VecDeque::with_capacity(crate::tabs::close::CLOSED_TABS_CAPACITY),
+            #[cfg(not(target_arch = "wasm32"))]
+            vfs_open_inbox: egui_inbox::UiInbox::new_with_ctx(&cc.egui_ctx),
         }
     }
 
@@ -1831,6 +1842,16 @@ impl HxyApp {
         else {
             return;
         };
+        // Skip files whose byte source is still being fetched in the
+        // background -- running templates against the zero-byte
+        // placeholder produces diagnostics-only instances. The
+        // VFS-open inbox drain re-fires this helper for the
+        // matching source once the real bytes land.
+        if let Some(file) = self.files.get(&file_id)
+            && matches!(file.load_status, crate::files::LoadStatus::Loading)
+        {
+            return;
+        }
         // Restore the visualizer panel's open flag *before* the
         // template auto-rerun fires. Once the worker completes,
         // `auto_open_visualizer_for` consults this flag; without
@@ -1908,48 +1929,44 @@ impl HxyApp {
                     };
                 };
                 // Parent mount is Ready, but the entry-specific
-                // metadata / open call can still fail at restore
-                // time even when mount_by_token reported success --
+                // metadata / open call can still fail or be slow --
                 // xbox-neighborhood lazy-loads its module +
                 // memory-region tables on first metadata for a
                 // synthetic path, and a transient session hiccup
                 // (kit was just powered on, network round trip
                 // timing out, region list churned since last
-                // session) bubbles up as an io::Error here.
+                // session) bubbles up as an io::Error there.
                 //
-                // Treat that as "preserve the tab so next session
-                // can try again", same shape as the
-                // parent_mount_pending branch above. Returning Ok
-                // keeps the entry in `open_tabs`; without the
-                // matching FileId in the dock-layout maps, the
-                // restored snapshot drops the placeholder cleanly
-                // (no zombie tab in the live dock).
-                let (source, _len) = match crate::files::streaming::open_vfs(parent_mount.clone(), entry_path.clone()) {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            entry = %entry_path,
-                            "vfs entry open failed at restore; preserving tab for next session"
-                        );
-                        return Ok(());
-                    }
-                };
+                // Push a zero-byte placeholder tab into the dock
+                // immediately and spawn a worker that opens the
+                // entry through the plugin mount on its own
+                // thread. The result lands on `vfs_open_inbox`,
+                // which the per-frame drain swaps into the
+                // editor (success) or stamps as Failed (error).
+                // Worker errors don't propagate up the restore
+                // loop -- the tab stays put with its load
+                // status surfaced in the tab strip + hex view.
                 let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(entry_path).to_owned();
                 let target = self
                     .workspace_for_source(parent.as_ref())
                     .map(OpenTarget::Workspace)
                     .unwrap_or(OpenTarget::Toplevel);
                 let virtual_base_hint = parent_mount.virtual_base.as_ref().and_then(|q| q.virtual_base(entry_path));
+                let placeholder: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(Vec::new()));
                 let opened_id = self.open_with_target(
                     name,
                     Some(tab.source.clone()),
-                    source,
+                    placeholder,
                     tab.selection,
                     Some(tab.scroll_offset),
                     target,
                 );
                 record_virtual_base_hint(self, opened_id, virtual_base_hint);
+                if let Some(file) = self.files.get_mut(&opened_id) {
+                    file.load_status = crate::files::LoadStatus::Loading;
+                }
+                let sender = self.vfs_open_inbox.sender();
+                crate::files::vfs_open::spawn(sender, opened_id, parent_mount, entry_path.clone());
                 Ok(())
             }
             TabSource::Anonymous { id, title } => {
@@ -2642,6 +2659,8 @@ impl eframe::App for HxyApp {
         drain_checksums_runs(ui.ctx(), self);
         #[cfg(not(target_arch = "wasm32"))]
         drain_byte_change_cascade(ui.ctx(), self);
+        #[cfg(not(target_arch = "wasm32"))]
+        drain_vfs_open_inbox(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
@@ -3384,6 +3403,45 @@ pub(crate) fn drain_byte_change_cascade(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Drain background-VFS-open results into the matching files. For
+/// each completed open, swap the real source into the editor and
+/// flip the file's `LoadStatus` to `Ready`; failures stamp
+/// `Failed(message)` so the placeholder hex view can show the
+/// reason instead of an empty grid. Successful swaps also kick the
+/// template-suggestion + watcher enrolment that the placeholder
+/// open skipped, plus an auto-rerun of any persisted templates the
+/// session restore captured for this tab (deferred until now
+/// because firing them against zero-byte placeholder bytes would
+/// yield diagnostics-only template instances).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn drain_vfs_open_inbox(ctx: &egui::Context, app: &mut HxyApp) {
+    let results: Vec<crate::files::vfs_open::VfsOpenResult> = app.vfs_open_inbox.read(ctx).collect();
+    for crate::files::vfs_open::VfsOpenResult { file_id, outcome } in results {
+        let Some(file) = app.files.get_mut(&file_id) else { continue };
+        match outcome {
+            Ok(source) => {
+                let display = file.display_name.clone();
+                let source_kind = file.source_kind.clone();
+                file.byte_cache.drop_source(file.source_id);
+                let cached = file.rewrap_for_view(source);
+                file.editor.swap_source(cached);
+                file.load_status = crate::files::LoadStatus::Ready;
+                app.suggest_templates_for(file_id);
+                app.watch_root_for_file(file_id);
+                if let Some(source) = source_kind {
+                    app.restore_persisted_templates_for_source(ctx, &source);
+                }
+                app.console_log(ConsoleSeverity::Info, "vfs", format!("loaded {display}"));
+            }
+            Err(msg) => {
+                file.load_status = crate::files::LoadStatus::Failed(msg.clone());
+                let display = file.display_name.clone();
+                app.console_log(ConsoleSeverity::Warning, "vfs", format!("load {display} failed: {msg}"));
+            }
+        }
+    }
+}
+
 /// Drain any completed entropy computations into the file's
 /// `entropy` slot. Mirrors `drain_template_runs` -- runs once
 /// per frame, non-blocking inbox read.
@@ -4045,6 +4103,83 @@ fn vfs_expanded_for<'a>(list: &'a mut Vec<(TabSource, Vec<String>)>, key: &TabSo
     }
     list.push((key.clone(), Vec::new()));
     &mut list.last_mut().expect("just pushed").1
+}
+
+/// Centered "Loading {name}..." overlay shown in place of the hex
+/// grid while a VFS-entry tab's bytes are being fetched on a
+/// background thread. Spins the phosphor circle-notch glyph by
+/// rotating it on the UI's elapsed time so the user has a clear
+/// "still working" signal without a separate animation system.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_loading_placeholder(ui: &mut egui::Ui, display_name: &str) {
+    let rect = ui.available_rect_before_wrap();
+    let bg = ui.visuals().window_fill();
+    ui.painter().rect_filled(rect, 0.0, bg);
+    let center = rect.center();
+    let time = ui.input(|i| i.time);
+    // Rotate twice per second; phosphor glyph rendered through the
+    // egui font system so it inherits the user's text color. The
+    // angle drives a manual layout to spin the glyph in place.
+    let angle = (time as f32) * std::f32::consts::TAU * 0.75;
+    let glyph = egui_phosphor::regular::CIRCLE_NOTCH;
+    let font = egui::FontId::proportional(28.0);
+    let color = ui.visuals().text_color();
+    let galley = ui.painter().layout_no_wrap(glyph.to_string(), font, color);
+    let half = galley.size() * 0.5;
+    let mut shape = egui::epaint::TextShape::new(center - half, galley, color);
+    shape.angle = angle;
+    // Pivot rotation around the glyph center, not the layout origin.
+    shape.override_text_color = Some(color);
+    ui.painter().add(shape);
+    let label_y = center.y + 32.0;
+    let label = hxy_i18n::t_args("vfs-loading-fmt", &[("name", display_name)]);
+    ui.painter().text(
+        egui::pos2(center.x, label_y),
+        egui::Align2::CENTER_TOP,
+        label,
+        egui::FontId::proportional(13.0),
+        ui.visuals().weak_text_color(),
+    );
+    // Keep repainting until the inbox drain swaps in the real
+    // source. Without this the spinner freezes between input
+    // events.
+    ui.ctx().request_repaint();
+}
+
+/// Static "could not load" overlay shown when the background VFS
+/// open returned an error. Surfaces the plugin / IO message
+/// alongside the file name so the user knows what to retry from
+/// the console / palette without flipping to logs.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_failed_placeholder(ui: &mut egui::Ui, display_name: &str, message: &str) {
+    let rect = ui.available_rect_before_wrap();
+    let bg = ui.visuals().window_fill();
+    ui.painter().rect_filled(rect, 0.0, bg);
+    let center = rect.center();
+    let glyph = egui_phosphor::regular::WARNING;
+    let color = ui.visuals().warn_fg_color;
+    ui.painter().text(
+        center - egui::vec2(0.0, 24.0),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(28.0),
+        color,
+    );
+    let title = hxy_i18n::t_args("vfs-failed-fmt", &[("name", display_name)]);
+    ui.painter().text(
+        egui::pos2(center.x, center.y + 16.0),
+        egui::Align2::CENTER_TOP,
+        title,
+        egui::FontId::proportional(13.0),
+        ui.visuals().text_color(),
+    );
+    ui.painter().text(
+        egui::pos2(center.x, center.y + 36.0),
+        egui::Align2::CENTER_TOP,
+        message,
+        egui::FontId::monospace(11.0),
+        ui.visuals().weak_text_color(),
+    );
 }
 
 fn render_file_tab(
@@ -5561,11 +5696,23 @@ impl TabViewer for HxyTabViewer<'_> {
             }
             Tab::File(id) => match self.files.get(id) {
                 Some(f) => {
-                    // Both indicators sit to the left of the name:
-                    // lock glyph first when the tab is read-only,
-                    // then a bullet when there are unsaved edits,
-                    // then the filename.
+                    // Indicators sit to the left of the name in fixed
+                    // order: load-status glyph (spinner / warning) for
+                    // VFS-entry tabs whose source is still being
+                    // fetched, then lock if read-only, then a bullet
+                    // for unsaved edits, then the filename.
                     let mut prefix = String::new();
+                    match &f.load_status {
+                        crate::files::LoadStatus::Ready => {}
+                        crate::files::LoadStatus::Loading => {
+                            prefix.push_str(egui_phosphor::regular::CIRCLE_NOTCH);
+                            prefix.push(' ');
+                        }
+                        crate::files::LoadStatus::Failed(_) => {
+                            prefix.push_str(egui_phosphor::regular::WARNING);
+                            prefix.push(' ');
+                        }
+                    }
                     if matches!(f.editor.edit_mode(), crate::files::EditMode::Readonly) {
                         prefix.push_str(egui_phosphor::regular::LOCK);
                         prefix.push(' ');
@@ -5797,19 +5944,27 @@ impl TabViewer for HxyTabViewer<'_> {
                 }
             }
             Tab::File(id) => match self.files.get_mut(id) {
-                Some(file) => {
-                    render_file_tab(
-                        ui,
-                        *id,
-                        file,
-                        self.state,
-                        *self.tab_focus,
-                        #[cfg(not(target_arch = "wasm32"))]
-                        self.toasts,
-                        #[cfg(not(target_arch = "wasm32"))]
-                        self.pending_template_runs,
-                    );
-                }
+                Some(file) => match &file.load_status {
+                    crate::files::LoadStatus::Loading => {
+                        render_loading_placeholder(ui, &file.display_name);
+                    }
+                    crate::files::LoadStatus::Failed(message) => {
+                        render_failed_placeholder(ui, &file.display_name, message);
+                    }
+                    crate::files::LoadStatus::Ready => {
+                        render_file_tab(
+                            ui,
+                            *id,
+                            file,
+                            self.state,
+                            *self.tab_focus,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            self.toasts,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            self.pending_template_runs,
+                        );
+                    }
+                },
                 None => {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }
