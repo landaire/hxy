@@ -290,7 +290,8 @@ pub struct AppSettings {
     /// startup and don't override it here.
     pub language: Option<String>,
 
-    /// egui zoom factor. 1.0 = native, 1.2 matches `lantia-locator`'s default.
+    /// egui zoom factor. 1.0 = native; users can scale up via the
+    /// settings panel.
     pub zoom_factor: f32,
 
     /// Number of hex columns per row in the hex view.
@@ -509,7 +510,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             language: None,
-            zoom_factor: 1.2,
+            zoom_factor: 1.0,
             hex_columns: ColumnCount::DEFAULT,
             check_for_updates: true,
             offset_base: OffsetBase::default(),
