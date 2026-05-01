@@ -2611,7 +2611,15 @@ fn draw_minimap<S: HexSource + ?Sized>(
     let max_top = (total_rows as f32 - capacity_f).max(0.0);
     let window_top_f = scroll_frac * max_top;
     let window_top_row = window_top_f.floor() as u64;
-    let shown_rows = minimap_capacity_rows.min(total_rows.saturating_sub(window_top_row as usize));
+    // Fractional remainder of the top row, used to apply a sub-row
+    // y-shift so the painted byte rows scroll continuously with the
+    // viewport indicator instead of snapping one `cell_h` every time
+    // `window_top_f` crosses an integer. Without this the indicator
+    // slides smoothly but the bytes underneath jitter up/down.
+    let row_subpixel_shift = (window_top_f - window_top_row as f32) * cell_h;
+    // Read one extra row so the row peeking in from the bottom
+    // (after applying the negative y-shift) still has bytes to draw.
+    let shown_rows = (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row as usize));
 
     // Single contiguous read for all rows visible in the window.
     let read_start = window_top_row.saturating_mul(cols as u64).min(len);
@@ -2629,7 +2637,7 @@ fn draw_minimap<S: HexSource + ?Sized>(
         }
         let chunk_end = (chunk_start + cols).min(bytes.len());
         let chunk = &bytes[chunk_start..chunk_end];
-        let y = minimap_rect.top() + i as f32 * cell_h;
+        let y = minimap_rect.top() + i as f32 * cell_h - row_subpixel_shift;
         let row_base_offset = read_start + (i as u64) * cols as u64;
         for (c, byte) in chunk.iter().enumerate() {
             let x = minimap_rect.left() + c as f32 * cell_w;
