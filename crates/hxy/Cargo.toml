@@ -149,3 +149,9 @@ web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlCanvasElement
 js-sys = { version = "0.3", optional = true }
 tracing-wasm = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
+# jiff::Timestamp::now() panics on wasm32-unknown-unknown without
+# the `js` feature -- we hit this from the panel workers
+# (strings / checksums / entropy stamp their results with the
+# current time). The `js` feature wires Timestamp::now through
+# performance.now() / Date.now() so it works in the browser.
+jiff = { workspace = true, features = ["js"] }
