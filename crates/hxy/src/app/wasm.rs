@@ -82,6 +82,8 @@ impl HxyApp {
             pending_global_search_events: Vec::new(),
             compares: std::collections::BTreeMap::new(),
             next_compare_id: 1,
+            inspector: crate::panels::inspector::InspectorState::default(),
+            decoders: crate::panels::inspector::default_decoders(),
         }
     }
 
@@ -555,6 +557,8 @@ impl eframe::App for HxyApp {
                     compares: &mut self.compares,
                     global_search: &mut self.global_search,
                     pending_global_search_events: &mut self.pending_global_search_events,
+                    inspector: &mut self.inspector,
+                    decoders: &self.decoders,
                     pending_vfs_opens: &mut pending_vfs_opens,
                     pending_close: &mut pending_close,
                     pending_strings_run: &mut pending_strings_run,
@@ -669,6 +673,8 @@ struct WasmTabViewer<'a> {
     compares: &'a mut std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
     global_search: &'a mut crate::search::global::GlobalSearchState,
     pending_global_search_events: &'a mut Vec<crate::search::global::GlobalSearchEvent>,
+    inspector: &'a mut crate::panels::inspector::InspectorState,
+    decoders: &'a [Arc<dyn crate::panels::inspector::Decoder>],
     /// Pending VFS-entry opens queued by the workspace's inner VFS
     /// tree this frame. Drained after the dock pass so we can mutate
     /// `files` without holding a borrow into `workspaces`.
@@ -810,9 +816,7 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                     Some((c, b)) => (Some(c.get()), b.as_slice()),
                     None => (None, &[] as &[u8]),
                 };
-                let mut state = crate::panels::inspector::InspectorState::default();
-                let decoders = crate::panels::inspector::default_decoders();
-                crate::panels::inspector::show(ui, &mut state, &decoders, caret, bytes);
+                crate::panels::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
             }
             Tab::Strings(file_id) => {
                 let pinned = *file_id;

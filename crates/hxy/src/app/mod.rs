@@ -176,12 +176,10 @@ pub struct HxyApp {
     /// Data-inspector dock tab state. Endianness + radix preferences
     /// and the `show_panel` flag that's only consulted when the
     /// Inspector tab is closed and re-opened.
-    #[cfg(not(target_arch = "wasm32"))]
-    inspector: crate::panels::inspector::InspectorState,
+    pub(crate) inspector: crate::panels::inspector::InspectorState,
     /// Registered decoders for the inspector. Defaults to the
     /// built-in set; user-registered decoders will be additive.
-    #[cfg(not(target_arch = "wasm32"))]
-    decoders: Vec<Arc<dyn crate::panels::inspector::Decoder>>,
+    pub(crate) decoders: Vec<Arc<dyn crate::panels::inspector::Decoder>>,
     /// The most recently focused File tab. Remembered across frames
     /// so panels like the Inspector (which take keyboard focus when
     /// clicked) keep showing data from the file the user was last
