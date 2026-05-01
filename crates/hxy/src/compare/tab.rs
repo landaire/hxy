@@ -2,8 +2,6 @@
 //! table at the bottom. Pulls in [`super::pane::render_compare_pane`]
 //! for the per-side hex view.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::compare::pane::compare_pane_ranges;
 use crate::compare::pane::pane_hover_span;
 use crate::compare::pane::render_compare_pane;

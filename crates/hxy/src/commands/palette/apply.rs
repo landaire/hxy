@@ -175,6 +175,9 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::SetVirtualBase => {
                     app.palette.open_at(Mode::SetVirtualBase);
                 }
+                PaletteCommand::SaveAsDownload => {
+                    crate::files::save::save_active_file(app, true);
+                }
             }
         }
         Action::CopyText(text) => {

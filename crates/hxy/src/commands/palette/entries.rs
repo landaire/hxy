@@ -1241,8 +1241,15 @@ pub fn build_palette_entries(
             };
             let picked_a = app.palette.compare_pick.as_ref().and_then(|p| p.picked_a.clone());
             for file in app.files.values() {
-                let Some(source) = file.source_kind.clone() else {
-                    continue;
+                // In-memory wasm tabs (and "New file" buffers on
+                // desktop) have no source_kind. Synthesize a
+                // FileId-keyed TabSource so the palette can still
+                // identify them; the dispatcher recognises the
+                // `__memory__` path prefix and reads bytes from
+                // app.files instead of the filesystem.
+                let source = match file.source_kind.clone() {
+                    Some(s) => s,
+                    None => TabSource::Filesystem(std::path::PathBuf::from(format!("/__memory__/{}", file.id.get()))),
                 };
                 if matches!(side, crate::commands::palette::CompareSide::B)
                     && picked_a.as_ref().is_some_and(|a| a == &source)

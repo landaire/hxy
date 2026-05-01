@@ -6,7 +6,6 @@
 //! `Tab::SearchResults`.
 
 pub mod bar;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod global;
 pub mod modal;
 pub mod replace;

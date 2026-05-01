@@ -88,9 +88,8 @@ pub struct HxyApp {
     pub(crate) next_mount_id: u64,
     /// Live compare sessions, keyed by the same id their
     /// `Tab::Compare` payload carries.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) compares: std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) next_compare_id: u64,
     pub(crate) state: SharedPersistedState,
     next_file_id: u64,
@@ -283,12 +282,10 @@ pub struct HxyApp {
     /// Shared cross-file search state. Backs the `Tab::SearchResults`
     /// dock tab; lives on the app so query / matches survive the user
     /// closing and reopening the tab.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) global_search: crate::search::global::GlobalSearchState,
     /// Events the global search tab emitted this frame. Drained at the
     /// end of `ui()` so we can mutate `files` (focus / jump) after the
     /// dock has released its borrow.
-    #[cfg(not(target_arch = "wasm32"))]
     pending_global_search_events: Vec<crate::search::global::GlobalSearchEvent>,
     /// Most-recently-focused leaf that holds a content tab (File /
     /// Welcome / Settings). Used to route file opens that originate
@@ -1214,41 +1211,6 @@ impl HxyApp {
             let node_path = path.node_path();
             let _ = self.dock.set_active_tab(path);
             self.dock.set_focused_node_and_surface(node_path);
-        }
-    }
-
-    /// Move dock focus to the tab backing `file_id`, if found.
-    pub(crate) fn focus_file_tab(&mut self, file_id: FileId) {
-        if let Some(path) = self.dock.find_tab(&Tab::File(file_id)) {
-            let node_path = path.node_path();
-            let _ = self.dock.set_active_tab(path);
-            self.dock.set_focused_node_and_surface(node_path);
-            return;
-        }
-        // The file might live inside a workspace either as the
-        // editor or as an opened entry. Focus the workspace tab in
-        // the outer dock and the matching sub-tab in the inner dock.
-        let workspace_target: Option<(crate::files::WorkspaceId, crate::files::WorkspaceTab)> =
-            self.workspaces.values().find_map(|w| {
-                if w.editor_id == file_id {
-                    Some((w.id, crate::files::WorkspaceTab::Editor))
-                } else if w.dock.find_tab(&crate::files::WorkspaceTab::Entry(file_id)).is_some() {
-                    Some((w.id, crate::files::WorkspaceTab::Entry(file_id)))
-                } else {
-                    None
-                }
-            });
-        if let Some((workspace_id, sub_tab)) = workspace_target {
-            if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
-                let node_path = path.node_path();
-                let _ = self.dock.set_active_tab(path);
-                self.dock.set_focused_node_and_surface(node_path);
-            }
-            if let Some(workspace) = self.workspaces.get_mut(&workspace_id)
-                && let Some(inner_path) = workspace.dock.find_tab(&sub_tab)
-            {
-                let _ = workspace.dock.set_active_tab(inner_path);
-            }
         }
     }
 
@@ -2396,6 +2358,38 @@ impl HxyApp {
             let _ = self.dock.remove_tab(welcome);
         }
         true
+    }
+
+    /// Move dock focus to the tab backing `file_id`, if found.
+    pub(crate) fn focus_file_tab(&mut self, file_id: FileId) {
+        if let Some(path) = self.dock.find_tab(&Tab::File(file_id)) {
+            let node_path = path.node_path();
+            let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
+            return;
+        }
+        let workspace_target: Option<(crate::files::WorkspaceId, crate::files::WorkspaceTab)> =
+            self.workspaces.values().find_map(|w| {
+                if w.editor_id == file_id {
+                    Some((w.id, crate::files::WorkspaceTab::Editor))
+                } else if w.dock.find_tab(&crate::files::WorkspaceTab::Entry(file_id)).is_some() {
+                    Some((w.id, crate::files::WorkspaceTab::Entry(file_id)))
+                } else {
+                    None
+                }
+            });
+        if let Some((workspace_id, sub_tab)) = workspace_target {
+            if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
+                let node_path = path.node_path();
+                let _ = self.dock.set_active_tab(path);
+                self.dock.set_focused_node_and_surface(node_path);
+            }
+            if let Some(workspace) = self.workspaces.get_mut(&workspace_id)
+                && let Some(inner_path) = workspace.dock.find_tab(&sub_tab)
+            {
+                let _ = workspace.dock.set_active_tab(inner_path);
+            }
+        }
     }
 
     /// Allocate a `WorkspaceId`, build a `Workspace`, and register
@@ -4042,7 +4036,6 @@ fn nearest_match_idx(matches: &[u64], caret: u64) -> Option<usize> {
 /// Apply a frame's worth of cross-file search events. `Run` rebuilds
 /// the match list from scratch by scanning every open file's source;
 /// `JumpTo` focuses the matched file's tab and selects the bytes.
-#[cfg(not(target_arch = "wasm32"))]
 fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::search::global::GlobalSearchEvent>) {
     use crate::search::find_all;
     use crate::search::global::GlobalMatch;
@@ -6008,7 +6001,6 @@ impl TabViewer for HxyTabViewer<'_> {
                     ui.colored_label(egui::Color32::RED, format!("missing mount {mount_id:?}"));
                 }
             },
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::SearchResults => {
                 let names: std::collections::HashMap<FileId, String> =
                     self.files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
@@ -7143,6 +7135,10 @@ impl HxyApp {
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
             toasts: crate::toasts::ToastCenter::new(),
             pending_search_modal: None,
+            global_search: crate::search::global::GlobalSearchState::default(),
+            pending_global_search_events: Vec::new(),
+            compares: std::collections::BTreeMap::new(),
+            next_compare_id: 1,
         }
     }
 
@@ -7307,6 +7303,33 @@ impl HxyApp {
         file.entropy_running = Some(crate::panels::entropy::spawn_compute(ctx, id, source, window));
     }
 
+    /// Read the raw bytes of any tab the user might pick for a
+    /// compare. Recognises the `/__memory__/{file_id}` synthetic
+    /// path the wasm palette emits for in-memory tabs and reads
+    /// from `app.files`; for any other `TabSource` returns `None`
+    /// (the wasm side has no filesystem / VFS resolver).
+    fn read_compare_side_wasm(&self, source: &TabSource) -> Option<(String, Vec<u8>)> {
+        if let TabSource::Filesystem(path) = source {
+            let s = path.to_string_lossy();
+            if let Some(id_str) = s.strip_prefix("/__memory__/")
+                && let Ok(id_u64) = id_str.parse::<u64>()
+            {
+                let id = FileId::new(id_u64);
+                let file = self.files.get(&id)?;
+                let len = file.editor.source().len().get();
+                let bytes = if len == 0 {
+                    Vec::new()
+                } else {
+                    let range =
+                        hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).ok()?;
+                    file.editor.source().read(range).ok()?
+                };
+                return Some((file.display_name.clone(), bytes));
+            }
+        }
+        None
+    }
+
     /// Open a VFS entry from inside the workspace's tree as a new
     /// editor tab in the workspace's inner dock. Reads the entry
     /// stream synchronously into a `MemorySource` (the built-in
@@ -7434,32 +7457,26 @@ impl eframe::App for HxyApp {
             let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
             self.open_bytes_wasm(name, bytes);
         }
-        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit, toggle_palette, toggle_quick_open) =
-            ctx.input_mut(|i| {
-                (
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(
-                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                        egui::Key::T,
-                    )),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C)),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(
-                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                        egui::Key::C,
-                    )),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)),
-                    // Cmd+Shift+P opens the full command palette,
-                    // Cmd+P opens the file-only quick-open list --
-                    // same bindings as desktop. The palette state
-                    // struct is shared across targets.
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(
-                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                        egui::Key::P,
-                    )),
-                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::P)),
-                )
-            });
+        // Wasm-only shortcuts that don't have a shared dispatcher
+        // yet: tab close (Cmd+W), reopen-closed (Cmd+Shift+T),
+        // selection copy (Cmd+C / Cmd+Shift+C), palette open
+        // (Cmd+Shift+P) / quick-open (Cmd+P).
+        use crate::commands::shortcuts::CLOSE_TAB;
+        use crate::commands::shortcuts::COMMAND_PALETTE;
+        use crate::commands::shortcuts::COPY_BYTES;
+        use crate::commands::shortcuts::COPY_HEX;
+        use crate::commands::shortcuts::QUICK_OPEN;
+        use crate::commands::shortcuts::REOPEN_CLOSED_TAB;
+        let (close_tab, reopen_tab, copy_bytes, copy_hex, toggle_palette, toggle_quick_open) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&CLOSE_TAB),
+                i.consume_shortcut(&REOPEN_CLOSED_TAB),
+                i.consume_shortcut(&COPY_BYTES),
+                i.consume_shortcut(&COPY_HEX),
+                i.consume_shortcut(&COMMAND_PALETTE),
+                i.consume_shortcut(&QUICK_OPEN),
+            )
+        });
         if toggle_palette {
             if self.palette.is_open() {
                 self.palette.close();
@@ -7476,24 +7493,17 @@ impl eframe::App for HxyApp {
         }
         // Shared shortcut handlers: Cmd+Z / Cmd+Shift+Z (undo/redo),
         // Cmd+N (new), Cmd+E (toggle edit), Cmd+V / Cmd+Shift+V
-        // (paste / paste-as-hex). Same code paths desktop runs.
+        // (paste / paste-as-hex), Cmd+F (find local) / Cmd+Shift+F
+        // (find in all files). Same code paths desktop runs.
         crate::app::shortcuts::dispatch_save_shortcut(&ctx, self);
         crate::app::shortcuts::dispatch_paste_shortcut(&ctx, self);
+        crate::app::shortcuts::dispatch_find_shortcut(&ctx, self);
         // Tab-bar focus + cycling: Ctrl+Tab / Ctrl+Shift+Tab cycle
         // tabs in the focused leaf; Alt+Tab toggles inner/outer
         // dock focus; Cmd+K stages the visual focus picker.
         crate::tabs::focus::dispatch_tab_focus_toggle(&ctx, self);
         crate::tabs::focus::dispatch_focus_pane_shortcut(&ctx, self);
         crate::tabs::focus::dispatch_tab_cycle(&ctx, self);
-        if toggle_find
-            && let Some(id) = self.last_active_file
-            && let Some(file) = self.files.get_mut(&id)
-        {
-            file.search.open = !file.search.open;
-            if file.search.open {
-                file.search.refresh_pattern();
-            }
-        }
         if close_tab && let Some(id) = self.last_active_file {
             self.close_file_tab_wasm(id);
         }
@@ -7504,16 +7514,6 @@ impl eframe::App for HxyApp {
             && let Some(text) = self.copy_active_selection_wasm(copy_hex)
         {
             ctx.copy_text(text);
-        }
-        if toggle_edit
-            && let Some(id) = self.last_active_file
-            && let Some(file) = self.files.get_mut(&id)
-        {
-            let next = match file.editor.edit_mode() {
-                crate::files::EditMode::Mutable => crate::files::EditMode::Readonly,
-                crate::files::EditMode::Readonly => crate::files::EditMode::Mutable,
-            };
-            file.editor.set_edit_mode(next);
         }
         // Skip editor input dispatch while the palette is open so the
         // palette gets first crack at Escape / arrow keys / Enter.
@@ -7580,6 +7580,12 @@ impl eframe::App for HxyApp {
                 if ui.button("Inspector").clicked() {
                     self.toggle_tab_wasm(Tab::Inspector);
                 }
+                if ui.button("Memory").clicked() {
+                    self.toggle_tab_wasm(Tab::Memory);
+                }
+                if ui.button("Settings").clicked() {
+                    self.toggle_tab_wasm(Tab::Settings);
+                }
                 ui.label("hxy");
             });
         });
@@ -7605,6 +7611,9 @@ impl eframe::App for HxyApp {
                     state: &mut state_guard,
                     tab_focus: &mut self.tab_focus,
                     workspaces: &mut self.workspaces,
+                    compares: &mut self.compares,
+                    global_search: &mut self.global_search,
+                    pending_global_search_events: &mut self.pending_global_search_events,
                     pending_vfs_opens: &mut pending_vfs_opens,
                     pending_close: &mut pending_close,
                     pending_strings_run: &mut pending_strings_run,
@@ -7654,6 +7663,12 @@ impl eframe::App for HxyApp {
         // toasts + modals. Same path desktop runs.
         crate::search::modal::drain_search_effects(self);
         crate::search::modal::render_search_modal(&ctx, self);
+        // Cross-file search results: drain events emitted by the
+        // SearchResults tab, run / refresh / jump / close as needed.
+        let global_events = std::mem::take(&mut self.pending_global_search_events);
+        if !global_events.is_empty() {
+            apply_global_search_events(self, global_events);
+        }
         self.toasts.show_toasts(&ctx);
         // Visual pane picker overlay -- same code path desktop uses
         // via `tabs::focus::handle_pane_pick`. That helper lives in a
@@ -7711,6 +7726,9 @@ struct WasmTabViewer<'a> {
     state: &'a mut PersistedState,
     tab_focus: &'a mut TabFocus,
     workspaces: &'a mut std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
+    compares: &'a mut std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
+    global_search: &'a mut crate::search::global::GlobalSearchState,
+    pending_global_search_events: &'a mut Vec<crate::search::global::GlobalSearchEvent>,
     /// Pending VFS-entry opens queued by the workspace's inner VFS
     /// tree this frame. Drained after the dock pass so we can mutate
     /// `files` without holding a borrow into `workspaces`.
@@ -7781,6 +7799,15 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
             Tab::Entropy(id) => panel_title(id, "tab-entropy"),
             Tab::Strings(id) => panel_title(id, "tab-strings"),
             Tab::Checksums(id) => panel_title(id, "tab-checksums"),
+            Tab::SearchResults => {
+                format!("{} {}", egui_phosphor::regular::MAGNIFYING_GLASS, hxy_i18n::t("tab-search-results")).into()
+            }
+            Tab::Compare(compare_id) => match self.compares.get(compare_id) {
+                Some(s) => {
+                    hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]).into()
+                }
+                None => format!("compare-{}", compare_id.get()).into(),
+            },
         }
     }
 
@@ -7925,8 +7952,29 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                 let empty: std::collections::VecDeque<ConsoleEntry> = std::collections::VecDeque::new();
                 console_ui(ui, &empty);
             }
-            other => {
-                ui.label(format!("{other:?} (not yet wired on wasm)"));
+            Tab::Plugins => {
+                // Plugin manager (browse / install / uninstall) is
+                // desktop-only -- wasmtime + filesystem operations
+                // don't run in the browser. Surface a stub so the
+                // tab doesn't read "(not yet wired)".
+                ui.vertical_centered(|ui| {
+                    ui.add_space(24.0);
+                    ui.heading(hxy_i18n::t("tab-plugins"));
+                    ui.add_space(8.0);
+                    ui.weak(hxy_i18n::t("plugins-wasm-unavailable"));
+                });
+            }
+            Tab::Compare(compare_id) => match self.compares.get_mut(compare_id) {
+                Some(session) => crate::compare::tab::render_compare_tab(ui, session, self.state),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing compare {compare_id:?}"));
+                }
+            },
+            Tab::SearchResults => {
+                let names: std::collections::HashMap<FileId, String> =
+                    self.files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
+                let events = crate::search::global::show(ui, self.global_search, &names);
+                self.pending_global_search_events.extend(events);
             }
         }
     }
@@ -8004,6 +8052,28 @@ impl egui_dock::TabViewer for WasmWorkspaceTabViewer<'_> {
                 }
             },
         }
+    }
+}
+
+/// Build a fresh CompareSession from two TabSources (which may be
+/// real on-disk paths on desktop or `/__memory__/{id}` synthetics
+/// on wasm) and push it as a new `Tab::Compare`. Wasm-only since
+/// only synthetic memory paths are supported here -- the desktop
+/// path goes through `compare::picker::spawn_compare_from_palette`
+/// which also handles real filesystem reads.
+#[cfg(target_arch = "wasm32")]
+fn spawn_compare_wasm(app: &mut HxyApp, a: TabSource, b: TabSource) {
+    let Some((a_name, a_bytes)) = app.read_compare_side_wasm(&a) else { return };
+    let Some((b_name, b_bytes)) = app.read_compare_side_wasm(&b) else { return };
+    let id = crate::compare::CompareId::new(app.next_compare_id);
+    app.next_compare_id += 1;
+    let pane_a = crate::compare::ComparePane::from_bytes(a_name, Some(a), a_bytes);
+    let pane_b = crate::compare::ComparePane::from_bytes(b_name, Some(b), b_bytes);
+    let session = crate::compare::CompareSession::new(id, pane_a, pane_b);
+    app.compares.insert(id, session);
+    app.dock.push_to_focused_leaf(Tab::Compare(id));
+    if let Some(path) = app.dock.find_tab(&Tab::Compare(id)) {
+        let _ = app.dock.set_active_tab(path);
     }
 }
 
@@ -8163,8 +8233,12 @@ fn build_wasm_palette_entries(
         egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
             .with_shortcut(fmt(&cmd_n)),
         egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(PaletteCommand::OpenFile)),
-        egui_palette::Entry::new("Save as download...", Action::InvokeCommand(PaletteCommand::ReloadActiveFile))
-            .with_disabled(!has_active),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-save-as-download"),
+            Action::InvokeCommand(PaletteCommand::SaveAsDownload),
+        )
+        .with_icon(icon::DOWNLOAD)
+        .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("menu-file-reopen-closed"),
             Action::InvokeCommand(PaletteCommand::ReopenClosedTab),
@@ -8238,6 +8312,12 @@ fn build_wasm_palette_entries(
         .with_icon(icon::GEAR),
         egui_palette::Entry::new(hxy_i18n::t("palette-toggle-vim"), Action::InvokeCommand(PaletteCommand::ToggleVim))
             .with_icon(icon::KEYBOARD),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-compare-files"),
+            Action::InvokeCommand(PaletteCommand::CompareFiles),
+        )
+        .with_icon(icon::ARROWS_LEFT_RIGHT)
+        .with_disabled(app.files.len() < 2),
     ]);
     // Editing: undo/redo and paste variants. Wired through the
     // shared shortcut helpers; same dispatch as desktop palette.
@@ -8476,7 +8556,7 @@ impl HxyApp {
                         ctx_clone.request_repaint();
                     });
                 }
-                PaletteCommand::ReloadActiveFile => {
+                PaletteCommand::SaveAsDownload => {
                     if let Some((name, bytes)) = self.active_file_bytes_wasm() {
                         wasm_bindgen_futures::spawn_local(async move {
                             let Some(handle) = rfd::AsyncFileDialog::new().set_file_name(&name).save_file().await
@@ -8568,6 +8648,9 @@ impl HxyApp {
                 PaletteCommand::ToggleSettings => self.toggle_tab_wasm(Tab::Settings),
                 PaletteCommand::ToggleMemory => self.toggle_tab_wasm(Tab::Memory),
                 PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(self),
+                PaletteCommand::CompareFiles => {
+                    self.palette.open_at(crate::commands::palette::Mode::CompareSideA);
+                }
                 PaletteCommand::Undo => crate::app::undo_active_file(self),
                 PaletteCommand::Redo => crate::app::redo_active_file(self),
                 PaletteCommand::Paste => crate::app::paste_active_file(self, false),
@@ -8730,6 +8813,19 @@ impl HxyApp {
                 }
                 crate::commands::palette::ColumnScope::Global => {
                     self.state.write().app.hex_columns = count;
+                }
+            },
+            Action::CompareSelectSource { side, source } => match side {
+                crate::commands::palette::CompareSide::A => {
+                    self.palette.compare_pick =
+                        Some(crate::commands::palette::ComparePickState { picked_a: Some(source) });
+                    self.palette.open_at(crate::commands::palette::Mode::CompareSideB);
+                }
+                crate::commands::palette::CompareSide::B => {
+                    let Some(pick) = self.palette.compare_pick.take() else { return };
+                    let Some(a) = pick.picked_a else { return };
+                    self.palette.close();
+                    spawn_compare_wasm(self, a, source);
                 }
             },
             _ => {}

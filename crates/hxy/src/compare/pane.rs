@@ -1,8 +1,6 @@
 //! Compare pane: one side's hex view rendering plus the
 //! diff-color overlay machinery.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::state::PersistedState;
 
 /// Sorted-by-start `(start, end_exclusive, kind)` ranges for one

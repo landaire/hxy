@@ -490,6 +490,13 @@ pub enum PaletteCommand {
     /// File with options... dialog, on wasm it's the only entry
     /// point.
     SetVirtualBase,
+    /// Save the active file's bytes via the platform's save dialog.
+    /// On desktop reuses [`Self::SaveActiveFile`] semantics through
+    /// the regular SAVE_FILE_AS shortcut path; on wasm pops the
+    /// browser's "save as" download flow with the active tab's
+    /// in-memory bytes. Listed under its own variant so the wasm
+    /// palette doesn't have to overload an unrelated command.
+    SaveAsDownload,
 }
 
 #[derive(Clone)]

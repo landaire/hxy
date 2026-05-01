@@ -11,7 +11,6 @@ pub mod persisted_dock;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::compare::CompareId;
 use crate::files::FileId;
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,11 +48,9 @@ pub enum Tab {
     /// Cross-file search results. Lists every match across every open
     /// file. Clicking jumps to the file + offset; the active match is
     /// highlighted in the corresponding hex view via its selection.
-    #[cfg(not(target_arch = "wasm32"))]
     SearchResults,
     /// Side-by-side diff between two byte sources. Indexes into
     /// `HxyApp::compares` for the [`crate::compare::CompareSession`].
-    #[cfg(not(target_arch = "wasm32"))]
     Compare(CompareId),
     /// Shannon-entropy plot for a specific file. Keyed by
     /// [`FileId`] (rather than reading the active file) so the

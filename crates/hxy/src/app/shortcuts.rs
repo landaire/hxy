@@ -256,7 +256,6 @@ pub fn consume_copy_event(input: &mut egui::InputState) -> bool {
 
 /// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
 /// opens the cross-file search results tab.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch_find_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     use crate::commands::shortcuts::FIND_GLOBAL;
     use crate::commands::shortcuts::FIND_LOCAL;
@@ -272,7 +271,6 @@ pub fn dispatch_find_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn toggle_local_search(app: &mut HxyApp) {
     let Some(id) = crate::app::active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -292,8 +290,7 @@ fn toggle_local_search(app: &mut HxyApp) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn toggle_global_search(app: &mut HxyApp) {
+pub(crate) fn toggle_global_search(app: &mut HxyApp) {
     if let Some(path) = app.dock.find_tab(&crate::tabs::Tab::SearchResults) {
         let _ = app.dock.remove_tab(path);
         return;
