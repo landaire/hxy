@@ -30,14 +30,14 @@ pub fn build_columns_entries(
     let parsed = match crate::commands::goto::parse_count_expr(query, resolver) {
         Ok(n) => n,
         Err(e) => {
-            super::entries::invalid_entry(out, query, &e.to_string());
+            super::invalid_entry(out, query, &e.to_string());
             return;
         }
     };
     let n_u16 = match u16::try_from(parsed) {
         Ok(n) if (1..=u64::from(PALETTE_MAX_COLUMNS)).contains(&parsed) => n,
         _ => {
-            super::entries::invalid_entry(
+            super::invalid_entry(
                 out,
                 query,
                 &hxy_i18n::t_args("palette-invalid-columns-range", &[("max", &PALETTE_MAX_COLUMNS.to_string())]),
@@ -48,7 +48,7 @@ pub fn build_columns_entries(
     let count = match hxy_core::ColumnCount::new(n_u16) {
         Ok(c) => c,
         Err(e) => {
-            super::entries::invalid_entry(out, query, &e.to_string());
+            super::invalid_entry(out, query, &e.to_string());
             return;
         }
     };

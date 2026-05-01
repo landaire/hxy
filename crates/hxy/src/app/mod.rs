@@ -178,7 +178,10 @@ pub struct HxyApp {
 
     /// Bounded ring buffer of plugin / template log entries. Rendered
     /// by the Console dock tab when it's open; entries accumulate
-    /// regardless so opening the tab later reveals back-scroll.
+    /// regardless so opening the tab later reveals back-scroll. The
+    /// only log writers (plugin host, template runner, file watcher)
+    /// are desktop-only -- wasm renders the empty placeholder
+    /// directly without holding a buffer.
     #[cfg(not(target_arch = "wasm32"))]
     console: std::collections::VecDeque<ConsoleEntry>,
 
@@ -4874,7 +4877,6 @@ fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>
     out
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
@@ -5271,7 +5273,6 @@ pub(crate) fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::Pane
 /// `Vim`, then walks every open file's editor and applies the new
 /// mode so the change takes effect immediately rather than waiting
 /// for the next file to open.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn toggle_vim_mode(app: &mut HxyApp) {
     let next = match app.state.read().app.input_mode {
         hxy_view::InputMode::Default => hxy_view::InputMode::Vim,
@@ -6720,7 +6721,6 @@ pub(crate) fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
 
 const WELCOME_OPEN_RECENT: &str = "hxy_welcome_open_recent";
 
-#[cfg(not(target_arch = "wasm32"))]
 fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEntry>) {
     if console.is_empty() {
         ui.vertical_centered(|ui| {
@@ -6754,7 +6754,6 @@ fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEnt
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn format_console_time(ts: jiff::Timestamp) -> String {
     // Keep the display compact -- HH:MM:SS.mmm, user-local.
     let zoned = ts.in_tz("UTC").unwrap_or_else(|_| ts.to_zoned(jiff::tz::TimeZone::UTC));
@@ -7118,6 +7117,7 @@ const CLOSED_TABS_CAPACITY_WASM: usize = 32;
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        install_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_global_style(crate::style::hxy_style());
         let initial_zoom = state.read().app.zoom_factor;
         cc.egui_ctx.set_zoom_factor(initial_zoom);
@@ -7427,7 +7427,13 @@ impl eframe::App for HxyApp {
             };
             file.editor.set_edit_mode(next);
         }
-        if let Some(id) = self.last_active_file
+        // Skip editor input dispatch while the palette is open so the
+        // palette gets first crack at Escape / arrow keys / Enter.
+        // Without this the editor's Escape handler (selection clear,
+        // Vim mode exit) eats the key before egui_palette sees it
+        // and the palette can't dismiss.
+        if !self.palette.is_open()
+            && let Some(id) = self.last_active_file
             && let Some(file) = self.files.get_mut(&id)
         {
             file.editor.handle_input(&ctx);
@@ -7726,6 +7732,14 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                 let labels = crate::panels::memory::ViewLabels::from_files(self.files);
                 crate::panels::memory::memory_ui(ui, self.byte_cache, &labels);
             }
+            Tab::Console => {
+                // Wasm has no log writers wired (plugin host /
+                // template runner / file watcher are all desktop-
+                // only) so the buffer is always empty -- console_ui
+                // renders the "no entries yet" placeholder.
+                let empty: std::collections::VecDeque<ConsoleEntry> = std::collections::VecDeque::new();
+                console_ui(ui, &empty);
+            }
             other => {
                 ui.label(format!("{other:?} (not yet wired on wasm)"));
             }
@@ -7766,17 +7780,80 @@ fn build_wasm_palette_entries(
     use crate::commands::palette::Action;
     use crate::commands::palette::Mode;
     use crate::commands::palette::PaletteCommand;
-    if matches!(app.palette.mode, Mode::SetVirtualBase) {
-        let mut out = Vec::new();
-        if !app.last_active_file.is_some_and(|id| app.files.contains_key(&id)) {
-            out.push(
-                egui_palette::Entry::new(hxy_i18n::t("palette-invalid-no-active-file"), Action::NoOp)
-                    .with_icon(egui_phosphor::regular::WARNING),
-            );
-            return out;
+    // Argument-style modes share their entry builders with desktop.
+    // They each take a query + a resolver and emit a single dynamic
+    // entry. Wasm uses NullResolver since it has no plugin-supplied
+    // template fields to resolve `name.length`-style paths against.
+    let resolver = hxy_calculator::NullResolver;
+    let query = app.palette.inner.query.trim();
+    let offset_ctx = match app.last_active_file.and_then(|id| app.files.get(&id)) {
+        Some(file) => {
+            let source_len = file.editor.source().len().get();
+            let sel = file.editor.selection();
+            let cursor = sel.map(|s| s.cursor.get()).unwrap_or(0);
+            let selection = sel.map(|s| {
+                let r = s.range();
+                (r.start().get(), r.end().get())
+            });
+            crate::commands::palette::offset::OffsetPaletteContext {
+                cursor,
+                source_len,
+                available: true,
+                selection,
+                virtual_base: file.virtual_base,
+            }
         }
-        let resolver = hxy_calculator::NullResolver;
-        crate::commands::palette::build_virtual_base_entries(&mut out, app.palette.inner.query.trim(), &resolver);
+        None => crate::commands::palette::offset::OffsetPaletteContext::default(),
+    };
+    if !matches!(app.palette.mode, Mode::Main | Mode::QuickOpen) {
+        let mut out = Vec::new();
+        match app.palette.mode {
+            Mode::SetVirtualBase => {
+                if !offset_ctx.available {
+                    crate::commands::palette::invalid_entry(
+                        &mut out,
+                        query,
+                        &hxy_i18n::t("palette-invalid-no-active-file"),
+                    );
+                } else {
+                    crate::commands::palette::build_virtual_base_entries(&mut out, query, &resolver);
+                }
+            }
+            Mode::GoToOffset | Mode::GoToAddress | Mode::SelectFromOffset | Mode::SelectRange => {
+                if !offset_ctx.available {
+                    crate::commands::palette::invalid_entry(
+                        &mut out,
+                        query,
+                        &hxy_i18n::t("palette-invalid-no-active-file"),
+                    );
+                } else {
+                    crate::commands::palette::offset::build_offset_entries(
+                        &mut out,
+                        app.palette.mode,
+                        query,
+                        &offset_ctx,
+                        &resolver,
+                    );
+                }
+            }
+            Mode::SetColumnsLocal | Mode::SetColumnsGlobal => {
+                if matches!(app.palette.mode, Mode::SetColumnsLocal) && !offset_ctx.available {
+                    crate::commands::palette::invalid_entry(
+                        &mut out,
+                        query,
+                        &hxy_i18n::t("palette-invalid-no-active-file"),
+                    );
+                } else {
+                    crate::commands::palette::columns::build_columns_entries(
+                        &mut out,
+                        app.palette.mode,
+                        query,
+                        &resolver,
+                    );
+                }
+            }
+            _ => {}
+        }
         return out;
     }
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
@@ -7835,27 +7912,105 @@ fn build_wasm_palette_entries(
             .with_shortcut(fmt(&cmd_shift_c)),
         );
     }
+    use egui_phosphor::regular as icon;
     out.extend([
         egui_palette::Entry::new(
             hxy_i18n::t("palette-strings-whole-file"),
             Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
         )
+        .with_icon(icon::TEXT_AA)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-checksums-whole-file"),
             Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
         )
+        .with_icon(icon::FINGERPRINT)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-compute-entropy"),
             Action::InvokeCommand(PaletteCommand::ComputeEntropy),
         )
+        .with_icon(icon::CHART_LINE)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-tool-show-inspector"),
             Action::InvokeCommand(PaletteCommand::ToggleInspector),
-        ),
+        )
+        .with_icon(icon::MAGNIFYING_GLASS),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-tool-show-memory"),
+            Action::InvokeCommand(PaletteCommand::ToggleMemory),
+        )
+        .with_icon(icon::MEMORY),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-tool-show-console"),
+            Action::InvokeCommand(PaletteCommand::ToggleConsole),
+        )
+        .with_icon(icon::TERMINAL_WINDOW),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-tool-show-settings"),
+            Action::InvokeCommand(PaletteCommand::ToggleSettings),
+        )
+        .with_icon(icon::GEAR),
+        egui_palette::Entry::new(hxy_i18n::t("palette-toggle-vim"), Action::InvokeCommand(PaletteCommand::ToggleVim))
+            .with_icon(icon::KEYBOARD),
     ]);
+    if has_active {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-entry"), Action::SwitchMode(Mode::GoToOffset))
+                .with_icon(icon::CROSSHAIR),
+        );
+        if active_vbase.is_some() {
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-go-to-address-entry"),
+                    Action::SwitchMode(Mode::GoToAddress),
+                )
+                .with_icon(icon::CROSSHAIR_SIMPLE),
+            );
+        }
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-select-from-offset-entry"),
+                Action::SwitchMode(Mode::SelectFromOffset),
+            )
+            .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+        );
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-select-range-entry"), Action::SwitchMode(Mode::SelectRange))
+                .with_icon(icon::BRACKETS_CURLY),
+        );
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-set-columns-local-entry"),
+                Action::SwitchMode(Mode::SetColumnsLocal),
+            )
+            .with_icon(icon::COLUMNS),
+        );
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-copy-file-length"),
+                Action::InvokeCommand(PaletteCommand::CopyFileLength),
+            )
+            .with_icon(icon::RULER),
+        );
+        if has_selection {
+            out.push(
+                egui_palette::Entry::new(
+                    hxy_i18n::t("palette-copy-selection-length"),
+                    Action::InvokeCommand(PaletteCommand::CopySelectionLength),
+                )
+                .with_icon(icon::RULER),
+            );
+        }
+    }
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-set-columns-global-entry"),
+            Action::SwitchMode(Mode::SetColumnsGlobal),
+        )
+        .with_icon(icon::COLUMNS_PLUS_RIGHT),
+    );
     let vbase_label = match active_vbase {
         Some(addr) => {
             hxy_i18n::t_args("palette-set-virtual-base-entry-current", &[("address", &format!("0x{addr:X}"))])
@@ -7864,7 +8019,7 @@ fn build_wasm_palette_entries(
     };
     out.push(
         egui_palette::Entry::new(vbase_label, Action::SwitchMode(Mode::SetVirtualBase))
-            .with_icon(egui_phosphor::regular::TARGET)
+            .with_icon(icon::TARGET)
             .with_disabled(!has_active),
     );
     out
@@ -7982,6 +8137,40 @@ impl HxyApp {
                         ctx.copy_text(text);
                     }
                 }
+                PaletteCommand::CopyCaretAddress => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get(&id)
+                        && let Some(sel) = file.editor.selection()
+                        && let Some(vaddr) = file.virtual_base
+                    {
+                        let base = self.state.read().app.offset_base;
+                        let text = crate::view::format::format_offset_with_vaddr(sel.cursor.get(), base, vaddr);
+                        ctx.copy_text(text);
+                    }
+                }
+                PaletteCommand::CopySelectionLength => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get(&id)
+                        && let Some(sel) = file.editor.selection()
+                    {
+                        let base = self.state.read().app.offset_base;
+                        let text = crate::view::format::format_offset(sel.range().len().get(), base);
+                        ctx.copy_text(text);
+                    }
+                }
+                PaletteCommand::CopyFileLength => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get(&id)
+                    {
+                        let base = self.state.read().app.offset_base;
+                        let text = crate::view::format::format_offset(file.editor.source().len().get(), base);
+                        ctx.copy_text(text);
+                    }
+                }
+                PaletteCommand::ToggleConsole => self.toggle_tab_wasm(Tab::Console),
+                PaletteCommand::ToggleSettings => self.toggle_tab_wasm(Tab::Settings),
+                PaletteCommand::ToggleMemory => self.toggle_tab_wasm(Tab::Memory),
+                PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(self),
                 _ => {}
             },
             Action::FocusFile(id) => {
@@ -7993,6 +8182,47 @@ impl HxyApp {
             Action::FocusTab(tab) => {
                 self.toggle_tab_wasm(tab);
             }
+            Action::GoToOffset(target) => {
+                if let Some(id) = self.last_active_file
+                    && let Some(file) = self.files.get_mut(&id)
+                {
+                    let total = file.editor.source().len().get();
+                    let clamped = target.min(total.saturating_sub(1));
+                    let anchor = hxy_core::ByteOffset::new(clamped);
+                    file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor: anchor }));
+                    if !file.editor.is_offset_visible(anchor) {
+                        file.editor.set_scroll_to_byte(anchor);
+                    }
+                }
+            }
+            Action::SetSelection { start, end_exclusive } => {
+                if let Some(id) = self.last_active_file
+                    && let Some(file) = self.files.get_mut(&id)
+                    && end_exclusive > start
+                {
+                    let total = file.editor.source().len().get();
+                    let s = start.min(total);
+                    let e = end_exclusive.min(total).saturating_sub(1).max(s);
+                    let anchor = hxy_core::ByteOffset::new(s);
+                    let cursor = hxy_core::ByteOffset::new(e);
+                    file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor }));
+                    if !file.editor.is_offset_visible(anchor) {
+                        file.editor.set_scroll_to_byte(anchor);
+                    }
+                }
+            }
+            Action::SetColumns { scope, count } => match scope {
+                crate::commands::palette::ColumnScope::Local => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get_mut(&id)
+                    {
+                        file.hex_columns_override = Some(count);
+                    }
+                }
+                crate::commands::palette::ColumnScope::Global => {
+                    self.state.write().app.hex_columns = count;
+                }
+            },
             _ => {}
         }
     }

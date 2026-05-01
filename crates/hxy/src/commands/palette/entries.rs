@@ -216,15 +216,7 @@ fn build_poll_interval_entries(
 /// which just closes the palette -- keeps a visible indication
 /// that the query isn't parseable without silently showing an
 /// empty list.
-pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
-    use egui_phosphor::regular as icon;
-
-    out.push(
-        egui_palette::Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), Action::NoOp)
-            .with_icon(icon::WARNING)
-            .with_subtitle(query.to_owned()),
-    );
-}
+pub use super::invalid_entry;
 
 /// Resolve a `@<expression>` query into a single Go-to-offset
 /// palette entry. When the expression is empty (`@` with nothing

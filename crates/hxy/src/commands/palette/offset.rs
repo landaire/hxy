@@ -133,7 +133,7 @@ pub fn build_offset_entries(
                     .with_subtitle(format!("{target}")),
                 );
             }
-            Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
+            Err(e) => super::invalid_entry(out, query, &e.to_string()),
         },
         Mode::GoToAddress => {
             // Parse the user's input as a virtual address against
@@ -151,12 +151,12 @@ pub fn build_offset_entries(
             }) {
                 Ok(target_address) => {
                     if target_address < vbase {
-                        super::entries::invalid_entry(out, query, "address below virtual base");
+                        super::invalid_entry(out, query, "address below virtual base");
                         return;
                     }
                     let file_offset = target_address - vbase;
                     if file_offset > offset_ctx.source_len {
-                        super::entries::invalid_entry(out, query, "address past end of file");
+                        super::invalid_entry(out, query, "address past end of file");
                         return;
                     }
                     out.push(
@@ -174,16 +174,16 @@ pub fn build_offset_entries(
                         )),
                     );
                 }
-                Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
+                Err(e) => super::invalid_entry(out, query, &e.to_string()),
             }
         }
         Mode::SelectFromOffset => match crate::commands::goto::parse_count_expr(query, resolver) {
-            Ok(0) => super::entries::invalid_entry(out, query, "count must be nonzero"),
+            Ok(0) => super::invalid_entry(out, query, "count must be nonzero"),
             Ok(count) => {
                 let start = offset_ctx.cursor;
                 let available = offset_ctx.source_len.saturating_sub(start);
                 if available == 0 {
-                    super::entries::invalid_entry(out, query, "at EOF");
+                    super::invalid_entry(out, query, "at EOF");
                     return;
                 }
                 let clamped = count.min(available);
@@ -200,7 +200,7 @@ pub fn build_offset_entries(
                     .with_subtitle(format!("0x{start:X} .. 0x{end_exclusive:X}")),
                 );
             }
-            Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
+            Err(e) => super::invalid_entry(out, query, &e.to_string()),
         },
         Mode::SelectRange => match crate::commands::goto::parse_range_expr(query, offset_ctx.source_len, resolver) {
             Ok(range) => {
@@ -219,7 +219,7 @@ pub fn build_offset_entries(
                     .with_icon(icon::BRACKETS_CURLY),
                 );
             }
-            Err(e) => super::entries::invalid_entry(out, query, &e.to_string()),
+            Err(e) => super::invalid_entry(out, query, &e.to_string()),
         },
         _ => {}
     }

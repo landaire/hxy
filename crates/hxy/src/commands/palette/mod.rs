@@ -4,24 +4,23 @@
 //! nav. This module defines hxy's entry / action vocabulary and the
 //! cascade mode (Main -> Templates -> ...).
 
-// Submodules other than the public types in this file reach into
-// desktop-only state (plugin host, file watcher, sync rfd,
-// std::fs::read_dir, hxy_plugin_host template types). Gated to
-// non-wasm. The wasm build builds its own minimal entry list and
-// dispatches palette picks inline in `crate::app`'s wasm impl
-// using the same `Action` / `PaletteCommand` / `Mode` types
-// declared below.
+// `apply` and `entries` reach into wide swaths of desktop-only state
+// (plugin host, file watcher, sync rfd, std::fs::read_dir,
+// hxy_plugin_host types, compare picker, template runner, watcher),
+// so they stay desktop-only for now. The thinner argument-mode
+// modules (`offset`, `columns`) are universal -- wasm uses them
+// through the same builder. `calculator` (template field resolver)
+// and `completion` (recent-files cascade) reach into desktop-only
+// types so they stay gated.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apply;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod calculator;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod columns;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod completion;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entries;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod offset;
 
 use std::path::PathBuf;
@@ -742,8 +741,20 @@ pub fn build_virtual_base_entries(
 }
 
 fn invalid_virtual_base_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
+    invalid_entry(out, query, reason)
+}
+
+/// Append a "Invalid: ..." placeholder row so the palette stays
+/// visible when the user's input doesn't parse. The row is bound to
+/// [`Action::NoOp`]; the host's Esc / dismiss path closes the
+/// palette cleanly. Universal across targets so the lightweight
+/// argument-mode submodules don't have to reach into desktop-only
+/// `entries::invalid_entry`.
+pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
     out.push(
-        egui_palette::Entry::new(format!("{query}: {reason}"), Action::NoOp).with_icon(egui_phosphor::regular::WARNING),
+        egui_palette::Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), Action::NoOp)
+            .with_icon(egui_phosphor::regular::WARNING)
+            .with_subtitle(query.to_owned()),
     );
 }
 
