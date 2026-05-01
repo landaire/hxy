@@ -2619,13 +2619,12 @@ fn draw_minimap<S: HexSource + ?Sized>(
     // Fractional remainder of the top row, used to apply a sub-row
     // y-shift so the painted byte rows scroll continuously with the
     // viewport indicator instead of snapping one `cell_h` every time
-    // `window_top_f` crosses an integer. Snap the shift to physical
-    // pixels so each row paints with its edges aligned to the
-    // device grid -- without this the rect's antialiased edges sit
-    // at different sub-pixel offsets each frame and the user sees a
-    // shimmer along the row boundaries.
-    let raw_shift = (window_top_f - window_top_row as f32) * cell_h;
-    let row_subpixel_shift = (raw_shift * ppp).round() / ppp;
+    // `window_top_f` crosses an integer. Kept fractional (not pixel-
+    // snapped) so slow scroll deceleration plays back as smooth
+    // motion rather than discrete half-device-pixel steps -- egui's
+    // tessellator feathers the rect edges for AA so a sub-pixel y
+    // still rasterises cleanly.
+    let row_subpixel_shift = (window_top_f - window_top_row as f32) * cell_h;
     // Read one extra row so the row peeking in from the bottom
     // (after applying the negative y-shift) still has bytes to draw.
     let shown_rows = (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row as usize));
@@ -2674,11 +2673,9 @@ fn draw_minimap<S: HexSource + ?Sized>(
 
     // Viewport indicator at its absolute position inside the scrolled
     // window. High-contrast outline + accent bracket for readability
-    // over any palette. Pixel-snap the y so the indicator's edges
-    // stay aligned with the byte rows beneath it -- those snap too.
-    let indicator_raw_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
-    let indicator_top_y = (indicator_raw_y * ppp).round() / ppp;
-    let indicator_height = ((viewport_rows_f * cell_h) * ppp).round() / ppp;
+    // over any palette.
+    let indicator_top_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
+    let indicator_height = viewport_rows_f * cell_h;
     let indicator = Rect::from_min_max(
         Pos2::new(minimap_rect.left(), indicator_top_y.max(minimap_rect.top())),
         Pos2::new(minimap_rect.right(), (indicator_top_y + indicator_height).min(minimap_rect.bottom())),
