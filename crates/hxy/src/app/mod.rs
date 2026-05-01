@@ -30,13 +30,10 @@ use egui_dock::TabViewer;
 use egui_dock::tab_viewer::OnCloseResponse;
 #[cfg(not(target_arch = "wasm32"))]
 use hxy_plugin_host::TemplateRuntime as _;
-#[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::TabSource;
 #[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::VfsHandler;
-#[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::VfsRegistry;
-#[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::handlers::ZipHandler;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,7 +46,6 @@ use crate::tabs::Tab;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::window::WindowSettings;
 
-#[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::MountedVfs;
 
 /// Where `open_with_target` should push the new tab.
@@ -82,9 +78,7 @@ pub struct HxyApp {
     /// File-mounted VFS workspaces, keyed by `WorkspaceId`. Each entry
     /// backs a `Tab::Workspace` and owns a nested `DockState` plus the
     /// `MountedVfs` that supplies child entries.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) workspaces: std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
-    #[cfg(not(target_arch = "wasm32"))]
     next_workspace_id: u64,
     /// Active plugin VFS mounts, keyed by `MountId`. Each entry backs a
     /// `Tab::PluginMount` and supplies the byte source for child VFS
@@ -107,7 +101,6 @@ pub struct HxyApp {
     /// debug panel attributes outstanding bytes back to the
     /// originating tab.
     pub(crate) byte_cache: Arc<hxy_core::ByteCache>,
-    #[cfg(not(target_arch = "wasm32"))]
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
@@ -204,7 +197,9 @@ pub struct HxyApp {
     /// "Toggle VFS panel" / "Browse VFS" don't silently no-op when
     /// the user happens to have clicked into the inspector or
     /// console. Cleared when the corresponding workspace closes.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Read by desktop-only focus tracking; on wasm it's set but
+    /// never consulted.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) last_active_workspace: Option<crate::files::WorkspaceId>,
     /// Native macOS menu bar. `None` until the app is constructed on
     /// the main thread. Dropping it tears the NSMenu down.
@@ -273,8 +268,10 @@ pub struct HxyApp {
     pub(crate) pending_close_workspace_entry: Option<crate::tabs::close::PendingCloseTab>,
     /// `WorkspaceId`s the inner dock drained to "no tabs left except
     /// the editor". Drained post-dock to collapse the workspace back
-    /// to a plain `Tab::File` in the outer dock.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// to a plain `Tab::File` in the outer dock. Drained only on
+    /// desktop today; wasm never populates it (no inner-dock close
+    /// handler queues into it yet).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) pending_collapse_workspace: Vec<crate::files::WorkspaceId>,
     /// Set when the user X-clicks a `Tab::PluginMount`; drained after
     /// the dock pass to remove the mount entry from `mounts` and any
@@ -1756,58 +1753,6 @@ impl HxyApp {
         id
     }
 
-    /// Attempt to wrap the freshly-created file `id` in a `Tab::Workspace`
-    /// by mounting its detected handler. Returns `true` if the workspace
-    /// was created and pushed; `false` falls back to the plain
-    /// `Tab::File` path (no detected handler, or mount failed).
-    fn try_push_as_workspace(&mut self, id: FileId) -> bool {
-        let Some(file) = self.files.get(&id) else { return false };
-        let Some(handler) = file.detected_handler.clone() else { return false };
-        let source = file.editor.source().clone();
-        let source_id = file.source_id;
-        let mount = match handler.mount(source) {
-            Ok(m) => Arc::new(m),
-            Err(e) => {
-                tracing::warn!(error = %e, handler = handler.name(), "mount as workspace");
-                return false;
-            }
-        };
-        // Handlers like ZipHandler eagerly slurp the whole source via
-        // `load_all` to parse the central directory, then keep their
-        // own `Arc<[u8]>` for VFS entry reads. The chunks our cache
-        // populated during that read are no longer paying for VFS
-        // access -- only for the parent file's own hex view, which
-        // re-fetches on scroll anyway. Drop them so a 4 MiB archive
-        // doesn't stay double-resident (one copy in the handler, one
-        // in our cache).
-        self.byte_cache.drop_source(source_id);
-        let workspace_id = self.spawn_workspace(id, mount);
-        // Same redirect as the plain-file branch in `open` --
-        // a workspace tab should never land in a leaf that's
-        // entirely tool panels.
-        #[cfg(not(target_arch = "wasm32"))]
-        if crate::tabs::dock_ops::focused_leaf_is_all_tool(self) {
-            crate::tabs::dock_ops::focus_content_leaf(self);
-        }
-        self.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
-        if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
-            crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
-        }
-        true
-    }
-
-    /// Allocate a `WorkspaceId`, build a `Workspace`, and register it.
-    /// Does not push a tab -- the caller decides whether the workspace
-    /// is fresh (push `Tab::Workspace`) or replacing an existing
-    /// `Tab::File` for the same `editor_id` (swap the dock tab).
-    pub(crate) fn spawn_workspace(&mut self, editor_id: FileId, mount: Arc<MountedVfs>) -> crate::files::WorkspaceId {
-        let id = crate::files::WorkspaceId::new(self.next_workspace_id);
-        self.next_workspace_id += 1;
-        let workspace = crate::files::Workspace::new(id, editor_id, mount);
-        self.workspaces.insert(id, workspace);
-        id
-    }
-
     /// Try to open each saved tab. Filesystem tabs are read directly
     /// from disk; VFS-entry tabs require their parent tab to be open
     /// with a materialised mount. We sort tabs by `TabSource` depth so
@@ -2415,6 +2360,62 @@ impl HxyApp {
 struct RestoredCompareSide {
     name: String,
     bytes: Vec<u8>,
+}
+
+/// Universal HxyApp methods that don't reach into desktop-only
+/// state (plugin host, watcher, sync rfd, etc.). Lives outside the
+/// big desktop-gated impl block so wasm can call into the workspace
+/// machinery.
+impl HxyApp {
+    /// Attempt to wrap the freshly-created file `id` in a
+    /// `Tab::Workspace` by mounting its detected handler. Returns
+    /// `true` if the workspace was created and pushed; `false` falls
+    /// back to the plain `Tab::File` path (no detected handler, or
+    /// mount failed).
+    pub(crate) fn try_push_as_workspace(&mut self, id: FileId) -> bool {
+        let Some(file) = self.files.get(&id) else { return false };
+        let Some(handler) = file.detected_handler.clone() else { return false };
+        let source = file.editor.source().clone();
+        let source_id = file.source_id;
+        let mount = match handler.mount(source) {
+            Ok(m) => Arc::new(m),
+            Err(e) => {
+                tracing::warn!(error = %e, handler = handler.name(), "mount as workspace");
+                return false;
+            }
+        };
+        // Handlers like ZipHandler eagerly slurp the whole source via
+        // `load_all` to parse the central directory, then keep their
+        // own `Arc<[u8]>` for VFS entry reads. Drop the cache chunks
+        // so the archive isn't double-resident.
+        self.byte_cache.drop_source(source_id);
+        let workspace_id = self.spawn_workspace(id, mount);
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::tabs::dock_ops::focused_leaf_is_all_tool(self) {
+            crate::tabs::dock_ops::focus_content_leaf(self);
+        }
+        self.dock.push_to_focused_leaf(Tab::Workspace(workspace_id));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = self.dock.find_tab(&Tab::Workspace(workspace_id)) {
+            crate::tabs::dock_ops::remove_welcome_from_leaf(&mut self.dock, path.surface, path.node);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(welcome) = self.dock.find_tab(&Tab::Welcome) {
+            let _ = self.dock.remove_tab(welcome);
+        }
+        true
+    }
+
+    /// Allocate a `WorkspaceId`, build a `Workspace`, and register
+    /// it. Does not push a tab -- the caller decides whether the
+    /// workspace is fresh or replacing an existing `Tab::File`.
+    pub(crate) fn spawn_workspace(&mut self, editor_id: FileId, mount: Arc<MountedVfs>) -> crate::files::WorkspaceId {
+        let id = crate::files::WorkspaceId::new(self.next_workspace_id);
+        self.next_workspace_id += 1;
+        let workspace = crate::files::Workspace::new(id, editor_id, mount);
+        self.workspaces.insert(id, workspace);
+        id
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4157,7 +4158,6 @@ pub(crate) fn active_workspace_id(app: &mut HxyApp) -> Option<crate::files::Work
 /// (see [`crate::state::PersistedState::vfs_tree_expanded`]); this
 /// helper hides the linear scan from call sites that just want a
 /// `&mut Vec<String>` they can hand to [`crate::panels::vfs::show`].
-#[cfg(not(target_arch = "wasm32"))]
 fn vfs_expanded_for<'a>(list: &'a mut Vec<(TabSource, Vec<String>)>, key: &TabSource) -> &'a mut Vec<String> {
     if let Some(idx) = list.iter().position(|(k, _)| k == key) {
         return &mut list[idx].1;
@@ -7122,28 +7122,52 @@ impl HxyApp {
         let initial_zoom = state.read().app.zoom_factor;
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let limit = hxy_core::CacheLimit::from_mib(state.read().app.byte_cache_limit_mib);
+        // Same handler set the desktop registers -- the built-in
+        // ZipHandler is pure Rust and works on wasm. Plugin-host-
+        // backed handlers stay desktop-only.
+        let mut registry = VfsRegistry::new();
+        registry.register(Arc::new(ZipHandler::new()));
         Self {
             dock: DockState::new(vec![Tab::Welcome]),
             files: HashMap::new(),
+            workspaces: std::collections::BTreeMap::new(),
+            next_workspace_id: 1,
             state,
             next_file_id: 1,
             byte_cache: hxy_core::ByteCache::new(limit),
+            registry,
             applied_zoom: initial_zoom,
             last_active_file: None,
+            last_active_workspace: None,
             palette: crate::commands::palette::PaletteState::default(),
             tab_focus: TabFocus::Outer,
+            pending_collapse_workspace: Vec::new(),
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
         }
     }
 
-    /// Open an in-memory byte buffer as a fresh file tab.
+    /// Open an in-memory byte buffer as a fresh file tab. Detects
+    /// the VFS handler the same way `open()` does on desktop -- if
+    /// one matches (e.g. ZipHandler on a .zip), the file is mounted
+    /// and pushed as a `Tab::Workspace` with the VFS tree pane;
+    /// otherwise it lands as a plain `Tab::File`.
     pub fn open_bytes_wasm(&mut self, name: String, bytes: Vec<u8>) -> FileId {
         let id = FileId::new(self.next_file_id);
         self.next_file_id += 1;
         let source: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
-        let file = OpenFile::from_source(id, name, None, source, &self.byte_cache);
+        let mut file = OpenFile::from_source(id, name, None, source, &self.byte_cache);
+        if let Ok(range) = hxy_core::ByteRange::new(
+            hxy_core::ByteOffset::new(0),
+            hxy_core::ByteOffset::new(file.editor.source().len().get().min(4096)),
+        ) && let Ok(head) = file.editor.source().read(range)
+        {
+            file.detected_handler = self.registry.detect(&head);
+        }
         self.files.insert(id, file);
-        self.dock.push_to_focused_leaf(Tab::File(id));
+        let pushed_workspace = self.try_push_as_workspace(id);
+        if !pushed_workspace {
+            self.dock.push_to_focused_leaf(Tab::File(id));
+        }
         if let Some(path) = self.dock.find_tab(&Tab::Welcome) {
             let _ = self.dock.remove_tab(path);
         }
@@ -7269,6 +7293,40 @@ impl HxyApp {
         let window = crate::panels::entropy::pick_window_size(len);
         file.entropy = None;
         file.entropy_running = Some(crate::panels::entropy::spawn_compute(ctx, id, source, window));
+    }
+
+    /// Open a VFS entry from inside the workspace's tree as a new
+    /// editor tab in the workspace's inner dock. Reads the entry
+    /// stream synchronously into a `MemorySource` (the built-in
+    /// ZipHandler decompresses on read, which is fine to block on
+    /// in the browser's main thread for the small archives the web
+    /// app deals with).
+    fn open_vfs_entry_wasm(&mut self, workspace_id: crate::files::WorkspaceId, entry_path: String) {
+        use std::io::Read;
+        let Some(workspace) = self.workspaces.get(&workspace_id) else { return };
+        let mount = workspace.mount.clone();
+        let mut stream = match mount.fs.open_file(&entry_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, entry = %entry_path, "open vfs entry");
+                return;
+            }
+        };
+        let mut bytes: Vec<u8> = Vec::new();
+        if let Err(e) = stream.read_to_end(&mut bytes) {
+            tracing::warn!(error = %e, entry = %entry_path, "read vfs entry");
+            return;
+        }
+        let id = FileId::new(self.next_file_id);
+        self.next_file_id += 1;
+        let name = entry_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&entry_path).to_owned();
+        let source: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
+        let file = OpenFile::from_source(id, name, None, source, &self.byte_cache);
+        self.files.insert(id, file);
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.dock.push_to_focused_leaf(crate::files::WorkspaceTab::Entry(id));
+        }
+        self.last_active_file = Some(id);
     }
 
     fn jump_to_offset_wasm(&mut self, id: FileId, offset: u64, end: u64) {
@@ -7511,6 +7569,7 @@ impl eframe::App for HxyApp {
         let mut pending_checksums_run: Vec<FileId> = Vec::new();
         let mut pending_checksums_copy: Vec<String> = Vec::new();
         let mut pending_entropy_recompute: Vec<FileId> = Vec::new();
+        let mut pending_vfs_opens: Vec<(crate::files::WorkspaceId, String)> = Vec::new();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let style = crate::style::hxy_dock_style(ui.style());
             let mut state_guard = self.state.write();
@@ -7522,6 +7581,8 @@ impl eframe::App for HxyApp {
                     byte_cache: &self.byte_cache,
                     state: &mut state_guard,
                     tab_focus: &mut self.tab_focus,
+                    workspaces: &mut self.workspaces,
+                    pending_vfs_opens: &mut pending_vfs_opens,
                     pending_close: &mut pending_close,
                     pending_strings_run: &mut pending_strings_run,
                     pending_strings_jump: &mut pending_strings_jump,
@@ -7531,6 +7592,9 @@ impl eframe::App for HxyApp {
                 },
             );
         });
+        for (workspace_id, entry_path) in pending_vfs_opens {
+            self.open_vfs_entry_wasm(workspace_id, entry_path);
+        }
         for id in pending_close {
             self.close_file_tab_wasm(id);
         }
@@ -7572,6 +7636,11 @@ struct WasmTabViewer<'a> {
     byte_cache: &'a Arc<hxy_core::ByteCache>,
     state: &'a mut PersistedState,
     tab_focus: &'a mut TabFocus,
+    workspaces: &'a mut std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
+    /// Pending VFS-entry opens queued by the workspace's inner VFS
+    /// tree this frame. Drained after the dock pass so we can mutate
+    /// `files` without holding a borrow into `workspaces`.
+    pending_vfs_opens: &'a mut Vec<(crate::files::WorkspaceId, String)>,
     pending_close: &'a mut Vec<FileId>,
     pending_strings_run: &'a mut Vec<FileId>,
     pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
@@ -7649,6 +7718,35 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
             }
             Tab::Settings => {
                 settings_ui(ui, &mut self.state.app, self.files, self.byte_cache);
+            }
+            Tab::Workspace(workspace_id) => {
+                let workspace_id = *workspace_id;
+                let style = crate::style::hxy_dock_style(ui.style());
+                let mut local_pending_close: Vec<FileId> = Vec::new();
+                let editor_id = match self.workspaces.get(&workspace_id) {
+                    Some(w) => w.editor_id,
+                    None => {
+                        ui.colored_label(egui::Color32::RED, format!("missing workspace {workspace_id:?}"));
+                        return;
+                    }
+                };
+                if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                    let mount = workspace.mount.clone();
+                    let mut viewer = WasmWorkspaceTabViewer {
+                        files: self.files,
+                        state: self.state,
+                        editor_id,
+                        workspace_id,
+                        mount: &mount,
+                        tab_focus: self.tab_focus,
+                        pending_vfs_opens: self.pending_vfs_opens,
+                        pending_close: &mut local_pending_close,
+                    };
+                    egui_dock::DockArea::new(&mut workspace.dock).style(style).show_inside(ui, &mut viewer);
+                }
+                for id in local_pending_close {
+                    self.pending_close.push(id);
+                }
             }
             Tab::Inspector => {
                 let bytes_for_inspector =
@@ -7750,6 +7848,81 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
             other => {
                 ui.label(format!("{other:?} (not yet wired on wasm)"));
             }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WasmWorkspaceTabViewer<'a> {
+    files: &'a mut HashMap<FileId, OpenFile>,
+    state: &'a mut PersistedState,
+    editor_id: FileId,
+    workspace_id: crate::files::WorkspaceId,
+    mount: &'a Arc<MountedVfs>,
+    tab_focus: &'a mut TabFocus,
+    pending_vfs_opens: &'a mut Vec<(crate::files::WorkspaceId, String)>,
+    pending_close: &'a mut Vec<FileId>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl egui_dock::TabViewer for WasmWorkspaceTabViewer<'_> {
+    type Tab = crate::files::WorkspaceTab;
+
+    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
+        matches!(tab, crate::files::WorkspaceTab::Entry(_) | crate::files::WorkspaceTab::VfsTree)
+    }
+
+    fn on_close(&mut self, tab: &mut Self::Tab) -> egui_dock::tab_viewer::OnCloseResponse {
+        if let crate::files::WorkspaceTab::Entry(id) = tab {
+            self.pending_close.push(*id);
+            egui_dock::tab_viewer::OnCloseResponse::Ignore
+        } else {
+            egui_dock::tab_viewer::OnCloseResponse::Close
+        }
+    }
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        match tab {
+            crate::files::WorkspaceTab::Editor => match self.files.get(&self.editor_id) {
+                Some(f) => f.display_name.clone().into(),
+                None => format!("editor-{}", self.editor_id.get()).into(),
+            },
+            crate::files::WorkspaceTab::VfsTree => "VFS".into(),
+            crate::files::WorkspaceTab::Entry(id) => match self.files.get(id) {
+                Some(f) => f.display_name.clone().into(),
+                None => format!("entry-{}", id.get()).into(),
+            },
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        match tab {
+            crate::files::WorkspaceTab::Editor => match self.files.get_mut(&self.editor_id) {
+                Some(file) => render_file_tab(ui, self.editor_id, file, self.state, *self.tab_focus),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing editor {:?}", self.editor_id));
+                }
+            },
+            crate::files::WorkspaceTab::VfsTree => {
+                let scope = egui::Id::new(("hxy-workspace-vfs-wasm", self.workspace_id.get()));
+                let parent_source = self.files.get(&self.editor_id).and_then(|f| f.source_kind.clone());
+                let mut scratch: Vec<String> = Vec::new();
+                let expanded: &mut Vec<String> = match parent_source.as_ref() {
+                    Some(key) => vfs_expanded_for(&mut self.state.vfs_tree_expanded, key),
+                    None => &mut scratch,
+                };
+                let events = crate::panels::vfs::show(ui, scope, &*self.mount.fs, expanded);
+                for ev in events {
+                    let crate::panels::vfs::VfsPanelEvent::OpenEntry(path) = ev;
+                    self.pending_vfs_opens.push((self.workspace_id, path));
+                }
+            }
+            crate::files::WorkspaceTab::Entry(file_id) => match self.files.get_mut(file_id) {
+                Some(file) => render_file_tab(ui, *file_id, file, self.state, *self.tab_focus),
+                None => {
+                    ui.colored_label(egui::Color32::RED, format!("missing entry {file_id:?}"));
+                }
+            },
         }
     }
 }
