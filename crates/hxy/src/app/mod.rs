@@ -238,7 +238,6 @@ pub struct HxyApp {
     /// either press a target letter (op fires) or Escape (cancel).
     /// Mutually exclusive with `palette` -- entering the picker
     /// closes the palette, opening the palette cancels the picker.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_pane_pick: Option<crate::tabs::pane_pick::PendingPanePick>,
     /// Persistent letter assignments for the visual pane picker,
     /// keyed by a content hash of each leaf's tabs. Lets a leaf
@@ -246,7 +245,6 @@ pub struct HxyApp {
     /// leaves around it open / close. Stale entries (whose leaf
     /// no longer exists) are evicted by `pane_pick::tick` so the
     /// freed letter is available for the next new leaf.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pane_pick_letters: std::collections::BTreeMap<u64, char>,
     /// Set when the user tries to close a tab that has unsaved
     /// edits -- via Cmd+W or by clicking the tab's X. The modal
@@ -284,7 +282,6 @@ pub struct HxyApp {
     /// highlights tool-class leaves rather than every leaf in
     /// the dock. Cleared automatically when the picker
     /// finishes (success or cancel).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pane_pick_target_paths: Option<Vec<egui_dock::NodePath>>,
     /// Shared cross-file search state. Backs the `Tab::SearchResults`
     /// dock tab; lives on the app so query / matches survive the user
@@ -301,7 +298,6 @@ pub struct HxyApp {
     /// from inside a tool panel (e.g. clicking a VFS entry inside a
     /// `Tab::PluginMount`) back into the user's main editing area
     /// instead of the tool panel itself. Refreshed each frame.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) last_content_leaf: Option<egui_dock::NodePath>,
     /// File paths from the launch's command line. Drained on the
     /// first frame and turned into open-file requests, so a
@@ -658,7 +654,6 @@ impl HxyApp {
             global_search: crate::search::global::GlobalSearchState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_global_search_events: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             last_content_leaf: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_cli_paths: Vec::new(),
@@ -2939,7 +2934,6 @@ pub fn take_snapshot_active_file(app: &mut HxyApp) {
 /// a no-op when there are zero. The picker callback in
 /// `handle_pane_pick` calls back into `close_tool_leaf` once
 /// the user presses a target letter.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn close_tool_pane(app: &mut HxyApp) {
     let leaves = crate::tabs::dock_ops::tool_only_leaves(&app.dock);
     match leaves.len() {
@@ -4129,7 +4123,6 @@ fn apply_global_search_events(app: &mut HxyApp, events: Vec<crate::search::globa
 /// `Toggle VFS panel` and friends evaporate), and finally -- when
 /// only one workspace is open -- that sole workspace. Returns
 /// `None` only when no workspace exists.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn active_workspace_id(app: &mut HxyApp) -> Option<crate::files::WorkspaceId> {
     if let Some((_, tab)) = app.dock.find_active_focused()
         && let Tab::Workspace(id) = *tab
@@ -5262,7 +5255,6 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
 /// to the active file's leaf), closes the palette so the overlay
 /// owns the screen, and records the op for `handle_pane_pick` to
 /// drive next frame. No-op when there's no resolvable source.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_pane_pick(app: &mut HxyApp, op: crate::tabs::pane_pick::PaneOp) {
     let Some(source) = crate::tabs::dock_ops::resolve_target_leaf(app) else { return };
     app.palette.close();
@@ -5287,7 +5279,6 @@ pub(crate) fn toggle_vim_mode(app: &mut HxyApp) {
 /// Sourceless variant: stage a pane pick whose op doesn't need a
 /// "from" leaf (currently just `Focus`). Every leaf in the dock
 /// becomes a target. No-op when there's no dock (shouldn't happen).
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_pane_focus(app: &mut HxyApp) {
     app.palette.close();
     app.pending_pane_pick =
@@ -7139,7 +7130,11 @@ impl HxyApp {
             applied_zoom: initial_zoom,
             last_active_file: None,
             last_active_workspace: None,
+            last_content_leaf: None,
             palette: crate::commands::palette::PaletteState::default(),
+            pending_pane_pick: None,
+            pane_pick_letters: std::collections::BTreeMap::new(),
+            pane_pick_target_paths: None,
             tab_focus: TabFocus::Outer,
             pending_collapse_workspace: Vec::new(),
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
@@ -7254,10 +7249,22 @@ impl HxyApp {
 
     fn toggle_tab_wasm(&mut self, tab: Tab) {
         if let Some(path) = self.dock.find_tab(&tab) {
+            let node_path = path.node_path();
             let _ = self.dock.set_active_tab(path);
+            self.dock.set_focused_node_and_surface(node_path);
             return;
         }
-        self.dock.push_to_focused_leaf(tab);
+        // Tool tabs (Inspector / Console / Memory / Strings /
+        // Checksums / Entropy / Settings) land in a dedicated tool
+        // pane on the right edge so the editor area stays free --
+        // same `push_tool_tab` helper desktop uses. Plain content
+        // tabs go to the focused leaf.
+        if crate::tabs::dock_ops::is_tool_tab(&tab) {
+            let node_path = crate::tabs::dock_ops::push_tool_tab(&mut self.dock, tab);
+            self.dock.set_focused_node_and_surface(node_path);
+        } else {
+            self.dock.push_to_focused_leaf(tab);
+        }
     }
 
     fn spawn_strings_run_wasm(&mut self, ctx: &egui::Context, id: FileId) {
@@ -7624,6 +7631,51 @@ impl eframe::App for HxyApp {
             let entries = build_wasm_palette_entries(&ctx, self);
             if let Some(outcome) = crate::commands::palette::show(&ctx, &mut self.palette, entries) {
                 self.apply_wasm_palette_outcome(&ctx, outcome);
+            }
+        }
+        // Visual pane picker overlay -- same code path desktop uses
+        // via `tabs::focus::handle_pane_pick`. That helper lives in a
+        // desktop-only module though, so the body is inlined here so
+        // wasm doesn't need to ungate `tabs::focus` (which has other
+        // desktop-only deps).
+        if let Some(pending) = self.pending_pane_pick {
+            let whitelist = self.pane_pick_target_paths.clone();
+            let outcome = crate::tabs::pane_pick::tick(
+                &ctx,
+                &self.dock,
+                pending,
+                &mut self.pane_pick_letters,
+                whitelist.as_deref(),
+            );
+            match outcome {
+                crate::tabs::pane_pick::TickOutcome::Continue => {}
+                crate::tabs::pane_pick::TickOutcome::Cancel => {
+                    self.pending_pane_pick = None;
+                    self.pane_pick_target_paths = None;
+                }
+                crate::tabs::pane_pick::TickOutcome::Picked { source, target, op } => {
+                    self.pending_pane_pick = None;
+                    self.pane_pick_target_paths = None;
+                    match op {
+                        crate::tabs::pane_pick::PaneOp::MoveTab => {
+                            if let Some(source) = source {
+                                crate::tabs::dock_ops::dock_move_tab_to(self, source, target);
+                            }
+                        }
+                        crate::tabs::pane_pick::PaneOp::Merge => {
+                            if let Some(source) = source {
+                                crate::tabs::dock_ops::dock_merge_to(self, source, target);
+                            }
+                        }
+                        crate::tabs::pane_pick::PaneOp::Focus => {
+                            self.dock.set_focused_node_and_surface(target);
+                            self.tab_focus = TabFocus::Outer;
+                        }
+                        crate::tabs::pane_pick::PaneOp::CloseToolLeaf => {
+                            crate::tabs::dock_ops::close_tool_leaf(self, target);
+                        }
+                    }
+                }
             }
         }
     }
@@ -8066,7 +8118,6 @@ fn build_wasm_palette_entries(
     }
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
     let cmd_n = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
-    let cmd_w = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
     let cmd_f = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
     let cmd_e = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
     let cmd_shift_t = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::T);
@@ -8085,9 +8136,6 @@ fn build_wasm_palette_entries(
             .with_shortcut(fmt(&cmd_n)),
         egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(PaletteCommand::OpenFile)),
         egui_palette::Entry::new("Save as download...", Action::InvokeCommand(PaletteCommand::ReloadActiveFile))
-            .with_disabled(!has_active),
-        egui_palette::Entry::new(hxy_i18n::t("menu-file-close"), Action::InvokeCommand(PaletteCommand::CloseToolPane))
-            .with_shortcut(fmt(&cmd_w))
             .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("menu-file-reopen-closed"),
@@ -8230,6 +8278,60 @@ fn build_wasm_palette_entries(
             .with_icon(icon::TARGET)
             .with_disabled(!has_active),
     );
+    // Dock pane management -- universal dock_ops module powers all of
+    // these on both targets.
+    out.extend([
+        egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand(PaletteCommand::SplitRight))
+            .with_icon(icon::ARROW_LINE_RIGHT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand(PaletteCommand::SplitLeft))
+            .with_icon(icon::ARROW_LINE_LEFT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand(PaletteCommand::SplitUp))
+            .with_icon(icon::ARROW_LINE_UP),
+        egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand(PaletteCommand::SplitDown))
+            .with_icon(icon::ARROW_LINE_DOWN),
+        egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand(PaletteCommand::MergeRight))
+            .with_icon(icon::ARROW_BEND_DOWN_RIGHT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand(PaletteCommand::MergeLeft))
+            .with_icon(icon::ARROW_BEND_DOWN_LEFT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand(PaletteCommand::MergeUp))
+            .with_icon(icon::ARROW_BEND_UP_RIGHT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand(PaletteCommand::MergeDown))
+            .with_icon(icon::ARROW_BEND_UP_RIGHT),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-move-tab-right"),
+            Action::InvokeCommand(PaletteCommand::MoveTabRight),
+        )
+        .with_icon(icon::ARROW_RIGHT),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-move-tab-left"),
+            Action::InvokeCommand(PaletteCommand::MoveTabLeft),
+        )
+        .with_icon(icon::ARROW_LEFT),
+        egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-up"), Action::InvokeCommand(PaletteCommand::MoveTabUp))
+            .with_icon(icon::ARROW_UP),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-move-tab-down"),
+            Action::InvokeCommand(PaletteCommand::MoveTabDown),
+        )
+        .with_icon(icon::ARROW_DOWN),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-move-tab-visual"),
+            Action::InvokeCommand(PaletteCommand::MoveTabVisual),
+        )
+        .with_icon(icon::ARROWS_OUT_CARDINAL),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-merge-visual"),
+            Action::InvokeCommand(PaletteCommand::MergeVisual),
+        )
+        .with_icon(icon::ARROWS_IN_CARDINAL),
+        egui_palette::Entry::new(hxy_i18n::t("palette-focus-pane"), Action::InvokeCommand(PaletteCommand::FocusPane))
+            .with_icon(icon::CROSSHAIR),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-close-tool-pane"),
+            Action::InvokeCommand(PaletteCommand::CloseToolPane),
+        )
+        .with_icon(icon::X_SQUARE),
+    ]);
     out
 }
 
@@ -8293,11 +8395,6 @@ impl HxyApp {
                                 tracing::warn!(error = %e, "wasm save");
                             }
                         });
-                    }
-                }
-                PaletteCommand::CloseToolPane => {
-                    if let Some(id) = self.last_active_file {
-                        self.close_file_tab_wasm(id);
                     }
                 }
                 PaletteCommand::ReopenClosedTab => self.reopen_last_closed_wasm(),
@@ -8379,6 +8476,48 @@ impl HxyApp {
                 PaletteCommand::ToggleSettings => self.toggle_tab_wasm(Tab::Settings),
                 PaletteCommand::ToggleMemory => self.toggle_tab_wasm(Tab::Memory),
                 PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(self),
+                PaletteCommand::SplitRight => {
+                    crate::tabs::dock_ops::dock_split_focused(self, crate::commands::DockDir::Right)
+                }
+                PaletteCommand::SplitLeft => {
+                    crate::tabs::dock_ops::dock_split_focused(self, crate::commands::DockDir::Left)
+                }
+                PaletteCommand::SplitUp => {
+                    crate::tabs::dock_ops::dock_split_focused(self, crate::commands::DockDir::Up)
+                }
+                PaletteCommand::SplitDown => {
+                    crate::tabs::dock_ops::dock_split_focused(self, crate::commands::DockDir::Down)
+                }
+                PaletteCommand::MergeRight => {
+                    crate::tabs::dock_ops::dock_merge_focused(self, crate::commands::DockDir::Right)
+                }
+                PaletteCommand::MergeLeft => {
+                    crate::tabs::dock_ops::dock_merge_focused(self, crate::commands::DockDir::Left)
+                }
+                PaletteCommand::MergeUp => {
+                    crate::tabs::dock_ops::dock_merge_focused(self, crate::commands::DockDir::Up)
+                }
+                PaletteCommand::MergeDown => {
+                    crate::tabs::dock_ops::dock_merge_focused(self, crate::commands::DockDir::Down)
+                }
+                PaletteCommand::MoveTabRight => {
+                    crate::tabs::dock_ops::dock_move_focused_tab(self, crate::commands::DockDir::Right)
+                }
+                PaletteCommand::MoveTabLeft => {
+                    crate::tabs::dock_ops::dock_move_focused_tab(self, crate::commands::DockDir::Left)
+                }
+                PaletteCommand::MoveTabUp => {
+                    crate::tabs::dock_ops::dock_move_focused_tab(self, crate::commands::DockDir::Up)
+                }
+                PaletteCommand::MoveTabDown => {
+                    crate::tabs::dock_ops::dock_move_focused_tab(self, crate::commands::DockDir::Down)
+                }
+                PaletteCommand::MoveTabVisual => {
+                    crate::app::start_pane_pick(self, crate::tabs::pane_pick::PaneOp::MoveTab)
+                }
+                PaletteCommand::MergeVisual => crate::app::start_pane_pick(self, crate::tabs::pane_pick::PaneOp::Merge),
+                PaletteCommand::FocusPane => crate::app::start_pane_focus(self),
+                PaletteCommand::CloseToolPane => crate::app::close_tool_pane(self),
                 _ => {}
             },
             Action::FocusFile(id) => {

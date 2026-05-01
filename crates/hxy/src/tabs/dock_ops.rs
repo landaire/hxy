@@ -2,8 +2,6 @@
 //! find tool / content leaves, classify tabs, push tool tabs into the
 //! right-hand panel.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::app::HxyApp;
 use crate::commands::DockDir;
 use crate::files::FileId;

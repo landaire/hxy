@@ -11,8 +11,6 @@
 //! so leaf rearrangements (resizes, drags, splits between frames)
 //! don't desync the labels from the rectangles they're painted on.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::hash::DefaultHasher;
