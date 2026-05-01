@@ -7364,7 +7364,7 @@ impl eframe::App for HxyApp {
             let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
             self.open_bytes_wasm(name, bytes);
         }
-        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit, toggle_palette) =
+        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit, toggle_palette, toggle_quick_open) =
             ctx.input_mut(|i| {
                 (
                     i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
@@ -7379,15 +7379,15 @@ impl eframe::App for HxyApp {
                         egui::Key::C,
                     )),
                     i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)),
-                    // Cmd+Shift+P opens the command palette --
-                    // same shortcut as desktop. The palette
-                    // state struct (`PaletteState`) is shared
-                    // across targets; the wasm side builds a
-                    // narrower entry list inline below.
+                    // Cmd+Shift+P opens the full command palette,
+                    // Cmd+P opens the file-only quick-open list --
+                    // same bindings as desktop. The palette state
+                    // struct is shared across targets.
                     i.consume_shortcut(&egui::KeyboardShortcut::new(
                         egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
                         egui::Key::P,
                     )),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::P)),
                 )
             });
         if toggle_palette {
@@ -7395,6 +7395,13 @@ impl eframe::App for HxyApp {
                 self.palette.close();
             } else {
                 self.palette.open_at(crate::commands::palette::Mode::Main);
+            }
+        }
+        if toggle_quick_open {
+            if self.palette.is_open() {
+                self.palette.close();
+            } else {
+                self.palette.open_at(crate::commands::palette::Mode::QuickOpen);
             }
         }
         if toggle_find
@@ -7805,6 +7812,34 @@ fn build_wasm_palette_entries(
         }
         None => crate::commands::palette::offset::OffsetPaletteContext::default(),
     };
+    // Mode::Main handles two query-prefix shortcuts inline before
+    // building the standard list:
+    //   @<expr> -> evaluate as offset, jump caret
+    //   =<expr> -> evaluate as expression, copy result (decimal+hex)
+    // Same builders desktop uses, same Action types -- no fragmentation.
+    if matches!(app.palette.mode, Mode::Main) {
+        let trimmed = app.palette.inner.query.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('@') {
+            let mut out = Vec::new();
+            crate::commands::palette::build_calculator_entry(&mut out, rest, &offset_ctx, &resolver);
+            return out;
+        }
+        if let Some(rest) = trimmed.strip_prefix('=') {
+            let mut out = Vec::new();
+            crate::commands::palette::build_calculator_copy_entries(&mut out, rest, &resolver);
+            return out;
+        }
+    }
+    if matches!(app.palette.mode, Mode::QuickOpen) {
+        let mut out = Vec::new();
+        for (id, file) in app.files.iter() {
+            out.push(
+                egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
+                    .with_icon(egui_phosphor::regular::FILE),
+            );
+        }
+        return out;
+    }
     if !matches!(app.palette.mode, Mode::Main | Mode::QuickOpen) {
         let mut out = Vec::new();
         match app.palette.mode {

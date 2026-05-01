@@ -758,6 +758,125 @@ pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, re
     );
 }
 
+/// Resolve a `@<expression>` query into a single Go-to-offset
+/// palette entry. When the expression is empty (`@` with nothing
+/// after) we render an inert hint so the user sees the prompt
+/// instead of an empty list. Parse / evaluation errors render as a
+/// non-actionable "Invalid: ..." row -- consistent with the other
+/// argument-style palette modes.
+///
+/// Universal across desktop and wasm so the same `@` syntax works
+/// everywhere -- the `resolver` argument is what lets desktop pass
+/// in a template-aware resolver while wasm uses
+/// [`hxy_calculator::NullResolver`].
+pub fn build_calculator_entry(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    expr: &str,
+    offset_ctx: &offset::OffsetPaletteContext,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
+    use egui_phosphor::regular as icon;
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-prompt"), Action::NoOp)
+                .with_icon(icon::CALCULATOR),
+        );
+        return;
+    }
+    if !offset_ctx.available {
+        invalid_entry(out, trimmed, &hxy_i18n::t("palette-invalid-no-active-file"));
+        return;
+    }
+    let value = match hxy_calculator::evaluate_str_with(trimmed, resolver) {
+        Ok(v) => v,
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    let raw = value.raw();
+    let max_offset = offset_ctx.source_len.saturating_sub(1);
+    let target = match value.as_u64() {
+        Ok(t) if t <= max_offset => t,
+        Ok(t) => {
+            invalid_entry(
+                out,
+                trimmed,
+                &hxy_i18n::t_args(
+                    "palette-calculator-out-of-range",
+                    &[("value", &format!("0x{t:X}")), ("max", &format!("0x{max_offset:X}"))],
+                ),
+            );
+            return;
+        }
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
+            Action::GoToOffset(target),
+        )
+        .with_icon(icon::CALCULATOR)
+        .with_subtitle(format!("{trimmed} = {raw}")),
+    );
+}
+
+/// Resolve a `=<expression>` query into "Copy result" entries.
+/// Emits decimal and hex rows so the user can pick the format that
+/// matches whatever they're pasting into. Universal across targets.
+pub fn build_calculator_copy_entries(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    expr: &str,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
+    use egui_phosphor::regular as icon;
+
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-copy-result-prompt"), Action::NoOp)
+                .with_icon(icon::CALCULATOR),
+        );
+        return;
+    }
+    let value = match hxy_calculator::evaluate_str_with(trimmed, resolver) {
+        Ok(v) => v,
+        Err(e) => {
+            invalid_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    let raw = value.raw();
+    let decimal = format!("{raw}");
+    let hex = format_signed_hex(raw);
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t_args("palette-copy-decimal-fmt", &[("value", &decimal)]),
+            Action::CopyText(decimal.clone()),
+        )
+        .with_icon(icon::COPY)
+        .with_subtitle(hex.clone()),
+    );
+    out.push(
+        egui_palette::Entry::new(hxy_i18n::t_args("palette-copy-hex-fmt", &[("value", &hex)]), Action::CopyText(hex))
+            .with_icon(icon::COPY)
+            .with_subtitle(decimal),
+    );
+}
+
+/// Format a signed `i128` as a `0x...` literal. Negative values get
+/// a leading `-` rather than a two's-complement bit pattern; `-16`
+/// renders as `-0x10`. Most paste targets (debuggers, hex editors,
+/// code) expect the signed-magnitude form.
+pub fn format_signed_hex(value: i128) -> String {
+    if value < 0 { format!("-0x{:X}", value.unsigned_abs()) } else { format!("0x{value:X}") }
+}
+
 /// Apply [`Action::SetVirtualBase`] to the active file. Universal
 /// across targets so both the desktop's `apply.rs` dispatch and the
 /// wasm inline outcome handler can share one code path. On desktop
