@@ -168,10 +168,9 @@ pub struct HxyApp {
     /// by the Console dock tab when it's open; entries accumulate
     /// regardless so opening the tab later reveals back-scroll. The
     /// only log writers (plugin host, template runner, file watcher)
-    /// are desktop-only -- wasm renders the empty placeholder
-    /// directly without holding a buffer.
-    #[cfg(not(target_arch = "wasm32"))]
-    console: std::collections::VecDeque<ConsoleEntry>,
+    /// are desktop-only; on wasm the buffer simply stays empty and
+    /// the Console tab renders its "no entries yet" placeholder.
+    pub(crate) console: std::collections::VecDeque<ConsoleEntry>,
 
     /// Data-inspector dock tab state. Endianness + radix preferences
     /// and the `show_panel` flag that's only consulted when the
@@ -804,7 +803,6 @@ pub enum StringsScope {
 /// in the panel to actually do the work. Stops a casual palette
 /// invocation against a 4 GiB memory dump from chewing tens of
 /// seconds of CPU before the user realizes what happened.
-#[cfg(not(target_arch = "wasm32"))]
 pub const AUTO_RUN_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Resolve a `StringsScope` to a concrete byte range against the
@@ -2007,6 +2005,199 @@ fn render_failed_placeholder(ui: &mut egui::Ui, display_name: &str, message: &st
         egui::FontId::monospace(11.0),
         ui.visuals().weak_text_color(),
     );
+}
+
+/// Inspector / data-decoder window: read up to 16 bytes at the
+/// caret of `file` and hand them to each registered decoder.
+/// Both tab viewers call this so the Inspector behaves identically
+/// on every target.
+pub(crate) fn render_inspector_tab(
+    ui: &mut egui::Ui,
+    inspector: &mut crate::panels::inspector::InspectorState,
+    decoders: &[Arc<dyn crate::panels::inspector::Decoder>],
+    files: &HashMap<FileId, OpenFile>,
+    last_active_file: Option<FileId>,
+) {
+    let bytes_for_inspector = last_active_file.and_then(|id| files.get(&id)).and_then(inspector_caret_window);
+    let (caret, bytes) = match bytes_for_inspector.as_ref() {
+        Some((c, b)) => (Some(*c), b.as_slice()),
+        None => (None, &[] as &[u8]),
+    };
+    crate::panels::inspector::show(ui, inspector, decoders, caret, bytes);
+}
+
+/// Read up to 16 bytes starting at `file`'s caret. Returns `None`
+/// when there's no selection or the source is empty; returns
+/// `Some((caret, bytes))` otherwise. Used by both the desktop and
+/// wasm Inspector tab arms so the byte-window logic lives in one
+/// place.
+pub(crate) fn inspector_caret_window(file: &OpenFile) -> Option<(u64, Vec<u8>)> {
+    let caret = file.editor.selection()?.cursor.get();
+    let src_len = file.editor.source().len().get();
+    if src_len == 0 {
+        return None;
+    }
+    if caret >= src_len {
+        return Some((caret, Vec::new()));
+    }
+    let end = caret.saturating_add(16).min(src_len);
+    let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(caret), hxy_core::ByteOffset::new(end)).ok()?;
+    let bytes = file.editor.source().read(range).ok()?;
+    Some((caret, bytes))
+}
+
+/// Strings extraction panel for one file. Backfills the panel's
+/// range to the whole file the first frame the panel renders, and
+/// for files within `AUTO_RUN_MAX_BYTES` queues an automatic Run
+/// so the user sees results without an extra click. Run / Jump
+/// events from the panel get pushed onto the supplied pending
+/// vectors for the host to drain after the dock pass.
+pub(crate) fn render_strings_tab(
+    ui: &mut egui::Ui,
+    files: &mut HashMap<FileId, OpenFile>,
+    file_id: FileId,
+    pending_run: &mut Vec<FileId>,
+    pending_jump: &mut Vec<(FileId, u64, u64)>,
+) {
+    let Some(file) = files.get_mut(&file_id) else {
+        let mut empty = crate::panels::strings::StringsPanel::default();
+        let _ = crate::panels::strings::show(ui, None, &mut empty);
+        return;
+    };
+    if file.strings_panel.config.range.is_empty() {
+        let len = file.editor.source().len().get();
+        if len > 0
+            && let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+        {
+            file.strings_panel.config.range = range;
+            if len <= AUTO_RUN_MAX_BYTES
+                && file.strings_panel.last_result.is_none()
+                && file.strings_panel.running.is_none()
+            {
+                pending_run.push(file_id);
+            }
+        }
+    }
+    let label = file.display_name.clone();
+    let events = match file.virtual_base {
+        Some(base) => crate::panels::strings::show_with_vaddr(ui, Some(&label), &mut file.strings_panel, base),
+        None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
+    };
+    for ev in events {
+        match ev {
+            crate::panels::strings::StringsEvent::Run => pending_run.push(file_id),
+            crate::panels::strings::StringsEvent::Jump { offset, end } => pending_jump.push((file_id, offset, end)),
+        }
+    }
+}
+
+/// Checksum panel for one file. Same auto-fill / auto-run shape as
+/// [`render_strings_tab`]; Run / Copy events drain through the
+/// supplied vectors.
+pub(crate) fn render_checksums_tab(
+    ui: &mut egui::Ui,
+    files: &mut HashMap<FileId, OpenFile>,
+    file_id: FileId,
+    pending_run: &mut Vec<FileId>,
+    pending_copy: &mut Vec<String>,
+) {
+    let Some(file) = files.get_mut(&file_id) else {
+        let mut empty = crate::panels::checksums::ChecksumsPanel::default();
+        let _ = crate::panels::checksums::show(ui, None, &mut empty);
+        return;
+    };
+    if file.checksums_panel.config.range.is_empty() {
+        let len = file.editor.source().len().get();
+        if len > 0
+            && let Ok(range) = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
+        {
+            file.checksums_panel.config.range = range;
+            if len <= AUTO_RUN_MAX_BYTES
+                && !file.checksums_panel.config.algorithms.is_empty()
+                && file.checksums_panel.last_result.is_none()
+                && file.checksums_panel.running.is_none()
+            {
+                pending_run.push(file_id);
+            }
+        }
+    }
+    let label = file.display_name.clone();
+    let events = match file.virtual_base {
+        Some(base) => crate::panels::checksums::show_with_vaddr(ui, Some(&label), &mut file.checksums_panel, base),
+        None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
+    };
+    for ev in events {
+        match ev {
+            crate::panels::checksums::ChecksumsEvent::Run => pending_run.push(file_id),
+            crate::panels::checksums::ChecksumsEvent::Copy(text) => pending_copy.push(text),
+        }
+    }
+}
+
+/// Entropy plot for one file. Compute clicks queue a recompute
+/// for the host post-dock drain.
+pub(crate) fn render_entropy_tab(
+    ui: &mut egui::Ui,
+    files: &HashMap<FileId, OpenFile>,
+    file_id: FileId,
+    pending_recompute: &mut Vec<FileId>,
+) {
+    let (label, state, running) = match files.get(&file_id) {
+        Some(f) => (Some(f.display_name.as_str()), f.entropy.as_ref(), f.entropy_running.is_some()),
+        None => (None, None, false),
+    };
+    let mut clicked = false;
+    crate::panels::entropy::show(ui, label, state, running, &mut clicked);
+    if clicked {
+        pending_recompute.push(file_id);
+    }
+}
+
+/// Byte-cache memory debug panel. Pure read-only over `byte_cache`
+/// stats and the `files` map for display labels.
+pub(crate) fn render_memory_tab(
+    ui: &mut egui::Ui,
+    files: &HashMap<FileId, OpenFile>,
+    byte_cache: &Arc<hxy_core::ByteCache>,
+) {
+    let labels = crate::panels::memory::ViewLabels::from_files(files);
+    crate::panels::memory::memory_ui(ui, byte_cache, &labels);
+}
+
+/// Console log of plugin / template / watcher events. Wasm has no
+/// writers so the buffer stays empty there and the panel renders
+/// its "no entries yet" placeholder.
+pub(crate) fn render_console_tab(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEntry>) {
+    console_ui(ui, console);
+}
+
+/// Cross-file search-results tab. Events from the panel (refresh,
+/// run, close, jump) drain post-dock through the supplied vector.
+pub(crate) fn render_search_results_tab(
+    ui: &mut egui::Ui,
+    files: &HashMap<FileId, OpenFile>,
+    global_search: &mut crate::search::global::GlobalSearchState,
+    pending_events: &mut Vec<crate::search::global::GlobalSearchEvent>,
+) {
+    let names: HashMap<FileId, String> = files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
+    let events = crate::search::global::show(ui, global_search, &names);
+    pending_events.extend(events);
+}
+
+/// Side-by-side compare tab. Renders nothing if the session id
+/// doesn't resolve (probably mid-removal).
+pub(crate) fn render_compare_tab(
+    ui: &mut egui::Ui,
+    compares: &mut std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
+    compare_id: crate::compare::CompareId,
+    state: &mut PersistedState,
+) {
+    match compares.get_mut(&compare_id) {
+        Some(session) => crate::compare::tab::render_compare_tab(ui, session, state),
+        None => {
+            ui.colored_label(egui::Color32::RED, format!("missing compare {compare_id:?}"));
+        }
+    }
 }
 
 fn render_file_tab(

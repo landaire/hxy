@@ -1781,10 +1781,11 @@ impl eframe::App for HxyApp {
         #[cfg(not(target_os = "macos"))]
         top_menu_bar(ui, self);
 
-        // Pre-read the 16-byte window at the active file's caret so
-        // the Inspector tab can render without needing to reborrow
-        // self.files while the dock is rendering.
-        let inspector_data = desktop_tab_viewer::snapshot_inspector_bytes(self);
+        // Capture the active file id before the dock pass so the
+        // Inspector tab arm can render against `self.files` (it does
+        // its own caret-window read at render time, with disjoint
+        // borrows on the viewer struct).
+        let active_file_id = super::active_file_id(self);
         // Recompute clicks fired by entropy panels during this
         // frame's dock pass land here. Each panel pushes its
         // pinned FileId; we drain the list after the dock
@@ -1823,7 +1824,7 @@ impl eframe::App for HxyApp {
                 pending_global_search_events: &mut self.pending_global_search_events,
                 inspector: &mut self.inspector,
                 decoders: &self.decoders,
-                inspector_data,
+                active_file_id,
                 plugin_rescan: &mut self.plugin_rescan,
                 plugin_handlers: &self.plugin_handlers,
                 pending_plugin_events: &mut self.pending_plugin_events,

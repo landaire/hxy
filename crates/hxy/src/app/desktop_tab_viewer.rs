@@ -14,14 +14,10 @@ use egui_dock::tab_viewer::OnCloseResponse;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::TabSource;
 
-use super::AUTO_RUN_MAX_BYTES;
 use super::ConsoleEntry;
-use super::HxyApp;
 use super::PENDING_VFS_OPEN_KEY;
 use super::PendingVfsOpen;
 use super::TabFocus;
-use super::active_file_id;
-use super::console_ui;
 use super::format_file_tab_title;
 use super::format_workspace_tab_title;
 use super::render_failed_placeholder;
@@ -57,10 +53,12 @@ pub(super) struct HxyTabViewer<'a> {
     pub(super) pending_global_search_events: &'a mut Vec<crate::search::global::GlobalSearchEvent>,
     pub(super) inspector: &'a mut crate::panels::inspector::InspectorState,
     pub(super) decoders: &'a [Arc<dyn crate::panels::inspector::Decoder>],
-    /// (caret offset, up to 16 bytes at caret) for the active file,
-    /// snapshotted before dock render so the Inspector tab can read
-    /// it without reborrowing `files`.
-    pub(super) inspector_data: Option<(u64, Vec<u8>)>,
+    /// FileId of the currently-active file, captured before the
+    /// dock pass so the Inspector tab arm can identify which
+    /// file's caret to read from. The Inspector helper does the
+    /// actual read against `files` at render time, so disjoint
+    /// field borrows on `self` (files immut + this immut) work.
+    pub(super) active_file_id: Option<FileId>,
     /// Set to true when the Plugins tab mutated the plugin directories
     /// and needs the registry / template runtimes rebuilt. Drained at
     /// end of frame by [`HxyApp::ui`].
@@ -141,25 +139,6 @@ pub(super) struct HxyTabViewer<'a> {
     pub(super) byte_cache: &'a Arc<hxy_core::ByteCache>,
 }
 
-/// Look up the caret offset and the bytes immediately after it for
-/// the file the inspector should display. Uses the currently focused
-/// file tab when one exists; otherwise falls back to the most
-/// recently focused file (so clicking into the Inspector tab itself
-/// doesn't make its content disappear).
-pub(super) fn snapshot_inspector_bytes(app: &mut HxyApp) -> Option<(u64, Vec<u8>)> {
-    let id = active_file_id(app)?;
-    let file = app.files.get(&id)?;
-    let caret = file.editor.selection()?.cursor.get();
-    let src_len = file.editor.source().len().get();
-    if caret >= src_len {
-        return Some((caret, Vec::new()));
-    }
-    let end = caret.saturating_add(16).min(src_len);
-    let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(caret), hxy_core::ByteOffset::new(end)).ok()?;
-    let bytes = file.editor.source().read(range).ok()?;
-    Some((caret, bytes))
-}
-
 impl egui_dock::TabViewer for HxyTabViewer<'_> {
     type Tab = Tab;
 
@@ -218,121 +197,30 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
         match tab {
             Tab::Welcome => welcome_ui(ui, self.state),
             Tab::Settings => settings_ui(ui, &mut self.state.app, self.files, self.byte_cache),
-            Tab::Console => console_ui(ui, self.console),
+            Tab::Console => super::render_console_tab(ui, self.console),
             Tab::Inspector => {
-                let (caret, bytes) = match &self.inspector_data {
-                    Some((c, b)) => (Some(*c), b.as_slice()),
-                    None => (None, &[] as &[u8]),
-                };
-                crate::panels::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
+                super::render_inspector_tab(ui, self.inspector, self.decoders, self.files, self.active_file_id)
             }
             Tab::Entropy(file_id) => {
-                let pinned = *file_id;
-                let (label, state, running) = match self.files.get(&pinned) {
-                    Some(f) => (Some(f.display_name.as_str()), f.entropy.as_ref(), f.entropy_running.is_some()),
-                    None => (None, None, false),
-                };
-                let mut clicked = false;
-                crate::panels::entropy::show(ui, label, state, running, &mut clicked);
-                if clicked {
-                    self.entropy_recompute.push(pinned);
-                }
+                super::render_entropy_tab(ui, self.files, *file_id, self.entropy_recompute);
             }
             Tab::Strings(file_id) => {
-                let pinned = *file_id;
-                if let Some(file) = self.files.get_mut(&pinned) {
-                    // A tab restored from the dock snapshot comes
-                    // back with the panel's default empty range.
-                    // Backfill with the whole file the first time the
-                    // panel renders, and -- when the file fits the
-                    // auto-run gate -- queue an immediate scan so the
-                    // user sees results without having to click Run
-                    // themselves. The panel's own Run button stays
-                    // un-gated; only the implicit restore path waits
-                    // for an explicit click on huge inputs.
-                    if file.strings_panel.config.range.is_empty() {
-                        let len = file.editor.source().len().get();
-                        if len > 0
-                            && let Ok(range) =
-                                hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                        {
-                            file.strings_panel.config.range = range;
-                            if len <= AUTO_RUN_MAX_BYTES
-                                && file.strings_panel.last_result.is_none()
-                                && file.strings_panel.running.is_none()
-                            {
-                                self.pending_strings_run.push(pinned);
-                            }
-                        }
-                    }
-                    let label = file.display_name.clone();
-                    let events = match file.virtual_base {
-                        Some(base) => {
-                            crate::panels::strings::show_with_vaddr(ui, Some(&label), &mut file.strings_panel, base)
-                        }
-                        None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
-                    };
-                    for ev in events {
-                        match ev {
-                            crate::panels::strings::StringsEvent::Run => {
-                                self.pending_strings_run.push(pinned);
-                            }
-                            crate::panels::strings::StringsEvent::Jump { offset, end } => {
-                                self.pending_strings_jump.push((pinned, offset, end));
-                            }
-                        }
-                    }
-                } else {
-                    let mut empty = crate::panels::strings::StringsPanel::default();
-                    let _ = crate::panels::strings::show(ui, None, &mut empty);
-                }
+                super::render_strings_tab(
+                    ui,
+                    self.files,
+                    *file_id,
+                    self.pending_strings_run,
+                    self.pending_strings_jump,
+                );
             }
             Tab::Checksums(file_id) => {
-                let pinned = *file_id;
-                if let Some(file) = self.files.get_mut(&pinned) {
-                    // Mirror the strings restore path: backfill the
-                    // empty default range with the whole file, and
-                    // when the file fits the auto-run gate plus the
-                    // panel still has algorithms ticked, kick off
-                    // the streaming compute so the user sees fresh
-                    // hashes on restart without an extra click.
-                    if file.checksums_panel.config.range.is_empty() {
-                        let len = file.editor.source().len().get();
-                        if len > 0
-                            && let Ok(range) =
-                                hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                        {
-                            file.checksums_panel.config.range = range;
-                            if len <= AUTO_RUN_MAX_BYTES
-                                && !file.checksums_panel.config.algorithms.is_empty()
-                                && file.checksums_panel.last_result.is_none()
-                                && file.checksums_panel.running.is_none()
-                            {
-                                self.pending_checksums_run.push(pinned);
-                            }
-                        }
-                    }
-                    let label = file.display_name.clone();
-                    let events = match file.virtual_base {
-                        Some(base) => {
-                            crate::panels::checksums::show_with_vaddr(ui, Some(&label), &mut file.checksums_panel, base)
-                        }
-                        None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
-                    };
-                    for ev in events {
-                        match ev {
-                            crate::panels::checksums::ChecksumsEvent::Run => {
-                                self.pending_checksums_run.push(pinned);
-                            }
-                            crate::panels::checksums::ChecksumsEvent::Copy(text) => {
-                                self.pending_checksums_copy.push(text);
-                            }
-                        }
-                    }
-                } else {
-                    let mut empty = crate::panels::checksums::ChecksumsPanel::default();
-                    let _ = crate::panels::checksums::show(ui, None, &mut empty);
-                }
+                super::render_checksums_tab(
+                    ui,
+                    self.files,
+                    *file_id,
+                    self.pending_checksums_run,
+                    self.pending_checksums_copy,
+                );
             }
             Tab::Visualizer(file_id) => {
                 let pinned = *file_id;
@@ -362,10 +250,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     let _ = crate::visualizers::show(ui, None, &mut empty, numeric_format, &template_value_formats);
                 }
             }
-            Tab::Memory => {
-                let labels = crate::panels::memory::ViewLabels::from_files(self.files);
-                crate::panels::memory::memory_ui(ui, self.byte_cache, &labels);
-            }
+            Tab::Memory => super::render_memory_tab(ui, self.files, self.byte_cache),
             Tab::Plugins => {
                 let handlers_dir = user_plugins_dir();
                 let templates_dir = user_template_plugins_dir();
@@ -429,10 +314,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 }
             },
             Tab::SearchResults => {
-                let names: std::collections::HashMap<FileId, String> =
-                    self.files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
-                let events = crate::search::global::show(ui, self.global_search, &names);
-                self.pending_global_search_events.extend(events);
+                super::render_search_results_tab(ui, self.files, self.global_search, self.pending_global_search_events);
             }
             Tab::Workspace(workspace_id) => {
                 render_workspace_tab(
@@ -448,12 +330,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     self.pending_template_runs,
                 );
             }
-            Tab::Compare(compare_id) => match self.compares.get_mut(compare_id) {
-                Some(session) => crate::compare::tab::render_compare_tab(ui, session, self.state),
-                None => {
-                    ui.colored_label(egui::Color32::RED, format!("missing compare {compare_id:?}"));
-                }
-            },
+            Tab::Compare(compare_id) => super::render_compare_tab(ui, self.compares, *compare_id, self.state),
         }
     }
 

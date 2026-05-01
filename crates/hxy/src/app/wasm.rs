@@ -17,7 +17,6 @@ use super::HashMap;
 use super::HxyApp;
 use super::TabFocus;
 use super::apply_global_search_events;
-use super::console_ui;
 use super::format_file_tab_title;
 use super::format_workspace_tab_title;
 use super::install_fonts;
@@ -84,6 +83,7 @@ impl HxyApp {
             next_compare_id: 1,
             inspector: crate::panels::inspector::InspectorState::default(),
             decoders: crate::panels::inspector::default_decoders(),
+            console: std::collections::VecDeque::new(),
         }
     }
 
@@ -559,6 +559,7 @@ impl eframe::App for HxyApp {
                     pending_global_search_events: &mut self.pending_global_search_events,
                     inspector: &mut self.inspector,
                     decoders: &self.decoders,
+                    console: &self.console,
                     pending_vfs_opens: &mut pending_vfs_opens,
                     pending_close: &mut pending_close,
                     pending_strings_run: &mut pending_strings_run,
@@ -675,6 +676,7 @@ struct WasmTabViewer<'a> {
     pending_global_search_events: &'a mut Vec<crate::search::global::GlobalSearchEvent>,
     inspector: &'a mut crate::panels::inspector::InspectorState,
     decoders: &'a [Arc<dyn crate::panels::inspector::Decoder>],
+    console: &'a std::collections::VecDeque<ConsoleEntry>,
     /// Pending VFS-entry opens queued by the workspace's inner VFS
     /// tree this frame. Drained after the dock pass so we can mutate
     /// `files` without holding a borrow into `workspaces`.
@@ -685,20 +687,6 @@ struct WasmTabViewer<'a> {
     pending_checksums_run: &'a mut Vec<FileId>,
     pending_checksums_copy: &'a mut Vec<String>,
     pending_entropy_recompute: &'a mut Vec<FileId>,
-}
-
-fn inspector_window_wasm(file: &OpenFile) -> Option<(hxy_core::ByteOffset, Vec<u8>)> {
-    let sel = file.editor.selection()?;
-    let caret = sel.cursor;
-    let total = file.editor.source().len().get();
-    if total == 0 {
-        return None;
-    }
-    let start = caret.get();
-    let end = (start + 16).min(total);
-    let range = hxy_core::ByteRange::new(caret, hxy_core::ByteOffset::new(end)).ok()?;
-    let bytes = file.editor.source().read(range).ok()?;
-    Some((caret, bytes))
 }
 
 impl egui_dock::TabViewer for WasmTabViewer<'_> {
@@ -810,100 +798,31 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                 }
             }
             Tab::Inspector => {
-                let bytes_for_inspector =
-                    self.last_active_file.and_then(|id| self.files.get(&id)).and_then(inspector_window_wasm);
-                let (caret, bytes) = match bytes_for_inspector.as_ref() {
-                    Some((c, b)) => (Some(c.get()), b.as_slice()),
-                    None => (None, &[] as &[u8]),
-                };
-                crate::panels::inspector::show(ui, self.inspector, self.decoders, caret, bytes);
+                super::render_inspector_tab(ui, self.inspector, self.decoders, self.files, *self.last_active_file)
             }
             Tab::Strings(file_id) => {
-                let pinned = *file_id;
-                if let Some(file) = self.files.get_mut(&pinned) {
-                    if file.strings_panel.config.range.is_empty() {
-                        let len = file.editor.source().len().get();
-                        if let Ok(range) =
-                            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                        {
-                            file.strings_panel.config.range = range;
-                        }
-                    }
-                    let label = file.display_name.clone();
-                    let events = match file.virtual_base {
-                        Some(base) => {
-                            crate::panels::strings::show_with_vaddr(ui, Some(&label), &mut file.strings_panel, base)
-                        }
-                        None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
-                    };
-                    for ev in events {
-                        match ev {
-                            crate::panels::strings::StringsEvent::Run => self.pending_strings_run.push(pinned),
-                            crate::panels::strings::StringsEvent::Jump { offset, end } => {
-                                self.pending_strings_jump.push((pinned, offset, end));
-                            }
-                        }
-                    }
-                } else {
-                    ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
-                }
+                super::render_strings_tab(
+                    ui,
+                    self.files,
+                    *file_id,
+                    self.pending_strings_run,
+                    self.pending_strings_jump,
+                );
             }
             Tab::Checksums(file_id) => {
-                let pinned = *file_id;
-                if let Some(file) = self.files.get_mut(&pinned) {
-                    if file.checksums_panel.config.range.is_empty() {
-                        let len = file.editor.source().len().get();
-                        if let Ok(range) =
-                            hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len))
-                        {
-                            file.checksums_panel.config.range = range;
-                        }
-                    }
-                    let label = file.display_name.clone();
-                    let events = match file.virtual_base {
-                        Some(base) => {
-                            crate::panels::checksums::show_with_vaddr(ui, Some(&label), &mut file.checksums_panel, base)
-                        }
-                        None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
-                    };
-                    for ev in events {
-                        match ev {
-                            crate::panels::checksums::ChecksumsEvent::Run => {
-                                self.pending_checksums_run.push(pinned);
-                            }
-                            crate::panels::checksums::ChecksumsEvent::Copy(text) => {
-                                self.pending_checksums_copy.push(text);
-                            }
-                        }
-                    }
-                } else {
-                    ui.colored_label(egui::Color32::RED, format!("missing file {pinned:?}"));
-                }
+                super::render_checksums_tab(
+                    ui,
+                    self.files,
+                    *file_id,
+                    self.pending_checksums_run,
+                    self.pending_checksums_copy,
+                );
             }
             Tab::Entropy(file_id) => {
-                let pinned = *file_id;
-                let (label, state, running) = match self.files.get(&pinned) {
-                    Some(f) => (Some(f.display_name.as_str()), f.entropy.as_ref(), f.entropy_running.is_some()),
-                    None => (None, None, false),
-                };
-                let mut clicked = false;
-                crate::panels::entropy::show(ui, label, state, running, &mut clicked);
-                if clicked {
-                    self.pending_entropy_recompute.push(pinned);
-                }
+                super::render_entropy_tab(ui, self.files, *file_id, self.pending_entropy_recompute);
             }
-            Tab::Memory => {
-                let labels = crate::panels::memory::ViewLabels::from_files(self.files);
-                crate::panels::memory::memory_ui(ui, self.byte_cache, &labels);
-            }
-            Tab::Console => {
-                // Wasm has no log writers wired (plugin host /
-                // template runner / file watcher are all desktop-
-                // only) so the buffer is always empty -- console_ui
-                // renders the "no entries yet" placeholder.
-                let empty: std::collections::VecDeque<ConsoleEntry> = std::collections::VecDeque::new();
-                console_ui(ui, &empty);
-            }
+            Tab::Memory => super::render_memory_tab(ui, self.files, self.byte_cache),
+            Tab::Console => super::render_console_tab(ui, self.console),
             Tab::Plugins => {
                 // Plugin manager (browse / install / uninstall) is
                 // desktop-only -- wasmtime + filesystem operations
@@ -916,17 +835,9 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                     ui.weak(hxy_i18n::t("plugins-wasm-unavailable"));
                 });
             }
-            Tab::Compare(compare_id) => match self.compares.get_mut(compare_id) {
-                Some(session) => crate::compare::tab::render_compare_tab(ui, session, self.state),
-                None => {
-                    ui.colored_label(egui::Color32::RED, format!("missing compare {compare_id:?}"));
-                }
-            },
+            Tab::Compare(compare_id) => super::render_compare_tab(ui, self.compares, *compare_id, self.state),
             Tab::SearchResults => {
-                let names: std::collections::HashMap<FileId, String> =
-                    self.files.iter().map(|(id, f)| (*id, f.display_name.clone())).collect();
-                let events = crate::search::global::show(ui, self.global_search, &names);
-                self.pending_global_search_events.extend(events);
+                super::render_search_results_tab(ui, self.files, self.global_search, self.pending_global_search_events);
             }
         }
     }
