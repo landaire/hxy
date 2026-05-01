@@ -15,7 +15,6 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dialogs;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod shortcuts;
 
 use std::collections::HashMap;
@@ -4938,7 +4937,6 @@ fn sync_native_menu_state(app: &mut HxyApp) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn toggle_active_edit_mode(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -4956,43 +4954,55 @@ pub(crate) fn toggle_active_edit_mode(app: &mut HxyApp) {
     file.editor.set_edit_mode(next);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Paste from the OS clipboard at the active tab's cursor. The
+/// desktop reads via arboard; on wasm the only entry point is the
+/// keyboard shortcut handler which threads `egui::Event::Paste`
+/// through `dispatch_paste_shortcut`, so the explicit-palette
+/// dispatch on wasm has no clipboard text to source and just
+/// no-ops (the user picks the entry from the palette but no
+/// platform clipboard text is reachable from here).
 pub(crate) fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
     let Some(id) = active_file_id(app) else { return };
     let edit_mode = app.files.get(&id).map(|f| f.editor.edit_mode());
     if edit_mode != Some(crate::files::EditMode::Mutable) {
         return;
     }
-    let text = match crate::files::paste::read_text() {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(error = %e, "read clipboard");
-            return;
-        }
-    };
-    let bytes = if as_hex {
-        match crate::files::paste::parse_hex_clipboard(&text) {
-            Ok(b) => b,
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let text = match crate::files::paste::read_text() {
+            Ok(t) => t,
             Err(e) => {
-                app.console_log(
-                    ConsoleSeverity::Warning,
-                    "Paste as hex",
-                    format!("clipboard text is not valid hex: {e}"),
-                );
+                tracing::warn!(error = %e, "read clipboard");
                 return;
             }
+        };
+        let bytes = if as_hex {
+            match crate::files::paste::parse_hex_clipboard(&text) {
+                Ok(b) => b,
+                Err(e) => {
+                    app.console_log(
+                        ConsoleSeverity::Warning,
+                        "Paste as hex",
+                        format!("clipboard text is not valid hex: {e}"),
+                    );
+                    return;
+                }
+            }
+        } else {
+            text.into_bytes()
+        };
+        if bytes.is_empty() {
+            return;
         }
-    } else {
-        text.into_bytes()
-    };
-    if bytes.is_empty() {
-        return;
+        let Some(file) = app.files.get_mut(&id) else { return };
+        crate::app::shortcuts::paste_bytes_at_cursor(file, bytes);
     }
-    let Some(file) = app.files.get_mut(&id) else { return };
-    crate::app::shortcuts::paste_bytes_at_cursor(file, bytes);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (as_hex, id);
+    }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn undo_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -5001,7 +5011,6 @@ pub(crate) fn undo_active_file(app: &mut HxyApp) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn redo_active_file(app: &mut HxyApp) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
@@ -5014,7 +5023,6 @@ pub(crate) fn redo_active_file(app: &mut HxyApp) {
 /// after an undo or redo so the user can see where the change
 /// landed. Also resets the nibble pointer and `last_cursor_offset`
 /// so typing after the jump starts on the high nibble.
-#[cfg(not(target_arch = "wasm32"))]
 fn jump_cursor_to(file: &mut crate::files::OpenFile, offset: u64) {
     let len = file.editor.source().len().get();
     let clamped = offset.min(len.saturating_sub(1));
@@ -5029,24 +5037,33 @@ fn jump_cursor_to(file: &mut crate::files::OpenFile, offset: u64) {
 /// already on screen. Uses the active template instance's
 /// boundaries; switching tabs in the template panel changes which
 /// fields the jump traverses.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn jump_to_template_field(app: &mut HxyApp, forward: bool) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get_mut(&id) else { return };
-    let Some(template) = file.active_template() else { return };
-    let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-    let target = if forward {
-        let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() <= cursor);
-        template.state.leaf_boundaries.get(idx).map(|(o, _)| o.get())
-    } else {
-        let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() < cursor);
-        if idx == 0 { None } else { template.state.leaf_boundaries.get(idx - 1).map(|(o, _)| o.get()) }
-    };
-    let Some(target) = target else { return };
-    jump_cursor_to(file, target);
-    let target_off = hxy_core::ByteOffset::new(target);
-    if !file.editor.is_offset_visible(target_off) {
-        file.editor.set_scroll_to_byte(target_off);
+    // Templates are desktop-only (the runner needs wasmtime), so on
+    // wasm there are no field boundaries to traverse and the jump
+    // is a no-op.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(template) = file.active_template() else { return };
+        let cursor = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
+        let target = if forward {
+            let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() <= cursor);
+            template.state.leaf_boundaries.get(idx).map(|(o, _)| o.get())
+        } else {
+            let idx = template.state.leaf_boundaries.partition_point(|(o, _)| o.get() < cursor);
+            if idx == 0 { None } else { template.state.leaf_boundaries.get(idx - 1).map(|(o, _)| o.get()) }
+        };
+        let Some(target) = target else { return };
+        jump_cursor_to(file, target);
+        let target_off = hxy_core::ByteOffset::new(target);
+        if !file.editor.is_offset_visible(target_off) {
+            file.editor.set_scroll_to_byte(target_off);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (file, forward);
     }
 }
 
@@ -5757,33 +5774,7 @@ impl TabViewer for HxyTabViewer<'_> {
                 hxy_i18n::t_args("tab-checksums", &[("name", name)]).into()
             }
             Tab::File(id) => match self.files.get(id) {
-                Some(f) => {
-                    // Indicators sit to the left of the name in fixed
-                    // order: load-status glyph (spinner / warning) for
-                    // VFS-entry tabs whose source is still being
-                    // fetched, then lock if read-only, then a bullet
-                    // for unsaved edits, then the filename.
-                    let mut prefix = String::new();
-                    match &f.load_status {
-                        crate::files::LoadStatus::Ready => {}
-                        crate::files::LoadStatus::Loading => {
-                            prefix.push_str(egui_phosphor::regular::CIRCLE_NOTCH);
-                            prefix.push(' ');
-                        }
-                        crate::files::LoadStatus::Failed(_) => {
-                            prefix.push_str(egui_phosphor::regular::WARNING);
-                            prefix.push(' ');
-                        }
-                    }
-                    if matches!(f.editor.edit_mode(), crate::files::EditMode::Readonly) {
-                        prefix.push_str(egui_phosphor::regular::LOCK);
-                        prefix.push(' ');
-                    }
-                    if f.editor.is_dirty() {
-                        prefix.push_str("\u{2022} ");
-                    }
-                    format!("{prefix}{}", f.display_name).into()
-                }
+                Some(f) => format_file_tab_title(f).into(),
                 None => format!("file-{}", id.get()).into(),
             },
             #[cfg(not(target_arch = "wasm32"))]
@@ -5797,21 +5788,7 @@ impl TabViewer for HxyTabViewer<'_> {
             }
             Tab::Workspace(workspace_id) => match self.workspaces.get(workspace_id) {
                 Some(w) => match self.files.get(&w.editor_id) {
-                    Some(f) => {
-                        // Same dirty / readonly indicators as Tab::File,
-                        // plus a tree-structure icon so the user can tell
-                        // at a glance that this tab nests sub-tabs.
-                        let mut prefix = String::from(egui_phosphor::regular::TREE_STRUCTURE);
-                        prefix.push(' ');
-                        if matches!(f.editor.edit_mode(), crate::files::EditMode::Readonly) {
-                            prefix.push_str(egui_phosphor::regular::LOCK);
-                            prefix.push(' ');
-                        }
-                        if f.editor.is_dirty() {
-                            prefix.push_str("\u{2022} ");
-                        }
-                        format!("{prefix}{}", f.display_name).into()
-                    }
+                    Some(f) => format_workspace_tab_title(f).into(),
                     None => format!("workspace-{}", workspace_id.get()).into(),
                 },
                 None => format!("workspace-{}", workspace_id.get()).into(),
@@ -6751,6 +6728,47 @@ fn format_console_time(ts: jiff::Timestamp) -> String {
     format!("{:02}:{:02}:{:02}", zoned.hour(), zoned.minute(), zoned.second())
 }
 
+/// Build the tab-bar title for a `Tab::File`, including the
+/// load-status / read-only / dirty indicators desktop shows.
+/// Universal so the wasm tab viewer renders identical titles.
+pub(crate) fn format_file_tab_title(file: &OpenFile) -> String {
+    let mut prefix = String::new();
+    match &file.load_status {
+        crate::files::LoadStatus::Ready => {}
+        crate::files::LoadStatus::Loading => {
+            prefix.push_str(egui_phosphor::regular::CIRCLE_NOTCH);
+            prefix.push(' ');
+        }
+        crate::files::LoadStatus::Failed(_) => {
+            prefix.push_str(egui_phosphor::regular::WARNING);
+            prefix.push(' ');
+        }
+    }
+    if matches!(file.editor.edit_mode(), crate::files::EditMode::Readonly) {
+        prefix.push_str(egui_phosphor::regular::LOCK);
+        prefix.push(' ');
+    }
+    if file.editor.is_dirty() {
+        prefix.push_str("\u{2022} ");
+    }
+    format!("{prefix}{}", file.display_name)
+}
+
+/// Build the tab-bar title for a `Tab::Workspace` -- adds the
+/// tree-structure icon to the standard file title.
+pub(crate) fn format_workspace_tab_title(file: &OpenFile) -> String {
+    let mut prefix = String::from(egui_phosphor::regular::TREE_STRUCTURE);
+    prefix.push(' ');
+    if matches!(file.editor.edit_mode(), crate::files::EditMode::Readonly) {
+        prefix.push_str(egui_phosphor::regular::LOCK);
+        prefix.push(' ');
+    }
+    if file.editor.is_dirty() {
+        prefix.push_str("\u{2022} ");
+    }
+    format!("{prefix}{}", file.display_name)
+}
+
 fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     ui.vertical_centered(|ui| {
         ui.add_space(32.0);
@@ -7469,6 +7487,17 @@ impl eframe::App for HxyApp {
                 self.palette.open_at(crate::commands::palette::Mode::QuickOpen);
             }
         }
+        // Shared shortcut handlers: Cmd+Z / Cmd+Shift+Z (undo/redo),
+        // Cmd+N (new), Cmd+E (toggle edit), Cmd+V / Cmd+Shift+V
+        // (paste / paste-as-hex). Same code paths desktop runs.
+        crate::app::shortcuts::dispatch_save_shortcut(&ctx, self);
+        crate::app::shortcuts::dispatch_paste_shortcut(&ctx, self);
+        // Tab-bar focus + cycling: Ctrl+Tab / Ctrl+Shift+Tab cycle
+        // tabs in the focused leaf; Alt+Tab toggles inner/outer
+        // dock focus; Cmd+K stages the visual focus picker.
+        crate::tabs::focus::dispatch_tab_focus_toggle(&ctx, self);
+        crate::tabs::focus::dispatch_focus_pane_shortcut(&ctx, self);
+        crate::tabs::focus::dispatch_tab_cycle(&ctx, self);
         if toggle_find
             && let Some(id) = self.last_active_file
             && let Some(file) = self.files.get_mut(&id)
@@ -7734,25 +7763,31 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
     }
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        let panel_title = |id: &FileId, label: &str| -> egui::WidgetText {
+        let panel_title = |id: &FileId, label_key: &str| -> egui::WidgetText {
             let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("(missing)");
-            format!("{label} ({name})").into()
+            hxy_i18n::t_args(label_key, &[("name", name)]).into()
         };
         match tab {
-            Tab::Welcome => "Welcome".into(),
-            Tab::Settings => "Settings".into(),
-            Tab::Console => "Console".into(),
-            Tab::Inspector => "Inspector".into(),
-            Tab::Plugins => "Plugins".into(),
-            Tab::Memory => "Memory".into(),
+            Tab::Welcome => hxy_i18n::t("tab-welcome").into(),
+            Tab::Settings => hxy_i18n::t("tab-settings").into(),
+            Tab::Console => hxy_i18n::t("tab-console").into(),
+            Tab::Inspector => hxy_i18n::t("tab-inspector").into(),
+            Tab::Plugins => hxy_i18n::t("tab-plugins").into(),
+            Tab::Memory => hxy_i18n::t("tab-memory").into(),
             Tab::File(id) => match self.files.get(id) {
-                Some(f) => f.display_name.clone().into(),
+                Some(f) => format_file_tab_title(f).into(),
                 None => format!("file-{}", id.get()).into(),
             },
-            Tab::Workspace(id) => format!("workspace-{}", id.get()).into(),
-            Tab::Entropy(id) => panel_title(id, "Entropy"),
-            Tab::Strings(id) => panel_title(id, "Strings"),
-            Tab::Checksums(id) => panel_title(id, "Checksums"),
+            Tab::Workspace(id) => match self.workspaces.get(id) {
+                Some(w) => match self.files.get(&w.editor_id) {
+                    Some(f) => format_workspace_tab_title(f).into(),
+                    None => format!("workspace-{}", id.get()).into(),
+                },
+                None => format!("workspace-{}", id.get()).into(),
+            },
+            Tab::Entropy(id) => panel_title(id, "tab-entropy"),
+            Tab::Strings(id) => panel_title(id, "tab-strings"),
+            Tab::Checksums(id) => panel_title(id, "tab-checksums"),
         }
     }
 
@@ -8211,6 +8246,70 @@ fn build_wasm_palette_entries(
         egui_palette::Entry::new(hxy_i18n::t("palette-toggle-vim"), Action::InvokeCommand(PaletteCommand::ToggleVim))
             .with_icon(icon::KEYBOARD),
     ]);
+    // Editing: undo/redo and paste variants. Wired through the
+    // shared shortcut helpers; same dispatch as desktop palette.
+    use crate::commands::shortcuts::PASTE;
+    use crate::commands::shortcuts::PASTE_AS_HEX;
+    use crate::commands::shortcuts::REDO;
+    use crate::commands::shortcuts::UNDO;
+    out.extend([
+        egui_palette::Entry::new(hxy_i18n::t("palette-undo"), Action::InvokeCommand(PaletteCommand::Undo))
+            .with_shortcut(fmt(&UNDO))
+            .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
+            .with_disabled(!has_active),
+        egui_palette::Entry::new(hxy_i18n::t("palette-redo"), Action::InvokeCommand(PaletteCommand::Redo))
+            .with_shortcut(fmt(&REDO))
+            .with_icon(icon::ARROW_CLOCKWISE)
+            .with_disabled(!has_active),
+        egui_palette::Entry::new(hxy_i18n::t("palette-paste"), Action::InvokeCommand(PaletteCommand::Paste))
+            .with_shortcut(fmt(&PASTE))
+            .with_icon(icon::CLIPBOARD)
+            .with_disabled(!has_active),
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-paste-as-hex"),
+            Action::InvokeCommand(PaletteCommand::PasteAsHex),
+        )
+        .with_shortcut(fmt(&PASTE_AS_HEX))
+        .with_icon(icon::CLIPBOARD_TEXT)
+        .with_disabled(!has_active),
+    ]);
+    // Selection-scoped strings / checksums (in addition to whole-
+    // file already in the list above).
+    if has_selection {
+        out.extend([
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-strings-selection"),
+                Action::InvokeCommand(PaletteCommand::FindStringsSelection),
+            )
+            .with_icon(icon::TEXT_AA),
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-checksums-selection"),
+                Action::InvokeCommand(PaletteCommand::CalculateChecksumsSelection),
+            )
+            .with_icon(icon::FINGERPRINT),
+        ]);
+    }
+    // BrowseVfs / ToggleWorkspaceVfs -- only shown when meaningful.
+    let has_handler =
+        app.last_active_file.and_then(|id| app.files.get(&id)).is_some_and(|f| f.detected_handler.is_some());
+    if has_handler {
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-browse-vfs"),
+                Action::InvokeCommand(PaletteCommand::BrowseVfs),
+            )
+            .with_icon(icon::TREE_STRUCTURE),
+        );
+    }
+    if !app.workspaces.is_empty() {
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-toggle-workspace-vfs"),
+                Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs),
+            )
+            .with_icon(icon::TREE_STRUCTURE),
+        );
+    }
     if has_active {
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-entry"), Action::SwitchMode(Mode::GoToOffset))
@@ -8476,6 +8575,76 @@ impl HxyApp {
                 PaletteCommand::ToggleSettings => self.toggle_tab_wasm(Tab::Settings),
                 PaletteCommand::ToggleMemory => self.toggle_tab_wasm(Tab::Memory),
                 PaletteCommand::ToggleVim => crate::app::toggle_vim_mode(self),
+                PaletteCommand::Undo => crate::app::undo_active_file(self),
+                PaletteCommand::Redo => crate::app::redo_active_file(self),
+                PaletteCommand::Paste => crate::app::paste_active_file(self, false),
+                PaletteCommand::PasteAsHex => crate::app::paste_active_file(self, true),
+                PaletteCommand::JumpNextField => crate::app::jump_to_template_field(self, true),
+                PaletteCommand::JumpPrevField => crate::app::jump_to_template_field(self, false),
+                PaletteCommand::FindStringsSelection => {
+                    if let Some(id) = self.last_active_file {
+                        if let Some(file) = self.files.get_mut(&id)
+                            && let Some(sel) = file.editor.selection()
+                        {
+                            file.strings_panel.config.range = sel.range();
+                        }
+                        self.toggle_tab_wasm(Tab::Strings(id));
+                    }
+                }
+                PaletteCommand::CalculateChecksumsSelection => {
+                    if let Some(id) = self.last_active_file {
+                        if let Some(file) = self.files.get_mut(&id)
+                            && let Some(sel) = file.editor.selection()
+                        {
+                            file.checksums_panel.config.range = sel.range();
+                        }
+                        self.toggle_tab_wasm(Tab::Checksums(id));
+                    }
+                }
+                PaletteCommand::FindStringsWithOptions => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Strings(id));
+                    }
+                }
+                PaletteCommand::ShowEntropy => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Entropy(id));
+                    }
+                }
+                PaletteCommand::ToggleEntropy => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Entropy(id));
+                    }
+                }
+                PaletteCommand::BrowseVfs => {
+                    if let Some(id) = self.last_active_file
+                        && self.try_push_as_workspace(id)
+                        && let Some(path) = self.dock.find_tab(&Tab::File(id))
+                    {
+                        let _ = self.dock.remove_tab(path);
+                    }
+                }
+                PaletteCommand::ToggleWorkspaceVfs => {
+                    if let Some(workspace_id) = crate::app::active_workspace_id(self)
+                        && let Some(workspace) = self.workspaces.get_mut(&workspace_id)
+                    {
+                        let already = workspace
+                            .dock
+                            .iter_all_tabs()
+                            .any(|(_, t)| matches!(t, crate::files::WorkspaceTab::VfsTree));
+                        if already {
+                            if let Some(path) = workspace.dock.find_tab(&crate::files::WorkspaceTab::VfsTree) {
+                                let _ = workspace.dock.remove_tab(path);
+                            }
+                        } else {
+                            workspace.dock.main_surface_mut().split_left(
+                                egui_dock::NodeIndex::root(),
+                                0.3,
+                                vec![crate::files::WorkspaceTab::VfsTree],
+                            );
+                        }
+                    }
+                }
                 PaletteCommand::SplitRight => {
                     crate::tabs::dock_ops::dock_split_focused(self, crate::commands::DockDir::Right)
                 }

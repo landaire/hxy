@@ -66,6 +66,12 @@ welcome-recent-empty = No recent files yet.
 
 toolbar-open-file = Open file...
 toolbar-browse-vfs = Browse VFS
+palette-browse-vfs = Browse VFS
+palette-toggle-workspace-vfs = Toggle VFS panel
+palette-undo = Undo
+palette-redo = Redo
+palette-paste = Paste at cursor
+palette-paste-as-hex = Paste as hex at cursor
 palette-browse-vfs-unavailable = no VFS handler for this file
 toolbar-run-template = Run template...
 settings-offset-base = Offset base

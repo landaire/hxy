@@ -11,7 +11,6 @@ pub mod copy;
 pub mod new;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod open;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod patch_persist;

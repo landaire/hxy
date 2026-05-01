@@ -1,8 +1,6 @@
 //! Tab cycling, pane-pick dispatch, and the inner/outer dock
 //! focus toggle.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::app::HxyApp;
 use crate::app::TabFocus;
 use crate::commands::shortcuts::FOCUS_PANE;

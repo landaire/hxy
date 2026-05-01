@@ -39,28 +39,33 @@ pub fn dispatch_jump_field_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
 /// New-file / save / save-as / toggle-edit-mode / undo / redo
 /// shortcuts. All consumed in one input borrow so a Cmd+Shift+S
 /// doesn't bleed into the bare Cmd+S handler.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     use crate::commands::shortcuts::NEW_FILE;
     use crate::commands::shortcuts::REDO;
+    #[cfg(not(target_arch = "wasm32"))]
     use crate::commands::shortcuts::SAVE_FILE;
+    #[cfg(not(target_arch = "wasm32"))]
     use crate::commands::shortcuts::SAVE_FILE_AS;
     use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
     use crate::commands::shortcuts::UNDO;
 
-    let (new_file, save_as, save, toggle, redo, undo) = ctx.input_mut(|i| {
+    let (new_file, toggle, redo, undo) = ctx.input_mut(|i| {
         (
             i.consume_shortcut(&NEW_FILE),
-            i.consume_shortcut(&SAVE_FILE_AS),
-            i.consume_shortcut(&SAVE_FILE),
             i.consume_shortcut(&TOGGLE_EDIT_MODE),
             i.consume_shortcut(&REDO),
             i.consume_shortcut(&UNDO),
         )
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    let (save_as, save) = ctx.input_mut(|i| (i.consume_shortcut(&SAVE_FILE_AS), i.consume_shortcut(&SAVE_FILE)));
     if new_file {
+        #[cfg(not(target_arch = "wasm32"))]
         crate::files::new::handle_new_file(app);
+        #[cfg(target_arch = "wasm32")]
+        app.open_bytes_wasm("Untitled".to_owned(), Vec::new());
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if save_as {
         crate::files::save::save_active_file(app, true);
     } else if save {
@@ -76,16 +81,11 @@ pub fn dispatch_save_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn dispatch_save_shortcut(_ctx: &egui::Context, _app: &mut HxyApp) {}
-
 /// Clipboard paste dispatcher. Consumes Cmd+V and Cmd+Shift+V plus any
 /// matching `Event::Paste` eframe auto-generated, reads the clipboard
 /// through `arboard`, parses as hex when the shift variant fired, and
 /// writes the result at the active tab's cursor.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    use crate::app::ConsoleSeverity;
     use crate::commands::shortcuts::PASTE;
     use crate::commands::shortcuts::PASTE_AS_HEX;
 
@@ -115,25 +115,42 @@ pub fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     if file.editor.edit_mode() != crate::files::EditMode::Mutable {
         return;
     }
+    // Desktop falls back to arboard when there's no Event::Paste --
+    // happens with explicit Cmd+V from the menu / shortcut while
+    // egui already has focus on a non-editable widget. On wasm
+    // arboard isn't available; egui delivers every Cmd+V as a
+    // Paste event already, so an empty event_text just means "no
+    // clipboard text to paste".
     let text = match paste_event_text {
         Some(t) if !t.is_empty() => t,
-        _ => match crate::files::paste::read_text() {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(error = %e, "read clipboard");
+        _ => {
+            #[cfg(not(target_arch = "wasm32"))]
+            match crate::files::paste::read_text() {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(error = %e, "read clipboard");
+                    return;
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
                 return;
             }
-        },
+        }
     };
     let bytes = if paste_hex {
         match crate::files::paste::parse_hex_clipboard(&text) {
             Ok(b) => b,
             Err(e) => {
+                #[cfg(not(target_arch = "wasm32"))]
                 app.console_log(
-                    ConsoleSeverity::Warning,
+                    crate::app::ConsoleSeverity::Warning,
                     "Paste as hex",
                     format!("clipboard text is not valid hex: {e}"),
                 );
+                #[cfg(target_arch = "wasm32")]
+                tracing::warn!(error = %e, "paste as hex");
+                let _ = app;
                 return;
             }
         }
@@ -151,7 +168,6 @@ pub fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
 /// write is truncated to what fits before EOF, leaves an empty
 /// clipboard as a no-op, and parks the caret just past the last
 /// written byte so the next paste / keystroke lands after it.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn paste_bytes_at_cursor(file: &mut crate::files::OpenFile, bytes: Vec<u8>) {
     let source_len = file.editor.source().len().get();
     if source_len == 0 {

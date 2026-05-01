@@ -3,7 +3,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod close;
 pub mod dock_ops;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod focus;
 pub mod pane_pick;
 #[cfg(not(target_arch = "wasm32"))]
