@@ -24,4 +24,12 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+
+    /// Source needs the chunk(s) covering the requested range to be
+    /// async-primed before this sync read can succeed. Currently only
+    /// raised by the wasm `Blob`-backed source, where reads must hop
+    /// through `FileReader.readAsArrayBuffer` (async) before the bytes
+    /// are visible to the sync `HexSource::read` API.
+    #[error("source not primed for {range} (chunk {missing_chunk} missing)")]
+    NotPrimed { range: ByteRange, missing_chunk: u64 },
 }

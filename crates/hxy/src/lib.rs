@@ -34,6 +34,8 @@ pub mod menu;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_blob_source;
 
 pub use app::HxyApp;
 

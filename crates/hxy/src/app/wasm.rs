@@ -87,17 +87,25 @@ impl HxyApp {
         }
     }
 
-    /// Open an in-memory byte buffer as a fresh file tab. Mirrors
-    /// the desktop `HxyApp::open_in_memory` -> `open(_, _, _, _, _,
-    /// as_workspace=false)` path: detect the VFS handler so the
-    /// "Browse VFS" palette entry can light up, but the tab lands
-    /// as a plain `Tab::File`. The user invokes `BrowseVfs` to
-    /// mount as a workspace, same as on desktop. Auto-mounting
-    /// would diverge from desktop behaviour for no good reason.
+    /// Open an in-memory byte buffer as a fresh file tab. Wraps
+    /// `bytes` in a [`hxy_core::MemorySource`] and forwards to
+    /// [`Self::open_source_wasm`] -- used by drag-and-drop, "New",
+    /// and reopen-closed-tab where the bytes are already in hand.
     pub fn open_bytes_wasm(&mut self, name: String, bytes: Vec<u8>) -> FileId {
+        let source: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
+        self.open_source_wasm(name, source)
+    }
+
+    /// Open an arbitrary [`hxy_core::HexSource`] as a fresh file tab.
+    /// The source must be ready for the initial detect-handler read
+    /// (the first 4 KiB) -- for [`crate::wasm_blob_source::WasmBlobSource`]
+    /// callers should `.await prime(0..min(len, 4096))` (or more)
+    /// before invoking this. Mirrors the desktop `HxyApp::open_in_memory`
+    /// path: we detect the VFS handler so "Browse VFS" can light up,
+    /// but the tab lands as a plain `Tab::File`.
+    pub fn open_source_wasm(&mut self, name: String, source: Arc<dyn hxy_core::HexSource>) -> FileId {
         let id = FileId::new(self.next_file_id);
         self.next_file_id += 1;
-        let source: Arc<dyn hxy_core::HexSource> = Arc::new(hxy_core::MemorySource::new(bytes));
         let mut file = OpenFile::from_source(id, name, None, source, &self.byte_cache);
         if let Ok(range) = hxy_core::ByteRange::new(
             hxy_core::ByteOffset::new(0),
@@ -479,9 +487,10 @@ impl eframe::App for HxyApp {
                     wasm_bindgen_futures::spawn_local(async move {
                         let Some(handles) = rfd::AsyncFileDialog::new().pick_files().await else { return };
                         for handle in handles {
-                            let bytes = handle.read().await;
                             let name = handle.file_name();
-                            push_open_request_wasm(name, bytes);
+                            if let Some(source) = open_handle_as_source_wasm(handle).await {
+                                push_open_request_wasm(name, source);
+                            }
                         }
                         ctx_clone.request_repaint();
                     });
@@ -532,8 +541,8 @@ impl eframe::App for HxyApp {
                 ui.label("hxy");
             });
         });
-        for (name, bytes) in drain_open_requests_wasm() {
-            self.open_bytes_wasm(name, bytes);
+        for (name, source) in drain_open_requests_wasm() {
+            self.open_source_wasm(name, source);
         }
         let mut pending_close: Vec<FileId> = Vec::new();
         let mut pending_strings_run: Vec<FileId> = Vec::new();
@@ -937,19 +946,45 @@ fn spawn_compare_wasm(app: &mut HxyApp, a: TabSource, b: TabSource) {
     }
 }
 
-type OpenRequestWasm = (String, Vec<u8>);
+type OpenRequestWasm = (String, Arc<dyn hxy_core::HexSource>);
 
 thread_local! {
     static OPEN_INBOX_WASM: std::cell::RefCell<Vec<OpenRequestWasm>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn push_open_request_wasm(name: String, bytes: Vec<u8>) {
-    OPEN_INBOX_WASM.with(|q| q.borrow_mut().push((name, bytes)));
+fn push_open_request_wasm(name: String, source: Arc<dyn hxy_core::HexSource>) {
+    OPEN_INBOX_WASM.with(|q| q.borrow_mut().push((name, source)));
 }
 
 fn drain_open_requests_wasm() -> Vec<OpenRequestWasm> {
     OPEN_INBOX_WASM.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// Wrap an `rfd::FileHandle` from the file picker as a streaming
+/// [`crate::wasm_blob_source::WasmBlobSource`] and prime the entire
+/// file. Done on a `spawn_local` task off the render thread so the
+/// async chunk-fetches don't block the UI.
+///
+/// The "prime everything" policy keeps current behaviour intact (all
+/// downstream ops -- close-tab snapshot, save-as, search, checksums --
+/// can still read the full file via the sync `HexSource::read` API).
+/// Future work narrows the prime window to the initial viewport so
+/// large files don't pull every byte into memory; that change has to
+/// land alongside async-prime calls in front of every full-file read
+/// site, otherwise those sites would race-fail with `NotPrimed`.
+async fn open_handle_as_source_wasm(handle: rfd::FileHandle) -> Option<Arc<dyn hxy_core::HexSource>> {
+    use hxy_core::HexSource;
+    let source = crate::wasm_blob_source::WasmBlobSource::new(handle);
+    let len = source.len().get();
+    if len > 0 {
+        let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).ok()?;
+        if let Err(e) = source.prime(range).await {
+            tracing::warn!(error = %e, "wasm blob prime");
+            return None;
+        }
+    }
+    Some(Arc::new(source))
 }
 
 /// Build the wasm-side command-palette entry list. Mirrors a
@@ -1403,9 +1438,10 @@ impl HxyApp {
                     wasm_bindgen_futures::spawn_local(async move {
                         let Some(handles) = rfd::AsyncFileDialog::new().pick_files().await else { return };
                         for handle in handles {
-                            let bytes = handle.read().await;
                             let name = handle.file_name();
-                            push_open_request_wasm(name, bytes);
+                            if let Some(source) = open_handle_as_source_wasm(handle).await {
+                                push_open_request_wasm(name, source);
+                            }
                         }
                         ctx_clone.request_repaint();
                     });
