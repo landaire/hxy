@@ -246,6 +246,13 @@ pub enum Mode {
     /// current value so the user can tweak from a known
     /// baseline.
     SetPollInterval,
+    /// Argument-style mode that takes a hex / decimal address
+    /// (or empty / `0` to clear) and applies it as the active
+    /// file's [`crate::files::OpenFile::virtual_base`]. Lets the
+    /// user dial an address shift in by hand on any platform,
+    /// including wasm where the plugin-supplied prompt path
+    /// doesn't exist.
+    SetVirtualBase,
 }
 
 /// State carried while the palette is walking the user through
@@ -297,6 +304,7 @@ impl Mode {
             Mode::CompareSideB => Some(Mode::CompareSideA),
             Mode::CompareSideBRecent => Some(Mode::CompareSideB),
             Mode::SetPollInterval => Some(Mode::Main),
+            Mode::SetVirtualBase => Some(Mode::Main),
         }
     }
 }
@@ -475,6 +483,14 @@ pub enum PaletteCommand {
     /// startup uses. Listed in the palette only when the buffer
     /// is non-empty so the row doesn't sit there inert.
     ReopenClosedTab,
+    /// Switch the palette into the [`Mode::SetVirtualBase`]
+    /// argument mode. The user types an address (hex or decimal,
+    /// empty / `0` clears) and Enter applies it as the active
+    /// file's virtual base. Works on every platform; on desktop
+    /// it complements the plugin-driven prompt and the Open
+    /// File with options... dialog, on wasm it's the only entry
+    /// point.
+    SetVirtualBase,
 }
 
 #[derive(Clone)]
@@ -581,6 +597,10 @@ pub enum Action {
     /// `AppSettings::file_poll_interval_ms`. The next frame's
     /// `set_polling` call picks the new value up.
     SetPollInterval(u32),
+    /// Apply a parsed virtual base address to the active file.
+    /// `Some(addr)` sets [`crate::files::OpenFile::virtual_base`];
+    /// `None` clears it back to file-offset display.
+    SetVirtualBase(Option<u64>),
 }
 
 /// Which side of a compare pick a palette entry contributes to.
@@ -637,6 +657,7 @@ pub fn show(
             }
         }
         Mode::SetPollInterval => hxy_i18n::t("palette-hint-set-poll-interval"),
+        Mode::SetVirtualBase => hxy_i18n::t("palette-hint-set-virtual-base"),
     };
     // Argument-style modes build a single dynamic entry from the
     // query itself; fuzzy-filtering that entry against the raw
@@ -653,6 +674,7 @@ pub fn show(
             | Mode::SetColumnsGlobal
             | Mode::PluginPrompt
             | Mode::SetPollInterval
+            | Mode::SetVirtualBase
     ) || (matches!(state.mode, Mode::Main) && {
         let q = state.inner.query.trim_start();
         q.starts_with('@') || q.starts_with('=')
@@ -671,4 +693,80 @@ pub enum Outcome {
     /// pop a cascade level on Escape but always close on backdrop
     /// click (see `app.rs` `handle_command_palette` dispatch).
     Dismissed(DismissReason),
+}
+
+/// Build the single dynamic entry the [`Mode::SetVirtualBase`]
+/// argument mode shows. Empty / `0` queries clear the base (emit
+/// [`Action::SetVirtualBase(None)`]); any other absolute value
+/// becomes [`Action::SetVirtualBase(Some(addr))`]. Unparseable input
+/// produces an inline "Invalid: ..." row through
+/// [`invalid_virtual_base_entry`] so the palette stays visible.
+///
+/// Lives on the parent module rather than a submodule because the
+/// argument-parsing path is the same on desktop and wasm — keeping it
+/// here avoids ungating a whole new submodule just for one builder.
+pub fn build_virtual_base_entries(
+    out: &mut Vec<egui_palette::Entry<Action>>,
+    query: &str,
+    resolver: &dyn hxy_calculator::PathResolver,
+) {
+    use egui_phosphor::regular as icon;
+
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        out.push(
+            egui_palette::Entry::new(hxy_i18n::t("palette-set-virtual-base-clear"), Action::SetVirtualBase(None))
+                .with_icon(icon::ERASER),
+        );
+        return;
+    }
+    let parsed = match crate::commands::goto::parse_count_expr(trimmed, resolver) {
+        Ok(n) => n,
+        Err(e) => {
+            invalid_virtual_base_entry(out, trimmed, &e.to_string());
+            return;
+        }
+    };
+    let payload = if parsed == 0 { None } else { Some(parsed) };
+    let label = match payload {
+        Some(addr) => hxy_i18n::t_args("palette-set-virtual-base-fmt", &[("address", &format!("0x{addr:X}"))]),
+        None => hxy_i18n::t("palette-set-virtual-base-clear"),
+    };
+    let entry = match payload {
+        Some(_) => egui_palette::Entry::new(label, Action::SetVirtualBase(payload))
+            .with_icon(icon::TARGET)
+            .with_subtitle(format!("{parsed}")),
+        None => egui_palette::Entry::new(label, Action::SetVirtualBase(None)).with_icon(icon::ERASER),
+    };
+    out.push(entry);
+}
+
+fn invalid_virtual_base_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
+    out.push(
+        egui_palette::Entry::new(format!("{query}: {reason}"), Action::NoOp).with_icon(egui_phosphor::regular::WARNING),
+    );
+}
+
+/// Apply [`Action::SetVirtualBase`] to the active file. Universal
+/// across targets so both the desktop's `apply.rs` dispatch and the
+/// wasm inline outcome handler can share one code path. On desktop
+/// it also writes the choice into [`crate::state::OpenTabState`]
+/// (when one exists) so the user's pick survives a restart; the
+/// wasm side has no persistent open-tab record so the persistence
+/// step there is a no-op.
+pub fn apply_set_virtual_base(app: &mut crate::app::HxyApp, addr: Option<u64>) {
+    let Some(id) = crate::app::active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.virtual_base = addr;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(source) = file.source_kind.clone() else { return };
+        let mut g = app.state.write();
+        if let Some(entry) = g.open_tabs.iter_mut().find(|t| t.source == source) {
+            entry.virtual_base_choice = match addr {
+                Some(v) => Some(crate::state::VirtualBaseChoice::Accepted(v)),
+                None => Some(crate::state::VirtualBaseChoice::Declined),
+            };
+        }
+    }
 }

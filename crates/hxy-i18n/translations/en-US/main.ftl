@@ -401,6 +401,13 @@ palette-set-poll-interval-fmt = Use { $ms } ms poll interval
 palette-set-poll-interval-clamped = Use { $clamped } ms poll interval ({ $ms } clamped to range)
 palette-set-poll-interval-off = Disable polling
 
+# Virtual-base palette mode
+palette-set-virtual-base-entry = Set virtual base address...
+palette-set-virtual-base-entry-current = Set virtual base address (currently { $address })...
+palette-hint-set-virtual-base = Virtual base address (hex/decimal; empty or 0 to clear)
+palette-set-virtual-base-fmt = Use { $address } as the virtual base
+palette-set-virtual-base-clear = Clear virtual base (display file offsets)
+
 # Status-bar watch indicator
 status-watch-watching = Monitoring this file for external changes
 status-watch-not-watching = Change detection disabled for this file

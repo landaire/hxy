@@ -90,18 +90,13 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         None
     };
 
-    // Virtual base: when the user accepted the plugin's hint (or
-    // set one via Open File with options...), every address the
-    // hex view paints is shifted by the base. The address column
-    // also needs to widen to fit the bigger numbers, and an
-    // Alt-held overlay tags each row with the underlying file
-    // offset so the user can correlate without flipping a setting.
-    // Wasm has no plugin-supplied virtual base hints since the
-    // plugin host doesn't run in browsers; the field is gated.
-    #[cfg(not(target_arch = "wasm32"))]
+    // Virtual base: when the user has set one (plugin hint accepted,
+    // Open File with options..., or palette command), every address
+    // the hex view paints is shifted by the base. The address column
+    // also needs to widen to fit the bigger numbers, and an Alt-held
+    // overlay tags each row with the underlying file offset so the
+    // user can correlate without flipping a setting.
     let virtual_base = file.virtual_base.unwrap_or(0);
-    #[cfg(target_arch = "wasm32")]
-    let virtual_base: u64 = 0;
     let alt_held = ui.input(|i| i.modifiers.alt);
     let source_len = file.editor.source().len().get();
     let display_len = hxy_core::ByteLen::new(source_len.saturating_add(virtual_base));

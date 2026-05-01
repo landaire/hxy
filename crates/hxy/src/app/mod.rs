@@ -5536,14 +5536,18 @@ fn inner_active_file(workspace: &mut crate::files::Workspace) -> FileId {
 /// blank out a menu command), and finally -- when only one file is
 /// open -- that sole file. Returning `None` means there's genuinely
 /// no file to act on.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     if let Some((_, tab)) = app.dock.find_active_focused() {
+        // The Workspace arm is desktop-only; on wasm the match
+        // collapses to `Tab::File | _` which clippy wants flattened
+        // -- keep the shape so the desktop arm stays intact.
+        #[cfg_attr(target_arch = "wasm32", allow(clippy::collapsible_match, clippy::single_match))]
         match *tab {
             Tab::File(id) => {
                 app.last_active_file = Some(id);
                 return Some(id);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Tab::Workspace(workspace_id) => {
                 // The active "file" for a workspace is whatever sub-
                 // tab is currently active in its inner dock: the
@@ -6581,19 +6585,9 @@ fn status_bar_ui(
         // addresses. The tooltip still shows the alternate base of
         // whatever's primary, mirroring the no-vaddr behaviour.
         let format_value = |value: u64, base: crate::settings::OffsetBase| -> String {
-            // virtual_base lives behind a `#[cfg(not(wasm32))]`
-            // because plugin-supplied virtual bases need the
-            // plugin host. Wasm always renders raw file offsets.
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                match file.virtual_base {
-                    Some(v) => crate::view::format::format_offset_with_vaddr(value, base, v),
-                    None => crate::view::format::format_offset(value, base),
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                crate::view::format::format_offset(value, base)
+            match file.virtual_base {
+                Some(v) => crate::view::format::format_offset_with_vaddr(value, base, v),
+                None => crate::view::format::format_offset(value, base),
             }
         };
         if let Some(hov) = file.hovered {
@@ -7666,7 +7660,12 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                         }
                     }
                     let label = file.display_name.clone();
-                    let events = crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel);
+                    let events = match file.virtual_base {
+                        Some(base) => {
+                            crate::panels::strings::show_with_vaddr(ui, Some(&label), &mut file.strings_panel, base)
+                        }
+                        None => crate::panels::strings::show(ui, Some(&label), &mut file.strings_panel),
+                    };
                     for ev in events {
                         match ev {
                             crate::panels::strings::StringsEvent::Run => self.pending_strings_run.push(pinned),
@@ -7691,7 +7690,12 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                         }
                     }
                     let label = file.display_name.clone();
-                    let events = crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel);
+                    let events = match file.virtual_base {
+                        Some(base) => {
+                            crate::panels::checksums::show_with_vaddr(ui, Some(&label), &mut file.checksums_panel, base)
+                        }
+                        None => crate::panels::checksums::show(ui, Some(&label), &mut file.checksums_panel),
+                    };
                     for ev in events {
                         match ev {
                             crate::panels::checksums::ChecksumsEvent::Run => {
@@ -7760,7 +7764,21 @@ fn build_wasm_palette_entries(
     app: &HxyApp,
 ) -> Vec<egui_palette::Entry<crate::commands::palette::Action>> {
     use crate::commands::palette::Action;
+    use crate::commands::palette::Mode;
     use crate::commands::palette::PaletteCommand;
+    if matches!(app.palette.mode, Mode::SetVirtualBase) {
+        let mut out = Vec::new();
+        if !app.last_active_file.is_some_and(|id| app.files.contains_key(&id)) {
+            out.push(
+                egui_palette::Entry::new(hxy_i18n::t("palette-invalid-no-active-file"), Action::NoOp)
+                    .with_icon(egui_phosphor::regular::WARNING),
+            );
+            return out;
+        }
+        let resolver = hxy_calculator::NullResolver;
+        crate::commands::palette::build_virtual_base_entries(&mut out, app.palette.inner.query.trim(), &resolver);
+        return out;
+    }
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
     let cmd_n = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
     let cmd_w = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
@@ -7776,6 +7794,7 @@ fn build_wasm_palette_entries(
         .and_then(|id| app.files.get(&id))
         .and_then(|f| f.editor.selection())
         .is_some_and(|s| !s.range().is_empty());
+    let active_vbase = app.last_active_file.and_then(|id| app.files.get(&id)).and_then(|f| f.virtual_base);
     let mut out: Vec<egui_palette::Entry<Action>> = vec![
         egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
             .with_shortcut(fmt(&cmd_n)),
@@ -7837,6 +7856,17 @@ fn build_wasm_palette_entries(
             Action::InvokeCommand(PaletteCommand::ToggleInspector),
         ),
     ]);
+    let vbase_label = match active_vbase {
+        Some(addr) => {
+            hxy_i18n::t_args("palette-set-virtual-base-entry-current", &[("address", &format!("0x{addr:X}"))])
+        }
+        None => hxy_i18n::t("palette-set-virtual-base-entry"),
+    };
+    out.push(
+        egui_palette::Entry::new(vbase_label, Action::SwitchMode(Mode::SetVirtualBase))
+            .with_icon(egui_phosphor::regular::TARGET)
+            .with_disabled(!has_active),
+    );
     out
 }
 
@@ -7859,6 +7889,18 @@ impl HxyApp {
                 return;
             }
         };
+        match action {
+            Action::SwitchMode(mode) => {
+                self.palette.open_at(mode);
+                return;
+            }
+            Action::SetVirtualBase(addr) => {
+                self.palette.close();
+                crate::commands::palette::apply_set_virtual_base(self, addr);
+                return;
+            }
+            _ => {}
+        }
         self.palette.close();
         match action {
             Action::InvokeCommand(cmd) => match cmd {

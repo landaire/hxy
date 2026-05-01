@@ -784,6 +784,17 @@ pub fn build_palette_entries(
                     )
                     .with_icon(icon::COLUMNS),
                 );
+                let vbase_label = match offset_ctx.virtual_base {
+                    Some(addr) => hxy_i18n::t_args(
+                        "palette-set-virtual-base-entry-current",
+                        &[("address", &format!("0x{addr:X}"))],
+                    ),
+                    None => hxy_i18n::t("palette-set-virtual-base-entry"),
+                };
+                out.push(
+                    egui_palette::Entry::new(vbase_label, Action::SwitchMode(Mode::SetVirtualBase))
+                        .with_icon(icon::TARGET),
+                );
                 let has_fields = history_ctx.template.is_some_and(|t| t.field_count > 0);
                 let mut next_field = egui_palette::Entry::new(
                     hxy_i18n::t("palette-jump-next-field"),
@@ -1445,6 +1456,14 @@ pub fn build_palette_entries(
         Mode::SetPollInterval => {
             let query = app.palette.inner.query.trim();
             build_poll_interval_entries(&mut out, query, &calc_resolver);
+        }
+        Mode::SetVirtualBase => {
+            let query = app.palette.inner.query.trim();
+            if !offset_ctx.available {
+                invalid_entry(&mut out, query, &hxy_i18n::t("palette-invalid-no-active-file"));
+            } else {
+                super::build_virtual_base_entries(&mut out, query, &calc_resolver);
+            }
         }
         Mode::PluginCascade => {
             if let Some(cascade) = app.palette.plugin_cascade.as_ref() {

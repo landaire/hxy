@@ -172,6 +172,9 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
                 PaletteCommand::ReopenClosedTab => {
                     crate::tabs::close::reopen_last_closed_tab(ctx, app);
                 }
+                PaletteCommand::SetVirtualBase => {
+                    app.palette.open_at(Mode::SetVirtualBase);
+                }
             }
         }
         Action::CopyText(text) => {
@@ -325,6 +328,10 @@ pub fn apply_palette_action(ctx: &egui::Context, app: &mut HxyApp, action: Actio
             app.palette.close();
             let clamped = clamp_poll_interval_ms(ms);
             app.state.write().app.file_poll_interval_ms = clamped;
+        }
+        Action::SetVirtualBase(addr) => {
+            app.palette.close();
+            crate::commands::palette::apply_set_virtual_base(app, addr);
         }
         Action::CompareBrowse(side) => {
             let Some(path) = rfd::FileDialog::new().pick_file() else {
