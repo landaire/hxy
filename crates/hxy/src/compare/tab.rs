@@ -21,7 +21,7 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
 
     session.poll_recompute();
     let global_deadline = state.app.compare_recompute_deadline;
-    match session.needs_recompute_debounced(std::time::Instant::now()) {
+    match session.needs_recompute_debounced(web_time::Instant::now()) {
         DebouncedDecision::Idle => {}
         DebouncedDecision::WaitFor(d) => ui.ctx().request_repaint_after(d),
         DebouncedDecision::Recompute => {

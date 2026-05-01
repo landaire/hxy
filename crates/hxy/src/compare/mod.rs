@@ -30,6 +30,7 @@ use hxy_vfs::TabSource;
 use similar::Algorithm;
 use similar::DiffOp;
 use similar::capture_diff_slices;
+#[cfg(not(target_arch = "wasm32"))]
 use similar::capture_diff_slices_deadline;
 
 use crate::files::EditMode;
@@ -113,7 +114,7 @@ pub struct CompareSession {
     last_diff_fingerprint: Option<(PaneFingerprint, PaneFingerprint)>,
     /// Wall-clock time of the most recent observed mutation. Used
     /// as the start of the debounce window.
-    edit_at: Option<std::time::Instant>,
+    edit_at: Option<web_time::Instant>,
     /// Last vertical scroll position the host saw both panes
     /// agreeing on. Used by [`Self::sync_scroll`] to detect which
     /// side moved when the user dragged a scrollbar / used the
@@ -268,8 +269,23 @@ impl CompareSession {
         let ctx_clone = ctx.clone();
         let deadline_dur = deadline.as_duration();
         crate::background::submit(move || {
-            let deadline_at = std::time::Instant::now() + deadline_dur;
-            let ops = capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at));
+            // `similar::capture_diff_slices_deadline` calls
+            // `std::time::Instant::now()` internally, which panics
+            // on wasm32-unknown-unknown. Skip the deadline on wasm
+            // and run the diff to completion. The web build deals
+            // with smaller inputs so the bound rarely matters; if a
+            // genuine cap is ever needed, we can split-budget by
+            // ops processed instead of wall-clock.
+            #[cfg(not(target_arch = "wasm32"))]
+            let ops = {
+                let deadline_at = std::time::Instant::now() + deadline_dur;
+                capture_diff_slices_deadline(Algorithm::Myers, &a_bytes, &b_bytes, Some(deadline_at))
+            };
+            #[cfg(target_arch = "wasm32")]
+            let ops = {
+                let _ = deadline_dur;
+                capture_diff_slices(Algorithm::Myers, &a_bytes, &b_bytes)
+            };
             let hunks: Vec<DiffHunk> = ops.into_iter().map(diff_op_to_hunk).collect();
             let result = DiffResult { hunks, a_len: a_bytes.len() as u64, b_len: b_bytes.len() as u64 };
             let _ = tx.send(result);
@@ -374,7 +390,7 @@ impl CompareSession {
     /// running -- the host's next [`Self::poll_recompute`] call
     /// will pick up the result and any post-worker edits will
     /// re-fire the debounce naturally.
-    pub fn needs_recompute_debounced(&mut self, now: std::time::Instant) -> DebouncedDecision {
+    pub fn needs_recompute_debounced(&mut self, now: web_time::Instant) -> DebouncedDecision {
         if self.pending_recompute.is_some() {
             return DebouncedDecision::Idle;
         }
@@ -687,7 +703,7 @@ mod tests {
     #[test]
     fn debounce_idle_when_nothing_changed() {
         let mut s = session(b"abc", b"abc");
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         assert!(matches!(s.needs_recompute_debounced(now), DebouncedDecision::Idle));
     }
 
@@ -762,7 +778,7 @@ mod tests {
     fn debounce_waits_then_recomputes_after_edit() {
         let mut s = session(b"abc", b"abc");
         s.a.editor.request_write(0, vec![b'X']).unwrap();
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         match s.needs_recompute_debounced(t0) {
             DebouncedDecision::WaitFor(d) => assert!(d <= RECOMPUTE_DEBOUNCE),
             other => panic!("expected WaitFor, got {other:?}"),

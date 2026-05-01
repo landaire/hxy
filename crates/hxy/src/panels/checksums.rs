@@ -94,7 +94,7 @@ pub enum ChecksumOutcome {
 pub struct ChecksumComputation {
     pub inbox: egui_inbox::UiInbox<ChecksumOutcome>,
     pub file_id: FileId,
-    pub started: std::time::Instant,
+    pub started: web_time::Instant,
 }
 
 #[derive(Default)]
@@ -205,7 +205,7 @@ pub fn spawn_compute(
     config: ChecksumConfig,
 ) -> ChecksumComputation {
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     crate::background::submit(move || {
         let outcome = match compute(&*source, &config) {
             Ok(result) => ChecksumOutcome::Ok(result),

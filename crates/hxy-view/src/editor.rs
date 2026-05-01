@@ -7,7 +7,12 @@
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
-use std::time::Instant;
+// `std::time::Instant::now()` panics on `wasm32-unknown-unknown`
+// (no platform clock available). `web-time` is a drop-in that maps
+// to `performance.now()` in the browser and to `std::time::Instant`
+// natively, so the editor's idle-coalesce timer works on both
+// targets without a cfg split.
+use web_time::Instant;
 
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;

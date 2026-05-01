@@ -108,7 +108,7 @@ pub enum StringsOutcome {
 pub struct StringsComputation {
     pub inbox: egui_inbox::UiInbox<StringsOutcome>,
     pub file_id: FileId,
-    pub started: std::time::Instant,
+    pub started: web_time::Instant,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -233,7 +233,7 @@ pub fn spawn_compute(
     config: StringsConfig,
 ) -> StringsComputation {
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     crate::background::submit(move || {
         let outcome = match extract(&*source, &config) {
             Ok(result) => StringsOutcome::Ok(result),

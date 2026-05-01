@@ -3063,6 +3063,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "zip",
 ]
 
@@ -3173,6 +3174,7 @@ dependencies = [
  "suture",
  "thiserror 2.0.18",
  "tracing",
+ "web-time",
 ]
 
 [[package]]

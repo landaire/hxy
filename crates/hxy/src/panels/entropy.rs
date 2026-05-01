@@ -92,7 +92,7 @@ impl EntropyState {
 pub struct EntropyComputation {
     pub inbox: egui_inbox::UiInbox<EntropyOutcome>,
     pub file_id: FileId,
-    pub started: std::time::Instant,
+    pub started: web_time::Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -174,7 +174,7 @@ pub fn spawn_compute(
     window_bytes: u64,
 ) -> EntropyComputation {
     let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     crate::background::submit(move || {
         let outcome = match compute_entropy(&*source, window_bytes) {
             Ok(points) => EntropyOutcome::Ok(EntropyState {
