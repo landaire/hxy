@@ -221,8 +221,10 @@ pub struct HxyApp {
     pub(crate) templates: crate::templates::library::TemplateLibrary,
     /// Cmd+P / Ctrl+P unified palette. Outlives individual opens so
     /// toggling off and back on feels continuous; the state is reset
-    /// explicitly when switching modes.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// explicitly when switching modes. The state struct is
+    /// universal across targets; the wasm impl builds a slimmer
+    /// entry list since plugin / template / file-watcher entries
+    /// have nothing to dispatch into on the browser.
     pub(crate) palette: crate::commands::palette::PaletteState,
     /// Visual pane picker session. `Some` after the user activates
     /// the visual move/merge palette commands and before they
@@ -628,7 +630,6 @@ impl HxyApp {
             pending_plugin_ops: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             templates: load_template_library_dirs(),
-            #[cfg(not(target_arch = "wasm32"))]
             palette: crate::commands::palette::PaletteState::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
@@ -7132,6 +7133,7 @@ impl HxyApp {
             console: std::collections::VecDeque::new(),
             last_active_file: None,
             last_active_workspace: None,
+            palette: crate::commands::palette::PaletteState::default(),
             tab_focus: TabFocus::Outer,
             pending_collapse_workspace: Vec::new(),
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
@@ -7366,22 +7368,39 @@ impl eframe::App for HxyApp {
             let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
             self.open_bytes_wasm(name, bytes);
         }
-        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit) = ctx.input_mut(|i| {
-            (
-                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                    egui::Key::T,
-                )),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C)),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                    egui::Key::C,
-                )),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)),
-            )
-        });
+        let (toggle_find, close_tab, reopen_tab, copy_bytes, copy_hex, toggle_edit, toggle_palette) =
+            ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F)),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                        egui::Key::T,
+                    )),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C)),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                        egui::Key::C,
+                    )),
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)),
+                    // Cmd+Shift+P opens the command palette --
+                    // same shortcut as desktop. The palette
+                    // state struct (`PaletteState`) is shared
+                    // across targets; the wasm side builds a
+                    // narrower entry list inline below.
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                        egui::Key::P,
+                    )),
+                )
+            });
+        if toggle_palette {
+            if self.palette.is_open() {
+                self.palette.close();
+            } else {
+                self.palette.open_at(crate::commands::palette::Mode::Main);
+            }
+        }
         if toggle_find
             && let Some(id) = self.last_active_file
             && let Some(file) = self.files.get_mut(&id)
@@ -7547,6 +7566,18 @@ impl eframe::App for HxyApp {
             self.spawn_entropy_run_wasm(&ctx, id);
         }
         self.drain_panel_runs_wasm(&ctx);
+        // Render the command palette over the dock when open.
+        // Same `egui_palette::show` rendering path the desktop
+        // build uses; entries are built inline by
+        // `build_wasm_palette_entries` since the desktop's
+        // `commands::palette::entries` reaches into too many
+        // desktop-only modules (plugin host, watcher, sync rfd).
+        if self.palette.is_open() {
+            let entries = build_wasm_palette_entries(&ctx, self);
+            if let Some(outcome) = crate::commands::palette::show(&ctx, &mut self.palette, entries) {
+                self.apply_wasm_palette_outcome(&ctx, outcome);
+            }
+        }
     }
 }
 
@@ -7855,4 +7886,232 @@ fn nearest_match_idx_wasm(matches: &[u64], caret: u64) -> Option<usize> {
         return None;
     }
     Some(matches.iter().enumerate().min_by_key(|&(_, m)| m.abs_diff(caret)).map(|(i, _)| i).unwrap_or(0))
+}
+
+/// Build the wasm-side command-palette entry list. Mirrors a
+/// subset of the desktop's `crate::commands::palette::entries`
+/// builder using the SAME `Entry` / `Action` / `PaletteCommand`
+/// types so palette rendering is one code path. Entries that
+/// reach into the desktop-only ungated dispatch (plugin host,
+/// templates runner, file watcher, sync rfd) are dropped.
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_palette_entries(
+    ctx: &egui::Context,
+    app: &HxyApp,
+) -> Vec<egui_palette::Entry<crate::commands::palette::Action>> {
+    use crate::commands::palette::Action;
+    use crate::commands::palette::PaletteCommand;
+    let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
+    let cmd_n = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
+    let cmd_w = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
+    let cmd_f = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
+    let cmd_e = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
+    let cmd_shift_t = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::T);
+    let cmd_c = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+    let cmd_shift_c = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::C);
+    let has_active = app.last_active_file.is_some();
+    let has_closed = !app.closed_tabs.is_empty();
+    let has_selection = app
+        .last_active_file
+        .and_then(|id| app.files.get(&id))
+        .and_then(|f| f.editor.selection())
+        .is_some_and(|s| !s.range().is_empty());
+    let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
+    out.push(
+        egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
+            .with_shortcut(fmt(&cmd_n)),
+    );
+    out.push(egui_palette::Entry::new(
+        hxy_i18n::t("toolbar-open-file"),
+        Action::InvokeCommand(PaletteCommand::OpenFile),
+    ));
+    out.push(
+        egui_palette::Entry::new("Save as download...", Action::InvokeCommand(PaletteCommand::ReloadActiveFile))
+            .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new(hxy_i18n::t("menu-file-close"), Action::InvokeCommand(PaletteCommand::CloseToolPane))
+            .with_shortcut(fmt(&cmd_w))
+            .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("menu-file-reopen-closed"),
+            Action::InvokeCommand(PaletteCommand::ReopenClosedTab),
+        )
+        .with_shortcut(fmt(&cmd_shift_t))
+        .with_disabled(!has_closed),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-toggle-readonly"),
+            Action::InvokeCommand(PaletteCommand::ToggleEditMode),
+        )
+        .with_shortcut(fmt(&cmd_e))
+        .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new("Toggle search bar", Action::InvokeCommand(PaletteCommand::FindStringsWholeFile))
+            .with_shortcut(fmt(&cmd_f))
+            .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-copy-caret-offset"),
+            Action::InvokeCommand(PaletteCommand::CopyCaretOffset),
+        )
+        .with_shortcut(fmt(&cmd_c))
+        .with_disabled(!has_active),
+    );
+    if has_selection {
+        out.push(
+            egui_palette::Entry::new(
+                hxy_i18n::t("palette-copy-selection-range"),
+                Action::InvokeCommand(PaletteCommand::CopySelectionRange),
+            )
+            .with_shortcut(fmt(&cmd_shift_c)),
+        );
+    }
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-strings-whole-file"),
+            Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
+        )
+        .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-checksums-whole-file"),
+            Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
+        )
+        .with_disabled(!has_active),
+    );
+    out.push(
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-compute-entropy"),
+            Action::InvokeCommand(PaletteCommand::ComputeEntropy),
+        )
+        .with_disabled(!has_active),
+    );
+    out.push(egui_palette::Entry::new(
+        hxy_i18n::t("palette-tool-show-inspector"),
+        Action::InvokeCommand(PaletteCommand::ToggleInspector),
+    ));
+    out
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HxyApp {
+    /// Dispatch a palette pick on wasm. Mirrors a subset of
+    /// `crate::commands::palette::apply::apply_palette_action`
+    /// using the SAME `Action` / `PaletteCommand` types --
+    /// commands the wasm UI doesn't surface (templates,
+    /// plugins, file watcher, sync rfd) are intentionally
+    /// dropped here as no-ops.
+    fn apply_wasm_palette_outcome(&mut self, ctx: &egui::Context, outcome: crate::commands::palette::Outcome) {
+        use crate::commands::palette::Action;
+        use crate::commands::palette::Outcome;
+        use crate::commands::palette::PaletteCommand;
+        let action = match outcome {
+            Outcome::Picked(a) => a,
+            Outcome::Dismissed(_) => {
+                self.palette.close();
+                return;
+            }
+        };
+        self.palette.close();
+        match action {
+            Action::InvokeCommand(cmd) => match cmd {
+                PaletteCommand::NewFile => {
+                    self.open_bytes_wasm("Untitled".to_owned(), Vec::new());
+                }
+                PaletteCommand::OpenFile => {
+                    let ctx_clone = ctx.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let Some(handles) = rfd::AsyncFileDialog::new().pick_files().await else { return };
+                        for handle in handles {
+                            let bytes = handle.read().await;
+                            let name = handle.file_name();
+                            push_open_request_wasm(name, bytes);
+                        }
+                        ctx_clone.request_repaint();
+                    });
+                }
+                PaletteCommand::ReloadActiveFile => {
+                    if let Some((name, bytes)) = self.active_file_bytes_wasm() {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let Some(handle) = rfd::AsyncFileDialog::new().set_file_name(&name).save_file().await
+                            else {
+                                return;
+                            };
+                            if let Err(e) = handle.write(&bytes).await {
+                                tracing::warn!(error = %e, "wasm save");
+                            }
+                        });
+                    }
+                }
+                PaletteCommand::CloseToolPane => {
+                    if let Some(id) = self.last_active_file {
+                        self.close_file_tab_wasm(id);
+                    }
+                }
+                PaletteCommand::ReopenClosedTab => self.reopen_last_closed_wasm(),
+                PaletteCommand::ToggleEditMode => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get_mut(&id)
+                    {
+                        let next = match file.editor.edit_mode() {
+                            crate::files::EditMode::Mutable => crate::files::EditMode::Readonly,
+                            crate::files::EditMode::Readonly => crate::files::EditMode::Mutable,
+                        };
+                        file.editor.set_edit_mode(next);
+                    }
+                }
+                PaletteCommand::FindStringsWholeFile => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Strings(id));
+                    }
+                }
+                PaletteCommand::CalculateChecksumsWholeFile => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Checksums(id));
+                    }
+                }
+                PaletteCommand::ComputeEntropy => {
+                    if let Some(id) = self.last_active_file {
+                        self.toggle_tab_wasm(Tab::Entropy(id));
+                    }
+                }
+                PaletteCommand::ToggleInspector => {
+                    self.toggle_tab_wasm(Tab::Inspector);
+                }
+                PaletteCommand::CopyCaretOffset => {
+                    if let Some(id) = self.last_active_file
+                        && let Some(file) = self.files.get(&id)
+                        && let Some(sel) = file.editor.selection()
+                    {
+                        let base = self.state.read().app.offset_base;
+                        let text = crate::view::format::format_offset(sel.cursor.get(), base);
+                        ctx.copy_text(text);
+                    }
+                }
+                PaletteCommand::CopySelectionRange => {
+                    if let Some(text) = self.copy_active_selection_wasm(false) {
+                        ctx.copy_text(text);
+                    }
+                }
+                _ => {}
+            },
+            Action::FocusFile(id) => {
+                if let Some(path) = self.dock.find_tab(&Tab::File(id)) {
+                    let _ = self.dock.set_active_tab(path);
+                }
+                self.last_active_file = Some(id);
+            }
+            Action::FocusTab(tab) => {
+                self.toggle_tab_wasm(tab);
+            }
+            _ => {}
+        }
+    }
 }

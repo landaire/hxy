@@ -10,7 +10,6 @@
 pub mod shortcuts;
 
 pub mod goto;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod palette;
 
 #[derive(Debug)]

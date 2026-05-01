@@ -4,13 +4,24 @@
 //! nav. This module defines hxy's entry / action vocabulary and the
 //! cascade mode (Main -> Templates -> ...).
 
-#![cfg(not(target_arch = "wasm32"))]
-
+// Submodules other than the public types in this file reach into
+// desktop-only state (plugin host, file watcher, sync rfd,
+// std::fs::read_dir, hxy_plugin_host template types). Gated to
+// non-wasm. The wasm build builds its own minimal entry list and
+// dispatches palette picks inline in `crate::app`'s wasm impl
+// using the same `Action` / `PaletteCommand` / `Mode` types
+// declared below.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod apply;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod calculator;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod columns;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod completion;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod entries;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod offset;
 
 use std::path::PathBuf;
@@ -28,11 +39,13 @@ pub struct PaletteState {
     /// the right handler) and the command list the plugin handed
     /// us, used to populate the sub-palette without re-asking the
     /// plugin every frame.
+    #[cfg(not(target_arch = "wasm32"))]
     pub plugin_cascade: Option<PluginCascadeState>,
     /// Active plugin prompt when `mode == Mode::PluginPrompt`.
     /// Carries the plugin name + originating command id (so the
     /// answer is routed back via `respond_to_prompt`) and the
     /// title rendered as the palette hint.
+    #[cfg(not(target_arch = "wasm32"))]
     pub plugin_prompt: Option<PluginPromptState>,
     /// In-progress compare-files pick when `mode` is one of the
     /// `Compare*` variants. Holds the A side once the user has
@@ -41,12 +54,14 @@ pub struct PaletteState {
     pub compare_pick: Option<ComparePickState>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct PluginCascadeState {
     pub plugin_name: String,
     pub commands: Vec<hxy_plugin_host::PluginCommand>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct PluginPromptState {
     pub plugin_name: String,
@@ -59,7 +74,9 @@ impl Default for PaletteState {
         Self {
             mode: Mode::Main,
             inner: egui_palette::State::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             plugin_cascade: None,
+            #[cfg(not(target_arch = "wasm32"))]
             plugin_prompt: None,
             compare_pick: None,
         }
@@ -75,8 +92,11 @@ impl PaletteState {
         // drop them. Compare-pick state survives only across the
         // CompareSideA -> CompareSideB sequence and is cleared by
         // any transition outside that family.
-        self.plugin_cascade = None;
-        self.plugin_prompt = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.plugin_cascade = None;
+            self.plugin_prompt = None;
+        }
         if !matches!(
             mode,
             Mode::CompareSideA | Mode::CompareSideARecent | Mode::CompareSideB | Mode::CompareSideBRecent
@@ -88,8 +108,11 @@ impl PaletteState {
 
     pub fn close(&mut self) {
         self.inner.close();
-        self.plugin_cascade = None;
-        self.plugin_prompt = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.plugin_cascade = None;
+            self.plugin_prompt = None;
+        }
         self.compare_pick = None;
     }
 
@@ -100,6 +123,7 @@ impl PaletteState {
     /// Push a fresh plugin-driven sub-menu and switch into the
     /// cascade mode. Resets the query / selection so the new entry
     /// list is searchable from scratch.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn enter_plugin_cascade(&mut self, plugin_name: String, commands: Vec<hxy_plugin_host::PluginCommand>) {
         self.plugin_cascade = Some(PluginCascadeState { plugin_name, commands });
         self.plugin_prompt = None;
@@ -116,6 +140,7 @@ impl PaletteState {
     /// name + command id stored here. `default_value` pre-fills
     /// the input so an "edit existing" flow can start from the
     /// last value.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn enter_plugin_prompt(
         &mut self,
         plugin_name: String,
@@ -485,6 +510,11 @@ pub enum Action {
     UninstallPlugin(PathBuf),
     /// Copy the active file's current selection using the given
     /// format. Only offered when a non-empty selection exists.
+    /// Variants of `CopyKind` reach into the per-byte format
+    /// helpers in `crate::files::copy`, which is desktop-only.
+    /// The wasm build doesn't surface this entry; once
+    /// `files::copy` ungates, the gate goes away.
+    #[cfg(not(target_arch = "wasm32"))]
     Copy(crate::files::copy::CopyKind),
     /// Open a previously-visited filesystem file by path. Used by
     /// the `Open recent` cascade mode.
@@ -589,8 +619,22 @@ pub fn show(
         // through verbatim. Falls back to a generic hint if the
         // mode was reached without setting up the prompt buffer
         // (shouldn't happen in practice; keeps the match total).
+        // The plugin-prompt buffer field is desktop-only because
+        // it carries hxy_plugin_host types; wasm never enters
+        // that mode but the match arm needs to be total.
         Mode::PluginPrompt => {
-            state.plugin_prompt.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| hxy_i18n::t("palette-hint-main"))
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                state
+                    .plugin_prompt
+                    .as_ref()
+                    .map(|p| p.title.clone())
+                    .unwrap_or_else(|| hxy_i18n::t("palette-hint-main"))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                hxy_i18n::t("palette-hint-main")
+            }
         }
         Mode::SetPollInterval => hxy_i18n::t("palette-hint-set-poll-interval"),
     };

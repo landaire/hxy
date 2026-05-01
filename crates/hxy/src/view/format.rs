@@ -1,8 +1,6 @@
 //! Tiny formatting + clipboard helpers shared across the status
 //! bar, hex view, and palette context-builders.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 pub fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
     match base {
         crate::settings::NumericBase::Hex => format!("0x{value:X}"),
@@ -52,7 +50,28 @@ pub fn copyable_status_label(
     let over_label = ui.ctx().input(|i| i.pointer.latest_pos()).is_some_and(|p| r.rect.contains(p));
     let r = if let Some(tt) = tooltip { r.on_hover_text(tt) } else { r };
     let _ = r;
-    if over_label && ui.ctx().input_mut(crate::app::shortcuts::consume_copy_event) {
+    if over_label && ui.ctx().input_mut(consume_copy_event_local) {
         ui.ctx().copy_text(copy.to_string());
     }
+}
+
+/// Drain the user's "copy" gesture in any form egui delivers it:
+/// the semantic `Event::Copy` (winit on macOS converts Cmd+C to
+/// this) and the raw `Cmd/Ctrl+C` keypress. Drains both because
+/// macOS sends both for the same gesture and the hex view's
+/// dispatcher would grab whichever survives. Mirrors the desktop
+/// app's `crate::app::shortcuts::consume_copy_event` so it works
+/// on every target (this module compiles on wasm too).
+fn consume_copy_event_local(input: &mut egui::InputState) -> bool {
+    let copy_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+    let mut any = false;
+    let before = input.events.len();
+    input.events.retain(|e| !matches!(e, egui::Event::Copy));
+    if input.events.len() != before {
+        any = true;
+    }
+    if input.consume_shortcut(&copy_shortcut) {
+        any = true;
+    }
+    any
 }
