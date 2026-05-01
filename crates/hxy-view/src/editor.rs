@@ -121,6 +121,14 @@ pub(crate) struct EditState {
     /// first mutation so `rebuild_patch_from_stack` doesn't re-read
     /// the base on every keystroke. Cleared by [`Self::swap_base`].
     base_cache: Option<Vec<u8>>,
+    /// Number of entries in `undo_stack` that aren't length-preserving
+    /// (inserts or deletes). When this is zero every entry's offset is
+    /// already in base coordinates, so a new write can be applied to
+    /// `patch` directly via [`Patch::write`] without rebuilding from
+    /// scratch -- saving an O(N) byte-by-byte diff against `base` on
+    /// every keystroke. Inserts / deletes / undo / redo / revert all
+    /// fall back to the full rebuild path.
+    non_lp_entries: usize,
 }
 
 impl EditState {
@@ -140,6 +148,7 @@ impl EditState {
             history_break: false,
             last_edit_at: None,
             base_cache: None,
+            non_lp_entries: 0,
         }
     }
 
@@ -158,6 +167,7 @@ impl EditState {
         self.last_edit_at = None;
         self.edit_high_nibble = true;
         self.base_cache = None;
+        self.non_lp_entries = 0;
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
@@ -187,9 +197,38 @@ impl EditState {
         for i in 0..bytes.len() {
             old_bytes.push(self.read_byte_at(offset + i as u64)?);
         }
+        // Fast path: when there are no insert / delete entries the
+        // patched view shares base coordinates, so the new write maps
+        // 1:1 onto Patch::write -- which already coalesces with
+        // adjacent length-preserving ops. Skips the O(N) byte-diff
+        // rebuild that otherwise runs on every keystroke.
+        let was_lp_only = self.non_lp_entries == 0;
         self.record_entry(EditEntry { offset, old_bytes, new_bytes: bytes });
-        self.rebuild_patch_from_stack();
+        if was_lp_only && self.non_lp_entries == 0 {
+            self.apply_lp_write_to_patch();
+        } else {
+            self.rebuild_patch_from_stack();
+        }
         Ok(())
+    }
+
+    /// Push the most recent undo entry's bytes through `Patch::write`.
+    /// Used by [`Self::request_write`]'s LP fast path: the entry's
+    /// offset is already in base coordinates (no inserts / deletes
+    /// have shifted things), and `Patch::write` handles coalescing
+    /// with neighbouring writes internally.
+    fn apply_lp_write_to_patch(&mut self) {
+        let Some(last) = self.undo_stack.last() else { return };
+        let mut patch = self.patch.write().expect("patch lock poisoned");
+        if let Err(e) = patch.write(last.offset, last.new_bytes.clone()) {
+            // Should be unreachable while non_lp_entries == 0 (no
+            // non-LP ops in `patch` for the new write to overlap), but
+            // a stale invariant shouldn't lock the user out of the
+            // editor. Drop the lock and fall back to a full rebuild.
+            tracing::warn!(error = %e, "fast-path write rejected; falling back to rebuild");
+            drop(patch);
+            self.rebuild_patch_from_stack();
+        }
     }
 
     /// Apply a batch of non-overlapping splices as a single
@@ -344,9 +383,16 @@ impl EditState {
             }
         }
 
+        let pushed_lp = entry.old_bytes.len() == entry.new_bytes.len();
+        if !pushed_lp {
+            self.non_lp_entries += 1;
+        }
         self.undo_stack.push(entry);
         if self.undo_stack.len() > UNDO_HISTORY_CAP {
-            self.undo_stack.remove(0);
+            let dropped = self.undo_stack.remove(0);
+            if dropped.old_bytes.len() != dropped.new_bytes.len() {
+                self.non_lp_entries = self.non_lp_entries.saturating_sub(1);
+            }
         }
         self.history_break = false;
         self.last_edit_at = Some(now);
@@ -357,6 +403,7 @@ impl EditState {
         self.redo_stack.clear();
         self.history_break = true;
         self.last_edit_at = None;
+        self.non_lp_entries = 0;
         self.rebuild_patch_from_stack();
     }
 
@@ -365,6 +412,9 @@ impl EditState {
             return None;
         }
         let entry = self.undo_stack.pop()?;
+        if entry.old_bytes.len() != entry.new_bytes.len() {
+            self.non_lp_entries = self.non_lp_entries.saturating_sub(1);
+        }
         self.rebuild_patch_from_stack();
         self.redo_stack.push(entry.clone());
         self.history_break = true;
@@ -377,6 +427,9 @@ impl EditState {
             return None;
         }
         let entry = self.redo_stack.pop()?;
+        if entry.old_bytes.len() != entry.new_bytes.len() {
+            self.non_lp_entries += 1;
+        }
         self.undo_stack.push(entry.clone());
         self.rebuild_patch_from_stack();
         self.history_break = true;
