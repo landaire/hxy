@@ -2585,10 +2585,15 @@ fn draw_minimap<S: HexSource + ?Sized>(
     painter.rect_filled(minimap_rect, 0.0, ui.visuals().extreme_bg_color);
 
     let cell_w = (minimap_rect.width() / cols as f32).max(1.0);
-    // Fixed zoom: each hex row gets a constant number of minimap pixels
-    // regardless of file size. The minimap is a window onto the file
-    // that scrolls with the main viewport, not a whole-file overview.
-    let cell_h = 2.0_f32;
+    // Snap cell_h to a whole number of physical pixels. egui's
+    // tessellator feathers rect edges over ~1 device pixel for AA;
+    // a fractional `cell_h` in device space puts each row's edges in
+    // a slightly different spot relative to the pixel grid every
+    // frame as `current_offset` changes, which the eye reads as
+    // edge flicker. Same `(x * ppp).ceil() / ppp` snap the hex
+    // view's row_height uses for the same reason.
+    let ppp = ui.ctx().pixels_per_point();
+    let cell_h = (2.0_f32 * ppp).round().max(1.0) / ppp;
 
     let minimap_capacity_rows = (minimap_rect.height() / cell_h).floor() as usize;
     if minimap_capacity_rows == 0 {
@@ -2614,9 +2619,13 @@ fn draw_minimap<S: HexSource + ?Sized>(
     // Fractional remainder of the top row, used to apply a sub-row
     // y-shift so the painted byte rows scroll continuously with the
     // viewport indicator instead of snapping one `cell_h` every time
-    // `window_top_f` crosses an integer. Without this the indicator
-    // slides smoothly but the bytes underneath jitter up/down.
-    let row_subpixel_shift = (window_top_f - window_top_row as f32) * cell_h;
+    // `window_top_f` crosses an integer. Snap the shift to physical
+    // pixels so each row paints with its edges aligned to the
+    // device grid -- without this the rect's antialiased edges sit
+    // at different sub-pixel offsets each frame and the user sees a
+    // shimmer along the row boundaries.
+    let raw_shift = (window_top_f - window_top_row as f32) * cell_h;
+    let row_subpixel_shift = (raw_shift * ppp).round() / ppp;
     // Read one extra row so the row peeking in from the bottom
     // (after applying the negative y-shift) still has bytes to draw.
     let shown_rows = (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row as usize));
@@ -2665,9 +2674,11 @@ fn draw_minimap<S: HexSource + ?Sized>(
 
     // Viewport indicator at its absolute position inside the scrolled
     // window. High-contrast outline + accent bracket for readability
-    // over any palette.
-    let indicator_top_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
-    let indicator_height = viewport_rows_f * cell_h;
+    // over any palette. Pixel-snap the y so the indicator's edges
+    // stay aligned with the byte rows beneath it -- those snap too.
+    let indicator_raw_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
+    let indicator_top_y = (indicator_raw_y * ppp).round() / ppp;
+    let indicator_height = ((viewport_rows_f * cell_h) * ppp).round() / ppp;
     let indicator = Rect::from_min_max(
         Pos2::new(minimap_rect.left(), indicator_top_y.max(minimap_rect.top())),
         Pos2::new(minimap_rect.right(), (indicator_top_y + indicator_height).min(minimap_rect.bottom())),
