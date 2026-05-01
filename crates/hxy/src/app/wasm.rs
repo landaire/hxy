@@ -85,11 +85,13 @@ impl HxyApp {
         }
     }
 
-    /// Open an in-memory byte buffer as a fresh file tab. Detects
-    /// the VFS handler the same way `open()` does on desktop -- if
-    /// one matches (e.g. ZipHandler on a .zip), the file is mounted
-    /// and pushed as a `Tab::Workspace` with the VFS tree pane;
-    /// otherwise it lands as a plain `Tab::File`.
+    /// Open an in-memory byte buffer as a fresh file tab. Mirrors
+    /// the desktop `HxyApp::open_in_memory` -> `open(_, _, _, _, _,
+    /// as_workspace=false)` path: detect the VFS handler so the
+    /// "Browse VFS" palette entry can light up, but the tab lands
+    /// as a plain `Tab::File`. The user invokes `BrowseVfs` to
+    /// mount as a workspace, same as on desktop. Auto-mounting
+    /// would diverge from desktop behaviour for no good reason.
     pub fn open_bytes_wasm(&mut self, name: String, bytes: Vec<u8>) -> FileId {
         let id = FileId::new(self.next_file_id);
         self.next_file_id += 1;
@@ -103,10 +105,7 @@ impl HxyApp {
             file.detected_handler = self.registry.detect(&head);
         }
         self.files.insert(id, file);
-        let pushed_workspace = self.try_push_as_workspace(id);
-        if !pushed_workspace {
-            self.dock.push_to_focused_leaf(Tab::File(id));
-        }
+        self.dock.push_to_focused_leaf(Tab::File(id));
         if let Some(path) = self.dock.find_tab(&Tab::Welcome) {
             let _ = self.dock.remove_tab(path);
         }
