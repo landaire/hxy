@@ -6,7 +6,6 @@
 //! the app-level metadata the tab needs (display name, filesystem
 //! source kind, VFS mount, template run state, etc.).
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod copy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod new;

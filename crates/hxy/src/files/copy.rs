@@ -4,8 +4,6 @@
 //! place so new kinds (e.g. Zig array, JSON array) only need
 //! editing here.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::fmt::Write;
 
 /// Every format the app knows how to render a selection / field as.

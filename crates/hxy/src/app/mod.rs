@@ -34,6 +34,7 @@ use hxy_plugin_host::TemplateRuntime as _;
 use hxy_vfs::TabSource;
 #[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::VfsHandler;
+#[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::VfsRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 use hxy_vfs::handlers::ZipHandler;
@@ -42,10 +43,10 @@ use hxy_vfs::handlers::ZipHandler;
 use crate::APP_NAME;
 use crate::files::FileId;
 use crate::files::OpenFile;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::state::PersistedState;
 use crate::state::SharedPersistedState;
 use crate::tabs::Tab;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::window::WindowSettings;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,7 +82,9 @@ pub struct HxyApp {
     /// File-mounted VFS workspaces, keyed by `WorkspaceId`. Each entry
     /// backs a `Tab::Workspace` and owns a nested `DockState` plus the
     /// `MountedVfs` that supplies child entries.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) workspaces: std::collections::BTreeMap<crate::files::WorkspaceId, crate::files::Workspace>,
+    #[cfg(not(target_arch = "wasm32"))]
     next_workspace_id: u64,
     /// Active plugin VFS mounts, keyed by `MountId`. Each entry backs a
     /// `Tab::PluginMount` and supplies the byte source for child VFS
@@ -104,6 +107,7 @@ pub struct HxyApp {
     /// debug panel attributes outstanding bytes back to the
     /// originating tab.
     pub(crate) byte_cache: Arc<hxy_core::ByteCache>,
+    #[cfg(not(target_arch = "wasm32"))]
     registry: VfsRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     template_plugins: Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>>,
@@ -126,7 +130,9 @@ pub struct HxyApp {
     /// Window geometry captured last frame, used to detect drag-end: the
     /// first frame where `prev_window == current_window` and the saved
     /// value still differs triggers the persistence write.
+    #[cfg(not(target_arch = "wasm32"))]
     prev_window: Option<WindowSettings>,
+    #[cfg(not(target_arch = "wasm32"))]
     last_saved_window: Option<WindowSettings>,
 
     /// Zoom factor we last applied to the egui context. Used to push
@@ -137,6 +143,7 @@ pub struct HxyApp {
     /// An open request that collided with an already-open tab. Held
     /// here while the modal asks the user whether to focus the
     /// existing tab or open a second copy. `None` outside that window.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_duplicate: Option<PendingDuplicate>,
 
     /// Toasts driven by `egui_toast`. Used for "search wrapped" /
@@ -172,6 +179,7 @@ pub struct HxyApp {
     /// Bounded ring buffer of plugin / template log entries. Rendered
     /// by the Console dock tab when it's open; entries accumulate
     /// regardless so opening the tab later reveals back-scroll.
+    #[cfg(not(target_arch = "wasm32"))]
     console: std::collections::VecDeque<ConsoleEntry>,
 
     /// Data-inspector dock tab state. Endianness + radix preferences
@@ -193,6 +201,7 @@ pub struct HxyApp {
     /// "Toggle VFS panel" / "Browse VFS" don't silently no-op when
     /// the user happens to have clicked into the inspector or
     /// console. Cleared when the corresponding workspace closes.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) last_active_workspace: Option<crate::files::WorkspaceId>,
     /// Native macOS menu bar. `None` until the app is constructed on
     /// the main thread. Dropping it tears the NSMenu down.
@@ -262,6 +271,7 @@ pub struct HxyApp {
     /// `WorkspaceId`s the inner dock drained to "no tabs left except
     /// the editor". Drained post-dock to collapse the workspace back
     /// to a plain `Tab::File` in the outer dock.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_collapse_workspace: Vec<crate::files::WorkspaceId>,
     /// Set when the user X-clicks a `Tab::PluginMount`; drained after
     /// the dock pass to remove the mount entry from `mounts` and any
@@ -444,6 +454,7 @@ pub enum ConsoleSeverity {
 /// the duplicate-open dialog. Just remembers the path -- with the
 /// streaming open path, opening is cheap and we don't need to
 /// stash the (potentially huge) bytes blob to avoid a re-read.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PendingDuplicate {
     pub(crate) display_name: String,
     pub(crate) path: std::path::PathBuf,
@@ -3787,6 +3798,7 @@ fn capture_window_on_drag_end(
 /// Key used to stash pending VFS-entry open requests between tab
 /// rendering (which only has `&mut PersistedState`) and the app-level
 /// drain loop (which can open new tabs).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const PENDING_VFS_OPEN_KEY: &str = "hxy_pending_vfs_open";
 
 /// One pending "open this entry as a new tab" request, queued from a
@@ -3867,9 +3879,6 @@ fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn drain_pending_vfs_opens(_ctx: &egui::Context, _app: &mut HxyApp) {}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect: crate::commands::CommandEffect) {
     use crate::commands::CommandEffect;
@@ -3924,7 +3933,6 @@ pub(crate) fn apply_command_effect(ctx: &egui::Context, app: &mut HxyApp, effect
 /// Apply a frame's worth of events from the search bar to `file`.
 /// The bar itself is render-only -- byte scans, selection moves, and
 /// `matches` recomputation happen here.
-#[cfg(not(target_arch = "wasm32"))]
 fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search::bar::SearchEvent>) {
     use crate::search::SearchSideEffect;
     use crate::search::bar::SearchEvent;
@@ -4004,16 +4012,24 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search::bar::Sear
                 file.search.active_idx = None;
             }
             SearchEvent::ReplaceCurrent => {
+                // Replace flows need the patch-overlay
+                // length-mismatch modal scaffolding which lives
+                // in `crate::search::replace`, gated to non-wasm.
+                // Wasm clicks on Replace become no-ops until that
+                // module ungates.
+                #[cfg(not(target_arch = "wasm32"))]
                 crate::search::replace::queue_replace_current(file);
             }
             SearchEvent::ReplaceAll => {
+                #[cfg(not(target_arch = "wasm32"))]
                 crate::search::replace::queue_replace_all(file, bounds);
+                #[cfg(target_arch = "wasm32")]
+                let _ = bounds;
             }
         }
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn current_caret(file: &OpenFile) -> u64 {
     file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0)
 }
@@ -4022,7 +4038,6 @@ fn current_caret(file: &OpenFile) -> u64 {
 /// selection to `[off, off + pattern.len())` so the existing selection
 /// rendering colors the match. Updates `active_idx` if the match
 /// matches an entry in `matches`.
-#[cfg(not(target_arch = "wasm32"))]
 fn apply_match_jump(file: &mut OpenFile, off: u64, pattern: &[u8]) {
     let end_inclusive = off.saturating_add(pattern.len() as u64).saturating_sub(1);
     file.editor.set_selection(Some(hxy_core::Selection {
@@ -4035,7 +4050,6 @@ fn apply_match_jump(file: &mut OpenFile, off: u64, pattern: &[u8]) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn nearest_match_idx(matches: &[u64], caret: u64) -> Option<usize> {
     if matches.is_empty() {
         return None;
@@ -4226,7 +4240,6 @@ fn render_failed_placeholder(ui: &mut egui::Ui, display_name: &str, message: &st
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn render_file_tab(
     ui: &mut egui::Ui,
     id: FileId,
@@ -4264,7 +4277,6 @@ fn render_file_tab(
             });
         });
 
-    #[cfg(not(target_arch = "wasm32"))]
     if file.search.open {
         egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get()))).resizable(false).show_inside(ui, |ui| {
             let events = crate::search::bar::show(ui, &mut file.search);
@@ -6507,7 +6519,6 @@ fn compute_watch_chip(file: &OpenFile, settings: &crate::settings::AppSettings) 
     Some(WatchStatusChip { watching, tooltip })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn status_bar_ui(
     ui: &mut egui::Ui,
     file: &mut OpenFile,
@@ -6570,9 +6581,19 @@ fn status_bar_ui(
         // addresses. The tooltip still shows the alternate base of
         // whatever's primary, mirroring the no-vaddr behaviour.
         let format_value = |value: u64, base: crate::settings::OffsetBase| -> String {
-            match file.virtual_base {
-                Some(v) => crate::view::format::format_offset_with_vaddr(value, base, v),
-                None => crate::view::format::format_offset(value, base),
+            // virtual_base lives behind a `#[cfg(not(wasm32))]`
+            // because plugin-supplied virtual bases need the
+            // plugin host. Wasm always renders raw file offsets.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                match file.virtual_base {
+                    Some(v) => crate::view::format::format_offset_with_vaddr(value, base, v),
+                    None => crate::view::format::format_offset(value, base),
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                crate::view::format::format_offset(value, base)
             }
         };
         if let Some(hov) = file.hovered {
@@ -6659,7 +6680,6 @@ fn status_bar_ui(
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::files::copy::CopyKind;
 
 /// Read the active selection's bytes from `file` and copy them to
@@ -6667,7 +6687,6 @@ use crate::files::copy::CopyKind;
 /// first `selection.len()` bytes as a LE integer (0-8 bytes) -- the
 /// hex view has no type context, so this is the best we can do
 /// without a template supplying sign + endianness.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn do_copy(ctx: &egui::Context, file: &OpenFile, kind: CopyKind) {
     let Some(selection) = file.editor.selection() else { return };
     let range = selection.range();
@@ -6748,7 +6767,6 @@ fn format_console_time(ts: jiff::Timestamp) -> String {
     format!("{:02}:{:02}:{:02}", zoned.hour(), zoned.minute(), zoned.second())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
     ui.vertical_centered(|ui| {
         ui.add_space(32.0);
@@ -6784,7 +6802,6 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
 /// `id_prefix` salts the inner combo boxes so multiple
 /// independent NumericFormat editors on the same settings tab
 /// don't collide on egui ids.
-#[cfg(not(target_arch = "wasm32"))]
 fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericFormat, id_prefix: &str) {
     use crate::settings::NumericBase;
     use crate::settings::NumericFormat;
@@ -6849,7 +6866,6 @@ fn numeric_format_row(ui: &mut egui::Ui, fmt: &mut crate::settings::NumericForma
 /// don't dominate the General settings tab; expanding it
 /// reveals one [`numeric_format_row`] per integer slot
 /// (u8 / u16 / u32 / u64 / s8 / s16 / s32 / s64).
-#[cfg(not(target_arch = "wasm32"))]
 fn template_value_formats_row(ui: &mut egui::Ui, fmts: &mut crate::settings::TemplateValueFormats) {
     use crate::settings::IntValueType;
 
@@ -6868,7 +6884,6 @@ fn template_value_formats_row(ui: &mut egui::Ui, fmts: &mut crate::settings::Tem
         });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn base_combo(ui: &mut egui::Ui, id: String, base: &mut crate::settings::NumericBase) {
     use crate::settings::NumericBase;
     egui::ComboBox::from_id_salt(id)
@@ -6882,7 +6897,6 @@ fn base_combo(ui: &mut egui::Ui, id: String, base: &mut crate::settings::Numeric
         });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn settings_ui(
     ui: &mut egui::Ui,
     settings: &mut crate::settings::AppSettings,
@@ -7112,30 +7126,18 @@ impl HxyApp {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         cc.egui_ctx.set_global_style(crate::style::hxy_style());
         let initial_zoom = state.read().app.zoom_factor;
-        let initial_window = state.read().window;
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let limit = hxy_core::CacheLimit::from_mib(state.read().app.byte_cache_limit_mib);
-        let mut registry = VfsRegistry::new();
-        registry.register(Arc::new(hxy_vfs::handlers::ZipHandler::new()));
         Self {
             dock: DockState::new(vec![Tab::Welcome]),
             files: HashMap::new(),
-            workspaces: std::collections::BTreeMap::new(),
-            next_workspace_id: 1,
             state,
             next_file_id: 1,
             byte_cache: hxy_core::ByteCache::new(limit),
-            registry,
-            prev_window: None,
-            last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
-            pending_duplicate: None,
-            console: std::collections::VecDeque::new(),
             last_active_file: None,
-            last_active_workspace: None,
             palette: crate::commands::palette::PaletteState::default(),
             tab_focus: TabFocus::Outer,
-            pending_collapse_workspace: Vec::new(),
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
         }
     }
@@ -7496,34 +7498,6 @@ impl eframe::App for HxyApp {
         for (name, bytes) in drain_open_requests_wasm() {
             self.open_bytes_wasm(name, bytes);
         }
-        egui::Panel::bottom("hxy_status_bar").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(id) = self.last_active_file
-                    && let Some(file) = self.files.get(&id)
-                {
-                    let mode = match file.editor.edit_mode() {
-                        crate::files::EditMode::Mutable => "edit",
-                        crate::files::EditMode::Readonly => "ro",
-                    };
-                    let len = file.editor.source().len().get();
-                    let (caret, sel_label) = match file.editor.selection() {
-                        Some(s) => {
-                            let r = s.range();
-                            if r.is_empty() {
-                                (s.cursor.get(), String::new())
-                            } else {
-                                let n = r.len().get();
-                                (s.cursor.get(), format!("  sel {n}"))
-                            }
-                        }
-                        None => (0, String::new()),
-                    };
-                    ui.label(format!("[{mode}] @0x{caret:X} / 0x{len:X}{sel_label}"));
-                } else {
-                    ui.label("no file");
-                }
-            });
-        });
         let mut pending_close: Vec<FileId> = Vec::new();
         let mut pending_strings_run: Vec<FileId> = Vec::new();
         let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
@@ -7532,12 +7506,15 @@ impl eframe::App for HxyApp {
         let mut pending_entropy_recompute: Vec<FileId> = Vec::new();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let style = crate::style::hxy_dock_style(ui.style());
+            let mut state_guard = self.state.write();
             egui_dock::DockArea::new(&mut self.dock).style(style).show_inside(
                 ui,
                 &mut WasmTabViewer {
                     files: &mut self.files,
                     last_active_file: &mut self.last_active_file,
                     byte_cache: &self.byte_cache,
+                    state: &mut state_guard,
+                    tab_focus: &mut self.tab_focus,
                     pending_close: &mut pending_close,
                     pending_strings_run: &mut pending_strings_run,
                     pending_strings_jump: &mut pending_strings_jump,
@@ -7586,6 +7563,8 @@ struct WasmTabViewer<'a> {
     files: &'a mut HashMap<FileId, OpenFile>,
     last_active_file: &'a mut Option<FileId>,
     byte_cache: &'a Arc<hxy_core::ByteCache>,
+    state: &'a mut PersistedState,
+    tab_focus: &'a mut TabFocus,
     pending_close: &'a mut Vec<FileId>,
     pending_strings_run: &'a mut Vec<FileId>,
     pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
@@ -7651,33 +7630,18 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
-            Tab::Welcome => {
-                ui.heading("hxy");
-                ui.label("Open a file from the toolbar to get started.");
-            }
+            Tab::Welcome => welcome_ui(ui, self.state),
             Tab::File(id) => {
                 let id = *id;
                 if let Some(file) = self.files.get_mut(&id) {
                     *self.last_active_file = Some(id);
-                    if file.search.open {
-                        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get())))
-                            .resizable(false)
-                            .show_inside(ui, |ui| {
-                                let events = crate::search::bar::show(ui, &mut file.search);
-                                apply_search_events_readonly_wasm(file, events);
-                            });
-                    }
-                    let len = file.editor.source().len().get();
-                    if len > 0 {
-                        let columns = hxy_core::ColumnCount::DEFAULT;
-                        let response = file.editor.view().columns(columns).show(ui);
-                        file.editor.on_response(&response, columns);
-                    } else {
-                        ui.label("(empty buffer)");
-                    }
+                    render_file_tab(ui, id, file, self.state, *self.tab_focus);
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }
+            }
+            Tab::Settings => {
+                settings_ui(ui, &mut self.state.app, self.files, self.byte_cache);
             }
             Tab::Inspector => {
                 let bytes_for_inspector =
@@ -7784,110 +7748,6 @@ fn drain_open_requests_wasm() -> Vec<OpenRequestWasm> {
     OPEN_INBOX_WASM.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
-#[cfg(target_arch = "wasm32")]
-fn apply_search_events_readonly_wasm(file: &mut OpenFile, events: Vec<crate::search::bar::SearchEvent>) {
-    use crate::search::bar::SearchEvent;
-    use crate::search::find_all;
-    use crate::search::find_next;
-    use crate::search::find_prev;
-    let mut want_all = file.search.all_results;
-    for ev in events {
-        let bounds = file.search.scope.bounds(file.editor.source().len().get());
-        match ev {
-            SearchEvent::Refresh => {
-                file.search.refresh_pattern();
-                if want_all && let Some(p) = file.search.pattern.clone() {
-                    let m = find_all(file.editor.source().as_ref(), &p, bounds);
-                    let caret = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-                    file.search.matches = m;
-                    file.search.active_idx = nearest_match_idx_wasm(&file.search.matches, caret);
-                }
-            }
-            SearchEvent::RefreshReplace => file.search.refresh_replace_pattern(),
-            SearchEvent::Next => {
-                let Some(pattern) = file.search.pattern.clone() else { continue };
-                let from = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0).saturating_add(1);
-                if let Some(hit) = find_next(file.editor.source().as_ref(), &pattern, from, true, bounds) {
-                    apply_match_jump_wasm(file, hit.offset, &pattern);
-                }
-            }
-            SearchEvent::Prev => {
-                let Some(pattern) = file.search.pattern.clone() else { continue };
-                let from = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-                if let Some(hit) = find_prev(file.editor.source().as_ref(), &pattern, from, true, bounds) {
-                    apply_match_jump_wasm(file, hit.offset, &pattern);
-                }
-            }
-            SearchEvent::FindAll => {
-                want_all = true;
-                file.search.all_results = true;
-                if let Some(p) = file.search.pattern.clone() {
-                    let m = find_all(file.editor.source().as_ref(), &p, bounds);
-                    let caret = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-                    file.search.matches = m;
-                    file.search.active_idx = nearest_match_idx_wasm(&file.search.matches, caret);
-                    if let Some(idx) = file.search.active_idx {
-                        let off = file.search.matches[idx];
-                        apply_match_jump_wasm(file, off, &p);
-                    }
-                }
-            }
-            SearchEvent::ClearAll => {
-                want_all = false;
-                file.search.all_results = false;
-                file.search.matches.clear();
-                file.search.active_idx = None;
-            }
-            SearchEvent::Close => file.search.open = false,
-            SearchEvent::JumpTo(idx) => {
-                let Some(pattern) = file.search.pattern.clone() else { continue };
-                let Some(off) = file.search.matches.get(idx).copied() else { continue };
-                file.search.active_idx = Some(idx);
-                apply_match_jump_wasm(file, off, &pattern);
-            }
-            SearchEvent::ToggleReplace => {
-                file.search.replace_open = !file.search.replace_open;
-            }
-            SearchEvent::SetScope(scope) => {
-                file.search.scope = scope;
-                file.search.matches.clear();
-                file.search.active_idx = None;
-                if want_all && let Some(p) = file.search.pattern.clone() {
-                    let bounds = file.search.scope.bounds(file.editor.source().len().get());
-                    let m = find_all(file.editor.source().as_ref(), &p, bounds);
-                    let caret = file.editor.selection().map(|s| s.cursor.get()).unwrap_or(0);
-                    file.search.matches = m;
-                    file.search.active_idx = nearest_match_idx_wasm(&file.search.matches, caret);
-                }
-            }
-            SearchEvent::ReplaceCurrent | SearchEvent::ReplaceAll => {}
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn apply_match_jump_wasm(file: &mut OpenFile, offset: u64, pattern: &[u8]) {
-    let total = file.editor.source().len().get();
-    if total == 0 || pattern.is_empty() {
-        return;
-    }
-    let last = (offset + pattern.len() as u64).saturating_sub(1).min(total.saturating_sub(1));
-    let anchor = hxy_core::ByteOffset::new(offset.min(total.saturating_sub(1)));
-    let cursor = hxy_core::ByteOffset::new(last);
-    file.editor.set_selection(Some(hxy_core::Selection { anchor, cursor }));
-    if !file.editor.is_offset_visible(anchor) {
-        file.editor.set_scroll_to_byte(anchor);
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn nearest_match_idx_wasm(matches: &[u64], caret: u64) -> Option<usize> {
-    if matches.is_empty() {
-        return None;
-    }
-    Some(matches.iter().enumerate().min_by_key(|&(_, m)| m.abs_diff(caret)).map(|(i, _)| i).unwrap_or(0))
-}
-
 /// Build the wasm-side command-palette entry list. Mirrors a
 /// subset of the desktop's `crate::commands::palette::entries`
 /// builder using the SAME `Entry` / `Action` / `PaletteCommand`
@@ -7916,53 +7776,37 @@ fn build_wasm_palette_entries(
         .and_then(|id| app.files.get(&id))
         .and_then(|f| f.editor.selection())
         .is_some_and(|s| !s.range().is_empty());
-    let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
-    out.push(
+    let mut out: Vec<egui_palette::Entry<Action>> = vec![
         egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
             .with_shortcut(fmt(&cmd_n)),
-    );
-    out.push(egui_palette::Entry::new(
-        hxy_i18n::t("toolbar-open-file"),
-        Action::InvokeCommand(PaletteCommand::OpenFile),
-    ));
-    out.push(
+        egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(PaletteCommand::OpenFile)),
         egui_palette::Entry::new("Save as download...", Action::InvokeCommand(PaletteCommand::ReloadActiveFile))
             .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new(hxy_i18n::t("menu-file-close"), Action::InvokeCommand(PaletteCommand::CloseToolPane))
             .with_shortcut(fmt(&cmd_w))
             .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new(
             hxy_i18n::t("menu-file-reopen-closed"),
             Action::InvokeCommand(PaletteCommand::ReopenClosedTab),
         )
         .with_shortcut(fmt(&cmd_shift_t))
         .with_disabled(!has_closed),
-    );
-    out.push(
         egui_palette::Entry::new(
             hxy_i18n::t("palette-toggle-readonly"),
             Action::InvokeCommand(PaletteCommand::ToggleEditMode),
         )
         .with_shortcut(fmt(&cmd_e))
         .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new("Toggle search bar", Action::InvokeCommand(PaletteCommand::FindStringsWholeFile))
             .with_shortcut(fmt(&cmd_f))
             .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new(
             hxy_i18n::t("palette-copy-caret-offset"),
             Action::InvokeCommand(PaletteCommand::CopyCaretOffset),
         )
         .with_shortcut(fmt(&cmd_c))
         .with_disabled(!has_active),
-    );
+    ];
     if has_selection {
         out.push(
             egui_palette::Entry::new(
@@ -7972,31 +7816,27 @@ fn build_wasm_palette_entries(
             .with_shortcut(fmt(&cmd_shift_c)),
         );
     }
-    out.push(
+    out.extend([
         egui_palette::Entry::new(
             hxy_i18n::t("palette-strings-whole-file"),
             Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
         )
         .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new(
             hxy_i18n::t("palette-checksums-whole-file"),
             Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
         )
         .with_disabled(!has_active),
-    );
-    out.push(
         egui_palette::Entry::new(
             hxy_i18n::t("palette-compute-entropy"),
             Action::InvokeCommand(PaletteCommand::ComputeEntropy),
         )
         .with_disabled(!has_active),
-    );
-    out.push(egui_palette::Entry::new(
-        hxy_i18n::t("palette-tool-show-inspector"),
-        Action::InvokeCommand(PaletteCommand::ToggleInspector),
-    ));
+        egui_palette::Entry::new(
+            hxy_i18n::t("palette-tool-show-inspector"),
+            Action::InvokeCommand(PaletteCommand::ToggleInspector),
+        ),
+    ]);
     out
 }
 

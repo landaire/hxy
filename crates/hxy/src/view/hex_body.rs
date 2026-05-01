@@ -1,11 +1,15 @@
 //! Render the per-tab hex view body: hooks up the editor, value
 //! palette, template field tinting, and patched-byte highlight.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::files::OpenFile;
 use crate::files::copy::CopyKind;
 use crate::state::PersistedState;
+
+/// Pair of (boundaries, colors) slices that the hex view applies as
+/// per-field tinting. Both slices line up by index: `boundaries[i]`
+/// describes the byte span that gets `colors[i]`.
+#[cfg(target_arch = "wasm32")]
+type FieldColorBands<'a> = (&'a [(hxy_core::ByteOffset, hxy_core::ByteLen)], &'a [egui::Color32]);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
@@ -20,11 +24,18 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     // the resulting borrow is on `file.templates` (a field), not on
     // `&file` as a whole. Going through the `active_template()`
     // method would extend the borrow to all of `file` and conflict
-    // with the later `file.editor.view()` mutable borrow.
+    // with the later `file.editor.view()` mutable borrow. Templates
+    // are desktop-only (the runner needs wasmtime), so wasm builds
+    // skip the template-state resolution and the field-coloring /
+    // hover-span / palette-override paths it feeds.
+    #[cfg(not(target_arch = "wasm32"))]
     let active_state: Option<&crate::files::TemplateState> =
         file.active_template.and_then(|active_id| file.templates.iter().find(|t| t.id == active_id)).map(|t| &t.state);
 
+    #[cfg(not(target_arch = "wasm32"))]
     let template_palette_override = active_state.and_then(|s| s.byte_palette_override.clone());
+    #[cfg(target_arch = "wasm32")]
+    let template_palette_override: Option<std::sync::Arc<[egui::Color32; 256]>> = None;
     let (highlight, palette) = if let Some(table) = template_palette_override {
         (Some(state.app.byte_highlight_mode.as_view()), Some(hxy_view::HighlightPalette::Custom(table)))
     } else {
@@ -36,6 +47,7 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         file.editor.selection().map(|s| matches!(s.range().len().get(), 1 | 2 | 4 | 8)).unwrap_or(false);
 
     let mut copy_request: Option<CopyKind> = None;
+    #[cfg(not(target_arch = "wasm32"))]
     let template_hover_span = active_state.and_then(|s| {
         let idx = s.hovered_node?;
         let node = s.tree.nodes.get(idx.0 as usize)?;
@@ -43,15 +55,23 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         let end = start.saturating_add(node.span.length);
         hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
     });
+    #[cfg(target_arch = "wasm32")]
+    let template_hover_span: Option<hxy_core::ByteRange> = None;
     // Strings-panel row hover paints the same highlight used by
     // template field hover; template wins on tie, since template
     // hovers are usually paired with explicit field selection.
     let hover_span = template_hover_span.or(file.strings_panel.hovered_entry);
 
+    #[cfg(not(target_arch = "wasm32"))]
     let field_boundaries = active_state.map(|s| s.leaf_boundaries.as_slice()).unwrap_or_default();
+    #[cfg(target_arch = "wasm32")]
+    let field_boundaries: &[(hxy_core::ByteOffset, hxy_core::ByteLen)] = &[];
+    #[cfg(not(target_arch = "wasm32"))]
     let field_colors = active_state
         .filter(|s| s.show_colors && !s.leaf_boundaries.is_empty())
         .map(|s| (s.leaf_boundaries.as_slice(), s.leaf_colors.as_slice()));
+    #[cfg(target_arch = "wasm32")]
+    let field_colors: Option<FieldColorBands<'_>> = None;
 
     let modified_ranges = file.editor.modified_ranges();
     let tab_id = file.id.get();
@@ -76,7 +96,12 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     // also needs to widen to fit the bigger numbers, and an
     // Alt-held overlay tags each row with the underlying file
     // offset so the user can correlate without flipping a setting.
+    // Wasm has no plugin-supplied virtual base hints since the
+    // plugin host doesn't run in browsers; the field is gated.
+    #[cfg(not(target_arch = "wasm32"))]
     let virtual_base = file.virtual_base.unwrap_or(0);
+    #[cfg(target_arch = "wasm32")]
+    let virtual_base: u64 = 0;
     let alt_held = ui.input(|i| i.modifiers.alt);
     let source_len = file.editor.source().len().get();
     let display_len = hxy_core::ByteLen::new(source_len.saturating_add(virtual_base));
@@ -164,49 +189,62 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         .show(ui);
     file.editor.on_response(&response, columns);
     file.hovered = response.hovered_offset;
+    // sync_tab_state mirrors live editor state into the
+    // persisted `OpenTabState` for session restore. Lives in
+    // `tabs::close` (gated to non-wasm because that whole module
+    // hangs off close-flow types). Wasm doesn't restore from
+    // disk -- closed-tab bytes are buffered in memory by
+    // `ClosedTabWasm`, no persistent OpenTabState mirror needed.
+    #[cfg(not(target_arch = "wasm32"))]
     crate::tabs::close::sync_tab_state(state, file);
 
-    let breadcrumb_state: Option<&crate::files::TemplateState> =
-        file.active_template.and_then(|active_id| file.templates.iter().find(|t| t.id == active_id)).map(|t| &t.state);
-    // Alt / Option held = full struct path; otherwise just the
-    // leaf field. Cross-platform: egui maps the macOS Option key
-    // to `modifiers.alt`.
-    let detail = if ui.input(|i| i.modifiers.alt) {
-        crate::panels::template::BreadcrumbDetail::Full
-    } else {
-        crate::panels::template::BreadcrumbDetail::Leaf
-    };
-    let template_value_formats = &state.app.template_value_formats;
-    let inverse_format = ui.input(|i| i.modifiers.alt);
-    if let Some(offset) = response.hovered_offset
-        && let Some(tpl_state) = breadcrumb_state
-        && let Some(path) = crate::panels::template::breadcrumb_for_offset(
-            &tpl_state.tree,
-            file.editor.source().as_ref(),
-            offset.get(),
-            detail,
-            template_value_formats,
-            inverse_format,
-        )
+    // Template breadcrumb tooltip: hovering a byte shows the
+    // path through the template's struct tree at that offset.
+    // Templates are desktop-only (need wasmtime via plugin
+    // host), so the breadcrumb path doesn't apply on wasm.
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        let layer = ui.layer_id();
-        egui::Tooltip::always_open(
-            ui.ctx().clone(),
-            layer,
-            egui::Id::new("hxy_template_breadcrumb"),
-            egui::PopupAnchor::Pointer,
-        )
-        .gap(12.0)
-        .show(|ui| {
-            // Let the tooltip grow to the widest row instead of
-            // wrapping long type names. Each row is monospace so the
-            // tree connectors align across labels.
-            for (i, line) in path.iter().enumerate() {
-                let text = egui::RichText::new(line).monospace();
-                let text = if i + 1 == path.len() { text.strong() } else { text };
-                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
-            }
-        });
+        let breadcrumb_state: Option<&crate::files::TemplateState> = file
+            .active_template
+            .and_then(|active_id| file.templates.iter().find(|t| t.id == active_id))
+            .map(|t| &t.state);
+        // Alt / Option held = full struct path; otherwise just the
+        // leaf field. Cross-platform: egui maps the macOS Option key
+        // to `modifiers.alt`.
+        let detail = if ui.input(|i| i.modifiers.alt) {
+            crate::panels::template::BreadcrumbDetail::Full
+        } else {
+            crate::panels::template::BreadcrumbDetail::Leaf
+        };
+        let template_value_formats = &state.app.template_value_formats;
+        let inverse_format = ui.input(|i| i.modifiers.alt);
+        if let Some(offset) = response.hovered_offset
+            && let Some(tpl_state) = breadcrumb_state
+            && let Some(path) = crate::panels::template::breadcrumb_for_offset(
+                &tpl_state.tree,
+                file.editor.source().as_ref(),
+                offset.get(),
+                detail,
+                template_value_formats,
+                inverse_format,
+            )
+        {
+            let layer = ui.layer_id();
+            egui::Tooltip::always_open(
+                ui.ctx().clone(),
+                layer,
+                egui::Id::new("hxy_template_breadcrumb"),
+                egui::PopupAnchor::Pointer,
+            )
+            .gap(12.0)
+            .show(|ui| {
+                for (i, line) in path.iter().enumerate() {
+                    let text = egui::RichText::new(line).monospace();
+                    let text = if i + 1 == path.len() { text.strong() } else { text };
+                    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+                }
+            });
+        }
     }
 
     copy_request
