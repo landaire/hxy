@@ -4,8 +4,6 @@
 //! length-mismatch / Replace-All confirm modals can be raised
 //! before any bytes are spliced.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::files::OpenFile;
 
 /// Stage a Replace-Current. The active match offset comes from the

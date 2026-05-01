@@ -144,7 +144,6 @@ pub struct HxyApp {
     /// top-right of the central panel; the wrapper exposes a
     /// `dismiss_group` helper for the file-open prompt flow that
     /// needs to clear sibling toasts when the user accepts one.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) toasts: crate::toasts::ToastCenter,
 
     /// Open compare-picker modal, if any. Holds the user's in-progress
@@ -158,7 +157,6 @@ pub struct HxyApp {
     /// confirmation or a Replace-All count confirmation. Carries the
     /// originating `FileId` so the resume path can re-issue the
     /// operation against the right buffer.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pending_search_modal: Option<crate::search::modal::PendingSearchModal>,
 
     /// Set when an open hit a sidecar from a previous session that
@@ -4008,21 +4006,8 @@ fn apply_search_events(file: &mut OpenFile, events: Vec<crate::search::bar::Sear
                 file.search.matches.clear();
                 file.search.active_idx = None;
             }
-            SearchEvent::ReplaceCurrent => {
-                // Replace flows need the patch-overlay
-                // length-mismatch modal scaffolding which lives
-                // in `crate::search::replace`, gated to non-wasm.
-                // Wasm clicks on Replace become no-ops until that
-                // module ungates.
-                #[cfg(not(target_arch = "wasm32"))]
-                crate::search::replace::queue_replace_current(file);
-            }
-            SearchEvent::ReplaceAll => {
-                #[cfg(not(target_arch = "wasm32"))]
-                crate::search::replace::queue_replace_all(file, bounds);
-                #[cfg(target_arch = "wasm32")]
-                let _ = bounds;
-            }
+            SearchEvent::ReplaceCurrent => crate::search::replace::queue_replace_current(file),
+            SearchEvent::ReplaceAll => crate::search::replace::queue_replace_all(file, bounds),
         }
     }
 }
@@ -7156,6 +7141,8 @@ impl HxyApp {
             tab_focus: TabFocus::Outer,
             pending_collapse_workspace: Vec::new(),
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY_WASM),
+            toasts: crate::toasts::ToastCenter::new(),
+            pending_search_modal: None,
         }
     }
 
@@ -7662,6 +7649,12 @@ impl eframe::App for HxyApp {
                 self.apply_wasm_palette_outcome(&ctx, outcome);
             }
         }
+        // Search side-effects: turn per-file pending_effects (wrapped /
+        // replaced / length-mismatch ack / replace-all confirm) into
+        // toasts + modals. Same path desktop runs.
+        crate::search::modal::drain_search_effects(self);
+        crate::search::modal::render_search_modal(&ctx, self);
+        self.toasts.show_toasts(&ctx);
         // Visual pane picker overlay -- same code path desktop uses
         // via `tabs::focus::handle_pane_pick`. That helper lives in a
         // desktop-only module though, so the body is inlined here so

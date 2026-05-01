@@ -8,8 +8,6 @@
 //! consumes the request next frame and routes confirms through the
 //! [`super::replace`] helpers.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use crate::app::HxyApp;
 use crate::files::FileId;
 
