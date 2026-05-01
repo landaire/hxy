@@ -1472,7 +1472,6 @@ fn handle_external_change(
 /// for VFS-entry tabs. We don't have a real path so we
 /// synthesise one from the source's parent + entry path. Two
 /// tabs of the same VFS entry share the same key.
-#[cfg(not(target_arch = "wasm32"))]
 fn vfs_pref_key_for(source: &TabSource) -> std::path::PathBuf {
     match source {
         TabSource::VfsEntry { parent, entry_path } => {
@@ -1942,7 +1941,6 @@ fn vfs_expanded_for<'a>(list: &'a mut Vec<(TabSource, Vec<String>)>, key: &TabSo
 /// background thread. Spins the phosphor circle-notch glyph by
 /// rotating it on the UI's elapsed time so the user has a clear
 /// "still working" signal without a separate animation system.
-#[cfg(not(target_arch = "wasm32"))]
 fn render_loading_placeholder(ui: &mut egui::Ui, display_name: &str) {
     let rect = ui.available_rect_before_wrap();
     let bg = ui.visuals().window_fill();
@@ -1982,7 +1980,6 @@ fn render_loading_placeholder(ui: &mut egui::Ui, display_name: &str) {
 /// open returned an error. Surfaces the plugin / IO message
 /// alongside the file name so the user knows what to retry from
 /// the console / palette without flipping to logs.
-#[cfg(not(target_arch = "wasm32"))]
 fn render_failed_placeholder(ui: &mut egui::Ui, display_name: &str, message: &str) {
     let rect = ui.available_rect_before_wrap();
     let bg = ui.visuals().window_fill();
@@ -2037,10 +2034,7 @@ fn render_file_tab(
     // a few px so a descender always has a clear pixel below it.
     let status_h = text_h + 6.0;
 
-    #[cfg(not(target_arch = "wasm32"))]
     let watch_chip = compute_watch_chip(file, &state.app);
-    #[cfg(target_arch = "wasm32")]
-    let watch_chip: Option<WatchStatusChip> = None;
     egui::Panel::bottom(egui::Id::new(("hxy-status-panel", id.get())))
         .resizable(false)
         .exact_size(status_h)
@@ -2655,7 +2649,6 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg(not(target_arch = "wasm32"))]
 fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(menu) = app.menu.as_ref() else { return };
     let actions = menu.drain_actions();
@@ -2686,7 +2679,6 @@ fn drain_native_menu(ctx: &egui::Context, app: &mut HxyApp) {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg(not(target_arch = "wasm32"))]
 fn sync_native_menu_state(app: &mut HxyApp) {
     let active = active_file_id(app);
     let has_file = active.is_some();
@@ -2847,7 +2839,6 @@ pub(crate) fn jump_to_template_field(app: &mut HxyApp, forward: bool) {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg(not(target_arch = "wasm32"))]
 fn copy_active_file(ctx: &egui::Context, app: &mut HxyApp, kind: CopyKind) {
     let Some(id) = active_file_id(app) else { return };
     let Some(file) = app.files.get(&id) else { return };
@@ -3306,7 +3297,6 @@ pub(crate) fn uninstall_plugin(app: &mut HxyApp, wasm_path: &std::path::Path) {
 /// actually clicked into. Falls back to the workspace's editor when
 /// the focused inner tab is the VfsTree (no file backs the tree
 /// itself) or when nothing has focus yet.
-#[cfg(not(target_arch = "wasm32"))]
 fn inner_active_file(workspace: &mut crate::files::Workspace) -> FileId {
     if let Some((_, tab)) = workspace.dock.find_active_focused() {
         match *tab {
@@ -3326,16 +3316,11 @@ fn inner_active_file(workspace: &mut crate::files::Workspace) -> FileId {
 /// no file to act on.
 pub(crate) fn active_file_id(app: &mut HxyApp) -> Option<FileId> {
     if let Some((_, tab)) = app.dock.find_active_focused() {
-        // The Workspace arm is desktop-only; on wasm the match
-        // collapses to `Tab::File | _` which clippy wants flattened
-        // -- keep the shape so the desktop arm stays intact.
-        #[cfg_attr(target_arch = "wasm32", allow(clippy::collapsible_match, clippy::single_match))]
         match *tab {
             Tab::File(id) => {
                 app.last_active_file = Some(id);
                 return Some(id);
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Workspace(workspace_id) => {
                 // The active "file" for a workspace is whatever sub-
                 // tab is currently active in its inner dock: the
@@ -3389,7 +3374,6 @@ pub(crate) struct WatchStatusChip {
 /// current `settings`. Returns `None` for purely in-memory
 /// tabs (anonymous scratch buffers without a stable identity)
 /// since the watcher has nothing to track for those.
-#[cfg(not(target_arch = "wasm32"))]
 fn compute_watch_chip(file: &OpenFile, settings: &crate::settings::AppSettings) -> Option<WatchStatusChip> {
     let source = file.source_kind.as_ref()?;
     if matches!(source, TabSource::Anonymous { .. }) {

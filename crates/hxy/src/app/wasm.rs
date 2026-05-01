@@ -756,7 +756,17 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
                 let id = *id;
                 if let Some(file) = self.files.get_mut(&id) {
                     *self.last_active_file = Some(id);
-                    render_file_tab(ui, id, file, self.state, *self.tab_focus);
+                    match &file.load_status {
+                        crate::files::LoadStatus::Ready => {
+                            render_file_tab(ui, id, file, self.state, *self.tab_focus);
+                        }
+                        crate::files::LoadStatus::Loading => {
+                            super::render_loading_placeholder(ui, &file.display_name);
+                        }
+                        crate::files::LoadStatus::Failed(message) => {
+                            super::render_failed_placeholder(ui, &file.display_name, message);
+                        }
+                    }
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }

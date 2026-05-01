@@ -40,57 +40,44 @@ use crate::tabs::Tab;
 pub(super) struct HxyTabViewer<'a> {
     pub(super) files: &'a mut HashMap<FileId, OpenFile>,
     pub(super) state: &'a mut PersistedState,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) compares: &'a mut std::collections::BTreeMap<crate::compare::CompareId, crate::compare::CompareSession>,
     pub(super) console: &'a std::collections::VecDeque<ConsoleEntry>,
     /// Active plugin VFS mounts. Read-only here -- closing a mount tab
     /// only flags it via `pending_close_mount` and the app drops it
     /// from the map after the dock pass.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) mounts: &'a std::collections::BTreeMap<crate::files::MountId, crate::files::MountedPlugin>,
     /// Slot for the dock's `on_close` handler when the user X-clicks a
     /// `Tab::PluginMount`. The app drains the mount entry from
     /// `app.mounts` after the dock pass.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_close_mount: &'a mut Option<crate::files::MountId>,
     /// Cross-file search state, rendered by `Tab::SearchResults`.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) global_search: &'a mut crate::search::global::GlobalSearchState,
     /// Events emitted by the global search tab during render. Drained
     /// after the dock pass so we can mutate `files` to focus / jump.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_global_search_events: &'a mut Vec<crate::search::global::GlobalSearchEvent>,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) inspector: &'a mut crate::panels::inspector::InspectorState,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) decoders: &'a [Arc<dyn crate::panels::inspector::Decoder>],
     /// (caret offset, up to 16 bytes at caret) for the active file,
     /// snapshotted before dock render so the Inspector tab can read
     /// it without reborrowing `files`.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) inspector_data: Option<(u64, Vec<u8>)>,
     /// Set to true when the Plugins tab mutated the plugin directories
     /// and needs the registry / template runtimes rebuilt. Drained at
     /// end of frame by [`HxyApp::ui`].
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) plugin_rescan: &'a mut bool,
     /// Read-only view of loaded plugin handlers so the Plugins tab
     /// can render their consent cards.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) plugin_handlers: &'a [Arc<hxy_plugin_host::PluginHandler>],
     /// Sink for grant changes / state-wipe requests captured by the
     /// Plugins tab. Drained at end of frame by [`HxyApp::ui`].
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_plugin_events: &'a mut Vec<crate::panels::plugins::PluginsEvent>,
     /// Snapshot of the persisted ImHex-Patterns hash, captured before
     /// the dock pass so the Plugins tab can render its status
     /// without re-borrowing `state`.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) patterns_installed_hash: Option<String>,
     /// Bytes received so far on an in-flight pattern download, or
     /// None when no fetch is running. Mirrors
     /// [`HxyApp::pattern_in_flight_bytes`] for the dock viewer.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) patterns_in_flight_bytes: Option<u64>,
     /// Slot the dock's `on_close` handler writes to when the user
     /// X-clicks a dirty File tab. The app drains this after the
@@ -115,11 +102,9 @@ pub(super) struct HxyTabViewer<'a> {
     /// Toast / template-prompt center, plumbed in so `render_file_tab`
     /// can render its prompts scoped to the tab's content rect rather
     /// than the app-global corner.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) toasts: &'a mut crate::toasts::ToastCenter,
     /// Sink for "Run X.bt" toast accepts. Drained by the host loop
     /// after the dock pass.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_template_runs: &'a mut Vec<crate::toasts::PendingTemplateRun>,
     /// Sink for entropy panels' "Compute" / "Recompute" button
     /// clicks. Each panel pushes its own pinned `FileId` here
@@ -128,33 +113,27 @@ pub(super) struct HxyTabViewer<'a> {
     /// [`compute_entropy_for`]. A `Vec` (rather than a single
     /// slot) lets multiple docked entropy panels each fire a
     /// recompute in the same frame.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) entropy_recompute: &'a mut Vec<FileId>,
     /// Sink for visualizer-panel header X-button clicks. The
     /// dock-pass borrow on `app.dock` blocks the renderer from
     /// removing the tab inline, so it queues the file id here and
     /// the post-dock drain calls `remove_tab` + sets the file's
     /// `visualizer_panel.open` flag.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_visualizer_dismiss: &'a mut Vec<FileId>,
     /// Strings panel "Run" requests captured during render.
     /// Drained post-dock-pass, where we have `&mut HxyApp` and can
     /// route through `spawn_strings_for`.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_strings_run: &'a mut Vec<FileId>,
     /// Strings panel offset-link clicks captured during render.
     /// Each entry is `(file_id, offset, end)`; the post-dock drain
     /// translates them into selection + scroll updates on the file's
     /// hex view.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_strings_jump: &'a mut Vec<(FileId, u64, u64)>,
     /// Checksum panel "Run" requests captured during render.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_checksums_run: &'a mut Vec<FileId>,
     /// Clipboard-copy requests emitted by the Checksum panel
     /// (per-row "Copy" buttons + "Copy all"). Each entry is the
     /// already-formatted string that should land on the clipboard.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) pending_checksums_copy: &'a mut Vec<String>,
     /// Shared byte cache, plumbed through so the Settings tab can
     /// drive `set_limit` directly when the user changes the cache
@@ -196,17 +175,14 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-entropy", &[("name", name)]).into()
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Visualizer(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-visualizer", &[("name", name)]).into()
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Strings(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-strings", &[("name", name)]).into()
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Checksums(id) => {
                 let name = self.files.get(id).map(|f| f.display_name.as_str()).unwrap_or("");
                 hxy_i18n::t_args("tab-checksums", &[("name", name)]).into()
@@ -215,12 +191,10 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 Some(f) => format_file_tab_title(f).into(),
                 None => format!("file-{}", id.get()).into(),
             },
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
                 Some(m) => format!("{} {}", egui_phosphor::regular::TREE_STRUCTURE, m.display_name).into(),
                 None => format!("mount-{}", mount_id.get()).into(),
             },
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::SearchResults => {
                 format!("{} {}", egui_phosphor::regular::MAGNIFYING_GLASS, hxy_i18n::t("tab-search-results")).into()
             }
@@ -231,7 +205,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 },
                 None => format!("workspace-{}", workspace_id.get()).into(),
             },
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Compare(compare_id) => match self.compares.get(compare_id) {
                 Some(s) => {
                     hxy_i18n::t_args("tab-compare-title", &[("a", &s.a.display_name), ("b", &s.b.display_name)]).into()
@@ -265,7 +238,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     self.entropy_recompute.push(pinned);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Strings(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
@@ -315,7 +287,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     let _ = crate::panels::strings::show(ui, None, &mut empty);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Checksums(file_id) => {
                 let pinned = *file_id;
                 if let Some(file) = self.files.get_mut(&pinned) {
@@ -363,7 +334,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     let _ = crate::panels::checksums::show(ui, None, &mut empty);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Visualizer(file_id) => {
                 let pinned = *file_id;
                 // Split-borrow: the visualizer renderer needs both
@@ -435,9 +405,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                             file,
                             self.state,
                             *self.tab_focus,
-                            #[cfg(not(target_arch = "wasm32"))]
                             self.toasts,
-                            #[cfg(not(target_arch = "wasm32"))]
                             self.pending_template_runs,
                         );
                     }
@@ -446,7 +414,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     ui.colored_label(egui::Color32::RED, format!("missing file {id:?}"));
                 }
             },
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(mount_id) => match self.mounts.get(mount_id) {
                 Some(m) => {
                     let key = TabSource::PluginMount {
@@ -481,7 +448,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                     self.pending_template_runs,
                 );
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Compare(compare_id) => match self.compares.get_mut(compare_id) {
                 Some(session) => crate::compare::tab::render_compare_tab(ui, session, self.state),
                 None => {
@@ -500,14 +466,19 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
         }
     }
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        match tab {
-            Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Plugins | Tab::Workspace(_) | Tab::Memory => true,
-            #[cfg(not(target_arch = "wasm32"))]
-            Tab::PluginMount(_) | Tab::SearchResults => true,
-            #[cfg(not(target_arch = "wasm32"))]
-            Tab::Entropy(_) | Tab::Visualizer(_) => true,
-            _ => false,
-        }
+        matches!(
+            tab,
+            Tab::File(_)
+                | Tab::Console
+                | Tab::Inspector
+                | Tab::Plugins
+                | Tab::Workspace(_)
+                | Tab::Memory
+                | Tab::PluginMount(_)
+                | Tab::SearchResults
+                | Tab::Entropy(_)
+                | Tab::Visualizer(_)
+        )
     }
 
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
@@ -517,9 +488,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
         // host an inner DockArea that takes the full body.
         match tab {
             Tab::File(_) | Tab::Console | Tab::Inspector | Tab::Workspace(_) => [false, false],
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::PluginMount(_) | Tab::SearchResults => [false, false],
-            #[cfg(not(target_arch = "wasm32"))]
             Tab::Entropy(_) | Tab::Visualizer(_) => [false, false],
             Tab::Memory => [false, true],
             _ => [true, true],
@@ -548,7 +517,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 }
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Tab::PluginMount(mount_id) = tab {
             // Defer the actual removal -- the mounts map is borrowed
             // immutably here. The post-dock drain in `HxyApp::ui`
@@ -556,7 +524,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
             // matching `state.open_tabs` record.
             *self.pending_close_mount = Some(*mount_id);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Tab::Visualizer(file_id) = tab {
             // Clear the user's "open" flag so the next template re-run
             // doesn't auto-pop the panel back. Mirrored to the
@@ -570,7 +537,6 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
                 }
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Tab::Strings(file_id) = tab {
             // Drop the cached row hover so the hex view doesn't keep
             // painting a stale highlight after the panel disappears.

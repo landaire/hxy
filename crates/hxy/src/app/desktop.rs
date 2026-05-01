@@ -62,8 +62,6 @@ use crate::files::OpenFile;
 use crate::state::PersistedState;
 use crate::state::SharedPersistedState;
 use crate::tabs::Tab;
-
-#[cfg(not(target_arch = "wasm32"))]
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
@@ -72,7 +70,6 @@ impl HxyApp {
         // Spin up the shared CPU-bound worker pool eagerly so the
         // first template / diff / entropy job doesn't pay thread
         // creation latency on the UI hot path.
-        #[cfg(not(target_arch = "wasm32"))]
         crate::background::init();
         let (initial_zoom, initial_window, show_patterns_prompt, initial_polling) = {
             let s = state.read();
@@ -96,101 +93,66 @@ impl HxyApp {
         // of MB of cranelift allocator churn. The wasm32 build never
         // calls `with_plugin_persistence`; it gets plugin loading via
         // the explicit `reload_plugins()` call right after construction.
-        #[cfg(not(target_arch = "wasm32"))]
         let plugin_handlers: Vec<Arc<hxy_plugin_host::PluginHandler>> = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
         let template_plugins = load_user_template_plugins();
         Self {
             dock: DockState::new(vec![Tab::Welcome, Tab::Settings]),
             files: HashMap::new(),
             workspaces: std::collections::BTreeMap::new(),
             next_workspace_id: 1,
-            #[cfg(not(target_arch = "wasm32"))]
             mounts: std::collections::BTreeMap::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             next_mount_id: 1,
-            #[cfg(not(target_arch = "wasm32"))]
             compares: std::collections::BTreeMap::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             next_compare_id: 1,
             byte_cache: hxy_core::ByteCache::new(byte_cache_limit_from_state(&state)),
             state,
             next_file_id: 1,
             registry,
-            #[cfg(not(target_arch = "wasm32"))]
             template_plugins,
-            #[cfg(not(target_arch = "wasm32"))]
             plugin_handlers,
-            #[cfg(not(target_arch = "wasm32"))]
             plugin_state_store: None,
-            #[cfg(not(target_arch = "wasm32"))]
             sink: None,
             prev_window: None,
             last_saved_window: Some(initial_window),
             applied_zoom: initial_zoom,
             pending_duplicate: None,
-            #[cfg(not(target_arch = "wasm32"))]
             toasts: crate::toasts::ToastCenter::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_search_modal: None,
-            #[cfg(not(target_arch = "wasm32"))]
             compare_picker: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_patch_restore: None,
             console: std::collections::VecDeque::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             inspector: crate::panels::inspector::InspectorState::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             decoders: crate::panels::inspector::default_decoders(),
             last_active_file: None,
             last_active_workspace: None,
             #[cfg(target_os = "macos")]
             menu: Some(crate::menu::MenuState::install()),
-            #[cfg(not(target_arch = "wasm32"))]
             plugin_rescan: false,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_plugin_events: Vec::new(),
             pending_plugin_ops: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             templates: load_template_library_dirs(),
             palette: crate::commands::palette::PaletteState::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_pane_pick: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pane_pick_letters: std::collections::BTreeMap::new(),
             pending_close_tab: None,
             tab_focus: TabFocus::Outer,
             pending_close_workspace_entry: None,
             pending_collapse_workspace: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_close_mount: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pane_pick_target_paths: None,
-            #[cfg(not(target_arch = "wasm32"))]
             global_search: crate::search::global::GlobalSearchState::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_global_search_events: Vec::new(),
             last_content_leaf: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_cli_paths: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             ipc_inbox: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pattern_fetch: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pattern_in_flight_bytes: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_pattern_download_request: false,
-            #[cfg(not(target_arch = "wasm32"))]
             // Cached above before `state` was moved into the struct.
             pattern_first_run_prompt: show_patterns_prompt,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_template_runs: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_byte_change_cascade: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_template_restore: false,
-            #[cfg(not(target_arch = "wasm32"))]
             file_watcher: match crate::files::watch::FileWatcher::with_prefs(&cc.egui_ctx, initial_polling) {
                 Ok(w) => Some(w),
                 Err(e) => {
@@ -198,19 +160,12 @@ impl HxyApp {
                     None
                 }
             },
-            #[cfg(not(target_arch = "wasm32"))]
             pending_reload_prompt: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_virtual_base_prompt: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_open_with_options: None,
-            #[cfg(not(target_arch = "wasm32"))]
             pending_orphan_entries: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_snapshot_dialog: None,
-            #[cfg(not(target_arch = "wasm32"))]
             closed_tabs: std::collections::VecDeque::with_capacity(crate::tabs::close::CLOSED_TABS_CAPACITY),
-            #[cfg(not(target_arch = "wasm32"))]
             vfs_open_inbox: egui_inbox::UiInbox::new_with_ctx(&cc.egui_ctx),
         }
     }
@@ -218,7 +173,6 @@ impl HxyApp {
     /// Rebuild the VFS registry + template runtime list from the
     /// user's plugin directories. Called by the Plugins tab after the
     /// user installs or deletes a file.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn reload_plugins(&mut self) {
         let mut registry = VfsRegistry::new();
         registry.register(Arc::new(ZipHandler::new()));
@@ -233,7 +187,6 @@ impl HxyApp {
     /// ImHex-Patterns download. Same shape as [`reload_plugins`]
     /// but only touches the templates list -- the plugin registry
     /// is unchanged.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn refresh_templates_after_pattern_install(&mut self) {
         self.templates = load_template_library_dirs();
     }
@@ -243,7 +196,6 @@ impl HxyApp {
     /// any `SetGrant`, calls the state store for any `WipeState`,
     /// then triggers a single `reload_plugins` at the end so the
     /// linker reflects the new grant set.
-    #[cfg(not(target_arch = "wasm32"))]
     fn apply_plugin_events(&mut self, events: Vec<crate::panels::plugins::PluginsEvent>) {
         let mut grants_changed = false;
         for ev in events {
@@ -286,7 +238,6 @@ impl HxyApp {
     /// Show the Plugins tab. Focuses if already open; otherwise routes
     /// to the shared tool leaf (creating it as a right split if no
     /// other plugin tab is already docked there).
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_plugins(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Plugins) {
             let node_path = path.node_path();
@@ -299,7 +250,6 @@ impl HxyApp {
     }
 
     /// Close the Plugins tab if present; otherwise show it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn toggle_plugins(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Plugins) {
             let _ = self.dock.remove_tab(path);
@@ -317,7 +267,6 @@ impl HxyApp {
     /// 010 Editor's layout. If already docked anywhere
     /// (including after the user drags it elsewhere), focus the
     /// existing tab instead of creating a second split.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_inspector(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Inspector) {
             let node_path = path.node_path();
@@ -330,7 +279,6 @@ impl HxyApp {
     }
 
     /// Close the Inspector tab if present; otherwise show it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn toggle_inspector(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Inspector) {
             let _ = self.dock.remove_tab(path);
@@ -341,7 +289,6 @@ impl HxyApp {
 
     /// Show (or focus) the Memory debug panel. Routes through the
     /// shared tool leaf alongside the other debug panels.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_memory_panel(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Memory) {
             let node_path = path.node_path();
@@ -354,7 +301,6 @@ impl HxyApp {
     }
 
     /// Close the Memory tab if present; otherwise show it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn toggle_memory_panel(&mut self) {
         if let Some(path) = self.dock.find_tab(&Tab::Memory) {
             let _ = self.dock.remove_tab(path);
@@ -367,7 +313,6 @@ impl HxyApp {
     /// file gets its own tab so two panels can be docked
     /// side-by-side for visual comparison; opening entropy for
     /// the same file twice just focuses the existing tab.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_entropy_for(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::Entropy(file_id)) {
             let node_path = path.node_path();
@@ -382,7 +327,6 @@ impl HxyApp {
     /// Show (or focus) the Strings panel for `file_id`. Modeled on
     /// [`Self::show_entropy_for`]: per-file dock tab, push to the
     /// shared tool leaf if not already present, focus otherwise.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_strings_for(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::Strings(file_id)) {
             let node_path = path.node_path();
@@ -395,7 +339,6 @@ impl HxyApp {
     }
 
     /// Show (or focus) the Checksums panel for `file_id`.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_checksums_for(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::Checksums(file_id)) {
             let node_path = path.node_path();
@@ -413,7 +356,6 @@ impl HxyApp {
     /// the user has previously dismissed the panel for this file
     /// (so re-runs don't re-pop it). The user can still re-open
     /// manually via the View menu / palette.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn show_visualizer_for(&mut self, file_id: FileId) {
         if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
             let node_path = path.node_path();
@@ -431,7 +373,6 @@ impl HxyApp {
     /// `OpenTabState::visualizer_open` from the prior session. Closed
     /// is the default; a freshly opened file with visualizer-bearing
     /// fields stays quiet until the user asks for the panel.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn auto_open_visualizer_for(&mut self, file_id: FileId) {
         let should_open = match self.files.get(&file_id) {
             Some(file) if file.visualizer_panel.open => !crate::visualizers::collect_targets(file).is_empty(),
@@ -473,7 +414,6 @@ impl HxyApp {
     /// [`crate::plugin_runner`]; the outcome dispatch matches what
     /// the synchronous calls used to do (palette dispatch / open
     /// tab) plus a "completed in N ms" log entry.
-    #[cfg(not(target_arch = "wasm32"))]
     fn drain_pending_plugin_ops(&mut self, ctx: &egui::Context) {
         // `try_take` consumes the op and returns either the result
         // or the unchanged op (still pending). Re-collect the
@@ -604,8 +544,6 @@ impl HxyApp {
             self.show_settings();
         }
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn template_runtime_for(&self, extension: &str) -> Option<Arc<dyn hxy_plugin_host::TemplateRuntime>> {
         self.template_plugins.iter().find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(extension))).cloned()
     }
@@ -613,8 +551,6 @@ impl HxyApp {
     pub fn registry(&self) -> &VfsRegistry {
         &self.registry
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_sink(mut self, sink: crate::settings::persist::SaveSink) -> Self {
         self.sink = Some(sink);
         self.restore_open_tabs();
@@ -628,7 +564,6 @@ impl HxyApp {
     /// `PluginHandler` instances pick up the new state-store
     /// reference; without this call (e.g. db open failed), every
     /// plugin's permission requests are treated as denied.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_plugin_persistence(mut self, state_store: Arc<dyn hxy_plugin_host::StateStore>) -> Self {
         self.plugin_state_store = Some(state_store);
         self.reload_plugins();
@@ -641,7 +576,6 @@ impl HxyApp {
     /// is called -- we don't want to re-resolve against the
     /// running instance's CWD on the receiving end of an IPC
     /// forward.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_cli_paths(mut self, paths: Vec<std::path::PathBuf>) -> Self {
         self.pending_cli_paths = paths;
         self
@@ -651,7 +585,6 @@ impl HxyApp {
     /// can pick up forwarded paths from later `hxy <file>...`
     /// invocations. `None` is fine: the GUI just won't accept
     /// forwarded opens.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_ipc_inbox(mut self, inbox: egui_inbox::UiInbox<Vec<std::path::PathBuf>>) -> Self {
         self.ipc_inbox = Some(inbox);
         self
@@ -686,7 +619,6 @@ impl HxyApp {
     /// Open a filesystem path with a streaming `HexSource` -- no
     /// up-front full-file read. Returns the new tab id, or an
     /// error if the file can't be opened.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn open_filesystem_path(
         &mut self,
         display_name: impl Into<String>,
@@ -705,7 +637,6 @@ impl HxyApp {
     ///
     /// Restore paths deliberately bypass this -- reopening a file
     /// across restarts shouldn't prompt.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn request_open_filesystem(&mut self, display_name: impl Into<String>, path: std::path::PathBuf) {
         let display_name = display_name.into();
         if let Some(existing) = self.existing_filesystem_tab(&path) {
@@ -763,7 +694,6 @@ impl HxyApp {
             // Entropy, Plugins, ...). Redirect focus to the
             // last known content leaf so push_to_focused_leaf
             // lands the file in the editing area instead.
-            #[cfg(not(target_arch = "wasm32"))]
             if crate::tabs::dock_ops::focused_leaf_is_all_tool(self) {
                 crate::tabs::dock_ops::focus_content_leaf(self);
             }
@@ -776,7 +706,6 @@ impl HxyApp {
         // Look for an unsaved-edits sidecar from a previous session
         // and offer it back to the user. The actual restore happens
         // after the modal returns; this just stages the prompt.
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(TabSource::Filesystem(path)) = source_kind.as_ref()
             && let Some(dir) = crate::files::save::unsaved_edits_dir()
         {
@@ -808,9 +737,7 @@ impl HxyApp {
                 });
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         self.suggest_templates_for(id);
-        #[cfg(not(target_arch = "wasm32"))]
         self.watch_root_for_file(id);
         id
     }
@@ -822,7 +749,6 @@ impl HxyApp {
     /// purely in-memory anonymous tabs, when the watcher failed
     /// to construct at startup, or when the per-file auto-reload
     /// pref is `Never` (which means "don't even watch").
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn watch_root_for_file(&mut self, id: FileId) {
         let Some(file) = self.files.get(&id) else { return };
         // Skip enrolment entirely when the user marked this
@@ -855,7 +781,6 @@ impl HxyApp {
     /// backed tabs, or a synthesised `vfs://...` key for VFS-
     /// entry tabs. `None` for purely in-memory anonymous tabs
     /// where there's nothing to remember across restarts.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn watch_key_for(&self, id: FileId) -> Option<std::path::PathBuf> {
         let file = self.files.get(&id)?;
         if let Some(p) = file.root_path() {
@@ -869,7 +794,6 @@ impl HxyApp {
     /// per-file auto-reload pref or the source identity
     /// changed. Idempotent: re-watching is a no-op for paths /
     /// entries already watched.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refresh_watch_for_file(&mut self, id: FileId) {
         let Some(file) = self.files.get(&id) else { return };
         let watch_key = self.watch_key_for(id);
@@ -894,7 +818,6 @@ impl HxyApp {
     /// Set the per-file auto-reload pref for `id` and re-aim
     /// the watcher. Used by the palette and the reload prompt's
     /// "remember for this file" checkbox.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_file_watch_pref(&mut self, id: FileId, mode: crate::settings::AutoReloadMode) {
         let Some(key) = self.watch_key_for(id) else { return };
         let global = self.state.read().app.auto_reload;
@@ -912,7 +835,6 @@ impl HxyApp {
 
     /// Unregister the watcher for `path` if no remaining open file
     /// or workspace still references it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn unwatch_path_if_unused(&mut self, path: &std::path::Path) {
         let Some(watcher) = self.file_watcher.as_mut() else { return };
         let still_used = self.files.values().any(|f| f.root_path().map(|p| p.as_path()) == Some(path));
@@ -925,7 +847,6 @@ impl HxyApp {
     /// Drop the VFS sample-hash poller for `id`. Called from
     /// the close path so the worker stops re-reading bytes
     /// through a source the user already torn down.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn unwatch_vfs_for_file(&mut self, id: FileId) {
         if let Some(watcher) = self.file_watcher.as_mut() {
             watcher.unwatch_vfs(id);
@@ -945,7 +866,6 @@ impl HxyApp {
     /// prompt when the entry no longer exists in the new mount),
     /// and any template that previously ran against the old bytes
     /// is re-fired against the new ones.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn apply_reload_decision(&mut self, ctx: &egui::Context, id: FileId, decision: ReloadDecision) -> bool {
         if matches!(decision, ReloadDecision::Ignore) {
             return true;
@@ -1001,7 +921,6 @@ impl HxyApp {
     /// entry stages an orphan-tab prompt the host renders next
     /// frame. No-op when the file isn't the editor of any
     /// workspace.
-    #[cfg(not(target_arch = "wasm32"))]
     fn refresh_workspace_for_file(&mut self, file_id: FileId) {
         let Some(workspace_id) = self.workspaces.values().find(|w| w.editor_id == file_id).map(|w| w.id) else {
             return;
@@ -1091,7 +1010,6 @@ impl HxyApp {
     /// when nothing has completed yet, or when any run is still in
     /// flight (the worker hasn't seen the old bytes yet either, so
     /// rerunning would just duplicate work).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn rerun_template_for_file(&mut self, ctx: &egui::Context, file_id: FileId) {
         let Some(file) = self.files.get(&file_id) else { return };
         if file.templates.is_empty() || !file.templates_running.is_empty() {
@@ -1133,7 +1051,6 @@ impl HxyApp {
     /// match. Multiple candidates render as rows in one anchored
     /// window; accepting any row dispatches that template and closes
     /// the panel.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn suggest_templates_for(&mut self, id: FileId) {
         let Some(file) = self.files.get(&id) else { return };
         let extension = file.source_kind.as_ref().and_then(|s| s.leaf_extension());
@@ -1209,7 +1126,6 @@ impl HxyApp {
         ) && let Ok(head) = file.editor.source().read(range)
         {
             file.detected_handler = self.registry.detect(&head);
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let ext = file
                     .source_kind
@@ -1235,7 +1151,6 @@ impl HxyApp {
     /// parents are restored before their children. Failures (file
     /// missing, parent failed to mount, entry path gone) drop the tab
     /// from the persisted list.
-    #[cfg(not(target_arch = "wasm32"))]
     fn restore_open_tabs(&mut self) {
         let mut tabs = self.state.read().open_tabs.clone();
         // Topologically order: shallower depth first so parents load
@@ -1280,7 +1195,6 @@ impl HxyApp {
     /// fingerprint check inside [`crate::templates::runner::run_template_from_path`]
     /// drops persisted color overrides when the template source has
     /// changed on disk since the last save.
-    #[cfg(not(target_arch = "wasm32"))]
     fn restore_persisted_templates(&mut self, ctx: &egui::Context) {
         // Snapshot the work list so the per-template loop doesn't have
         // to keep re-acquiring `self.state` against the runner's own
@@ -1298,7 +1212,6 @@ impl HxyApp {
     /// and the `Reopen Last Closed` path (which only wants to
     /// re-fire the just-restored tab, not every other open file's
     /// templates).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restore_persisted_templates_for_source(&mut self, ctx: &egui::Context, source: &TabSource) {
         let (templates, active_idx, visualizer_open) = {
             let g = self.state.read();
@@ -1362,8 +1275,6 @@ impl HxyApp {
             file.active_template = Some(running.id);
         }
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restore_one_tab(
         &mut self,
         tab: &crate::state::OpenTabState,
@@ -1511,7 +1422,6 @@ impl HxyApp {
     /// state. Used by `restore_one_tab` to decide whether a missing
     /// VfsEntry parent is "deferred until retry succeeds" (preserve
     /// the tab) or "genuinely gone" (drop it).
-    #[cfg(not(target_arch = "wasm32"))]
     fn parent_mount_pending(&self, source: &TabSource) -> bool {
         let TabSource::PluginMount { plugin_name, token, .. } = source else { return false };
         self.mounts.values().any(|m| m.plugin_name == *plugin_name && m.token == *token && m.status.live().is_none())
@@ -1553,14 +1463,11 @@ impl HxyApp {
     /// `PluginMount` arm is the only desktop-only piece.
     pub(crate) fn find_mount_for_source(&self, source: &TabSource) -> Option<Arc<MountedVfs>> {
         match source {
-            #[cfg(not(target_arch = "wasm32"))]
             TabSource::PluginMount { plugin_name, token, .. } => self
                 .mounts
                 .values()
                 .find(|m| m.plugin_name == *plugin_name && m.token == *token)
                 .and_then(|m| m.status.live().cloned()),
-            #[cfg(target_arch = "wasm32")]
-            TabSource::PluginMount { .. } => None,
             other => {
                 let editor_id =
                     self.files.iter().find_map(|(id, f)| (f.source_kind.as_ref() == Some(other)).then_some(*id))?;
@@ -1623,7 +1530,6 @@ impl HxyApp {
                         });
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
                 self.suggest_templates_for(id);
                 id
             }
@@ -1637,7 +1543,6 @@ impl HxyApp {
         if *snapshot_before == after {
             return;
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(sink) = &self.sink {
             if let Err(e) = sink.save(&after) {
                 tracing::warn!(error = %e, "save persisted state");
@@ -1652,7 +1557,6 @@ impl HxyApp {
     /// Compares against the previous JSON before writing so the
     /// per-frame [`Self::save_if_dirty`] check correctly elides a
     /// disk write when nothing actually changed.
-    #[cfg(not(target_arch = "wasm32"))]
     fn snapshot_dock_layout(&mut self) {
         let snapshot = crate::tabs::persisted_dock::live_to_persisted(
             &self.dock,
@@ -1681,7 +1585,6 @@ impl HxyApp {
     /// an unknown schema version -- in any of those cases the host
     /// keeps the layout that [`Self::restore_open_tabs`] just built
     /// from `open_tabs` alone.
-    #[cfg(not(target_arch = "wasm32"))]
     fn apply_persisted_dock_layout(&mut self) {
         let json = match self.state.read().dock_layout_json.clone() {
             Some(j) => j,
@@ -1741,7 +1644,6 @@ impl HxyApp {
     /// [`crate::compare::CompareSession`]. Returns a lookup map
     /// keyed by the `(a, b)` source pair so the dock translation
     /// can resolve persisted compare tabs to live ids.
-    #[cfg(not(target_arch = "wasm32"))]
     fn respawn_persisted_compares(
         &mut self,
         snapshot: &crate::tabs::persisted_dock::PersistedDock,
@@ -1770,7 +1672,6 @@ impl HxyApp {
     /// sources are read directly; VFS-entry sources read through
     /// the parent mount (which `restore_open_tabs` has already
     /// remounted).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn spawn_compare_from_sources(
         &mut self,
         a: TabSource,
@@ -1796,7 +1697,6 @@ impl HxyApp {
     /// Read whatever a [`TabSource`] resolves to as a byte buffer
     /// for compare's purposes. Filesystem reads from disk, VFS
     /// entries route through the parent mount.
-    #[cfg(not(target_arch = "wasm32"))]
     fn read_tab_source_bytes(
         &self,
         source: &TabSource,
@@ -1832,20 +1732,15 @@ impl HxyApp {
 }
 
 /// Bytes + display name produced by [`HxyApp::read_tab_source_bytes`].
-#[cfg(not(target_arch = "wasm32"))]
 struct RestoredCompareSide {
     name: String,
     bytes: Vec<u8>,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
 impl crate::plugins::runner::Logger for HxyApp {
     fn log(&mut self, severity: ConsoleSeverity, context: String, message: String) {
         self.console_log(severity, context, message);
     }
 }
-
-#[cfg(not(target_arch = "wasm32"))]
 impl eframe::App for HxyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let snapshot_before = self.state.read().clone();
@@ -1855,13 +1750,11 @@ impl eframe::App for HxyApp {
         // through the same paths the synchronous calls used to take
         // (palette dispatch, mount-tab open) plus a "completed in N
         // ms" log entry.
-        #[cfg(not(target_arch = "wasm32"))]
         self.drain_pending_plugin_ops(ui.ctx());
 
         // Push the user's polling preferences into the watcher
         // so any settings-tab nudge takes effect on the very
         // next tick. Idempotent when nothing changed.
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(watcher) = self.file_watcher.as_mut() {
             let prefs = polling_prefs_from_settings(&self.state.read().app);
             watcher.set_polling(prefs);
@@ -1870,13 +1763,11 @@ impl eframe::App for HxyApp {
         // Pull queued filesystem-change notifications off the
         // notify watcher + polling worker and route each one
         // through the reload prompt / auto-reload paths.
-        #[cfg(not(target_arch = "wasm32"))]
         drain_file_watch_events(ui.ctx(), self);
 
         // First-frame auto-rerun of every persisted template the
         // previous session left running. Cleared after one shot;
         // see `restore_persisted_templates` for the semantics.
-        #[cfg(not(target_arch = "wasm32"))]
         if self.pending_template_restore {
             self.pending_template_restore = false;
             self.restore_persisted_templates(ui.ctx());
@@ -1893,31 +1784,24 @@ impl eframe::App for HxyApp {
         // Pre-read the 16-byte window at the active file's caret so
         // the Inspector tab can render without needing to reborrow
         // self.files while the dock is rendering.
-        #[cfg(not(target_arch = "wasm32"))]
         let inspector_data = desktop_tab_viewer::snapshot_inspector_bytes(self);
         // Recompute clicks fired by entropy panels during this
         // frame's dock pass land here. Each panel pushes its
         // pinned FileId; we drain the list after the dock
         // borrow releases.
-        #[cfg(not(target_arch = "wasm32"))]
         let mut entropy_recompute: Vec<FileId> = Vec::new();
         // Visualizer-panel close clicks land here for the same
         // reason; drained after the dock pass to remove the
         // matching dock tab + record the sticky-dismiss flag.
-        #[cfg(not(target_arch = "wasm32"))]
         let mut pending_visualizer_dismiss: Vec<FileId> = Vec::new();
         // Strings panel "Run" clicks queue here (re-runs the
         // extractor against the panel's current config), and offset-
         // link clicks queue (FileId, offset, end) tuples for the
         // hex-view jump dispatch.
-        #[cfg(not(target_arch = "wasm32"))]
         let mut pending_strings_run: Vec<FileId> = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
         let mut pending_strings_jump: Vec<(FileId, u64, u64)> = Vec::new();
         // Checksum panel "Run" clicks + clipboard requests.
-        #[cfg(not(target_arch = "wasm32"))]
         let mut pending_checksums_run: Vec<FileId> = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
         let mut pending_checksums_copy: Vec<String> = Vec::new();
 
         {
@@ -1926,59 +1810,37 @@ impl eframe::App for HxyApp {
             // `self.state.read()` inside the struct literal deadlocks
             // against the outer write guard (parking_lot RwLock is not
             // reentrant).
-            #[cfg(not(target_arch = "wasm32"))]
             let patterns_installed_hash_snapshot = self.state.read().app.imhex_patterns.installed_hash.clone();
             let mut state_guard = self.state.write();
             let mut viewer = desktop_tab_viewer::HxyTabViewer {
                 files: &mut self.files,
                 state: &mut state_guard,
-                #[cfg(not(target_arch = "wasm32"))]
                 compares: &mut self.compares,
                 console: &self.console,
-                #[cfg(not(target_arch = "wasm32"))]
                 mounts: &self.mounts,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_close_mount: &mut self.pending_close_mount,
-                #[cfg(not(target_arch = "wasm32"))]
                 global_search: &mut self.global_search,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_global_search_events: &mut self.pending_global_search_events,
-                #[cfg(not(target_arch = "wasm32"))]
                 inspector: &mut self.inspector,
-                #[cfg(not(target_arch = "wasm32"))]
                 decoders: &self.decoders,
-                #[cfg(not(target_arch = "wasm32"))]
                 inspector_data,
-                #[cfg(not(target_arch = "wasm32"))]
                 plugin_rescan: &mut self.plugin_rescan,
-                #[cfg(not(target_arch = "wasm32"))]
                 plugin_handlers: &self.plugin_handlers,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_plugin_events: &mut self.pending_plugin_events,
-                #[cfg(not(target_arch = "wasm32"))]
                 patterns_installed_hash: patterns_installed_hash_snapshot,
-                #[cfg(not(target_arch = "wasm32"))]
                 patterns_in_flight_bytes: self.pattern_in_flight_bytes,
                 pending_close_tab: &mut self.pending_close_tab,
                 tab_focus: &mut self.tab_focus,
                 workspaces: &mut self.workspaces,
                 pending_close_workspace_entry: &mut self.pending_close_workspace_entry,
                 pending_collapse_workspace: &mut self.pending_collapse_workspace,
-                #[cfg(not(target_arch = "wasm32"))]
                 toasts: &mut self.toasts,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_template_runs: &mut self.pending_template_runs,
-                #[cfg(not(target_arch = "wasm32"))]
                 entropy_recompute: &mut entropy_recompute,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_visualizer_dismiss: &mut pending_visualizer_dismiss,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_strings_run: &mut pending_strings_run,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_strings_jump: &mut pending_strings_jump,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_checksums_run: &mut pending_checksums_run,
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_checksums_copy: &mut pending_checksums_copy,
                 byte_cache: &self.byte_cache,
             };
@@ -1990,7 +1852,6 @@ impl eframe::App for HxyApp {
         // dock borrow releases so we can mutate `app.files`
         // freely. Multiple entropy panels can fire in the same
         // frame; each one targets its own pinned FileId.
-        #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut entropy_recompute) {
             compute_entropy_for(ui.ctx(), self, file_id);
         }
@@ -1999,22 +1860,18 @@ impl eframe::App for HxyApp {
         // (range, encoding, min length the user just edited inline);
         // the Jump path drives the file's hex-view selection so the
         // matched bytes are visible and selected.
-        #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut pending_strings_run) {
             spawn_strings_with_panel_config(ui.ctx(), self, file_id);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         for (file_id, offset, end) in std::mem::take(&mut pending_strings_jump) {
             jump_to_strings_match(self, file_id, offset, end);
         }
         // Checksum panel "Run" + Copy. Run uses the panel's current
         // config (algorithm set + range) and re-fires the worker;
         // Copy puts the formatted hex on the clipboard.
-        #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut pending_checksums_run) {
             spawn_checksums_with_panel_config(ui.ctx(), self, file_id);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         for text in std::mem::take(&mut pending_checksums_copy) {
             ui.ctx().copy_text(text);
         }
@@ -2023,7 +1880,6 @@ impl eframe::App for HxyApp {
         // and clear the user's "open" flag so a re-run on the same
         // file doesn't pop the panel back. Persisted so the closure
         // also survives a restart.
-        #[cfg(not(target_arch = "wasm32"))]
         for file_id in std::mem::take(&mut pending_visualizer_dismiss) {
             if let Some(path) = self.dock.find_tab(&Tab::Visualizer(file_id)) {
                 let _ = self.dock.remove_tab(path);
@@ -2035,7 +1891,6 @@ impl eframe::App for HxyApp {
         // pending_show flag. The handler also wrote the active
         // node into `panel.active`, so the next render lands on
         // the right sub-tab.
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let to_show: Vec<FileId> = self
                 .files
@@ -2050,17 +1905,13 @@ impl eframe::App for HxyApp {
                 self.show_visualizer_for(id);
             }
         }
-
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let events = std::mem::take(&mut self.pending_plugin_events);
             if !events.is_empty() {
                 self.apply_plugin_events(events);
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::dock_ops::track_content_leaf(self);
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(mount_id) = self.pending_close_mount.take()
             && let Some(removed) = self.mounts.remove(&mount_id)
         {
@@ -2096,14 +1947,12 @@ impl eframe::App for HxyApp {
         if self.dock.iter_all_tabs().next().is_none() {
             self.dock.push_to_focused_leaf(Tab::Welcome);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let events = std::mem::take(&mut self.pending_global_search_events);
             if !events.is_empty() {
                 apply_global_search_events(self, events);
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if std::mem::take(&mut self.plugin_rescan) {
             self.reload_plugins();
         }
@@ -2116,28 +1965,19 @@ impl eframe::App for HxyApp {
         consume_dropped_files(ui.ctx(), self);
         consume_welcome_open_request(ui.ctx(), self);
         drain_pending_vfs_opens(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::plugins::mount::drain_pending_mount_retries(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_external_open_requests(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::templates::runner::drain_template_runs(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_entropy_runs(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_strings_runs(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_checksums_runs(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_byte_change_cascade(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         drain_vfs_open_inbox(ui.ctx(), self);
         // Visual pane picker takes priority over the palette and
         // any other keyboard consumer: while a pick is staged it
         // owns Escape (cancel) and a..z (target letters). It runs
         // after the dock has rendered so leaf rects are this
         // frame's, not last frame's.
-        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::focus::handle_pane_pick(ui.ctx(), self);
         // Palette runs first so it gets first crack at keyboard
         // events. egui clears focus on plain Escape during its own
@@ -2146,39 +1986,25 @@ impl eframe::App for HxyApp {
         // hex editor ran first it would drain Escape for its own
         // clear-selection handler before the palette could use it
         // to dismiss.
-        #[cfg(not(target_arch = "wasm32"))]
         handle_command_palette(ui.ctx(), self);
         crate::app::shortcuts::dispatch_copy_shortcut(ui.ctx(), self);
         crate::app::shortcuts::dispatch_save_shortcut(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::dispatch_close_shortcut(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::shortcuts::dispatch_paste_shortcut(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::shortcuts::dispatch_find_shortcut(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::shortcuts::dispatch_jump_field_shortcut(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::focus::dispatch_focus_pane_shortcut(ui.ctx(), self);
         crate::tabs::focus::dispatch_tab_focus_toggle(ui.ctx(), self);
         crate::tabs::focus::dispatch_tab_cycle(ui.ctx(), self);
         crate::app::shortcuts::dispatch_hex_edit_keys(ui.ctx(), self);
         crate::app::dialogs::render_duplicate_open_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_patch_restore_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_reload_prompt_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_virtual_base_prompt_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_open_with_options_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::app::dialogs::render_orphaned_entry_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::files::snapshot_ui::render_snapshot_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::tabs::close::render_close_tab_dialog(ui.ctx(), self);
-        #[cfg(not(target_arch = "wasm32"))]
         {
             crate::search::modal::drain_search_effects(self);
             crate::search::modal::render_search_modal(ui.ctx(), self);
@@ -2188,8 +2014,6 @@ impl eframe::App for HxyApp {
             self.toasts.show_toasts(ui.ctx());
             crate::templates::runner::drain_pending_template_runs(ui.ctx(), self);
         }
-
-        #[cfg(not(target_arch = "wasm32"))]
         self.snapshot_dock_layout();
         self.save_if_dirty(&snapshot_before);
     }
