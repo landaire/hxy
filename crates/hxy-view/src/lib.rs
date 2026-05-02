@@ -1962,6 +1962,7 @@ fn paint_row_backs_and_glyphs(
     for (i, byte) in chunk.iter().enumerate().take(MAX_COLS_PER_ROW) {
         let byte_offset = ByteOffset::new(row_first_offset.get() + i as u64);
         let is_sel = ctx.selected_range.is_some_and(|r| r.contains(byte_offset));
+        let is_hovered = ctx.hover_span.is_some_and(|r| r.contains(byte_offset));
 
         let class_color = ctx.palette.as_ref().map(|(_, p)| p.color_for(*byte));
         let (palette_bg, palette_fg) = match ctx.palette.as_ref().map(|(m, _)| *m) {
@@ -1978,7 +1979,12 @@ fn paint_row_backs_and_glyphs(
         let bg = user_style.and_then(|s| s.bg).or(palette_bg);
         let fg_override = user_style.and_then(|s| s.fg);
 
-        let tint = bg.filter(|_| !is_sel);
+        // Skip the per-cell tint on selected AND hovered bytes so the
+        // selection / hover bands aren't painted over by the second
+        // pass. Without the hover branch, value-highlight or field-
+        // color modes would cover the hover paint and the strings /
+        // template hover would only show in the minimap.
+        let tint = bg.filter(|_| !is_sel && !is_hovered);
         let fg = if is_sel {
             ctx.colors.selection_fg
         } else if let Some(f) = fg_override {
