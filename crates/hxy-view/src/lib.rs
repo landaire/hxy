@@ -2720,16 +2720,32 @@ fn draw_minimap<S: HexSource + ?Sized>(
         Pos2::new(minimap_rect.left(), indicator_top_y.max(minimap_rect.top())),
         Pos2::new(minimap_rect.right(), (indicator_top_y + indicator_height).min(minimap_rect.bottom())),
     );
+    // Mute the indicator when the user isn't pointing at the minimap
+    // and isn't actively dragging it. Hover / drag restores the full-
+    // contrast styling so it's easy to grab. The cell painting above
+    // is unchanged either way -- the dim only affects the grabber.
+    let active = response.hovered() || response.dragged();
     let (fill, outline) = if dark {
-        (Color32::from_rgba_unmultiplied(255, 255, 255, 70), Color32::WHITE)
+        let fill_alpha = if active { 70 } else { 28 };
+        let outline_alpha = if active { 255 } else { 110 };
+        (
+            Color32::from_rgba_unmultiplied(255, 255, 255, fill_alpha),
+            Color32::from_rgba_unmultiplied(255, 255, 255, outline_alpha),
+        )
     } else {
-        (Color32::from_rgba_unmultiplied(0, 0, 0, 70), Color32::from_rgb(20, 20, 20))
+        let fill_alpha = if active { 70 } else { 28 };
+        let outline_alpha = if active { 255 } else { 110 };
+        (
+            Color32::from_rgba_unmultiplied(0, 0, 0, fill_alpha),
+            Color32::from_rgba_unmultiplied(20, 20, 20, outline_alpha),
+        )
     };
     painter.rect_filled(indicator, 0.0, fill);
     painter.rect_stroke(indicator, 0.0, Stroke::new(2.0, outline), StrokeKind::Inside);
     let accent = ui.visuals().selection.bg_fill;
+    let bracket_color = if active { accent } else { accent.gamma_multiply(0.4) };
     let bracket = Rect::from_min_max(indicator.left_top(), Pos2::new(indicator.left() + 4.0, indicator.bottom()));
-    painter.rect_filled(bracket, 0.0, accent);
+    painter.rect_filled(bracket, 0.0, bracket_color);
 
     // Hover-span marker: mirrors the secondary highlight the hex view
     // draws when the template panel is pointing at a field. When the
