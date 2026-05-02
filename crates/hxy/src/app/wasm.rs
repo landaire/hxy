@@ -1106,7 +1106,6 @@ fn build_wasm_palette_entries(
     }
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
     let cmd_n = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
-    let cmd_f = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
     let cmd_e = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
     let cmd_shift_t = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::T);
     let cmd_c = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
@@ -1141,9 +1140,6 @@ fn build_wasm_palette_entries(
         )
         .with_shortcut(fmt(&cmd_e))
         .with_disabled(!has_active),
-        egui_palette::Entry::new("Toggle search bar", Action::InvokeCommand(PaletteCommand::FindStringsWholeFile))
-            .with_shortcut(fmt(&cmd_f))
-            .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-copy-caret-offset"),
             Action::InvokeCommand(PaletteCommand::CopyCaretOffset),
