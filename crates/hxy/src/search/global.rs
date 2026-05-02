@@ -123,6 +123,9 @@ pub fn show(
             if enter || ui.button(egui_phosphor::regular::MAGNIFYING_GLASS).on_hover_text("Run").clicked() {
                 events.push(GlobalSearchEvent::Run);
             }
+            if resp.has_focus() && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                events.push(GlobalSearchEvent::Close);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(egui_phosphor::regular::X).on_hover_text("Close").clicked() {
                     events.push(GlobalSearchEvent::Close);

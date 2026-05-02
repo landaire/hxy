@@ -195,6 +195,9 @@ fn replace_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<Sear
     if resp.changed() {
         events.push(SearchEvent::RefreshReplace);
     }
+    if resp.has_focus() && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        events.push(SearchEvent::Close);
+    }
 
     let can_replace_current = state.pattern.is_some() && state.replace_pattern.is_some();
     if ui
