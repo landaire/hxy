@@ -1,0 +1,15 @@
+[package]
+name = "egui_minimap"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A scrollable minimap widget for egui that delegates row painting to a user-supplied source. Supports hex bytes, text lines, message timelines, or anything else expressible as 'N rows of paintable strips'."
+readme = "README.md"
+keywords = ["egui", "minimap", "scroll", "overview"]
+categories = ["gui"]
+
+[dependencies]
+egui = { workspace = true }

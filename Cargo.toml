@@ -12,6 +12,8 @@ members = [
     "crates/hxy-imhex-lang",
     "crates/hxy-calculator",
     "crates/egui-palette",
+    "crates/egui_minimap",
+    "crates/egui_dock_picker",
 ]
 
 [workspace.package]
@@ -33,6 +35,8 @@ hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.3.0" }
 hxy-imhex-lang = { path = "crates/hxy-imhex-lang", version = "0.3.0" }
 hxy-calculator = { path = "crates/hxy-calculator", version = "0.3.0" }
 egui-palette = { path = "crates/egui-palette", version = "0.3.0" }
+egui_minimap = { path = "crates/egui_minimap", version = "0.3.0" }
+egui_dock_picker = { path = "crates/egui_dock_picker", version = "0.3.0" }
 
 # Shared third-party deps. Pinning here keeps every member crate on
 # the same version and feature baseline; per-crate Cargo.tomls add

@@ -71,6 +71,7 @@ hxy-vfs.workspace = true
 egui_ltreeview = "0.7.0"
 egui_table = "0.8.0"
 egui-palette = { workspace = true }
+egui_dock_picker = { workspace = true }
 similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
 
 # Built-in 010 Editor Binary Template + ImHex pattern-language

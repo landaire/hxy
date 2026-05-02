@@ -10,6 +10,7 @@ description = "Reusable egui hex-view widget"
 
 [dependencies]
 egui = { workspace = true }
+egui_minimap = { workspace = true }
 hxy-core = { workspace = true }
 serde = { workspace = true, optional = true }
 suture = { workspace = true, optional = true }

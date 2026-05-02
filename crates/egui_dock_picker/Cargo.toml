@@ -1,0 +1,16 @@
+[package]
+name = "egui_dock_picker"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Hint-style 'press a key, jump a pane' picker overlay for egui_dock. Renders a big letter on every leaf and resolves a NodePath when the user presses one."
+readme = "README.md"
+keywords = ["egui", "egui_dock", "picker", "hint", "navigation"]
+categories = ["gui"]
+
+[dependencies]
+egui = { workspace = true }
+egui_dock = { version = "0.19.1" }

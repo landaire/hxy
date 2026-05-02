@@ -2598,6 +2598,100 @@ impl ByteClass {
     }
 }
 
+/// Adapter from a hex source to the generic `egui_minimap` row API.
+/// Reads one contiguous byte range per frame and paints `cols` cells
+/// per row, using either the value palette or a grayscale gradient.
+struct HexMinimapSource<'a, S: HexSource + ?Sized> {
+    source: &'a S,
+    source_len: ByteLen,
+    cols: usize,
+    palette: Option<(ValueHighlight, HighlightPalette)>,
+    colored: bool,
+    field_boundaries: &'a [(ByteOffset, ByteLen)],
+    field_colors: &'a [Color32],
+    fallback: Color32,
+    dark: bool,
+    total_rows: usize,
+}
+
+impl<S: HexSource + ?Sized> egui_minimap::MinimapSource for HexMinimapSource<'_, S> {
+    fn row_count(&self) -> usize {
+        self.total_rows
+    }
+
+    fn paint_row(&self, _painter: &egui::Painter, _row_rect: Rect, _row: usize) {
+        // Unused: `paint_rows` overrides this to do one batch read per
+        // frame instead of `shown_rows` reads.
+    }
+
+    fn paint_rows(
+        &self,
+        painter: &egui::Painter,
+        column_rect: Rect,
+        rows: std::ops::Range<usize>,
+        cell_height: f32,
+    ) {
+        let cell_w = (column_rect.width() / self.cols as f32).max(1.0);
+        let len = self.source_len.get();
+        let cols_u64 = self.cols as u64;
+        let window_top_row = rows.start as u64;
+        let shown_rows = rows.end - rows.start;
+
+        let read_start = window_top_row.saturating_mul(cols_u64).min(len);
+        let read_end = read_start
+            .saturating_add(shown_rows as u64 * cols_u64)
+            .min(len);
+        let bytes = ByteRange::new(ByteOffset::new(read_start), ByteOffset::new(read_end))
+            .ok()
+            .and_then(|r| self.source.read(r).ok())
+            .unwrap_or_default();
+
+        let field_override = !self.field_boundaries.is_empty() && !self.field_colors.is_empty();
+        for i in 0..shown_rows {
+            let chunk_start = i * self.cols;
+            if chunk_start >= bytes.len() {
+                break;
+            }
+            let chunk_end = (chunk_start + self.cols).min(bytes.len());
+            let chunk = &bytes[chunk_start..chunk_end];
+            let y = column_rect.top() + i as f32 * cell_height;
+            let row_base_offset = read_start + (i as u64) * cols_u64;
+            for (c, byte) in chunk.iter().enumerate() {
+                let x = column_rect.left() + c as f32 * cell_w;
+                let offset = row_base_offset + c as u64;
+                let field_color = if field_override {
+                    field_color_for(self.field_boundaries, self.field_colors, offset)
+                } else {
+                    None
+                };
+                let color = field_color.unwrap_or_else(|| {
+                    if self.colored {
+                        self.palette
+                            .as_ref()
+                            .map(|(_, p)| p.color_for(*byte))
+                            .unwrap_or(self.fallback)
+                    } else {
+                        grayscale_for_byte(*byte, self.dark)
+                    }
+                });
+                // The hex view paints the same palette color underneath
+                // hex glyphs that occupy a fair chunk of each cell, so
+                // the perceived intensity drops -- the foreground text
+                // breaks up the fill. The minimap fills its cells
+                // edge-to-edge with no overlay, which makes the same
+                // RGB read brighter to the eye. Gamma-multiply by 0.65
+                // here so the two surfaces match perceptually.
+                let muted = color.gamma_multiply(0.65);
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_height)),
+                    0.0,
+                    muted,
+                );
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_minimap<S: HexSource + ?Sized>(
     ui: &mut Ui,
@@ -2626,220 +2720,45 @@ fn draw_minimap<S: HexSource + ?Sized>(
     // view at non-16 column counts and `total_rows` no longer
     // describes the file in minimap-row units.
     let cols = usize::from(columns.get());
-    let response = ui.allocate_rect(minimap_rect, Sense::click_and_drag());
-    let painter = ui.painter_at(minimap_rect);
-    painter.rect_filled(minimap_rect, 0.0, ui.visuals().extreme_bg_color);
-
-    let cell_w = (minimap_rect.width() / cols as f32).max(1.0);
-    // Snap cell_h to a whole number of physical pixels. egui's
-    // tessellator feathers rect edges over ~1 device pixel for AA;
-    // a fractional `cell_h` in device space puts each row's edges in
-    // a slightly different spot relative to the pixel grid every
-    // frame as `current_offset` changes, which the eye reads as
-    // edge flicker. Same `(x * ppp).ceil() / ppp` snap the hex
-    // view's row_height uses for the same reason.
-    let ppp = ui.ctx().pixels_per_point();
-    let cell_h = (2.0_f32 * ppp).round().max(1.0) / ppp;
-
-    let minimap_capacity_rows = (minimap_rect.height() / cell_h).floor() as usize;
-    if minimap_capacity_rows == 0 {
-        return;
-    }
-    let fallback = ui.visuals().text_color();
-    let len = source_len.get();
     let dark = ui.visuals().dark_mode;
-
-    // Map the minimap window's top row linearly to the file's scroll
-    // fraction. That way the viewport indicator travels the full height
-    // of the minimap as you scroll from start to end -- like a regular
-    // scrollbar -- instead of pinning itself to the middle.
-    let viewport_top_row_f = (current_offset / row_height).max(0.0);
-    let viewport_rows_f = (viewport_height / row_height).max(1.0);
-    let capacity_f = minimap_capacity_rows as f32;
-    let content_height = total_rows as f32 * row_height;
-    let max_scroll = (content_height - viewport_height).max(0.0);
-    let scroll_frac = if max_scroll > 0.0 { (current_offset / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
-    let max_top = (total_rows as f32 - capacity_f).max(0.0);
-    let window_top_f = scroll_frac * max_top;
-    let window_top_row = window_top_f.floor() as u64;
-    // Fractional remainder of the top row, used to apply a sub-row
-    // y-shift so the painted byte rows scroll continuously with the
-    // viewport indicator instead of snapping one `cell_h` every time
-    // `window_top_f` crosses an integer. Kept fractional (not pixel-
-    // snapped) so slow scroll deceleration plays back as smooth
-    // motion rather than discrete half-device-pixel steps -- egui's
-    // tessellator feathers the rect edges for AA so a sub-pixel y
-    // still rasterises cleanly.
-    let row_subpixel_shift = (window_top_f - window_top_row as f32) * cell_h;
-    // Read one extra row so the row peeking in from the bottom
-    // (after applying the negative y-shift) still has bytes to draw.
-    let shown_rows = (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row as usize));
-
-    // Single contiguous read for all rows visible in the window.
-    let read_start = window_top_row.saturating_mul(cols as u64).min(len);
-    let read_end = read_start.saturating_add(shown_rows as u64 * cols as u64).min(len);
-    let bytes = ByteRange::new(ByteOffset::new(read_start), ByteOffset::new(read_end))
-        .ok()
-        .and_then(|r| source.read(r).ok())
-        .unwrap_or_default();
-
-    let field_override = !field_boundaries.is_empty() && !field_colors.is_empty();
-    for i in 0..shown_rows {
-        let chunk_start = i * cols;
-        if chunk_start >= bytes.len() {
-            break;
-        }
-        let chunk_end = (chunk_start + cols).min(bytes.len());
-        let chunk = &bytes[chunk_start..chunk_end];
-        let y = minimap_rect.top() + i as f32 * cell_h - row_subpixel_shift;
-        let row_base_offset = read_start + (i as u64) * cols as u64;
-        for (c, byte) in chunk.iter().enumerate() {
-            let x = minimap_rect.left() + c as f32 * cell_w;
-            let offset = row_base_offset + c as u64;
-            let field_color =
-                if field_override { field_color_for(field_boundaries, field_colors, offset) } else { None };
-            let color = field_color.unwrap_or_else(|| {
-                if colored {
-                    palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(fallback)
-                } else {
-                    grayscale_for_byte(*byte, dark)
-                }
-            });
-            // The hex view paints the same palette color underneath
-            // hex glyphs that occupy a fair chunk of each cell, so
-            // the perceived intensity drops -- the foreground text
-            // breaks up the fill. The minimap fills its cells
-            // edge-to-edge with no overlay, which makes the same
-            // RGB read brighter to the eye. Gamma-multiply by 0.65
-            // here so the two surfaces match perceptually.
-            let muted = color.gamma_multiply(0.65);
-            painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h)), 0.0, muted);
-        }
-    }
-
-    // Viewport indicator at its absolute position inside the scrolled
-    // window. High-contrast outline + accent bracket for readability
-    // over any palette.
-    let indicator_top_y = minimap_rect.top() + (viewport_top_row_f - window_top_f) * cell_h;
-    let indicator_height = viewport_rows_f * cell_h;
-    let indicator = Rect::from_min_max(
-        Pos2::new(minimap_rect.left(), indicator_top_y.max(minimap_rect.top())),
-        Pos2::new(minimap_rect.right(), (indicator_top_y + indicator_height).min(minimap_rect.bottom())),
-    );
-    // Mute the indicator when the user isn't pointing at the minimap
-    // and isn't actively dragging it. Hover / drag restores the full-
-    // contrast styling so it's easy to grab. The cell painting above
-    // is unchanged either way -- the dim only affects the grabber.
-    let active = response.hovered() || response.dragged();
-    let (fill, outline) = if dark {
-        let fill_alpha = if active { 70 } else { 28 };
-        let outline_alpha = if active { 255 } else { 110 };
-        (
-            Color32::from_rgba_unmultiplied(255, 255, 255, fill_alpha),
-            Color32::from_rgba_unmultiplied(255, 255, 255, outline_alpha),
-        )
-    } else {
-        let fill_alpha = if active { 70 } else { 28 };
-        let outline_alpha = if active { 255 } else { 110 };
-        (
-            Color32::from_rgba_unmultiplied(0, 0, 0, fill_alpha),
-            Color32::from_rgba_unmultiplied(20, 20, 20, outline_alpha),
-        )
-    };
-    painter.rect_filled(indicator, 0.0, fill);
-    painter.rect_stroke(indicator, 0.0, Stroke::new(2.0, outline), StrokeKind::Inside);
     let accent = ui.visuals().selection.bg_fill;
-    let bracket_color = if active { accent } else { accent.gamma_multiply(0.4) };
-    let bracket = Rect::from_min_max(indicator.left_top(), Pos2::new(indicator.left() + 4.0, indicator.bottom()));
-    painter.rect_filled(bracket, 0.0, bracket_color);
 
-    // Hover-span marker: mirrors the secondary highlight the hex view
-    // draws when the template panel is pointing at a field. When the
-    // span is outside the currently-shown minimap window, draw a
-    // small caret at the top/bottom edge so the user still has a
-    // direction to scroll.
+    let hex_source = HexMinimapSource {
+        source,
+        source_len,
+        cols,
+        palette,
+        colored,
+        field_boundaries,
+        field_colors,
+        fallback: ui.visuals().text_color(),
+        dark,
+        total_rows,
+    };
+
+    let response = egui_minimap::Minimap::new(&hex_source)
+        .scroll_id(scroll_id)
+        .viewport(egui_minimap::Viewport {
+            total_rows,
+            scroll_offset: current_offset,
+            viewport_height,
+            rows: egui_minimap::ViewportRows::Uniform { row_height },
+        })
+        .show(ui, minimap_rect);
+
     if let Some(span) = hover_span {
+        let painter = ui.painter_at(minimap_rect);
         paint_hover_span_on_minimap(
             &painter,
             minimap_rect,
             span,
             cols as u64,
-            cell_h,
-            window_top_row,
-            shown_rows as u64,
+            response.cell_height,
+            response.window_top_row as u64,
+            response.shown_rows as u64,
             accent,
         );
     }
-
-    // Click vs. drag dispatch:
-    //
-    // * Click outside the indicator -> jump (cursor.y maps to a file
-    //   position fraction).
-    // * Click *inside* the indicator -> no-op. The user grabbed the
-    //   handle but didn't slide; teleporting on press would yank the
-    //   indicator out from under the cursor before any actual motion.
-    // * Drag started inside the indicator -> relative scroll. The
-    //   indicator follows the cursor 1:1 (each pixel of cursor motion
-    //   shifts scroll by `max_scroll / (minimap.height - indicator.h)`).
-    // * Drag started outside the indicator -> jump on the press, then
-    //   absolute mapping for the remainder of the drag (matches the
-    //   classic "click and drag" scrubbing behavior).
-    let pointer = response
-        .interact_pointer_pos()
-        .or_else(|| response.hover_pos().filter(|_| response.is_pointer_button_down_on()));
-    let drag_state_id = scroll_id.with("minimap_drag_start");
-    let absolute_target = |pos: Pos2| -> f32 {
-        let y = (pos.y - minimap_rect.top()).clamp(0.0, minimap_rect.height());
-        let frac = y / minimap_rect.height();
-        (frac * max_scroll).clamp(0.0, max_scroll)
-    };
-    if response.drag_started()
-        && let Some(pos) = pointer
-    {
-        let started_in_grab = indicator.contains(pos);
-        ui.ctx().data_mut(|d| {
-            d.insert_temp(
-                drag_state_id,
-                MinimapDragStart { pointer_y: pos.y, scroll_offset: current_offset, started_in_grab },
-            )
-        });
-        if !started_in_grab {
-            ui.ctx().data_mut(|d| d.insert_temp(scroll_id, absolute_target(pos)));
-            ui.ctx().request_repaint();
-        }
-    } else if response.dragged()
-        && let Some(pos) = pointer
-    {
-        let start = ui.ctx().data(|d| d.get_temp::<MinimapDragStart>(drag_state_id));
-        let target_scroll = match start {
-            Some(start) if start.started_in_grab => {
-                let max_travel = (minimap_rect.height() - indicator.height()).max(1.0);
-                let scroll_per_pixel = max_scroll / max_travel;
-                let delta_scroll = (pos.y - start.pointer_y) * scroll_per_pixel;
-                (start.scroll_offset + delta_scroll).clamp(0.0, max_scroll)
-            }
-            _ => absolute_target(pos),
-        };
-        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, target_scroll));
-        ui.ctx().request_repaint();
-    } else if response.clicked()
-        && let Some(pos) = pointer
-        && !indicator.contains(pos)
-    {
-        ui.ctx().data_mut(|d| d.insert_temp(scroll_id, absolute_target(pos)));
-        ui.ctx().request_repaint();
-    }
-}
-
-/// Drag origin for a minimap interaction. Stashed on `drag_started`
-/// so subsequent `dragged` events can pick the right scroll model
-/// (relative when the press landed on the indicator, absolute when
-/// it landed on empty minimap area).
-#[derive(Clone, Copy)]
-struct MinimapDragStart {
-    pointer_y: f32,
-    scroll_offset: f32,
-    started_in_grab: bool,
 }
 
 /// Paint the template-panel's hover span on the minimap. Splits into
