@@ -119,6 +119,10 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         editor.push_history_boundary();
         editor.last_cursor_offset = current_cursor;
     }
+    // Snapshot the cursor at the start of input processing so the
+    // post-dispatch scrolloff check can detect "did this dispatch move
+    // the cursor". We compare against the post-dispatch cursor below.
+    let cursor_before_dispatch = current_cursor;
 
     #[cfg(feature = "editor")]
     let mutable = editor.edit.mode == crate::editor::EditMode::Mutable;
@@ -240,8 +244,16 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
             },
         }
     }
-    editor.last_cursor_offset = editor.selection.as_ref().map(|s| s.cursor.get());
+    let cursor_after_dispatch = editor.selection.as_ref().map(|s| s.cursor.get());
+    if cursor_after_dispatch.is_some() && cursor_after_dispatch != cursor_before_dispatch {
+        editor.ensure_cursor_visible_with_scrolloff(SCROLLOFF_ROWS);
+    }
+    editor.last_cursor_offset = cursor_after_dispatch;
 }
+
+/// Rows of context kept above and below the cursor when a dispatcher
+/// scrolls to follow it. Mirrors vim's default `'scrolloff'`.
+pub(crate) const SCROLLOFF_ROWS: u64 = 3;
 
 /// Advance the cursor by one whole byte (clamp at EOF). Collapses
 /// any live selection to a caret -- typing isn't a selection-

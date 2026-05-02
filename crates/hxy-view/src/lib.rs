@@ -271,6 +271,46 @@ impl HexEditor {
         self.pending_scroll_to_byte = Some(byte);
     }
 
+    /// Schedule a scroll that places the current cursor inside the
+    /// viewport with a `scrolloff`-row buffer at the top and bottom
+    /// edges (vim's `'scrolloff'` semantics). No-op when the cursor is
+    /// already inside the safe zone, or when no frame has rendered
+    /// yet (we need the previous frame's visible range to compute the
+    /// target row). When the viewport is too short for the requested
+    /// buffer, `scrolloff` is clamped to half the viewport height.
+    pub fn ensure_cursor_visible_with_scrolloff(&mut self, scrolloff: u64) {
+        let Some(cursor) = self.selection.as_ref().map(|s| s.cursor.get()) else { return };
+        let Some(visible) = self.last_visible_range else { return };
+        let Some(columns) = self.last_columns else { return };
+        let cols = u64::from(columns.get());
+        if cols == 0 {
+            return;
+        }
+        let cursor_row = cursor / cols;
+        let visible_start_row = visible.start().get() / cols;
+        // `visible.end()` is the exclusive byte end of the last
+        // partially-visible row. Round up to row-exclusive.
+        let visible_end_row = visible.end().get().div_ceil(cols);
+        let visible_rows = visible_end_row.saturating_sub(visible_start_row);
+        if visible_rows == 0 {
+            return;
+        }
+        let scrolloff = scrolloff.min(visible_rows / 2);
+        let safe_start = visible_start_row + scrolloff;
+        let safe_end = visible_end_row.saturating_sub(scrolloff);
+        if cursor_row >= safe_start && cursor_row < safe_end {
+            return;
+        }
+        let target_top_row = if cursor_row < safe_start {
+            cursor_row.saturating_sub(scrolloff)
+        } else {
+            // cursor at or past the bottom safe edge: place it
+            // `scrolloff` rows above the viewport's last row.
+            cursor_row.saturating_add(1).saturating_add(scrolloff).saturating_sub(visible_rows)
+        };
+        self.set_scroll_to_byte(ByteOffset::new(target_top_row.saturating_mul(cols)));
+    }
+
     #[cfg(feature = "editor")]
     pub fn base_source(&self) -> &Arc<dyn HexSource> {
         &self.edit.base_source

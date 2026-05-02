@@ -146,6 +146,11 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         return;
     }
 
+    // Snapshot the cursor at entry so the post-dispatch scrolloff
+    // check can detect motions that left the cursor outside the safe
+    // viewport zone. Compared to the post-dispatch cursor below.
+    let cursor_before_dispatch = editor.selection.as_ref().map(|s| s.cursor.get());
+
     // Insert / Replace both delegate typing to the standard
     // dispatcher -- hex digits, ASCII typing, arrows, copy/paste --
     // and rely on the editor's `typing_mode` to decide whether each
@@ -544,7 +549,11 @@ pub(crate) fn dispatch(editor: &mut HexEditor, ctx: &egui::Context) {
         }
     }
 
-    editor.last_cursor_offset = editor.selection.as_ref().map(|s| s.cursor.get());
+    let cursor_after_dispatch = editor.selection.as_ref().map(|s| s.cursor.get());
+    if cursor_after_dispatch.is_some() && cursor_after_dispatch != cursor_before_dispatch {
+        editor.ensure_cursor_visible_with_scrolloff(input::SCROLLOFF_ROWS);
+    }
+    editor.last_cursor_offset = cursor_after_dispatch;
 }
 
 fn set_cursor(editor: &mut HexEditor, offset: u64) {
