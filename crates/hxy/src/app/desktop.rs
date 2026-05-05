@@ -40,6 +40,7 @@ use super::drain_checksums_runs;
 use super::drain_entropy_runs;
 use super::drain_external_open_requests;
 use super::drain_file_watch_events;
+#[cfg(target_os = "macos")]
 use super::drain_native_menu;
 use super::drain_pending_vfs_opens;
 use super::drain_strings_runs;
@@ -55,7 +56,10 @@ use super::record_virtual_base_hint;
 use super::register_user_plugins;
 use super::spawn_checksums_with_panel_config;
 use super::spawn_strings_with_panel_config;
+#[cfg(target_os = "macos")]
 use super::sync_native_menu_state;
+#[cfg(not(target_os = "macos"))]
+use super::top_menu_bar;
 use super::vfs_pref_key_for;
 use crate::files::FileId;
 use crate::files::OpenFile;
