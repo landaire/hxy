@@ -2624,13 +2624,7 @@ impl<S: HexSource + ?Sized> egui_minimap::MinimapSource for HexMinimapSource<'_,
         // frame instead of `shown_rows` reads.
     }
 
-    fn paint_rows(
-        &self,
-        painter: &egui::Painter,
-        column_rect: Rect,
-        rows: std::ops::Range<usize>,
-        cell_height: f32,
-    ) {
+    fn paint_rows(&self, painter: &egui::Painter, column_rect: Rect, rows: std::ops::Range<usize>, cell_height: f32) {
         let cell_w = (column_rect.width() / self.cols as f32).max(1.0);
         let len = self.source_len.get();
         let cols_u64 = self.cols as u64;
@@ -2638,9 +2632,7 @@ impl<S: HexSource + ?Sized> egui_minimap::MinimapSource for HexMinimapSource<'_,
         let shown_rows = rows.end - rows.start;
 
         let read_start = window_top_row.saturating_mul(cols_u64).min(len);
-        let read_end = read_start
-            .saturating_add(shown_rows as u64 * cols_u64)
-            .min(len);
+        let read_end = read_start.saturating_add(shown_rows as u64 * cols_u64).min(len);
         let bytes = ByteRange::new(ByteOffset::new(read_start), ByteOffset::new(read_end))
             .ok()
             .and_then(|r| self.source.read(r).ok())
@@ -2666,10 +2658,7 @@ impl<S: HexSource + ?Sized> egui_minimap::MinimapSource for HexMinimapSource<'_,
                 };
                 let color = field_color.unwrap_or_else(|| {
                     if self.colored {
-                        self.palette
-                            .as_ref()
-                            .map(|(_, p)| p.color_for(*byte))
-                            .unwrap_or(self.fallback)
+                        self.palette.as_ref().map(|(_, p)| p.color_for(*byte)).unwrap_or(self.fallback)
                     } else {
                         grayscale_for_byte(*byte, self.dark)
                     }
@@ -2682,11 +2671,7 @@ impl<S: HexSource + ?Sized> egui_minimap::MinimapSource for HexMinimapSource<'_,
                 // RGB read brighter to the eye. Gamma-multiply by 0.65
                 // here so the two surfaces match perceptually.
                 let muted = color.gamma_multiply(0.65);
-                painter.rect_filled(
-                    Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_height)),
-                    0.0,
-                    muted,
-                );
+                painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_height)), 0.0, muted);
             }
         }
     }

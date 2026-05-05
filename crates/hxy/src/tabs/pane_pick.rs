@@ -55,11 +55,7 @@ pub enum TickOutcome {
     /// User pressed a target letter. Execute the staged op against
     /// `target` and clear the picker state. `source` is `None` for
     /// sourceless ops like `Focus`.
-    Picked {
-        source: Option<NodePath>,
-        target: NodePath,
-        op: PaneOp,
-    },
+    Picked { source: Option<NodePath>, target: NodePath, op: PaneOp },
 }
 
 pub fn tick<Tab>(
@@ -79,18 +75,13 @@ where
         // (if any) shouldn't be flagged.
         PaneOp::Focus | PaneOp::CloseToolLeaf => None,
     };
-    let config = egui_dock_picker::PanePickConfig {
-        source: pending.source,
-        source_badge_label: badge,
-        target_whitelist,
-    };
+    let config =
+        egui_dock_picker::PanePickConfig { source: pending.source, source_badge_label: badge, target_whitelist };
     match egui_dock_picker::tick(ctx, dock, config, assignments) {
         egui_dock_picker::TickOutcome::Continue => TickOutcome::Continue,
         egui_dock_picker::TickOutcome::Cancel => TickOutcome::Cancel,
-        egui_dock_picker::TickOutcome::Picked { source, target } => TickOutcome::Picked {
-            source,
-            target,
-            op: pending.op,
-        },
+        egui_dock_picker::TickOutcome::Picked { source, target } => {
+            TickOutcome::Picked { source, target, op: pending.op }
+        }
     }
 }

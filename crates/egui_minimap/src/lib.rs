@@ -41,19 +41,11 @@ pub trait MinimapSource {
     /// Paint a contiguous range of rows. Defaults to a loop over
     /// [`paint_row`](Self::paint_row); override when batching pays for
     /// itself (e.g. one I/O read per frame instead of one per row).
-    fn paint_rows(
-        &self,
-        painter: &egui::Painter,
-        column_rect: Rect,
-        rows: Range<usize>,
-        cell_height: f32,
-    ) {
+    fn paint_rows(&self, painter: &egui::Painter, column_rect: Rect, rows: Range<usize>, cell_height: f32) {
         for (i, row) in rows.enumerate() {
             let y = column_rect.top() + i as f32 * cell_height;
-            let row_rect = Rect::from_min_size(
-                Pos2::new(column_rect.left(), y),
-                Vec2::new(column_rect.width(), cell_height),
-            );
+            let row_rect =
+                Rect::from_min_size(Pos2::new(column_rect.left(), y), Vec2::new(column_rect.width(), cell_height));
             self.paint_row(painter, row_rect, row);
         }
     }
@@ -111,9 +103,7 @@ impl ViewportRows<'_> {
     fn content_height(&self, total_rows: usize) -> f32 {
         match *self {
             ViewportRows::Uniform { row_height } => total_rows as f32 * row_height.max(1.0),
-            ViewportRows::Variable { offsets } => {
-                offsets.last().copied().unwrap_or(0.0).max(0.0)
-            }
+            ViewportRows::Variable { offsets } => offsets.last().copied().unwrap_or(0.0).max(0.0),
         }
     }
 
@@ -126,9 +116,7 @@ impl ViewportRows<'_> {
             return 0.0;
         }
         match *self {
-            ViewportRows::Uniform { row_height } => {
-                (pixel_offset / row_height.max(1.0)).max(0.0)
-            }
+            ViewportRows::Uniform { row_height } => (pixel_offset / row_height.max(1.0)).max(0.0),
             ViewportRows::Variable { offsets } => {
                 let total_h = offsets.last().copied().unwrap_or(0.0);
                 if pixel_offset >= total_h || total_h <= 0.0 {
@@ -256,12 +244,8 @@ impl<'s> Minimap<'s> {
     /// Paint the minimap into `rect` and process input. Returns
     /// positioning info for caller-controlled overlay painting.
     pub fn show(self, ui: &mut Ui, rect: Rect) -> MinimapResponse {
-        let viewport = self
-            .viewport
-            .expect("Minimap::viewport(...) is required before show(...)");
-        let scroll_id = self
-            .scroll_id
-            .expect("Minimap::scroll_id(...) is required before show(...)");
+        let viewport = self.viewport.expect("Minimap::viewport(...) is required before show(...)");
+        let scroll_id = self.scroll_id.expect("Minimap::scroll_id(...) is required before show(...)");
         let source = self.source;
 
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -312,22 +296,14 @@ impl<'s> Minimap<'s> {
         // variable-height rows, the cumulative-offset table is
         // queried per pixel offset so the indicator + window line
         // up with what's actually under the host's viewport.
-        let viewport_top_row_f = viewport
-            .rows
-            .fractional_row_at(total_rows, viewport.scroll_offset);
-        let viewport_bot_row_f = viewport.rows.fractional_row_at(
-            total_rows,
-            viewport.scroll_offset + viewport.viewport_height,
-        );
+        let viewport_top_row_f = viewport.rows.fractional_row_at(total_rows, viewport.scroll_offset);
+        let viewport_bot_row_f =
+            viewport.rows.fractional_row_at(total_rows, viewport.scroll_offset + viewport.viewport_height);
         let viewport_rows_f = (viewport_bot_row_f - viewport_top_row_f).max(1.0);
         let capacity_f = minimap_capacity_rows as f32;
         let content_height = viewport.rows.content_height(total_rows);
         let max_scroll = (content_height - viewport.viewport_height).max(0.0);
-        let scroll_frac = if max_scroll > 0.0 {
-            (viewport.scroll_offset / max_scroll).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let scroll_frac = if max_scroll > 0.0 { (viewport.scroll_offset / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
         let max_top = (total_rows as f32 - capacity_f).max(0.0);
         let window_top_f = scroll_frac * max_top;
         let window_top_row = window_top_f.floor() as usize;
@@ -335,8 +311,7 @@ impl<'s> Minimap<'s> {
         // Read one extra row so the row peeking in from the bottom
         // (after applying the negative y-shift) still has bytes to
         // draw.
-        let shown_rows =
-            (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row));
+        let shown_rows = (minimap_capacity_rows + 1).min(total_rows.saturating_sub(window_top_row));
 
         // Hand over to the source.
         let source_rows = window_top_row..(window_top_row + shown_rows);
@@ -352,10 +327,7 @@ impl<'s> Minimap<'s> {
         let indicator_height = viewport_rows_f * cell_h;
         let indicator = Rect::from_min_max(
             Pos2::new(rect.left(), indicator_top_y.max(rect.top())),
-            Pos2::new(
-                rect.right(),
-                (indicator_top_y + indicator_height).min(rect.bottom()),
-            ),
+            Pos2::new(rect.right(), (indicator_top_y + indicator_height).min(rect.bottom())),
         );
         let active = response.hovered() || response.dragged();
         let dark = ui.visuals().dark_mode;
@@ -377,15 +349,8 @@ impl<'s> Minimap<'s> {
         painter.rect_filled(indicator, 0.0, fill);
         painter.rect_stroke(indicator, 0.0, Stroke::new(2.0, outline), StrokeKind::Inside);
         let accent = ui.visuals().selection.bg_fill;
-        let bracket_color = if active {
-            accent
-        } else {
-            accent.gamma_multiply(0.4)
-        };
-        let bracket = Rect::from_min_max(
-            indicator.left_top(),
-            Pos2::new(indicator.left() + 4.0, indicator.bottom()),
-        );
+        let bracket_color = if active { accent } else { accent.gamma_multiply(0.4) };
+        let bracket = Rect::from_min_max(indicator.left_top(), Pos2::new(indicator.left() + 4.0, indicator.bottom()));
         painter.rect_filled(bracket, 0.0, bracket_color);
 
         // Click vs. drag dispatch.
@@ -418,11 +383,7 @@ impl<'s> Minimap<'s> {
             ui.ctx().data_mut(|d| {
                 d.insert_temp(
                     drag_state_id,
-                    MinimapDragStart {
-                        pointer_y: pos.y,
-                        scroll_offset: viewport.scroll_offset,
-                        started_in_grab,
-                    },
+                    MinimapDragStart { pointer_y: pos.y, scroll_offset: viewport.scroll_offset, started_in_grab },
                 )
             });
             if !started_in_grab {
@@ -434,9 +395,7 @@ impl<'s> Minimap<'s> {
         } else if response.dragged()
             && let Some(pos) = pointer
         {
-            let start = ui
-                .ctx()
-                .data(|d| d.get_temp::<MinimapDragStart>(drag_state_id));
+            let start = ui.ctx().data(|d| d.get_temp::<MinimapDragStart>(drag_state_id));
             let target = match start {
                 Some(start) if start.started_in_grab => {
                     let max_travel = (rect.height() - indicator.height()).max(1.0);
@@ -459,13 +418,6 @@ impl<'s> Minimap<'s> {
             scroll_target = Some(target);
         }
 
-        MinimapResponse {
-            scroll_target,
-            response,
-            window_top_row,
-            shown_rows,
-            cell_height: cell_h,
-            minimap_rect: rect,
-        }
+        MinimapResponse { scroll_target, response, window_top_row, shown_rows, cell_height: cell_h, minimap_rect: rect }
     }
 }
