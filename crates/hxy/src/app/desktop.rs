@@ -149,6 +149,8 @@ impl HxyApp {
             last_content_leaf: None,
             pending_cli_paths: Vec::new(),
             ipc_inbox: None,
+            #[cfg(target_os = "macos")]
+            macos_open_inbox: None,
             pattern_fetch: None,
             pattern_in_flight_bytes: None,
             pending_pattern_download_request: false,
@@ -591,6 +593,16 @@ impl HxyApp {
     /// forwarded opens.
     pub fn with_ipc_inbox(mut self, inbox: egui_inbox::UiInbox<Vec<std::path::PathBuf>>) -> Self {
         self.ipc_inbox = Some(inbox);
+        self
+    }
+
+    /// Hand off the macOS file-open inbox (Apple Events + NSServices).
+    /// Mirrors `with_ipc_inbox` shape; the host drains both alongside
+    /// the pending CLI batch each frame. `None` outside macOS or when
+    /// the installer noticed the static handler slot already taken.
+    #[cfg(target_os = "macos")]
+    pub fn with_macos_open_inbox(mut self, inbox: egui_inbox::UiInbox<Vec<std::path::PathBuf>>) -> Self {
+        self.macos_open_inbox = Some(inbox);
         self
     }
 

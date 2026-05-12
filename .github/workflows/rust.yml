@@ -117,3 +117,30 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --workspace
+
+  macos-bundle:
+    name: macOS bundle
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # Builds a release binary and assembles
+      # `target/release/bundle/macos/hxy.app` with the Info.plist
+      # that registers Launch Services file associations and the
+      # "Open in hxy" NSServices entry.
+      - run: dist/macos/build_app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hxy-macos-app
+          path: target/bundle/macos/hxy.app

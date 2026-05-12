@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>hxy</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.lander.hxy</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>hxy</string>
+  <key>CFBundleDisplayName</key>
+  <string>hxy</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.3.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.3.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <!-- macOS Launch Services file associations.
+
+       CFBundleDocumentTypes drives the "Open With" submenu in
+       Finder's right-click menu, plus the default-app assignment
+       under "Get Info -> Open With". The single entry below claims
+       the public.data UTI conformance, which every regular file
+       conforms to -- so hxy shows up as an option for any file the
+       user right-clicks. Role=Viewer is the honest claim: hxy can
+       view and edit, but isn't the canonical "owner" of any
+       specific file type, so we don't want to be auto-picked as
+       the default for, e.g., text files. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Any File</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.data</string>
+        <string>public.item</string>
+      </array>
+    </dict>
+  </array>
+  <!-- Services menu integration: a single "Open in hxy" entry that
+       appears under Finder's right-click "Services" submenu (and
+       under the app menu's Services entry from other apps). The
+       user can promote it to a top-level Finder menu item via
+       System Settings -> Keyboard -> Keyboard Shortcuts -> Services.
+
+       NSSendFileTypes restricts which UTIs we accept; public.item
+       conforms to every file, mirroring the document-types claim
+       above. The runtime handler is registered by HxyApp on macOS
+       (see crates/hxy/src/macos_open.rs). -->
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key>
+        <string>Open in hxy</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>openInHxy</string>
+      <key>NSPortName</key>
+      <string>hxy</string>
+      <key>NSSendFileTypes</key>
+      <array>
+        <string>public.item</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

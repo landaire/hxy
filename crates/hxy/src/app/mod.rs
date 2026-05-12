@@ -302,6 +302,16 @@ pub struct HxyApp {
     /// every frame.
     #[cfg(not(target_arch = "wasm32"))]
     ipc_inbox: Option<egui_inbox::UiInbox<Vec<std::path::PathBuf>>>,
+    /// Inbox carrying path batches forwarded from macOS Finder's
+    /// "Open With -> hxy" (AppleEvent `kAEOpenDocuments`) and the
+    /// "Services -> Open in hxy" menu entries while this instance is
+    /// already running. Cold-start opens go through the CLI / IPC
+    /// path the same way drag-and-drop and `hxy <file>` invocations
+    /// do; this inbox only fires once an existing window is up.
+    /// `None` outside macOS or when `macos_open::install` fails
+    /// (e.g. the static handler slot has already been claimed).
+    #[cfg(target_os = "macos")]
+    macos_open_inbox: Option<egui_inbox::UiInbox<Vec<std::path::PathBuf>>>,
     /// Active patterns-download worker, if any. Held until the
     /// status reaches Success / Failed; the host then writes the
     /// resulting hash back to [`crate::settings::ImhexPatternsState`]
@@ -1497,6 +1507,13 @@ fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
             // direct "focus the OS window" call we can rely on
             // cross-platform, but a request_repaint is cheap and
             // ensures the new tab paints right away.
+            ctx.request_repaint();
+            batch.extend(forwarded);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(inbox) = app.macos_open_inbox.as_ref() {
+        for forwarded in inbox.read(ctx) {
             ctx.request_repaint();
             batch.extend(forwarded);
         }

@@ -67,3 +67,7 @@ run = [
     "cargo build --manifest-path plugins/png-template/Cargo.toml --target wasm32-wasip2 --release",
     "python scripts/deploy_plugin.py plugins/png-template hxy_png_template template",
 ]
+
+[tasks.bundle-macos]
+description = "Assemble target/release/bundle/macos/hxy.app from a release build"
+run = "dist/macos/build_app.sh"

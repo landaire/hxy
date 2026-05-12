@@ -1,5 +1,14 @@
 target/
-dist/
+# Ignore generated bundle output but keep the static packaging
+# tree under /dist/macos/ checked in (Info.plist + build_app.sh
+# drive the Finder integration). Anchor to the repo root so the
+# pattern doesn't also swallow `crates/hxy/dist/` (wasm build
+# artifacts), and use `/dist/*` instead of `/dist/` so gitignore
+# still recurses into subdirectories beneath.
+/dist/*
+!/dist/macos/
+# Wasm build output (wasm-pack / trunk) lives under `crates/hxy/dist/`.
+crates/hxy/dist/
 .cargo/config.toml
 .claude/
 .DS_Store

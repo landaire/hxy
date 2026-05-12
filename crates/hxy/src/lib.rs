@@ -30,6 +30,8 @@ pub mod ipc;
 pub mod toasts;
 
 #[cfg(target_os = "macos")]
+pub mod macos_open;
+#[cfg(target_os = "macos")]
 pub mod menu;
 
 #[cfg(target_arch = "wasm32")]

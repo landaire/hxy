@@ -149,6 +149,16 @@ fn main() -> eframe::Result<()> {
             if let Some(inbox) = ipc::start_server(&cc.egui_ctx) {
                 app = app.with_ipc_inbox(inbox);
             }
+            // macOS Finder "Open With -> hxy" / "Services -> Open in
+            // hxy" feed the warm-start handler installed here. The
+            // inbox shape matches the IPC inbox, so the host drains
+            // both in `drain_external_open_requests`. Cold-start
+            // opens (Finder launching the .app fresh) still flow
+            // through argv -> IPC above.
+            #[cfg(target_os = "macos")]
+            if let Some(inbox) = hxy_lib::macos_open::install(&cc.egui_ctx) {
+                app = app.with_macos_open_inbox(inbox);
+            }
             if !cli_files.is_empty() {
                 app = app.with_cli_paths(cli_files);
             }
