@@ -38,6 +38,17 @@ fn main() -> eframe::Result<()> {
 
     hxy_i18n::init_from_system_locale();
 
+    // macOS Finder integration: register the AppleEvent /
+    // NSServices handlers BEFORE `eframe::run_native` so they are
+    // in place by the time `NSApplication::run` dispatches any
+    // cold-start "Open With" events. Doing it from inside the
+    // eframe creator would replace AppKit's handler mid-flight
+    // during the in-progress `_handleAEOpenEvent:` chain, which
+    // crashes winit's ApplicationDelegate state machine on cold
+    // start with a document.
+    #[cfg(target_os = "macos")]
+    hxy_lib::macos_open::install();
+
     let cli = Cli::parse_args();
     let cli_files = cli.resolved_files();
     // Single-instance: if another hxy is already running, hand off
@@ -149,16 +160,12 @@ fn main() -> eframe::Result<()> {
             if let Some(inbox) = ipc::start_server(&cc.egui_ctx) {
                 app = app.with_ipc_inbox(inbox);
             }
-            // macOS Finder "Open With -> hxy" / "Services -> Open in
-            // hxy" feed the warm-start handler installed here. The
-            // inbox shape matches the IPC inbox, so the host drains
-            // both in `drain_external_open_requests`. Cold-start
-            // opens (Finder launching the .app fresh) still flow
-            // through argv -> IPC above.
+            // The handlers themselves were registered earlier in
+            // `main`; here we just hand them the egui Context so
+            // they can request a repaint after pushing paths into
+            // the per-frame drain buffer.
             #[cfg(target_os = "macos")]
-            if let Some(inbox) = hxy_lib::macos_open::install(&cc.egui_ctx) {
-                app = app.with_macos_open_inbox(inbox);
-            }
+            hxy_lib::macos_open::wire_repaint_ctx(&cc.egui_ctx);
             if !cli_files.is_empty() {
                 app = app.with_cli_paths(cli_files);
             }

@@ -1,7 +1,7 @@
 //! macOS Finder right-click "Open in hxy" / "Open With -> hxy"
 //! handlers.
 //!
-//! Two routes feed the same channel:
+//! Two routes feed the same buffer:
 //!
 //! * **Apple Events** -- Launch Services dispatches `kAEOpenDocuments`
 //!   to the running NSApp when the user picks hxy from the
@@ -10,27 +10,35 @@
 //!   so we register an Apple-Event handler on
 //!   `NSAppleEventManager` -- a parallel API that doesn't fight
 //!   for the delegate slot. The handler runs on the main thread
-//!   while winit's event loop is pumping, parses the event's
-//!   direct-object descriptor for file URLs, and pushes them onto
-//!   the shared inbox the app already drains every frame.
+//!   while AppKit / winit are pumping the run loop.
 //!
 //! * **NSServices** -- the "Open in hxy" entry in Finder's
 //!   right-click "Services" submenu (declared in Info.plist's
 //!   `NSServices` array) calls `openInHxy:userData:error:` on
 //!   whatever object we register via `NSApp.setServicesProvider`.
-//!   We read the file URLs from the supplied `NSPasteboard` and
-//!   funnel them through the same inbox sender.
 //!
-//! Cold-start opens (Finder launches the .app with the file as
-//! argv) are handled by the existing CLI / IPC plumbing in
-//! `main.rs`; this module only covers the warm-start case where
-//! hxy is already running.
+//! Both routes push paths into a process-global buffer the app
+//! drains every frame via [`drain_pending_paths`]. The buffer model
+//! (instead of an `egui_inbox`) lets [`install`] run before
+//! `eframe::run_native` -- crucial, because if we registered the
+//! Apple Event handler during the eframe creator (which runs inside
+//! winit's `applicationDidFinishLaunching`), we'd be replacing
+//! AppKit's in-flight `_handleAEOpenEvent:` handler mid-dispatch on
+//! cold-start launches with a document, which crashes winit's
+//! ApplicationDelegate state machine.
+//!
+//! Cold-start opens still also flow through argv -> IPC when macOS
+//! happens to pass the file via argv; this module covers the
+//! AppleEvent path (which is how Launch Services delivers most
+//! "Open With" invocations to a bundled .app).
 
 #![allow(unsafe_code)]
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use objc2::ClassType;
 use objc2::class;
 use objc2::define_class;
 use objc2::msg_send;
@@ -59,29 +67,35 @@ const K_CORE_EVENT_CLASS: u32 = osc(b"aevt");
 const K_AE_OPEN_DOCUMENTS: u32 = osc(b"odoc");
 const KEY_DIRECT_OBJECT: u32 = osc(b"----");
 
-/// Shared sender into the app's "external open" inbox. Set once
-/// during install, read by the ObjC handlers (which the runtime
-/// calls on the main thread; no synchronization needed beyond the
-/// OnceLock's atomic store/load).
-static OPEN_SENDER: OnceLock<egui_inbox::UiInboxSender<Vec<PathBuf>>> = OnceLock::new();
+/// Buffer of batched file paths the handlers have produced. The app
+/// drains this every frame in `drain_external_open_requests`. Behind
+/// a `Mutex` so we don't need to think about whether AppleEvent
+/// callbacks could ever fire off the main thread (they don't today,
+/// but the buffer also has to be readable from the app's update
+/// loop without `RefCell` requiring `!Sync`).
+static PENDING_PATHS: Mutex<Vec<Vec<PathBuf>>> = Mutex::new(Vec::new());
 
-/// Install both handlers and return the inbox the app should drain
-/// alongside the IPC inbox. Idempotent across the process lifetime
-/// -- a second call returns `None` because the first install
-/// already owns the sender slot.
-///
-/// `ctx` is the egui context used to schedule a repaint whenever a
-/// batch lands, so the next frame opens the new file without
-/// waiting for the user to nudge the window.
-pub fn install(ctx: &egui::Context) -> Option<egui_inbox::UiInbox<Vec<PathBuf>>> {
-    if OPEN_SENDER.get().is_some() {
-        return None;
+/// Set once, when the egui `Context` is first available, so the
+/// AppleEvent / NSServices handlers can request a repaint after
+/// pushing paths. Stays `None` until the eframe creator runs.
+static REPAINT_CTX: OnceLock<egui::Context> = OnceLock::new();
+
+/// Whether the handler ObjC object is already installed. Idempotent
+/// across the process lifetime; a second [`install`] call is a no-op.
+static INSTALLED: OnceLock<()> = OnceLock::new();
+
+/// Register the Apple Event and NSServices handlers. MUST be called
+/// before `eframe::run_native` so the handlers are in place before
+/// `NSApplication::run` dispatches any cold-start Apple Events.
+/// Returns `false` if not on macOS's main thread (`MainThreadMarker`
+/// unavailable) or if a previous install already ran.
+pub fn install() -> bool {
+    if INSTALLED.get().is_some() {
+        return false;
     }
-    let mtm = MainThreadMarker::new()?;
-    let (sender, inbox) = egui_inbox::UiInbox::channel_with_ctx(ctx);
-    if OPEN_SENDER.set(sender).is_err() {
-        return None;
-    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
 
     let handler = HxyMacOpenHandler::new();
     let handler_obj: &AnyObject = handler.as_ref();
@@ -101,9 +115,7 @@ pub fn install(ctx: &egui::Context) -> Option<egui_inbox::UiInbox<Vec<PathBuf>>>
     let app = NSApplication::sharedApplication(mtm);
     unsafe {
         app.setServicesProvider(Some(handler_obj));
-        let url_class: &AnyClass = class!(NSURL);
         let send_types = NSArray::from_slice(&[NSString::from_str("public.file-url").as_ref()]);
-        let _ = url_class;
         app.registerServicesMenuSendTypes_returnTypes(&send_types, &NSArray::<NSString>::from_slice(&[]));
     }
 
@@ -112,17 +124,33 @@ pub fn install(ctx: &egui::Context) -> Option<egui_inbox::UiInbox<Vec<PathBuf>>>
     // event dispatch. The process owns it for its full lifetime.
     Box::leak(Box::new(handler));
 
-    Some(inbox)
+    let _ = INSTALLED.set(());
+    true
+}
+
+/// Plumb the egui [`Context`] in once it's available so subsequent
+/// handler firings can request a repaint. Safe to call multiple times
+/// -- only the first call takes effect.
+pub fn wire_repaint_ctx(ctx: &egui::Context) {
+    let _ = REPAINT_CTX.set(ctx.clone());
+}
+
+/// Drain whatever batches the handlers have accumulated since the
+/// last call. Returns an empty `Vec` when nothing is pending.
+/// Called from the per-frame open-request drain on macOS.
+pub fn drain_pending_paths() -> Vec<Vec<PathBuf>> {
+    PENDING_PATHS.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
 }
 
 fn push_paths(paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
-    if let Some(sender) = OPEN_SENDER.get()
-        && sender.send(paths).is_err()
-    {
-        tracing::warn!("macos_open: inbox dropped; cannot forward open request");
+    if let Ok(mut buf) = PENDING_PATHS.lock() {
+        buf.push(paths);
+    }
+    if let Some(ctx) = REPAINT_CTX.get() {
+        ctx.request_repaint();
     }
 }
 
@@ -144,7 +172,7 @@ define_class!(
         /// NSAppleEventManager calls this with a populated event
         /// descriptor whose direct-object parameter is a list of
         /// file URL descriptors. We iterate the list, pull each
-        /// URL's path, and forward the batch to the inbox.
+        /// URL's path, and forward the batch to the buffer.
         ///
         /// SAFETY: matches the AppleEvent handler signature
         /// `-(void)handleAppleEvent:withReplyEvent:` exactly.
@@ -174,7 +202,7 @@ define_class!(
         /// more file URLs (we declared `public.file-url` as the
         /// only NSSendType in Info.plist). `userData` and the error
         /// out-param go unused -- failures here surface to the user
-        /// via the inbox no-op, not via the Services framework's
+        /// via the buffer no-op, not via the Services framework's
         /// error reporting.
         ///
         /// SAFETY: matches the NSServices provider signature
@@ -196,10 +224,6 @@ define_class!(
             let count = items.count();
             for i in 0..count {
                 let obj: Retained<AnyObject> = items.objectAtIndex(i);
-                // Down-cast: readObjectsForClasses:[NSURL.class] only
-                // ever returns NSURL instances, so this is safe in
-                // practice. `downcast_ref` does the runtime class
-                // check and gives us a typed `&NSURL`.
                 let Some(url) = obj.downcast_ref::<NSURL>() else { continue };
                 if let Some(path) = nsurl_to_pathbuf(url) {
                     paths.push(path);
@@ -214,8 +238,14 @@ impl HxyMacOpenHandler {
     /// `+[HxyMacOpenHandler new]` allocates and initialises in one
     /// shot. Returns a `Retained<Self>` ready to register with
     /// NSAppleEventManager and NSApp.servicesProvider.
+    ///
+    /// Goes through `Self::class()` (not `class!()`) so the
+    /// `define_class!`-generated class registration runs even when
+    /// this is the first reference to the class in the process --
+    /// `class!()` only does a runtime lookup and panics on miss.
     fn new() -> Retained<Self> {
-        unsafe { msg_send![class!(HxyMacOpenHandler), new] }
+        let cls = <Self as ClassType>::class();
+        unsafe { msg_send![cls, new] }
     }
 }
 
