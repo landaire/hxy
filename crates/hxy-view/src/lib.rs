@@ -1865,6 +1865,13 @@ fn read_visible_rows<S: HexSource + ?Sized>(
                 is_gap: false,
             });
         }
+        // Empty source has no bytes to chunk, so the loop emits zero
+        // rows -- but row_count() reserves space for row 0 to host the
+        // EOF / ghost-byte caret. Emit a length-0 row so paint_row_marks
+        // runs and the insertion-point glyphs render.
+        if rows.is_empty() && source_len.get() == 0 && first_visible == 0 && last_visible_exclusive > 0 {
+            rows.push(RowRead { offset: ByteOffset::new(0), bytes: Vec::new(), is_gap: false });
+        }
         Ok((rows, Some(read_range)))
     }
 }
@@ -3225,6 +3232,21 @@ mod tests {
         let removed = ed.backspace_byte().unwrap();
         assert!(!removed);
         assert_eq!(read_all_bytes(&ed), b"abc");
+    }
+
+    #[test]
+    fn read_visible_rows_emits_synthetic_row_for_empty_source() {
+        // Empty source still gets a row of length 0 so the EOF
+        // cursor / ghost-byte painter has a row to hang onto. Without
+        // this row, paint_row_marks never runs for a fresh untitled
+        // buffer and the user sees nothing where they can type.
+        let source = hxy_core::MemorySource::new(Vec::new());
+        let (rows, range) = read_visible_rows(&source, None, 0, 1, 16, ByteLen::new(0)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].offset, ByteOffset::new(0));
+        assert!(rows[0].bytes.is_empty());
+        assert!(!rows[0].is_gap);
+        assert!(range.is_some());
     }
 
     #[cfg(feature = "editor")]
