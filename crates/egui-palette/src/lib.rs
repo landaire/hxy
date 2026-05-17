@@ -317,6 +317,15 @@ pub struct Style {
     /// [`Style::close_on_backdrop_click`] is on); add more keys to
     /// support alternative bindings like Ctrl+G.
     pub dismiss_keys: Cow<'static, [egui::Key]>,
+    /// Modifier combos that activate the selected row. The widget
+    /// iterates this list in order on each frame; the first combo
+    /// whose key state matches consumes the Enter press and is
+    /// reported back to the host. Order most-specific first: egui's
+    /// `consume_key(Cmd, Enter)` returns true when `Cmd+Shift+Enter`
+    /// is pressed, so a list of `[Cmd, Shift]` will silently misroute
+    /// Cmd+Shift+Enter to the Cmd handler. List
+    /// `Cmd|Shift` before `Cmd` and `Shift`, and `NONE` last.
+    pub activation_modifiers: Cow<'static, [egui::Modifiers]>,
 }
 
 impl Default for Style {
@@ -356,6 +365,12 @@ impl Default for Style {
             case_matching: CaseMatching::Smart,
             normalization: Normalization::Smart,
             dismiss_keys: Cow::Borrowed(&[egui::Key::Escape]),
+            activation_modifiers: Cow::Borrowed(&[
+                egui::Modifiers { command: true, shift: true, ..egui::Modifiers::NONE },
+                egui::Modifiers { command: true, ..egui::Modifiers::NONE },
+                egui::Modifiers { shift: true, ..egui::Modifiers::NONE },
+                egui::Modifiers::NONE,
+            ]),
         }
     }
 }
@@ -471,6 +486,7 @@ pub fn show_with_style<A: Clone>(
     }
 
     let mut picked_idx: Option<usize> = None;
+    let mut pick_modifiers: Option<egui::Modifiers> = None;
     let mut selection_changed_by_kbd = false;
     if style.consume_nav_keys {
         ctx.input_mut(|i| {
@@ -482,8 +498,12 @@ pub fn show_with_style<A: Clone>(
                 state.selected = (state.selected + filtered.len() - 1) % filtered.len();
                 selection_changed_by_kbd = true;
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) && !filtered.is_empty() {
-                picked_idx = Some(state.selected);
+            for modifiers in style.activation_modifiers.iter() {
+                if i.consume_key(*modifiers, egui::Key::Enter) && !filtered.is_empty() {
+                    picked_idx = Some(state.selected);
+                    pick_modifiers = Some(*modifiers);
+                    break;
+                }
             }
         });
     }

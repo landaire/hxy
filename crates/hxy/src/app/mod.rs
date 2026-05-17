@@ -2960,7 +2960,7 @@ pub(crate) fn paste_active_file(app: &mut HxyApp, as_hex: bool) {
             return;
         }
         let Some(file) = app.files.get_mut(&id) else { return };
-        crate::app::shortcuts::paste_bytes_at_cursor(file, bytes);
+        crate::app::shortcuts::paste_bytes_at_cursor(&mut file.editor, bytes);
     }
     #[cfg(target_arch = "wasm32")]
     {

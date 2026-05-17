@@ -161,34 +161,31 @@ pub fn dispatch_paste_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
         return;
     }
     let Some(file) = app.files.get_mut(&id) else { return };
-    paste_bytes_at_cursor(file, bytes);
+    paste_bytes_at_cursor(&mut file.editor, bytes);
 }
 
-/// Apply a paste buffer at the tab's cursor. Length-preserving: the
-/// write is truncated to what fits before EOF, leaves an empty
-/// clipboard as a no-op, and parks the caret just past the last
+/// Apply a paste buffer at the editor's cursor. Bytes that fit
+/// before EOF overwrite in place; the rest append, so pasting into
+/// an empty anonymous buffer or past the last byte grows the source.
+/// Empty clipboards no-op. The caret parks just past the last
 /// written byte so the next paste / keystroke lands after it.
-pub(crate) fn paste_bytes_at_cursor(file: &mut crate::files::OpenFile, bytes: Vec<u8>) {
-    let source_len = file.editor.source().len().get();
-    if source_len == 0 {
+pub(crate) fn paste_bytes_at_cursor(editor: &mut hxy_view::HexEditor, bytes: Vec<u8>) {
+    if bytes.is_empty() {
         return;
     }
-    let start = file.editor.selection().map(|s| s.range().start().get()).unwrap_or(0);
-    let available = source_len.saturating_sub(start);
-    if available == 0 {
+    let source_len = editor.source().len().get();
+    let start = editor.selection().map(|s| s.range().start().get()).unwrap_or(0).min(source_len);
+    let n = bytes.len() as u64;
+    let overwrite = n.min(source_len.saturating_sub(start));
+    editor.push_history_boundary();
+    if let Err(e) = editor.splice(start, overwrite, bytes) {
+        tracing::warn!(error = %e, "paste splice");
         return;
     }
-    let n = (bytes.len() as u64).min(available) as usize;
-    let bytes = if n == bytes.len() { bytes } else { bytes[..n].to_vec() };
-    file.editor.push_history_boundary();
-    if let Err(e) = file.editor.request_write(start, bytes) {
-        tracing::warn!(error = %e, "paste write");
-        return;
-    }
-    let new_cursor = (start + n as u64).min(source_len.saturating_sub(1));
-    file.editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor))));
-    file.editor.reset_edit_nibble();
-    file.editor.push_history_boundary();
+    let new_cursor = start + n;
+    editor.set_selection(Some(hxy_core::Selection::caret(hxy_core::ByteOffset::new(new_cursor))));
+    editor.reset_edit_nibble();
+    editor.push_history_boundary();
 }
 
 /// App-level copy shortcut handler. Runs after the dock renders, so
@@ -224,6 +221,87 @@ pub fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     let Some(id) = crate::app::active_file_id(app) else { return };
     if let Some(file) = app.files.get(&id) {
         crate::app::do_copy(ctx, file, kind);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hxy_core::ByteOffset;
+    use hxy_core::ByteRange;
+    use hxy_core::HexSource;
+    use hxy_core::MemorySource;
+    use hxy_core::Selection;
+    use hxy_view::HexEditor;
+
+    use super::paste_bytes_at_cursor;
+
+    fn editor_with(bytes: &[u8], cursor: u64) -> HexEditor {
+        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes.to_vec()));
+        let mut ed = HexEditor::new(source);
+        ed.set_selection(Some(Selection::caret(ByteOffset::new(cursor))));
+        ed
+    }
+
+    fn read_all(ed: &HexEditor) -> Vec<u8> {
+        let len = ed.source().len().get();
+        if len == 0 {
+            return Vec::new();
+        }
+        let r = ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap();
+        ed.source().read(r).unwrap()
+    }
+
+    #[test]
+    fn paste_into_empty_buffer_grows_buffer() {
+        // Pasting into a fresh "Untitled" tab (zero bytes) used to
+        // no-op because the length-preserving write rejected an
+        // empty source; users had to type a byte first to "unlock"
+        // paste. The buffer should grow to hold the pasted bytes
+        // and the caret should park just past the last one.
+        let mut ed = editor_with(&[], 0);
+        paste_bytes_at_cursor(&mut ed, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(read_all(&ed), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(ed.selection().unwrap().cursor.get(), 4);
+    }
+
+    #[test]
+    fn paste_past_eof_extends_buffer() {
+        // Caret on the trailing EOF cell of a non-empty buffer
+        // should append, not no-op.
+        let mut ed = editor_with(&[0x11, 0x22], 2);
+        paste_bytes_at_cursor(&mut ed, vec![0x33, 0x44]);
+        assert_eq!(read_all(&ed), vec![0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(ed.selection().unwrap().cursor.get(), 4);
+    }
+
+    #[test]
+    fn paste_straddling_eof_overwrites_then_appends() {
+        // Partial overlap: the first N bytes overwrite in place,
+        // the rest extend past EOF.
+        let mut ed = editor_with(&[0x11, 0x22, 0x33, 0x44], 2);
+        paste_bytes_at_cursor(&mut ed, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(read_all(&ed), vec![0x11, 0x22, 0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(ed.selection().unwrap().cursor.get(), 6);
+    }
+
+    #[test]
+    fn paste_in_bounds_still_overwrites() {
+        // Length-preserving overwrite still works for the common
+        // case where paste fits entirely inside the buffer.
+        let mut ed = editor_with(&[0x11, 0x22, 0x33, 0x44, 0x55], 1);
+        paste_bytes_at_cursor(&mut ed, vec![0xAA, 0xBB]);
+        assert_eq!(read_all(&ed), vec![0x11, 0xAA, 0xBB, 0x44, 0x55]);
+        assert_eq!(ed.selection().unwrap().cursor.get(), 3);
+    }
+
+    #[test]
+    fn paste_empty_clipboard_is_noop() {
+        let mut ed = editor_with(&[0x11, 0x22], 1);
+        paste_bytes_at_cursor(&mut ed, Vec::new());
+        assert_eq!(read_all(&ed), vec![0x11, 0x22]);
+        assert_eq!(ed.selection().unwrap().cursor.get(), 1);
     }
 }
 
