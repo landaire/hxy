@@ -326,6 +326,11 @@ pub struct Style {
     /// Cmd+Shift+Enter to the Cmd handler. List
     /// `Cmd|Shift` before `Cmd` and `Shift`, and `NONE` last.
     pub activation_modifiers: Cow<'static, [egui::Modifiers]>,
+    /// Keyboard shortcut that opens a per-row "actions" sub-palette.
+    /// Pressed while a row is selected, the widget emits
+    /// `Outcome::SubAction { data }` instead of `Picked`. `None`
+    /// disables sub-actions entirely. Default `Cmd+K`.
+    pub sub_action_shortcut: Option<egui::KeyboardShortcut>,
 }
 
 impl Default for Style {
@@ -371,6 +376,10 @@ impl Default for Style {
                 egui::Modifiers { shift: true, ..egui::Modifiers::NONE },
                 egui::Modifiers::NONE,
             ]),
+            sub_action_shortcut: Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::K,
+            )),
         }
     }
 }
