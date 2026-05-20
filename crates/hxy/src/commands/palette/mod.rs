@@ -687,7 +687,11 @@ pub fn show(
     });
     match egui_palette::show(ctx, &mut state.inner, &entries, &hint)? {
         egui_palette::Outcome::Dismissed(reason) => Some(Outcome::Dismissed(reason)),
-        egui_palette::Outcome::Picked(action) => Some(Outcome::Picked(action)),
+        egui_palette::Outcome::Picked { data: action, .. } => Some(Outcome::Picked(action)),
+        egui_palette::Outcome::SubAction { .. } => {
+            // hxy doesn't expose per-row sub-actions yet; ignore.
+            None
+        }
     }
 }
 

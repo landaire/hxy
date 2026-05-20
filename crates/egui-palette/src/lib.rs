@@ -12,7 +12,7 @@
 //!     Entry::new("Open file", MyAction::Open),
 //!     Entry::new("Close file", MyAction::Close).with_subtitle("Cmd+W"),
 //! ];
-//! if let Some(Outcome::Picked(action)) = egui_palette::show(ctx, &mut state, &entries, "Search...") {
+//! if let Some(Outcome::Picked { data: action, .. }) = egui_palette::show(ctx, &mut state, &entries, "Search...") {
 //!     dispatch(action);
 //! }
 //! ```
@@ -171,7 +171,15 @@ impl<A> Entry<A> {
 /// the matching entry's `data`; [`Outcome::Closed`] fires on `Esc`
 /// or a click on the backdrop.
 pub enum Outcome<A> {
-    Picked(A),
+    /// User activated an entry. `modifiers` carries the modifier
+    /// state of the activating key combo (matched against
+    /// [`Style::activation_modifiers`]), so hosts can route the same
+    /// row to different actions based on Cmd / Shift / etc.
+    Picked { data: A, modifiers: egui::Modifiers },
+    /// The user pressed [`Style::sub_action_shortcut`] (default
+    /// `Cmd+K`) on a selected row, requesting a per-row actions
+    /// sub-palette instead of activating the row outright.
+    SubAction { data: A },
     /// The user dismissed the palette without picking an entry.
     /// Carries the cause so hosts can make context-aware decisions
     /// (e.g. pop one cascade level on Escape, fully close on
@@ -496,6 +504,7 @@ pub fn show_with_style<A: Clone>(
 
     let mut picked_idx: Option<usize> = None;
     let mut pick_modifiers: Option<egui::Modifiers> = None;
+    let mut sub_action_idx: Option<usize> = None;
     let mut selection_changed_by_kbd = false;
     if style.consume_nav_keys {
         ctx.input_mut(|i| {
@@ -512,6 +521,11 @@ pub fn show_with_style<A: Clone>(
                     picked_idx = Some(state.selected);
                     pick_modifiers = Some(*modifiers);
                     break;
+                }
+            }
+            if let Some(shortcut) = &style.sub_action_shortcut {
+                if i.consume_shortcut(shortcut) && !filtered.is_empty() {
+                    sub_action_idx = Some(state.selected);
                 }
             }
         });
@@ -766,7 +780,16 @@ pub fn show_with_style<A: Clone>(
         && let Some(hit) = filtered.get(row)
         && !entries[hit.index].disabled
     {
-        return Some(Outcome::Picked(entries[hit.index].data.clone()));
+        return Some(Outcome::Picked {
+            data: entries[hit.index].data.clone(),
+            modifiers: pick_modifiers.unwrap_or(egui::Modifiers::NONE),
+        });
+    }
+    if let Some(row) = sub_action_idx
+        && let Some(hit) = filtered.get(row)
+        && !entries[hit.index].disabled
+    {
+        return Some(Outcome::SubAction { data: entries[hit.index].data.clone() });
     }
     if let Some(key) = dismissed_key {
         return Some(Outcome::Dismissed(DismissReason::Key(key)));
@@ -945,4 +968,66 @@ fn layout_truncated(
     );
     job.wrap = egui::epaint::text::TextWrapping::truncate_at_width(max_width.max(0.0));
     ui.painter().layout_job(job)
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers, RawInput};
+
+    fn press(modifiers: Modifiers, key: Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn drive(input_events: Vec<Event>, style: &Style) -> Option<Outcome<&'static str>> {
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        state.open();
+        let entries = vec![Entry::new("only", "payload")];
+        let mut outcome = None;
+        let raw = RawInput { events: input_events, ..Default::default() };
+        let _ = ctx.run_ui(raw, |ui| {
+            outcome = show_with_style(ui.ctx(), &mut state, &entries, "", style);
+        });
+        outcome
+    }
+
+    #[test]
+    fn cmd_shift_enter_does_not_match_cmd_enter() {
+        let style = Style::default();
+        let modifiers = Modifiers { command: true, shift: true, ..Modifiers::NONE };
+        let out = drive(vec![press(modifiers, Key::Enter)], &style);
+        match out {
+            Some(Outcome::Picked { modifiers: m, .. }) => {
+                assert!(m.command && m.shift, "expected Cmd+Shift, got {:?}", m);
+            }
+            _ => panic!("expected Picked with Cmd+Shift"),
+        }
+    }
+
+    #[test]
+    fn plain_enter_picks_with_none_modifiers() {
+        let style = Style::default();
+        let out = drive(vec![press(Modifiers::NONE, Key::Enter)], &style);
+        match out {
+            Some(Outcome::Picked { modifiers: m, .. }) => assert_eq!(m, Modifiers::NONE),
+            _ => panic!("expected Picked NONE"),
+        }
+    }
+
+    #[test]
+    fn cmd_k_emits_sub_action() {
+        let style = Style::default();
+        let out = drive(vec![press(Modifiers::COMMAND, Key::K)], &style);
+        match out {
+            Some(Outcome::SubAction { data }) => assert_eq!(data, "payload"),
+            _ => panic!("expected SubAction"),
+        }
+    }
 }
