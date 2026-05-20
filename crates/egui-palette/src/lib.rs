@@ -438,6 +438,33 @@ pub fn show_with_style<A: Clone>(
     hint: &str,
     style: &Style,
 ) -> Option<Outcome<A>> {
+    show_with_style_inner(ctx, state, entries, hint, style, None)
+}
+
+/// Render the palette with a footer slot. The provided closure is
+/// invoked at the bottom of the panel inside the same `Frame` as
+/// the result list, separated by a thin separator. Use this for
+/// action hints, status text, or any per-frame footer content the
+/// host wants to surface.
+pub fn show_with_footer<A: Clone>(
+    ctx: &egui::Context,
+    state: &mut State,
+    entries: &[Entry<A>],
+    hint: &str,
+    style: &Style,
+    footer: &dyn Fn(&mut egui::Ui),
+) -> Option<Outcome<A>> {
+    show_with_style_inner(ctx, state, entries, hint, style, Some(footer))
+}
+
+fn show_with_style_inner<A: Clone>(
+    ctx: &egui::Context,
+    state: &mut State,
+    entries: &[Entry<A>],
+    hint: &str,
+    style: &Style,
+    footer: Option<&dyn Fn(&mut egui::Ui)>,
+) -> Option<Outcome<A>> {
     if !state.open {
         return None;
     }
@@ -769,6 +796,10 @@ pub fn show_with_style<A: Clone>(
                         ui.add_space(16.0);
                     }
                 });
+                if let Some(footer_fn) = footer {
+                    ui.separator();
+                    footer_fn(ui);
+                }
             });
         });
     let _ = area_response;
