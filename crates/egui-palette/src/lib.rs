@@ -306,16 +306,29 @@ pub struct Style {
     /// derives from `visuals.selection.bg_fill` with 0.4 opacity so
     /// it reads on both light and dark themes.
     pub selected_fill: Option<Color32>,
+    /// Corner radius of the selected-row fill. `None` uses a small
+    /// 3px rounding.
+    pub selected_corner_radius: Option<f32>,
     /// Color of the entry title and the icon. `None` uses
     /// `visuals.text_color()`.
     pub text_color: Option<Color32>,
     /// Color of the entry subtitle. `None` uses
     /// `visuals.weak_text_color()`.
     pub subtitle_color: Option<Color32>,
+    /// Font size of the entry title. `None` uses
+    /// [`egui::TextStyle::Body`].
+    pub title_font_size: Option<f32>,
     /// Font size used for the subtitle. `None` falls back to the
     /// size of [`egui::TextStyle::Small`] (noticeably smaller than
     /// the title so a long path reads as secondary).
     pub subtitle_size: Option<f32>,
+    /// Font size of the query input text. `None` uses
+    /// [`egui::TextStyle::Body`], matching the title size.
+    pub input_font_size: Option<f32>,
+    /// Whether the query input draws its own background frame and
+    /// focus outline. `None` leaves egui's default (framed); `false`
+    /// makes the input frameless so it blends into the panel.
+    pub input_frame: Option<bool>,
     /// Color of the icon glyph. `None` uses [`Self::text_color`] so
     /// icons and titles match unless explicitly split.
     pub icon_color: Option<Color32>,
@@ -396,9 +409,13 @@ impl Default for Style {
             panel_fill: None,
             panel_stroke: None,
             selected_fill: None,
+            selected_corner_radius: None,
             text_color: None,
             subtitle_color: None,
+            title_font_size: None,
             subtitle_size: None,
+            input_font_size: None,
+            input_frame: None,
             icon_color: None,
             match_color: None,
             close_on_backdrop_click: true,
@@ -671,8 +688,14 @@ fn show_with_style_inner<'a, A: Clone>(
                 }
             };
             frame.show(ui, |ui| {
-                ui.set_min_width(panel_width);
-                ui.set_max_width(panel_width);
+                // `panel_width` is the intended outer width; the Frame adds
+                // `inner_margin` around this content, so constrain the content to
+                // `panel_width - horizontal margin` or the panel draws wider than
+                // requested and overflows its host on the right.
+                let content_width =
+                    panel_width - style.inner_margin.leftf() - style.inner_margin.rightf();
+                ui.set_min_width(content_width);
+                ui.set_max_width(content_width);
 
                 // Inline ghost completion: when the host has
                 // staged a suggestion -- and the user hasn't
@@ -714,10 +737,16 @@ fn show_with_style_inner<'a, A: Clone>(
                 }
                 let prev_query_chars = state.query.chars().count();
                 let mut buffer = display_buffer.clone();
-                let text_edit = egui::TextEdit::singleline(&mut buffer)
+                let mut text_edit = egui::TextEdit::singleline(&mut buffer)
                     .id(text_edit_id)
                     .hint_text(hint)
                     .desired_width(f32::INFINITY);
+                if let Some(size) = style.input_font_size {
+                    text_edit = text_edit.font(egui::FontId::proportional(size));
+                }
+                if style.input_frame == Some(false) {
+                    text_edit = text_edit.frame(egui::Frame::NONE);
+                }
                 let resp = ui.add(text_edit);
                 if state.pending_focus {
                     resp.request_focus();
@@ -796,17 +825,37 @@ fn show_with_style_inner<'a, A: Clone>(
                 // -- often the bottom row the user was hovering when
                 // they hit Cmd+P -- instead of the intended row 0.
                 let pointer_moving = ui.ctx().input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                // One ScrollArea handles both shrink and scroll
-                // cases: `auto_shrink([false, true])` shrinks the
-                // viewport vertically to content size when it fits,
-                // and caps at `list_max_height` (showing a scrollbar)
-                // when it doesn't.
-                let max_h = if style.list_shrink_to_fit { list_max_height } else { f32::INFINITY };
-                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                // One ScrollArea handles both shrink and scroll cases. When
+                // `list_shrink_to_fit` is true (default), `auto_shrink` shrinks
+                // the viewport vertically to content size when it fits and caps
+                // at `list_max_height` (showing a scrollbar) when it doesn't.
+                // When false, vertical shrink is disabled so the list always
+                // claims the full `list_max_height` -- a fixed-size palette that
+                // fills its host regardless of row count (matching the doc).
+                egui::ScrollArea::vertical()
+                    .max_height(list_max_height)
+                    .auto_shrink([false, style.list_shrink_to_fit])
+                    .show(ui, |ui| {
                     for (row, hit) in filtered.iter().enumerate() {
                         let entry = &entries[hit.index];
                         let selected = row == state.selected;
-                        let resp = render_row(ui, entry, selected, style, &hit.match_indices);
+                        // Salt each row's widget id with its stable entry index.
+                        // Without this the row's click-sense rect takes an
+                        // auto-generated id off the sequential counter, which
+                        // shifts between egui's sizing and render passes in a
+                        // tall list and spams "changed id between passes".
+                        // Salt each row's widget id with its stable entry index.
+                        // Without this the row's click-sense rect takes an
+                        // auto-generated id off the sequential counter; if an
+                        // upstream widget count shifts between egui's sizing and
+                        // render passes (e.g. the input's ghost completion) every
+                        // row's id moves and egui spams "changed id between
+                        // passes". A stable per-row id is immune to that shift.
+                        let resp = ui
+                            .push_id(hit.index, |ui| {
+                                render_row(ui, entry, selected, style, &hit.match_indices)
+                            })
+                            .inner;
                         if resp.clicked() {
                             picked_idx = Some(row);
                         }
@@ -873,10 +922,13 @@ fn render_row<A>(
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     if selected {
         let fill = style.selected_fill.unwrap_or_else(|| ui.visuals().selection.bg_fill.gamma_multiply(0.4));
-        ui.painter().rect_filled(rect, 3.0, fill);
+        ui.painter().rect_filled(rect, style.selected_corner_radius.unwrap_or(3.0), fill);
     }
     let inner = rect.shrink2(style.row_padding);
-    let body = egui::TextStyle::Body.resolve(ui.style());
+    let mut body = egui::TextStyle::Body.resolve(ui.style());
+    if let Some(size) = style.title_font_size {
+        body.size = size;
+    }
     let subtitle_font = egui::FontId {
         size: style.subtitle_size.unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()).size),
         ..body.clone()
