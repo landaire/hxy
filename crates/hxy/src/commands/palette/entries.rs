@@ -168,7 +168,7 @@ pub fn template_palette_context(app: &mut HxyApp) -> TemplatePaletteContext {
 /// `0` is preserved as the "disable polling" sentinel and
 /// labeled distinctly so the user knows what they're picking.
 fn build_poll_interval_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     query: &str,
     resolver: &dyn hxy_calculator::PathResolver,
 ) {
@@ -228,7 +228,7 @@ pub use super::format_signed_hex;
 /// covers both plain file tabs and workspace-nested editor / entry
 /// sub-tabs) via [`Action::FocusFile`]. Adding the outer-dock entry
 /// for those would duplicate rows.
-fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entry<Action>> {
+fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entry<'static, Action>> {
     use egui_phosphor::regular as icon;
 
     let (title, icon_glyph): (String, &'static str) = match tab {
@@ -278,11 +278,11 @@ pub fn build_palette_entries(
     history_ctx: HistoryPaletteContext,
     template_ctx: &TemplatePaletteContext,
     offset_ctx: &OffsetPaletteContext,
-) -> Vec<egui_palette::Entry<Action>> {
+) -> Vec<egui_palette::Entry<'static, Action>> {
     use egui_phosphor::regular as icon;
 
     let fmt = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
-    let mut out: Vec<egui_palette::Entry<Action>> = Vec::new();
+    let mut out: Vec<egui_palette::Entry<'static, Action>> = Vec::new();
     // Calculator-resolver scoped to the active file's templates.
     // Cheap to construct (just borrows the slice); used by every
     // mode that accepts an expression. When no file is active or

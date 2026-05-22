@@ -118,14 +118,27 @@ impl State {
     }
 }
 
+/// Leading icon for a row. `Glyph` is a string drawn with egui's
+/// text layout (single character or short codepoint sequence like a
+/// phosphor or SF Symbols name). `Image` is anything egui's image
+/// system can render -- a pre-loaded texture, raw bytes with a URI
+/// key, or a registered URI handled by `egui_extras`. `Image`
+/// variants render unmodified (no theme tint) so full-color app
+/// icons retain their colors; tint glyphs by setting
+/// `Style::icon_color`.
+pub enum EntryIcon<'a> {
+    Glyph(Cow<'a, str>),
+    Image(egui::ImageSource<'a>),
+}
+
 /// One selectable row. `data` is returned verbatim in
 /// [`Outcome::Picked`]; the crate doesn't care what it is.
-pub struct Entry<A> {
+pub struct Entry<'a, A> {
     pub title: String,
     pub subtitle: Option<String>,
-    /// Optional leading icon (single glyph / short string). Rendered
-    /// in a fixed-width gutter on the left of the row.
-    pub icon: Option<String>,
+    /// Optional leading icon (glyph or image). Rendered in a fixed-
+    /// width gutter on the left of the row.
+    pub icon: Option<EntryIcon<'a>>,
     /// Optional keyboard-shortcut hint rendered right-aligned in a
     /// muted color (e.g. `cmd-z`, `ctrl-shift-v`). Consumers
     /// typically pass [`egui::Context::format_shortcut`]'s output
@@ -141,7 +154,7 @@ pub struct Entry<A> {
     pub data: A,
 }
 
-impl<A> Entry<A> {
+impl<'a, A> Entry<'a, A> {
     pub fn new(title: impl Into<String>, data: A) -> Self {
         Self { title: title.into(), subtitle: None, icon: None, shortcut: None, disabled: false, data }
     }
@@ -151,9 +164,24 @@ impl<A> Entry<A> {
         self
     }
 
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
+    /// Set a font-glyph icon (single character or short string).
+    pub fn with_icon_glyph(mut self, s: impl Into<Cow<'a, str>>) -> Self {
+        self.icon = Some(EntryIcon::Glyph(s.into()));
         self
+    }
+
+    /// Set an image icon from any source egui understands.
+    pub fn with_icon_image(mut self, src: impl Into<egui::ImageSource<'a>>) -> Self {
+        self.icon = Some(EntryIcon::Image(src.into()));
+        self
+    }
+
+    /// Deprecated shim that calls `with_icon_glyph`. Kept so 0.4
+    /// callers compile during migration.
+    #[deprecated(note = "use with_icon_glyph or with_icon_image")]
+    pub fn with_icon(self, icon: impl Into<String>) -> Self {
+        let s: String = icon.into();
+        self.with_icon_glyph(Cow::Owned(s))
     }
 
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
@@ -426,15 +454,20 @@ impl Style {
 /// `None` on idle frames (still typing, still moving selection,
 /// still rendering); the host should early-return when the palette
 /// isn't visible by checking `state.open`.
-pub fn show<A: Clone>(ctx: &egui::Context, state: &mut State, entries: &[Entry<A>], hint: &str) -> Option<Outcome<A>> {
+pub fn show<'a, A: Clone>(
+    ctx: &egui::Context,
+    state: &mut State,
+    entries: &[Entry<'a, A>],
+    hint: &str,
+) -> Option<Outcome<A>> {
     show_with_style(ctx, state, entries, hint, &Style::default())
 }
 
 /// Variant of [`show`] that takes an explicit [`Style`].
-pub fn show_with_style<A: Clone>(
+pub fn show_with_style<'a, A: Clone>(
     ctx: &egui::Context,
     state: &mut State,
-    entries: &[Entry<A>],
+    entries: &[Entry<'a, A>],
     hint: &str,
     style: &Style,
 ) -> Option<Outcome<A>> {
@@ -446,10 +479,10 @@ pub fn show_with_style<A: Clone>(
 /// the result list, separated by a thin separator. Use this for
 /// action hints, status text, or any per-frame footer content the
 /// host wants to surface.
-pub fn show_with_footer<A: Clone>(
+pub fn show_with_footer<'a, A: Clone>(
     ctx: &egui::Context,
     state: &mut State,
-    entries: &[Entry<A>],
+    entries: &[Entry<'a, A>],
     hint: &str,
     style: &Style,
     footer: &dyn Fn(&mut egui::Ui),
@@ -457,10 +490,10 @@ pub fn show_with_footer<A: Clone>(
     show_with_style_inner(ctx, state, entries, hint, style, Some(footer))
 }
 
-fn show_with_style_inner<A: Clone>(
+fn show_with_style_inner<'a, A: Clone>(
     ctx: &egui::Context,
     state: &mut State,
-    entries: &[Entry<A>],
+    entries: &[Entry<'a, A>],
     hint: &str,
     style: &Style,
     footer: Option<&dyn Fn(&mut egui::Ui)>,
@@ -830,7 +863,7 @@ fn show_with_style_inner<A: Clone>(
 
 fn render_row<A>(
     ui: &mut egui::Ui,
-    entry: &Entry<A>,
+    entry: &Entry<'_, A>,
     selected: bool,
     style: &Style,
     match_indices: &[u32],
@@ -890,14 +923,23 @@ fn render_row<A>(
     let shortcut_reserved = shortcut_galley.as_ref().map(|g| g.size().x + style.subtitle_spacing).unwrap_or(0.0);
     let content_right = inner.right() - shortcut_reserved;
 
-    let title_x = if let Some(icon) = entry.icon.as_deref() {
-        let galley =
-            ui.painter().layout_no_wrap(icon.to_owned(), egui::FontId::proportional(style.icon_size), icon_color);
-        let pos = egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5);
-        ui.painter().galley(pos, galley, icon_color);
-        inner.left() + style.icon_gutter
-    } else {
-        inner.left()
+    // Task 1 paints glyph icons only; image-icon rendering arrives
+    // in Task 2. Until then `Image` reserves the gutter but draws
+    // nothing, so layout stays stable as soon as callers start
+    // supplying image icons.
+    let title_x = match entry.icon.as_ref() {
+        Some(EntryIcon::Glyph(s)) => {
+            let galley = ui.painter().layout_no_wrap(
+                s.as_ref().to_owned(),
+                egui::FontId::proportional(style.icon_size),
+                icon_color,
+            );
+            let pos = egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5);
+            ui.painter().galley(pos, galley, icon_color);
+            inner.left() + style.icon_gutter
+        }
+        Some(EntryIcon::Image(_)) => inner.left() + style.icon_gutter,
+        None => inner.left(),
     };
 
     let title_width_budget = content_right - title_x;
@@ -1060,5 +1102,22 @@ mod outcome_tests {
             Some(Outcome::SubAction { data }) => assert_eq!(data, "payload"),
             _ => panic!("expected SubAction"),
         }
+    }
+
+    #[test]
+    fn entry_supports_glyph_and_image_icons() {
+        let mut e: Entry<&'static str> = Entry::new("title", "data");
+        assert!(e.icon.is_none());
+
+        e = e.with_icon_glyph("X");
+        match e.icon.as_ref().unwrap() {
+            EntryIcon::Glyph(s) => assert_eq!(s.as_ref(), "X"),
+            _ => panic!("expected glyph"),
+        }
+
+        let bytes = egui::load::Bytes::Static(b"fake-png");
+        let src = egui::ImageSource::Bytes { uri: "test://1".into(), bytes };
+        let e2: Entry<&'static str> = Entry::new("t2", "d2").with_icon_image(src);
+        assert!(matches!(e2.icon.as_ref(), Some(EntryIcon::Image(_))));
     }
 }

@@ -37,16 +37,16 @@ pub struct MatchResult {
 /// concatenate, e.g. `title + " " + subtitle`. The scoring / case /
 /// normalisation knobs come straight from the matching nucleo types;
 /// see [`MatcherConfig`], [`CaseMatching`], and [`Normalization`].
-pub fn filter_and_sort<A, F>(
+pub fn filter_and_sort<'a, A, F>(
     query: &str,
-    entries: &[Entry<A>],
+    entries: &[Entry<'a, A>],
     matcher_cfg: &MatcherConfig,
     case: CaseMatching,
     normalization: Normalization,
     haystack_of: F,
 ) -> Vec<MatchResult>
 where
-    F: for<'e> Fn(&'e Entry<A>) -> Cow<'e, str>,
+    F: for<'e> Fn(&'e Entry<'_, A>) -> Cow<'e, str>,
 {
     if query.is_empty() {
         return (0..entries.len()).map(|index| MatchResult { index, match_indices: Vec::new() }).collect();
