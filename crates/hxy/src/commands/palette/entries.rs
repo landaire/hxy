@@ -193,7 +193,7 @@ fn build_poll_interval_entries(
     };
     let entry = if ms == 0 {
         egui_palette::Entry::new(hxy_i18n::t("palette-set-poll-interval-off"), Action::SetPollInterval(0))
-            .with_icon(icon::TIMER)
+            .with_icon_glyph(icon::TIMER)
     } else {
         let min_ms = PollingPrefs::MIN_INTERVAL.as_millis() as u32;
         let max_ms = PollingPrefs::MAX_INTERVAL.as_millis() as u32;
@@ -206,7 +206,7 @@ fn build_poll_interval_entries(
                 &[("ms", &ms.to_string()), ("clamped", &clamped.to_string())],
             )
         };
-        egui_palette::Entry::new(label, Action::SetPollInterval(clamped)).with_icon(icon::TIMER)
+        egui_palette::Entry::new(label, Action::SetPollInterval(clamped)).with_icon_glyph(icon::TIMER)
     };
     out.push(entry);
 }
@@ -268,7 +268,7 @@ fn quick_open_entry_for_tab(app: &HxyApp, tab: Tab) -> Option<egui_palette::Entr
             None => return None,
         },
     };
-    Some(egui_palette::Entry::new(title, Action::FocusTab(tab)).with_icon(icon_glyph))
+    Some(egui_palette::Entry::new(title, Action::FocusTab(tab)).with_icon_glyph(icon_glyph))
 }
 
 pub fn build_palette_entries(
@@ -314,7 +314,7 @@ pub fn build_palette_entries(
             }
             out.push(
                 egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
-                    .with_icon(icon::FILE_PLUS)
+                    .with_icon_glyph(icon::FILE_PLUS)
                     .with_shortcut(fmt(&NEW_FILE)),
             );
             out.push(
@@ -322,14 +322,14 @@ pub fn build_palette_entries(
                     hxy_i18n::t("toolbar-open-file"),
                     Action::InvokeCommand(PaletteCommand::OpenFile),
                 )
-                .with_icon(icon::FOLDER_OPEN),
+                .with_icon_glyph(icon::FOLDER_OPEN),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-open-file-with-options"),
                     Action::InvokeCommand(PaletteCommand::OpenFileWithOptions),
                 )
-                .with_icon(icon::FOLDER_OPEN)
+                .with_icon_glyph(icon::FOLDER_OPEN)
                 .with_subtitle(hxy_i18n::t("palette-open-file-with-options-subtitle")),
             );
             if !app.state.read().app.recent_files.is_empty() {
@@ -338,7 +338,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-open-recent-entry"),
                         Action::SwitchMode(Mode::Recent),
                     )
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                    .with_icon_glyph(icon::CLOCK_COUNTER_CLOCKWISE),
                 );
             }
             // Reopen-last-closed-tab: surfaced only when the in-memory
@@ -351,7 +351,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-reopen-closed-tab"),
                         Action::InvokeCommand(PaletteCommand::ReopenClosedTab),
                     )
-                    .with_icon(icon::ARROW_U_UP_LEFT)
+                    .with_icon_glyph(icon::ARROW_U_UP_LEFT)
                     .with_subtitle(last.display_name.clone())
                     .with_shortcut(fmt(&REOPEN_CLOSED_TAB)),
                 );
@@ -364,7 +364,7 @@ pub fn build_palette_entries(
                 hxy_i18n::t("toolbar-browse-vfs"),
                 Action::InvokeCommand(PaletteCommand::BrowseVfs),
             )
-            .with_icon(icon::TREE_STRUCTURE)
+            .with_icon_glyph(icon::TREE_STRUCTURE)
             .with_disabled(!history_ctx.can_browse_vfs);
             if !history_ctx.can_browse_vfs {
                 browse_vfs = browse_vfs.with_subtitle(hxy_i18n::t("palette-browse-vfs-unavailable"));
@@ -391,7 +391,7 @@ pub fn build_palette_entries(
                     }),
                     Action::InvokeCommand(PaletteCommand::ToggleConsole),
                 )
-                .with_icon(icon::TERMINAL),
+                .with_icon_glyph(icon::TERMINAL),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -402,7 +402,7 @@ pub fn build_palette_entries(
                     }),
                     Action::InvokeCommand(PaletteCommand::ToggleInspector),
                 )
-                .with_icon(icon::EYE),
+                .with_icon_glyph(icon::EYE),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -413,7 +413,7 @@ pub fn build_palette_entries(
                     }),
                     Action::InvokeCommand(PaletteCommand::TogglePlugins),
                 )
-                .with_icon(icon::PUZZLE_PIECE),
+                .with_icon_glyph(icon::PUZZLE_PIECE),
             );
             let settings_visible = app.dock.find_tab(&Tab::Settings).is_some();
             out.push(
@@ -425,7 +425,7 @@ pub fn build_palette_entries(
                     }),
                     Action::InvokeCommand(PaletteCommand::ToggleSettings),
                 )
-                .with_icon(icon::GEAR),
+                .with_icon_glyph(icon::GEAR),
             );
             let memory_visible = app.dock.find_tab(&Tab::Memory).is_some();
             out.push(
@@ -433,7 +433,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t(if memory_visible { "palette-tool-close-memory" } else { "palette-tool-show-memory" }),
                     Action::InvokeCommand(PaletteCommand::ToggleMemory),
                 )
-                .with_icon(icon::CHART_BAR),
+                .with_icon_glyph(icon::CHART_BAR),
             );
             if history_ctx.has_active_file {
                 out.push(
@@ -445,7 +445,7 @@ pub fn build_palette_entries(
                         }),
                         Action::InvokeCommand(PaletteCommand::ToggleEntropy),
                     )
-                    .with_icon(icon::CHART_LINE),
+                    .with_icon_glyph(icon::CHART_LINE),
                 );
             }
 
@@ -466,7 +466,7 @@ pub fn build_palette_entries(
                         }),
                         Action::InvokeCommand(PaletteCommand::ToggleVisualizer),
                     )
-                    .with_icon(icon::SHAPES),
+                    .with_icon_glyph(icon::SHAPES),
                 );
             }
 
@@ -481,7 +481,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-strings-whole-file"),
                         Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
                     )
-                    .with_icon(icon::TEXT_T)
+                    .with_icon_glyph(icon::TEXT_T)
                     .with_subtitle(hxy_i18n::t("palette-strings-whole-file-subtitle")),
                 );
                 if let Some(sel) = template_ctx.selection {
@@ -494,7 +494,7 @@ pub fn build_palette_entries(
                             hxy_i18n::t("palette-strings-selection"),
                             Action::InvokeCommand(PaletteCommand::FindStringsSelection),
                         )
-                        .with_icon(icon::TEXT_T)
+                        .with_icon_glyph(icon::TEXT_T)
                         .with_subtitle(subtitle),
                     );
                 }
@@ -503,7 +503,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-strings-with-options"),
                         Action::InvokeCommand(PaletteCommand::FindStringsWithOptions),
                     )
-                    .with_icon(icon::TEXT_T)
+                    .with_icon_glyph(icon::TEXT_T)
                     .with_subtitle(hxy_i18n::t("palette-strings-with-options-subtitle")),
                 );
             }
@@ -516,7 +516,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-checksums-whole-file"),
                         Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
                     )
-                    .with_icon(icon::FINGERPRINT)
+                    .with_icon_glyph(icon::FINGERPRINT)
                     .with_subtitle(hxy_i18n::t("palette-checksums-whole-file-subtitle")),
                 );
                 if let Some(sel) = template_ctx.selection {
@@ -529,7 +529,7 @@ pub fn build_palette_entries(
                             hxy_i18n::t("palette-checksums-selection"),
                             Action::InvokeCommand(PaletteCommand::CalculateChecksumsSelection),
                         )
-                        .with_icon(icon::FINGERPRINT)
+                        .with_icon_glyph(icon::FINGERPRINT)
                         .with_subtitle(subtitle),
                     );
                 }
@@ -561,7 +561,7 @@ pub fn build_palette_entries(
                         }),
                         Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs),
                     )
-                    .with_icon(icon::TREE_STRUCTURE),
+                    .with_icon_glyph(icon::TREE_STRUCTURE),
                 );
             }
 
@@ -578,7 +578,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-close-tool-pane"),
                         Action::InvokeCommand(PaletteCommand::CloseToolPane),
                     )
-                    .with_icon(icon::SQUARES_FOUR),
+                    .with_icon_glyph(icon::SQUARES_FOUR),
                 );
             }
             out.push(
@@ -586,7 +586,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-run-template-entry"),
                     Action::SwitchMode(Mode::Templates),
                 )
-                .with_icon(icon::SCROLL),
+                .with_icon_glyph(icon::SCROLL),
             );
             if let Some(sel) = template_ctx.selection {
                 let subtitle = hxy_i18n::t_args(
@@ -598,7 +598,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-run-template-at-selection-entry"),
                         Action::SwitchMode(Mode::TemplatesAtSelection),
                     )
-                    .with_icon(icon::SCROLL)
+                    .with_icon_glyph(icon::SCROLL)
                     .with_subtitle(subtitle),
                 );
             }
@@ -607,7 +607,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-uninstall-template"),
                     Action::SwitchMode(Mode::Uninstall),
                 )
-                .with_icon(icon::TRASH),
+                .with_icon_glyph(icon::TRASH),
             );
             out.push(
                 egui_palette::Entry::new(
@@ -615,7 +615,7 @@ pub fn build_palette_entries(
                     Action::SwitchMode(Mode::UninstallPlugin),
                 )
                 .with_subtitle(hxy_i18n::t("palette-delete-plugin-subtitle"))
-                .with_icon(icon::TRASH),
+                .with_icon_glyph(icon::TRASH),
             );
             if history_ctx.has_active_file {
                 out.push(
@@ -624,7 +624,7 @@ pub fn build_palette_entries(
                         Action::SwitchMode(Mode::GoToOffset),
                     )
                     .with_subtitle(hxy_i18n::t("palette-go-to-offset-shortcut-hint"))
-                    .with_icon(icon::CROSSHAIR),
+                    .with_icon_glyph(icon::CROSSHAIR),
                 );
                 if offset_ctx.virtual_base.is_some() {
                     out.push(
@@ -633,7 +633,7 @@ pub fn build_palette_entries(
                             Action::SwitchMode(Mode::GoToAddress),
                         )
                         .with_subtitle(hxy_i18n::t("palette-go-to-address-shortcut-hint"))
-                        .with_icon(icon::CROSSHAIR),
+                        .with_icon_glyph(icon::CROSSHAIR),
                     );
                 }
                 out.push(
@@ -641,21 +641,21 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-select-from-offset-entry"),
                         Action::SwitchMode(Mode::SelectFromOffset),
                     )
-                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+                    .with_icon_glyph(icon::ARROWS_OUT_LINE_HORIZONTAL),
                 );
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t("palette-select-range-entry"),
                         Action::SwitchMode(Mode::SelectRange),
                     )
-                    .with_icon(icon::BRACKETS_CURLY),
+                    .with_icon_glyph(icon::BRACKETS_CURLY),
                 );
                 out.push(
                     egui_palette::Entry::new(
                         hxy_i18n::t("palette-set-columns-local-entry"),
                         Action::SwitchMode(Mode::SetColumnsLocal),
                     )
-                    .with_icon(icon::COLUMNS),
+                    .with_icon_glyph(icon::COLUMNS),
                 );
                 let vbase_label = match offset_ctx.virtual_base {
                     Some(addr) => hxy_i18n::t_args(
@@ -666,21 +666,21 @@ pub fn build_palette_entries(
                 };
                 out.push(
                     egui_palette::Entry::new(vbase_label, Action::SwitchMode(Mode::SetVirtualBase))
-                        .with_icon(icon::TARGET),
+                        .with_icon_glyph(icon::TARGET),
                 );
                 let has_fields = history_ctx.template.is_some_and(|t| t.field_count > 0);
                 let mut next_field = egui_palette::Entry::new(
                     hxy_i18n::t("palette-jump-next-field"),
                     Action::InvokeCommand(PaletteCommand::JumpNextField),
                 )
-                .with_icon(icon::ARROW_RIGHT)
+                .with_icon_glyph(icon::ARROW_RIGHT)
                 .with_shortcut(fmt(&crate::commands::shortcuts::JUMP_NEXT_FIELD))
                 .with_disabled(!has_fields);
                 let mut prev_field = egui_palette::Entry::new(
                     hxy_i18n::t("palette-jump-prev-field"),
                     Action::InvokeCommand(PaletteCommand::JumpPrevField),
                 )
-                .with_icon(icon::ARROW_LEFT)
+                .with_icon_glyph(icon::ARROW_LEFT)
                 .with_shortcut(fmt(&crate::commands::shortcuts::JUMP_PREV_FIELD))
                 .with_disabled(!has_fields);
                 if !has_fields {
@@ -695,14 +695,14 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-set-columns-global-entry"),
                     Action::SwitchMode(Mode::SetColumnsGlobal),
                 )
-                .with_icon(icon::COLUMNS_PLUS_RIGHT),
+                .with_icon_glyph(icon::COLUMNS_PLUS_RIGHT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-set-poll-interval-entry"),
                     Action::SwitchMode(Mode::SetPollInterval),
                 )
-                .with_icon(icon::TIMER)
+                .with_icon_glyph(icon::TIMER)
                 .with_subtitle(hxy_i18n::t_args(
                     "palette-set-poll-interval-current",
                     &[("ms", &app.state.read().app.file_poll_interval_ms.to_string())],
@@ -714,7 +714,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("menu-edit-undo"),
                         Action::InvokeCommand(PaletteCommand::Undo),
                     )
-                    .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
+                    .with_icon_glyph(icon::ARROW_COUNTER_CLOCKWISE)
                     .with_shortcut(fmt(&UNDO)),
                 );
             }
@@ -724,7 +724,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("menu-edit-redo"),
                         Action::InvokeCommand(PaletteCommand::Redo),
                     )
-                    .with_icon(icon::ARROW_CLOCKWISE)
+                    .with_icon_glyph(icon::ARROW_CLOCKWISE)
                     .with_shortcut(fmt(&REDO)),
                 );
             }
@@ -740,14 +740,14 @@ pub fn build_palette_entries(
                         Action::InvokeCommand(PaletteCommand::ToggleEditMode),
                     )
                     .with_subtitle(hxy_i18n::t(result_key))
-                    .with_icon(toggle_icon)
+                    .with_icon_glyph(toggle_icon)
                     .with_shortcut(fmt(&TOGGLE_EDIT_MODE)),
                 );
                 let mut reload_entry = egui_palette::Entry::new(
                     hxy_i18n::t("palette-reload-file"),
                     Action::InvokeCommand(PaletteCommand::ReloadActiveFile),
                 )
-                .with_icon(icon::ARROWS_CLOCKWISE)
+                .with_icon_glyph(icon::ARROWS_CLOCKWISE)
                 .with_subtitle(hxy_i18n::t("palette-reload-file-subtitle"))
                 .with_disabled(!history_ctx.has_disk_source);
                 if !history_ctx.has_disk_source {
@@ -760,7 +760,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-take-snapshot"),
                         Action::InvokeCommand(PaletteCommand::TakeSnapshot),
                     )
-                    .with_icon(icon::CAMERA)
+                    .with_icon_glyph(icon::CAMERA)
                     .with_subtitle(hxy_i18n::t("palette-take-snapshot-subtitle")),
                 );
                 out.push(
@@ -768,7 +768,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-open-snapshots"),
                         Action::InvokeCommand(PaletteCommand::OpenSnapshots),
                     )
-                    .with_icon(icon::IMAGES)
+                    .with_icon_glyph(icon::IMAGES)
                     .with_subtitle(hxy_i18n::t("palette-open-snapshots-subtitle")),
                 );
 
@@ -783,7 +783,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-watch-always"),
                         Action::InvokeCommand(PaletteCommand::WatchAlways),
                     )
-                    .with_icon(icon::EYE)
+                    .with_icon_glyph(icon::EYE)
                     .with_subtitle(active_subtitle(
                         crate::settings::AutoReloadMode::Always.label_key(),
                         mark_for(crate::settings::AutoReloadMode::Always),
@@ -794,7 +794,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-watch-ask"),
                         Action::InvokeCommand(PaletteCommand::WatchAsk),
                     )
-                    .with_icon(icon::EYE)
+                    .with_icon_glyph(icon::EYE)
                     .with_subtitle(active_subtitle(
                         crate::settings::AutoReloadMode::Ask.label_key(),
                         mark_for(crate::settings::AutoReloadMode::Ask),
@@ -805,7 +805,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-watch-never"),
                         Action::InvokeCommand(PaletteCommand::WatchNever),
                     )
-                    .with_icon(icon::EYE_SLASH)
+                    .with_icon_glyph(icon::EYE_SLASH)
                     .with_subtitle(active_subtitle(
                         crate::settings::AutoReloadMode::Never.label_key(),
                         mark_for(crate::settings::AutoReloadMode::Never),
@@ -816,7 +816,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-compute-entropy"),
                         Action::InvokeCommand(PaletteCommand::ComputeEntropy),
                     )
-                    .with_icon(icon::CHART_LINE)
+                    .with_icon_glyph(icon::CHART_LINE)
                     .with_subtitle(hxy_i18n::t("palette-compute-entropy-subtitle")),
                 );
                 // The "show entropy panel" use case is now
@@ -831,7 +831,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("menu-edit-paste"),
                         Action::InvokeCommand(PaletteCommand::Paste),
                     )
-                    .with_icon(icon::CLIPBOARD_TEXT)
+                    .with_icon_glyph(icon::CLIPBOARD_TEXT)
                     .with_shortcut(fmt(&PASTE)),
                 );
                 out.push(
@@ -839,7 +839,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("menu-edit-paste-as-hex"),
                         Action::InvokeCommand(PaletteCommand::PasteAsHex),
                     )
-                    .with_icon(icon::CLIPBOARD_TEXT)
+                    .with_icon_glyph(icon::CLIPBOARD_TEXT)
                     .with_shortcut(fmt(&PASTE_AS_HEX)),
                 );
             }
@@ -854,7 +854,7 @@ pub fn build_palette_entries(
                             hxy_i18n::t("palette-copy-caret-offset"),
                             Action::InvokeCommand(PaletteCommand::CopyCaretOffset),
                         )
-                        .with_icon(icon::COPY)
+                        .with_icon_glyph(icon::COPY)
                         .with_subtitle(caret_preview),
                     );
                     if let Some(vbase) = offset_ctx.virtual_base {
@@ -865,7 +865,7 @@ pub fn build_palette_entries(
                                 hxy_i18n::t("palette-copy-caret-address"),
                                 Action::InvokeCommand(PaletteCommand::CopyCaretAddress),
                             )
-                            .with_icon(icon::COPY)
+                            .with_icon_glyph(icon::COPY)
                             .with_subtitle(caret_address_preview),
                         );
                     }
@@ -882,7 +882,7 @@ pub fn build_palette_entries(
                                 hxy_i18n::t("palette-copy-selection-range"),
                                 Action::InvokeCommand(PaletteCommand::CopySelectionRange),
                             )
-                            .with_icon(icon::COPY)
+                            .with_icon_glyph(icon::COPY)
                             .with_subtitle(range_preview),
                         );
                         if let Some(vbase) = offset_ctx.virtual_base {
@@ -897,7 +897,7 @@ pub fn build_palette_entries(
                                     hxy_i18n::t("palette-copy-selection-range-address"),
                                     Action::InvokeCommand(PaletteCommand::CopySelectionRangeAddress),
                                 )
-                                .with_icon(icon::COPY)
+                                .with_icon_glyph(icon::COPY)
                                 .with_subtitle(range_address_preview),
                             );
                         }
@@ -906,7 +906,7 @@ pub fn build_palette_entries(
                                 hxy_i18n::t("palette-copy-selection-length"),
                                 Action::InvokeCommand(PaletteCommand::CopySelectionLength),
                             )
-                            .with_icon(icon::COPY)
+                            .with_icon_glyph(icon::COPY)
                             .with_subtitle(len_preview),
                         );
                     }
@@ -916,7 +916,7 @@ pub fn build_palette_entries(
                         hxy_i18n::t("palette-copy-file-length"),
                         Action::InvokeCommand(PaletteCommand::CopyFileLength),
                     )
-                    .with_icon(icon::COPY)
+                    .with_icon_glyph(icon::COPY)
                     .with_subtitle(crate::view::format::format_offset(offset_ctx.source_len, base)),
                 );
             }
@@ -925,7 +925,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-compare-files"),
                     Action::InvokeCommand(PaletteCommand::CompareFiles),
                 )
-                .with_icon(icon::COLUMNS)
+                .with_icon_glyph(icon::COLUMNS)
                 .with_subtitle(hxy_i18n::t("palette-compare-files-subtitle")),
             );
             out.push(
@@ -933,7 +933,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-compare-files-dialog"),
                     Action::InvokeCommand(PaletteCommand::CompareFilesDialog),
                 )
-                .with_icon(icon::COLUMNS)
+                .with_icon_glyph(icon::COLUMNS)
                 .with_subtitle(hxy_i18n::t("palette-compare-files-dialog-subtitle")),
             );
             out.push(
@@ -941,91 +941,91 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-split-right"),
                     Action::InvokeCommand(PaletteCommand::SplitRight),
                 )
-                .with_icon(icon::ARROW_SQUARE_RIGHT),
+                .with_icon_glyph(icon::ARROW_SQUARE_RIGHT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-split-left"),
                     Action::InvokeCommand(PaletteCommand::SplitLeft),
                 )
-                .with_icon(icon::ARROW_SQUARE_LEFT),
+                .with_icon_glyph(icon::ARROW_SQUARE_LEFT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-split-down"),
                     Action::InvokeCommand(PaletteCommand::SplitDown),
                 )
-                .with_icon(icon::ARROW_SQUARE_DOWN),
+                .with_icon_glyph(icon::ARROW_SQUARE_DOWN),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-split-up"),
                     Action::InvokeCommand(PaletteCommand::SplitUp),
                 )
-                .with_icon(icon::ARROW_SQUARE_UP),
+                .with_icon_glyph(icon::ARROW_SQUARE_UP),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-merge-right"),
                     Action::InvokeCommand(PaletteCommand::MergeRight),
                 )
-                .with_icon(icon::ARROW_LINE_RIGHT),
+                .with_icon_glyph(icon::ARROW_LINE_RIGHT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-merge-left"),
                     Action::InvokeCommand(PaletteCommand::MergeLeft),
                 )
-                .with_icon(icon::ARROW_LINE_LEFT),
+                .with_icon_glyph(icon::ARROW_LINE_LEFT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-merge-down"),
                     Action::InvokeCommand(PaletteCommand::MergeDown),
                 )
-                .with_icon(icon::ARROW_LINE_DOWN),
+                .with_icon_glyph(icon::ARROW_LINE_DOWN),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-merge-up"),
                     Action::InvokeCommand(PaletteCommand::MergeUp),
                 )
-                .with_icon(icon::ARROW_LINE_UP),
+                .with_icon_glyph(icon::ARROW_LINE_UP),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-move-tab-right"),
                     Action::InvokeCommand(PaletteCommand::MoveTabRight),
                 )
-                .with_icon(icon::ARROW_FAT_RIGHT),
+                .with_icon_glyph(icon::ARROW_FAT_RIGHT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-move-tab-left"),
                     Action::InvokeCommand(PaletteCommand::MoveTabLeft),
                 )
-                .with_icon(icon::ARROW_FAT_LEFT),
+                .with_icon_glyph(icon::ARROW_FAT_LEFT),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-move-tab-down"),
                     Action::InvokeCommand(PaletteCommand::MoveTabDown),
                 )
-                .with_icon(icon::ARROW_FAT_DOWN),
+                .with_icon_glyph(icon::ARROW_FAT_DOWN),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-move-tab-up"),
                     Action::InvokeCommand(PaletteCommand::MoveTabUp),
                 )
-                .with_icon(icon::ARROW_FAT_UP),
+                .with_icon_glyph(icon::ARROW_FAT_UP),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-move-tab-visual"),
                     Action::InvokeCommand(PaletteCommand::MoveTabVisual),
                 )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_icon_glyph(icon::CROSSHAIR_SIMPLE)
                 .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
             );
             out.push(
@@ -1033,7 +1033,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-merge-visual"),
                     Action::InvokeCommand(PaletteCommand::MergeVisual),
                 )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_icon_glyph(icon::CROSSHAIR_SIMPLE)
                 .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle")),
             );
             out.push(
@@ -1041,7 +1041,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-focus-pane"),
                     Action::InvokeCommand(PaletteCommand::FocusPane),
                 )
-                .with_icon(icon::CROSSHAIR_SIMPLE)
+                .with_icon_glyph(icon::CROSSHAIR_SIMPLE)
                 .with_subtitle(hxy_i18n::t("palette-pane-pick-subtitle"))
                 .with_shortcut(fmt(&FOCUS_PANE)),
             );
@@ -1051,7 +1051,7 @@ pub fn build_palette_entries(
                     hxy_i18n::t("palette-toggle-vim"),
                     Action::InvokeCommand(PaletteCommand::ToggleVim),
                 )
-                .with_icon(icon::KEYBOARD)
+                .with_icon_glyph(icon::KEYBOARD)
                 .with_subtitle(hxy_i18n::t(if vim_active {
                     "palette-toggle-vim-subtitle-on"
                 } else {
@@ -1061,7 +1061,7 @@ pub fn build_palette_entries(
             if let Some(copy) = copy_ctx {
                 for (label, kind) in crate::files::copy::BYTES_MENU {
                     let mut entry = egui_palette::Entry::new(format!("Copy bytes: {label}"), Action::Copy(*kind))
-                        .with_icon(icon::COPY);
+                        .with_icon_glyph(icon::COPY);
                     if matches!(kind, CopyKind::BytesLossyUtf8) {
                         entry = entry.with_shortcut(fmt(&COPY_BYTES));
                     } else if matches!(kind, CopyKind::BytesHexSpaced) {
@@ -1073,7 +1073,7 @@ pub fn build_palette_entries(
                     for (label, kind) in crate::files::copy::VALUE_MENU {
                         out.push(
                             egui_palette::Entry::new(format!("Copy value: {label}"), Action::Copy(*kind))
-                                .with_icon(icon::COPY),
+                                .with_icon_glyph(icon::COPY),
                         );
                     }
                 }
@@ -1088,7 +1088,7 @@ pub fn build_palette_entries(
                     if let Some(s) = cmd.subtitle {
                         entry = entry.with_subtitle(s);
                     }
-                    entry = entry.with_icon(cmd.icon.unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
+                    entry = entry.with_icon_glyph(cmd.icon.unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
                     out.push(entry);
                 }
             }
@@ -1096,7 +1096,7 @@ pub fn build_palette_entries(
         Mode::QuickOpen => {
             for (id, file) in &app.files {
                 let mut entry =
-                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon(icon::FILE);
+                    egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id)).with_icon_glyph(icon::FILE);
                 if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1119,7 +1119,7 @@ pub fn build_palette_entries(
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| recent.path.display().to_string());
                 let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                    .with_icon_glyph(icon::CLOCK_COUNTER_CLOCKWISE);
                 if let Some(parent) = recent.path.parent() {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1135,20 +1135,20 @@ pub fn build_palette_entries(
                         Action::RunTemplate { path: entry.path.clone(), range: None },
                     )
                     .with_subtitle(entry.path.display().to_string())
-                    .with_icon(icon::SCROLL),
+                    .with_icon_glyph(icon::SCROLL),
                 );
             }
             out.push(
                 egui_palette::Entry::new(hxy_i18n::t("palette-install-template"), Action::InstallTemplate)
                     .with_subtitle(hxy_i18n::t("palette-install-template-subtitle"))
-                    .with_icon(icon::DOWNLOAD),
+                    .with_icon_glyph(icon::DOWNLOAD),
             );
             out.push(
                 egui_palette::Entry::new(
                     hxy_i18n::t("palette-uninstall-template"),
                     Action::SwitchMode(Mode::Uninstall),
                 )
-                .with_icon(icon::TRASH),
+                .with_icon_glyph(icon::TRASH),
             );
         }
         Mode::TemplatesAtSelection => {
@@ -1166,7 +1166,7 @@ pub fn build_palette_entries(
                         Action::RunTemplate { path: entry.path.clone(), range: Some(sel) },
                     )
                     .with_subtitle(entry.path.display().to_string())
-                    .with_icon(icon::SCROLL),
+                    .with_icon_glyph(icon::SCROLL),
                 );
             }
         }
@@ -1183,7 +1183,7 @@ pub fn build_palette_entries(
                             Action::UninstallTemplate(path.clone()),
                         )
                         .with_subtitle(path.display().to_string())
-                        .with_icon(icon::TRASH),
+                        .with_icon_glyph(icon::TRASH),
                     );
                 }
             }
@@ -1208,7 +1208,7 @@ pub fn build_palette_entries(
                             Action::UninstallPlugin(path.clone()),
                         )
                         .with_subtitle(path.display().to_string())
-                        .with_icon(icon::TRASH),
+                        .with_icon_glyph(icon::TRASH),
                     );
                 }
             }
@@ -1226,7 +1226,7 @@ pub fn build_palette_entries(
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| recent.path.display().to_string());
                 let mut entry = egui_palette::Entry::new(name, Action::OpenRecent(recent.path.clone()))
-                    .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                    .with_icon_glyph(icon::CLOCK_COUNTER_CLOCKWISE);
                 if let Some(parent) = recent.path.parent() {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1258,7 +1258,7 @@ pub fn build_palette_entries(
                 }
                 let mut entry =
                     egui_palette::Entry::new(file.display_name.clone(), Action::CompareSelectSource { side, source })
-                        .with_icon(icon::FILE);
+                        .with_icon_glyph(icon::FILE);
                 if let Some(parent) = file.root_path().and_then(|p| p.parent()) {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1271,12 +1271,12 @@ pub fn build_palette_entries(
             if !app.state.read().app.recent_files.is_empty() {
                 out.push(
                     egui_palette::Entry::new(hxy_i18n::t("palette-open-recent-entry"), Action::SwitchMode(recent_mode))
-                        .with_icon(icon::CLOCK_COUNTER_CLOCKWISE),
+                        .with_icon_glyph(icon::CLOCK_COUNTER_CLOCKWISE),
                 );
             }
             out.push(
                 egui_palette::Entry::new(hxy_i18n::t("compare-picker-browse"), Action::CompareBrowse(side))
-                    .with_icon(icon::FOLDER_OPEN),
+                    .with_icon_glyph(icon::FOLDER_OPEN),
             );
         }
         Mode::CompareSideARecent | Mode::CompareSideBRecent => {
@@ -1310,7 +1310,7 @@ pub fn build_palette_entries(
                     name,
                     Action::CompareSelectSource { side, source: TabSource::Filesystem(recent.path.clone()) },
                 )
-                .with_icon(icon::CLOCK_COUNTER_CLOCKWISE);
+                .with_icon_glyph(icon::CLOCK_COUNTER_CLOCKWISE);
                 if let Some(parent) = recent.path.parent() {
                     entry = entry.with_subtitle(parent.display().to_string());
                 }
@@ -1356,7 +1356,7 @@ pub fn build_palette_entries(
                     if let Some(s) = cmd.subtitle.clone() {
                         entry = entry.with_subtitle(s);
                     }
-                    entry = entry.with_icon(cmd.icon.clone().unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
+                    entry = entry.with_icon_glyph(cmd.icon.clone().unwrap_or_else(|| icon::PUZZLE_PIECE.to_string()));
                     out.push(entry);
                 }
             }
@@ -1373,7 +1373,7 @@ pub fn build_palette_entries(
                         answer,
                     },
                 )
-                .with_icon(icon::ARROW_BEND_DOWN_LEFT);
+                .with_icon_glyph(icon::ARROW_BEND_DOWN_LEFT);
                 entry = entry.with_subtitle(prompt.title.clone());
                 out.push(entry);
             }

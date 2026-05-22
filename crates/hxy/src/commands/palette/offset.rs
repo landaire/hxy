@@ -108,7 +108,7 @@ pub fn copy_formatted_offset(ctx: &egui::Context, app: &mut HxyApp, kind: Offset
 }
 
 pub fn build_offset_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     mode: Mode,
     query: &str,
     offset_ctx: &OffsetPaletteContext,
@@ -129,7 +129,7 @@ pub fn build_offset_entries(
                         hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
                         Action::GoToOffset(target),
                     )
-                    .with_icon(icon::CROSSHAIR)
+                    .with_icon_glyph(icon::CROSSHAIR)
                     .with_subtitle(format!("{target}")),
                 );
             }
@@ -167,7 +167,7 @@ pub fn build_offset_entries(
                             ),
                             Action::GoToOffset(file_offset),
                         )
-                        .with_icon(icon::CROSSHAIR)
+                        .with_icon_glyph(icon::CROSSHAIR)
                         .with_subtitle(hxy_i18n::t_args(
                             "palette-go-to-address-subtitle",
                             &[("offset", &format!("0x{file_offset:X}"))],
@@ -196,7 +196,7 @@ pub fn build_offset_entries(
                         ),
                         Action::SetSelection { start, end_exclusive },
                     )
-                    .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL)
+                    .with_icon_glyph(icon::ARROWS_OUT_LINE_HORIZONTAL)
                     .with_subtitle(format!("0x{start:X} .. 0x{end_exclusive:X}")),
                 );
             }
@@ -216,7 +216,7 @@ pub fn build_offset_entries(
                         ),
                         Action::SetSelection { start: range.start, end_exclusive: range.end_exclusive },
                     )
-                    .with_icon(icon::BRACKETS_CURLY),
+                    .with_icon_glyph(icon::BRACKETS_CURLY),
                 );
             }
             Err(e) => super::invalid_entry(out, query, &e.to_string()),

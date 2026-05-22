@@ -996,7 +996,7 @@ async fn open_handle_as_source_wasm(handle: rfd::FileHandle) -> Option<Arc<dyn h
 fn build_wasm_palette_entries(
     ctx: &egui::Context,
     app: &HxyApp,
-) -> Vec<egui_palette::Entry<crate::commands::palette::Action>> {
+) -> Vec<egui_palette::Entry<'static, crate::commands::palette::Action>> {
     use crate::commands::palette::Action;
     use crate::commands::palette::Mode;
     use crate::commands::palette::PaletteCommand;
@@ -1048,7 +1048,7 @@ fn build_wasm_palette_entries(
         for (id, file) in app.files.iter() {
             out.push(
                 egui_palette::Entry::new(file.display_name.clone(), Action::FocusFile(*id))
-                    .with_icon(egui_phosphor::regular::FILE),
+                    .with_icon_glyph(egui_phosphor::regular::FILE),
             );
         }
         return out;
@@ -1118,7 +1118,7 @@ fn build_wasm_palette_entries(
         .and_then(|f| f.editor.selection())
         .is_some_and(|s| !s.range().is_empty());
     let active_vbase = app.last_active_file.and_then(|id| app.files.get(&id)).and_then(|f| f.virtual_base);
-    let mut out: Vec<egui_palette::Entry<Action>> = vec![
+    let mut out: Vec<egui_palette::Entry<'static, Action>> = vec![
         egui_palette::Entry::new(hxy_i18n::t("menu-file-new"), Action::InvokeCommand(PaletteCommand::NewFile))
             .with_shortcut(fmt(&cmd_n)),
         egui_palette::Entry::new(hxy_i18n::t("toolbar-open-file"), Action::InvokeCommand(PaletteCommand::OpenFile)),
@@ -1126,7 +1126,7 @@ fn build_wasm_palette_entries(
             hxy_i18n::t("palette-save-as-download"),
             Action::InvokeCommand(PaletteCommand::SaveAsDownload),
         )
-        .with_icon(icon::DOWNLOAD)
+        .with_icon_glyph(icon::DOWNLOAD)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("menu-file-reopen-closed"),
@@ -1162,47 +1162,47 @@ fn build_wasm_palette_entries(
             hxy_i18n::t("palette-strings-whole-file"),
             Action::InvokeCommand(PaletteCommand::FindStringsWholeFile),
         )
-        .with_icon(icon::TEXT_AA)
+        .with_icon_glyph(icon::TEXT_AA)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-checksums-whole-file"),
             Action::InvokeCommand(PaletteCommand::CalculateChecksumsWholeFile),
         )
-        .with_icon(icon::FINGERPRINT)
+        .with_icon_glyph(icon::FINGERPRINT)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-compute-entropy"),
             Action::InvokeCommand(PaletteCommand::ComputeEntropy),
         )
-        .with_icon(icon::CHART_LINE)
+        .with_icon_glyph(icon::CHART_LINE)
         .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-tool-show-inspector"),
             Action::InvokeCommand(PaletteCommand::ToggleInspector),
         )
-        .with_icon(icon::MAGNIFYING_GLASS),
+        .with_icon_glyph(icon::MAGNIFYING_GLASS),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-tool-show-memory"),
             Action::InvokeCommand(PaletteCommand::ToggleMemory),
         )
-        .with_icon(icon::MEMORY),
+        .with_icon_glyph(icon::MEMORY),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-tool-show-console"),
             Action::InvokeCommand(PaletteCommand::ToggleConsole),
         )
-        .with_icon(icon::TERMINAL_WINDOW),
+        .with_icon_glyph(icon::TERMINAL_WINDOW),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-tool-show-settings"),
             Action::InvokeCommand(PaletteCommand::ToggleSettings),
         )
-        .with_icon(icon::GEAR),
+        .with_icon_glyph(icon::GEAR),
         egui_palette::Entry::new(hxy_i18n::t("palette-toggle-vim"), Action::InvokeCommand(PaletteCommand::ToggleVim))
-            .with_icon(icon::KEYBOARD),
+            .with_icon_glyph(icon::KEYBOARD),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-compare-files"),
             Action::InvokeCommand(PaletteCommand::CompareFiles),
         )
-        .with_icon(icon::ARROWS_LEFT_RIGHT)
+        .with_icon_glyph(icon::ARROWS_LEFT_RIGHT)
         .with_disabled(app.files.len() < 2),
     ]);
     // Editing: undo/redo and paste variants. Wired through the
@@ -1214,22 +1214,22 @@ fn build_wasm_palette_entries(
     out.extend([
         egui_palette::Entry::new(hxy_i18n::t("palette-undo"), Action::InvokeCommand(PaletteCommand::Undo))
             .with_shortcut(fmt(&UNDO))
-            .with_icon(icon::ARROW_COUNTER_CLOCKWISE)
+            .with_icon_glyph(icon::ARROW_COUNTER_CLOCKWISE)
             .with_disabled(!has_active),
         egui_palette::Entry::new(hxy_i18n::t("palette-redo"), Action::InvokeCommand(PaletteCommand::Redo))
             .with_shortcut(fmt(&REDO))
-            .with_icon(icon::ARROW_CLOCKWISE)
+            .with_icon_glyph(icon::ARROW_CLOCKWISE)
             .with_disabled(!has_active),
         egui_palette::Entry::new(hxy_i18n::t("palette-paste"), Action::InvokeCommand(PaletteCommand::Paste))
             .with_shortcut(fmt(&PASTE))
-            .with_icon(icon::CLIPBOARD)
+            .with_icon_glyph(icon::CLIPBOARD)
             .with_disabled(!has_active),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-paste-as-hex"),
             Action::InvokeCommand(PaletteCommand::PasteAsHex),
         )
         .with_shortcut(fmt(&PASTE_AS_HEX))
-        .with_icon(icon::CLIPBOARD_TEXT)
+        .with_icon_glyph(icon::CLIPBOARD_TEXT)
         .with_disabled(!has_active),
     ]);
     // Selection-scoped strings / checksums (in addition to whole-
@@ -1240,12 +1240,12 @@ fn build_wasm_palette_entries(
                 hxy_i18n::t("palette-strings-selection"),
                 Action::InvokeCommand(PaletteCommand::FindStringsSelection),
             )
-            .with_icon(icon::TEXT_AA),
+            .with_icon_glyph(icon::TEXT_AA),
             egui_palette::Entry::new(
                 hxy_i18n::t("palette-checksums-selection"),
                 Action::InvokeCommand(PaletteCommand::CalculateChecksumsSelection),
             )
-            .with_icon(icon::FINGERPRINT),
+            .with_icon_glyph(icon::FINGERPRINT),
         ]);
     }
     // BrowseVfs / ToggleWorkspaceVfs -- only shown when meaningful.
@@ -1257,7 +1257,7 @@ fn build_wasm_palette_entries(
                 hxy_i18n::t("palette-browse-vfs"),
                 Action::InvokeCommand(PaletteCommand::BrowseVfs),
             )
-            .with_icon(icon::TREE_STRUCTURE),
+            .with_icon_glyph(icon::TREE_STRUCTURE),
         );
     }
     if !app.workspaces.is_empty() {
@@ -1266,13 +1266,13 @@ fn build_wasm_palette_entries(
                 hxy_i18n::t("palette-toggle-workspace-vfs"),
                 Action::InvokeCommand(PaletteCommand::ToggleWorkspaceVfs),
             )
-            .with_icon(icon::TREE_STRUCTURE),
+            .with_icon_glyph(icon::TREE_STRUCTURE),
         );
     }
     if has_active {
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-entry"), Action::SwitchMode(Mode::GoToOffset))
-                .with_icon(icon::CROSSHAIR),
+                .with_icon_glyph(icon::CROSSHAIR),
         );
         if active_vbase.is_some() {
             out.push(
@@ -1280,7 +1280,7 @@ fn build_wasm_palette_entries(
                     hxy_i18n::t("palette-go-to-address-entry"),
                     Action::SwitchMode(Mode::GoToAddress),
                 )
-                .with_icon(icon::CROSSHAIR_SIMPLE),
+                .with_icon_glyph(icon::CROSSHAIR_SIMPLE),
             );
         }
         out.push(
@@ -1288,25 +1288,25 @@ fn build_wasm_palette_entries(
                 hxy_i18n::t("palette-select-from-offset-entry"),
                 Action::SwitchMode(Mode::SelectFromOffset),
             )
-            .with_icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+            .with_icon_glyph(icon::ARROWS_OUT_LINE_HORIZONTAL),
         );
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-select-range-entry"), Action::SwitchMode(Mode::SelectRange))
-                .with_icon(icon::BRACKETS_CURLY),
+                .with_icon_glyph(icon::BRACKETS_CURLY),
         );
         out.push(
             egui_palette::Entry::new(
                 hxy_i18n::t("palette-set-columns-local-entry"),
                 Action::SwitchMode(Mode::SetColumnsLocal),
             )
-            .with_icon(icon::COLUMNS),
+            .with_icon_glyph(icon::COLUMNS),
         );
         out.push(
             egui_palette::Entry::new(
                 hxy_i18n::t("palette-copy-file-length"),
                 Action::InvokeCommand(PaletteCommand::CopyFileLength),
             )
-            .with_icon(icon::RULER),
+            .with_icon_glyph(icon::RULER),
         );
         if has_selection {
             out.push(
@@ -1314,7 +1314,7 @@ fn build_wasm_palette_entries(
                     hxy_i18n::t("palette-copy-selection-length"),
                     Action::InvokeCommand(PaletteCommand::CopySelectionLength),
                 )
-                .with_icon(icon::RULER),
+                .with_icon_glyph(icon::RULER),
             );
         }
     }
@@ -1323,7 +1323,7 @@ fn build_wasm_palette_entries(
             hxy_i18n::t("palette-set-columns-global-entry"),
             Action::SwitchMode(Mode::SetColumnsGlobal),
         )
-        .with_icon(icon::COLUMNS_PLUS_RIGHT),
+        .with_icon_glyph(icon::COLUMNS_PLUS_RIGHT),
     );
     let vbase_label = match active_vbase {
         Some(addr) => {
@@ -1333,62 +1333,62 @@ fn build_wasm_palette_entries(
     };
     out.push(
         egui_palette::Entry::new(vbase_label, Action::SwitchMode(Mode::SetVirtualBase))
-            .with_icon(icon::TARGET)
+            .with_icon_glyph(icon::TARGET)
             .with_disabled(!has_active),
     );
     // Dock pane management -- universal dock_ops module powers all of
     // these on both targets.
     out.extend([
         egui_palette::Entry::new(hxy_i18n::t("palette-split-right"), Action::InvokeCommand(PaletteCommand::SplitRight))
-            .with_icon(icon::ARROW_LINE_RIGHT),
+            .with_icon_glyph(icon::ARROW_LINE_RIGHT),
         egui_palette::Entry::new(hxy_i18n::t("palette-split-left"), Action::InvokeCommand(PaletteCommand::SplitLeft))
-            .with_icon(icon::ARROW_LINE_LEFT),
+            .with_icon_glyph(icon::ARROW_LINE_LEFT),
         egui_palette::Entry::new(hxy_i18n::t("palette-split-up"), Action::InvokeCommand(PaletteCommand::SplitUp))
-            .with_icon(icon::ARROW_LINE_UP),
+            .with_icon_glyph(icon::ARROW_LINE_UP),
         egui_palette::Entry::new(hxy_i18n::t("palette-split-down"), Action::InvokeCommand(PaletteCommand::SplitDown))
-            .with_icon(icon::ARROW_LINE_DOWN),
+            .with_icon_glyph(icon::ARROW_LINE_DOWN),
         egui_palette::Entry::new(hxy_i18n::t("palette-merge-right"), Action::InvokeCommand(PaletteCommand::MergeRight))
-            .with_icon(icon::ARROW_BEND_DOWN_RIGHT),
+            .with_icon_glyph(icon::ARROW_BEND_DOWN_RIGHT),
         egui_palette::Entry::new(hxy_i18n::t("palette-merge-left"), Action::InvokeCommand(PaletteCommand::MergeLeft))
-            .with_icon(icon::ARROW_BEND_DOWN_LEFT),
+            .with_icon_glyph(icon::ARROW_BEND_DOWN_LEFT),
         egui_palette::Entry::new(hxy_i18n::t("palette-merge-up"), Action::InvokeCommand(PaletteCommand::MergeUp))
-            .with_icon(icon::ARROW_BEND_UP_RIGHT),
+            .with_icon_glyph(icon::ARROW_BEND_UP_RIGHT),
         egui_palette::Entry::new(hxy_i18n::t("palette-merge-down"), Action::InvokeCommand(PaletteCommand::MergeDown))
-            .with_icon(icon::ARROW_BEND_UP_RIGHT),
+            .with_icon_glyph(icon::ARROW_BEND_UP_RIGHT),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-move-tab-right"),
             Action::InvokeCommand(PaletteCommand::MoveTabRight),
         )
-        .with_icon(icon::ARROW_RIGHT),
+        .with_icon_glyph(icon::ARROW_RIGHT),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-move-tab-left"),
             Action::InvokeCommand(PaletteCommand::MoveTabLeft),
         )
-        .with_icon(icon::ARROW_LEFT),
+        .with_icon_glyph(icon::ARROW_LEFT),
         egui_palette::Entry::new(hxy_i18n::t("palette-move-tab-up"), Action::InvokeCommand(PaletteCommand::MoveTabUp))
-            .with_icon(icon::ARROW_UP),
+            .with_icon_glyph(icon::ARROW_UP),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-move-tab-down"),
             Action::InvokeCommand(PaletteCommand::MoveTabDown),
         )
-        .with_icon(icon::ARROW_DOWN),
+        .with_icon_glyph(icon::ARROW_DOWN),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-move-tab-visual"),
             Action::InvokeCommand(PaletteCommand::MoveTabVisual),
         )
-        .with_icon(icon::ARROWS_OUT_CARDINAL),
+        .with_icon_glyph(icon::ARROWS_OUT_CARDINAL),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-merge-visual"),
             Action::InvokeCommand(PaletteCommand::MergeVisual),
         )
-        .with_icon(icon::ARROWS_IN_CARDINAL),
+        .with_icon_glyph(icon::ARROWS_IN_CARDINAL),
         egui_palette::Entry::new(hxy_i18n::t("palette-focus-pane"), Action::InvokeCommand(PaletteCommand::FocusPane))
-            .with_icon(icon::CROSSHAIR),
+            .with_icon_glyph(icon::CROSSHAIR),
         egui_palette::Entry::new(
             hxy_i18n::t("palette-close-tool-pane"),
             Action::InvokeCommand(PaletteCommand::CloseToolPane),
         )
-        .with_icon(icon::X_SQUARE),
+        .with_icon_glyph(icon::X_SQUARE),
     ]);
     out
 }

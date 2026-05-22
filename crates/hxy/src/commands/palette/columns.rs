@@ -12,7 +12,7 @@ use crate::commands::palette::Mode;
 pub const PALETTE_MAX_COLUMNS: u16 = 64;
 
 pub fn build_columns_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     mode: Mode,
     query: &str,
     resolver: &dyn hxy_calculator::PathResolver,
@@ -61,6 +61,6 @@ pub fn build_columns_entries(
             hxy_i18n::t_args(key, &[("count", &n_u16.to_string())]),
             Action::SetColumns { scope, count },
         )
-        .with_icon(scope_icon),
+        .with_icon_glyph(scope_icon),
     );
 }

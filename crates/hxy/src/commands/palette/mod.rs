@@ -621,7 +621,7 @@ pub enum CompareSide {
 pub fn show(
     ctx: &egui::Context,
     state: &mut PaletteState,
-    entries: Vec<egui_palette::Entry<Action>>,
+    entries: Vec<egui_palette::Entry<'static, Action>>,
 ) -> Option<Outcome> {
     let hint: String = match state.mode {
         Mode::Main => hxy_i18n::t("palette-hint-main"),
@@ -716,7 +716,7 @@ pub enum Outcome {
 /// argument-parsing path is the same on desktop and wasm — keeping it
 /// here avoids ungating a whole new submodule just for one builder.
 pub fn build_virtual_base_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     query: &str,
     resolver: &dyn hxy_calculator::PathResolver,
 ) {
@@ -726,7 +726,7 @@ pub fn build_virtual_base_entries(
     if trimmed.is_empty() {
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-set-virtual-base-clear"), Action::SetVirtualBase(None))
-                .with_icon(icon::ERASER),
+                .with_icon_glyph(icon::ERASER),
         );
         return;
     }
@@ -744,14 +744,14 @@ pub fn build_virtual_base_entries(
     };
     let entry = match payload {
         Some(_) => egui_palette::Entry::new(label, Action::SetVirtualBase(payload))
-            .with_icon(icon::TARGET)
+            .with_icon_glyph(icon::TARGET)
             .with_subtitle(format!("{parsed}")),
-        None => egui_palette::Entry::new(label, Action::SetVirtualBase(None)).with_icon(icon::ERASER),
+        None => egui_palette::Entry::new(label, Action::SetVirtualBase(None)).with_icon_glyph(icon::ERASER),
     };
     out.push(entry);
 }
 
-fn invalid_virtual_base_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
+fn invalid_virtual_base_entry(out: &mut Vec<egui_palette::Entry<'static, Action>>, query: &str, reason: &str) {
     invalid_entry(out, query, reason)
 }
 
@@ -761,10 +761,10 @@ fn invalid_virtual_base_entry(out: &mut Vec<egui_palette::Entry<Action>>, query:
 /// palette cleanly. Universal across targets so the lightweight
 /// argument-mode submodules don't have to reach into desktop-only
 /// `entries::invalid_entry`.
-pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, reason: &str) {
+pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<'static, Action>>, query: &str, reason: &str) {
     out.push(
         egui_palette::Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), Action::NoOp)
-            .with_icon(egui_phosphor::regular::WARNING)
+            .with_icon_glyph(egui_phosphor::regular::WARNING)
             .with_subtitle(query.to_owned()),
     );
 }
@@ -781,7 +781,7 @@ pub fn invalid_entry(out: &mut Vec<egui_palette::Entry<Action>>, query: &str, re
 /// in a template-aware resolver while wasm uses
 /// [`hxy_calculator::NullResolver`].
 pub fn build_calculator_entry(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     expr: &str,
     offset_ctx: &offset::OffsetPaletteContext,
     resolver: &dyn hxy_calculator::PathResolver,
@@ -792,7 +792,7 @@ pub fn build_calculator_entry(
     if trimmed.is_empty() {
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-go-to-offset-prompt"), Action::NoOp)
-                .with_icon(icon::CALCULATOR),
+                .with_icon_glyph(icon::CALCULATOR),
         );
         return;
     }
@@ -832,7 +832,7 @@ pub fn build_calculator_entry(
             hxy_i18n::t_args("palette-go-to-offset-fmt", &[("offset", &format!("0x{target:X}"))]),
             Action::GoToOffset(target),
         )
-        .with_icon(icon::CALCULATOR)
+        .with_icon_glyph(icon::CALCULATOR)
         .with_subtitle(format!("{trimmed} = {raw}")),
     );
 }
@@ -841,7 +841,7 @@ pub fn build_calculator_entry(
 /// Emits decimal and hex rows so the user can pick the format that
 /// matches whatever they're pasting into. Universal across targets.
 pub fn build_calculator_copy_entries(
-    out: &mut Vec<egui_palette::Entry<Action>>,
+    out: &mut Vec<egui_palette::Entry<'static, Action>>,
     expr: &str,
     resolver: &dyn hxy_calculator::PathResolver,
 ) {
@@ -851,7 +851,7 @@ pub fn build_calculator_copy_entries(
     if trimmed.is_empty() {
         out.push(
             egui_palette::Entry::new(hxy_i18n::t("palette-copy-result-prompt"), Action::NoOp)
-                .with_icon(icon::CALCULATOR),
+                .with_icon_glyph(icon::CALCULATOR),
         );
         return;
     }
@@ -870,12 +870,12 @@ pub fn build_calculator_copy_entries(
             hxy_i18n::t_args("palette-copy-decimal-fmt", &[("value", &decimal)]),
             Action::CopyText(decimal.clone()),
         )
-        .with_icon(icon::COPY)
+        .with_icon_glyph(icon::COPY)
         .with_subtitle(hex.clone()),
     );
     out.push(
         egui_palette::Entry::new(hxy_i18n::t_args("palette-copy-hex-fmt", &[("value", &hex)]), Action::CopyText(hex))
-            .with_icon(icon::COPY)
+            .with_icon_glyph(icon::COPY)
             .with_subtitle(decimal),
     );
 }
