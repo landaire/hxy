@@ -38,6 +38,7 @@ use std::borrow::Cow;
 use egui::Color32;
 use egui::Pos2;
 use egui::Stroke;
+use egui::Widget;
 
 pub mod fuzzy;
 
@@ -923,11 +924,8 @@ fn render_row<A>(
     let shortcut_reserved = shortcut_galley.as_ref().map(|g| g.size().x + style.subtitle_spacing).unwrap_or(0.0);
     let content_right = inner.right() - shortcut_reserved;
 
-    // Task 1 paints glyph icons only; image-icon rendering arrives
-    // in Task 2. Until then `Image` reserves the gutter but draws
-    // nothing, so layout stays stable as soon as callers start
-    // supplying image icons.
     let title_x = match entry.icon.as_ref() {
+        None => inner.left(),
         Some(EntryIcon::Glyph(s)) => {
             let galley = ui.painter().layout_no_wrap(
                 s.as_ref().to_owned(),
@@ -938,8 +936,21 @@ fn render_row<A>(
             ui.painter().galley(pos, galley, icon_color);
             inner.left() + style.icon_gutter
         }
-        Some(EntryIcon::Image(_)) => inner.left() + style.icon_gutter,
-        None => inner.left(),
+        Some(EntryIcon::Image(src)) => {
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(inner.left() + style.icon_size * 0.5, inner.center().y),
+                egui::vec2(style.icon_size, style.icon_size),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(icon_rect)
+                    .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
+            );
+            egui::Image::new(src.clone())
+                .fit_to_exact_size(egui::vec2(style.icon_size, style.icon_size))
+                .ui(&mut child);
+            inner.left() + style.icon_gutter
+        }
     };
 
     let title_width_budget = content_right - title_x;
@@ -1119,5 +1130,24 @@ mod outcome_tests {
         let src = egui::ImageSource::Bytes { uri: "test://1".into(), bytes };
         let e2: Entry<&'static str> = Entry::new("t2", "d2").with_icon_image(src);
         assert!(matches!(e2.icon.as_ref(), Some(EntryIcon::Image(_))));
+    }
+
+    #[test]
+    fn render_row_handles_all_icon_variants() {
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        state.open();
+        let entries: Vec<Entry<'static, &'static str>> = vec![
+            Entry::new("no-icon", "a"),
+            Entry::new("glyph", "b").with_icon_glyph("X"),
+            Entry::new("image", "c").with_icon_image(egui::ImageSource::Bytes {
+                uri: "test://img".into(),
+                bytes: egui::load::Bytes::Static(b"fake"),
+            }),
+        ];
+        let raw = egui::RawInput::default();
+        let _ = ctx.run_ui(raw, |ui| {
+            let _ = show_with_style(ui.ctx(), &mut state, &entries, "", &Style::default());
+        });
     }
 }
