@@ -85,6 +85,11 @@ To build or verify:
   through hxy-editor's input layer, so vim behavior is identical in both
   apps by construction.
 - All UI strings go through hxy_i18n::t / t_args (existing rule).
+- Theming: follow the system dark/light preference at startup and on
+  runtime changes, matching the egui app's behavior. Default theme choice
+  mirrors the egui app (its default dark and light looks map to the
+  closest gpui-component built-in theme pair); everything else stays
+  idiomatic gpui-component.
 - Visualizers: gpui-component charts replace egui_plot; bitmap, digram,
   image, and sound visualizers use GPUI canvas/paint primitives.
 
