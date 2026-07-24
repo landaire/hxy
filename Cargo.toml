@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/hxy-core",
     "crates/hxy-i18n",
+    "crates/hxy-editor",
     "crates/hxy-view",
     "crates/hxy-vfs",
     "crates/hxy",
@@ -31,6 +32,7 @@ repository = "https://github.com/landaire/hxy"
 # Internal crates -- versioned in lockstep with the workspace.
 hxy-core = { path = "crates/hxy-core", version = "0.5.0" }
 hxy-i18n = { path = "crates/hxy-i18n", version = "0.5.0" }
+hxy-editor = { path = "crates/hxy-editor", version = "0.5.0" }
 hxy-view = { path = "crates/hxy-view", version = "0.5.0" }
 hxy-vfs = { path = "crates/hxy-vfs", version = "0.5.0" }
 hxy-plugin-host = { path = "crates/hxy-plugin-host", version = "0.5.0" }

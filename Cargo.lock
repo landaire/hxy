@@ -3085,6 +3085,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hxy-editor"
+version = "0.3.0"
+dependencies = [
+ "hxy-core",
+ "serde",
+ "suture",
+ "thiserror 2.0.18",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "hxy-i18n"
 version = "0.5.0"
 dependencies = [
