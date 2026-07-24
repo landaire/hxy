@@ -111,10 +111,13 @@ fn vim_insert_escape_swallows_batch_and_pops_mode() {
 #[test]
 fn empty_batch_still_runs_frame_bookkeeping() {
     let mut ed = editor(&[0x00, 0x11]);
-    // Simulate an external cursor move (mouse click), then an empty
-    // input frame: the nibble cursor must reset to high.
+    // Simulate an external cursor move (mouse click) through the view
+    // seam -- writing the selection directly, without going through
+    // `set_selection`, so the nibble reset is left entirely to the
+    // frame-begin bookkeeping in `apply`. An empty input frame must
+    // then reset the nibble cursor to high.
     feed_all(&mut ed, &[key(Key::Letter('a'))]); // half-typed byte, nibble now low
-    ed.set_selection(Some(Selection::caret(ByteOffset::new(1))));
+    *ed.view_parts().selection = Some(Selection::caret(ByteOffset::new(1)));
     feed_all(&mut ed, &[]);
     // Typing one digit now must hit the HIGH nibble of byte 1.
     feed_all(&mut ed, &[key(Key::Letter('c'))]);
