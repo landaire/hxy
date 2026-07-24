@@ -3164,6 +3164,7 @@ dependencies = [
  "egui_kittest",
  "egui_minimap",
  "hxy-core",
+ "hxy-editor",
  "serde",
  "suture",
  "thiserror 2.0.20",

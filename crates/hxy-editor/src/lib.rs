@@ -640,3 +640,76 @@ impl HexEditor {
         offset.get() >= range.start().get() && offset.get() < range.end().get()
     }
 }
+
+#[cfg(all(test, feature = "editor"))]
+mod typing_tests {
+    use super::*;
+    use hxy_core::MemorySource;
+
+    fn ed_with(bytes: &[u8], cursor: u64) -> HexEditor {
+        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes.to_vec()));
+        let mut ed = HexEditor::new(source);
+        ed.set_active_pane(Pane::Ascii);
+        ed.selection = Some(Selection::caret(ByteOffset::new(cursor)));
+        ed
+    }
+
+    fn read_all_bytes(ed: &HexEditor) -> Vec<u8> {
+        let len = ed.source.len().get();
+        if len == 0 {
+            return Vec::new();
+        }
+        let r = ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)).unwrap();
+        ed.source.read(r).unwrap()
+    }
+
+    #[test]
+    fn replace_typing_overwrites_in_place() {
+        let mut ed = ed_with(b"abcde", 1);
+        ed.set_typing_mode(TypingMode::Replace);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"aXcde");
+    }
+
+    #[test]
+    fn replace_typing_grows_past_eof() {
+        let mut ed = ed_with(b"abc", 3);
+        ed.set_typing_mode(TypingMode::Replace);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"abcX");
+    }
+
+    #[test]
+    fn insert_typing_splices_in_bounds() {
+        let mut ed = ed_with(b"abcde", 1);
+        ed.set_typing_mode(TypingMode::Insert);
+        ed.type_ascii_byte(b'X').unwrap();
+        assert_eq!(read_all_bytes(&ed), b"aXbcde");
+    }
+
+    #[test]
+    fn backspace_byte_deletes_before_cursor() {
+        let mut ed = ed_with(b"abcde", 3);
+        ed.backspace_byte().unwrap();
+        assert_eq!(read_all_bytes(&ed), b"abde");
+        assert_eq!(ed.selection.unwrap().cursor.get(), 2);
+    }
+
+    #[test]
+    fn backspace_byte_at_zero_is_noop() {
+        let mut ed = ed_with(b"abc", 0);
+        let removed = ed.backspace_byte().unwrap();
+        assert!(!removed);
+        assert_eq!(read_all_bytes(&ed), b"abc");
+    }
+
+    #[test]
+    fn insert_hex_first_nibble_grows_then_low_nibble_fills() {
+        let mut ed = ed_with(&[0xAA, 0xBB, 0xCC], 1);
+        ed.set_typing_mode(TypingMode::Insert);
+        ed.type_hex_digit(0x3).unwrap();
+        assert_eq!(read_all_bytes(&ed), &[0xAA, 0x30, 0xBB, 0xCC]);
+        ed.type_hex_digit(0xC).unwrap();
+        assert_eq!(read_all_bytes(&ed), &[0xAA, 0x3C, 0xBB, 0xCC]);
+    }
+}
