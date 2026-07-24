@@ -1,6 +1,8 @@
 //! Render the per-tab hex view body: hooks up the editor, value
 //! palette, template field tinting, and patched-byte highlight.
 
+use hxy_view::HexEditorExt;
+
 use crate::files::OpenFile;
 use crate::files::copy::CopyKind;
 use crate::state::PersistedState;

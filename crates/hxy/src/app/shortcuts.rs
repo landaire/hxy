@@ -2,6 +2,8 @@
 //! exactly the egui input events it owns and routes the action to
 //! the appropriate subsystem (file save, paste, copy, search, ...).
 
+use hxy_view::HexEditorExt;
+
 use crate::app::HxyApp;
 use crate::commands::shortcuts::COPY_HEX;
 use crate::files::copy::CopyKind;

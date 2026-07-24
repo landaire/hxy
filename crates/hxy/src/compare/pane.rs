@@ -1,6 +1,8 @@
 //! Compare pane: one side's hex view rendering plus the
 //! diff-color overlay machinery.
 
+use hxy_view::HexEditorExt;
+
 use crate::state::PersistedState;
 
 /// Sorted-by-start `(start, end_exclusive, kind)` ranges for one

@@ -67,7 +67,7 @@ fn ascii_pane_text_event_types_byte() {
 
 #[test]
 fn command_modifier_passes_through() {
-    let mut ed = editor(&[0x00]);
+    let ed = editor(&[0x00]);
     let mut filter = ed.input_filter();
     let ev = InputEvent::Key {
         key: Key::Letter('a'),

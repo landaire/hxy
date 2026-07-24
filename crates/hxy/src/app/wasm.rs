@@ -11,6 +11,7 @@ use hxy_vfs::MountedVfs;
 use hxy_vfs::TabSource;
 use hxy_vfs::VfsRegistry;
 use hxy_vfs::handlers::ZipHandler;
+use hxy_view::HexEditorExt;
 
 use super::ConsoleEntry;
 use super::HashMap;
