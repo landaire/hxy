@@ -5,3 +5,9 @@
 #![forbid(unsafe_code)]
 
 pub mod events;
+
+pub use events::Disposition;
+pub use events::Effect;
+pub use events::InputEvent;
+pub use events::Key;
+pub use events::Modifiers;
