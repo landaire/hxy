@@ -4,10 +4,8 @@
 //! against a [`HexEditor`] and returns any [`Effect`]s the adapter
 //! must execute.
 //!
-//! This is the model-side half of the old egui `input::dispatch` /
-//! `vim::dispatch` functions: the per-event decision tables live in
-//! [`InputFilter::feed`], the once-per-frame bookkeeping and press
-//! application live in [`apply`].
+//! The per-event decision tables live in [`InputFilter::feed`]; the
+//! once-per-frame bookkeeping and press application live in [`apply`].
 
 use crate::HexEditor;
 use crate::Pane;
@@ -42,7 +40,7 @@ pub struct InputFilter {
     vim_mode: VimMode,
     /// Running pending state, seeded from the editor's `vim.pending`.
     /// Mutated as find-char / text-object sequences resolve within a
-    /// single frame, mirroring the old retain closure's `local_pending`.
+    /// single frame.
     local_pending: Option<Pending>,
     active_pane: Pane,
     mutable: bool,

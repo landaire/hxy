@@ -25,6 +25,7 @@ pub use hxy_editor::NibbleCursor;
 pub use hxy_editor::Pane;
 pub use hxy_editor::VimMode;
 pub use hxy_editor::VimState;
+pub use hxy_editor::{FindDir, Pending, RegisterOrigin};
 #[cfg(feature = "editor")]
 pub use hxy_editor::{EditEntry, EditMode, TypingMode, WriteError};
 

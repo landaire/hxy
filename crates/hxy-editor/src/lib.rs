@@ -4,7 +4,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod events;
+mod events;
 
 #[cfg(feature = "editor")]
 mod editor;
@@ -608,9 +608,8 @@ impl HexEditor {
         let pending_scroll = self.pending_scroll.take();
         let pending_scroll_to_byte = self.pending_scroll_to_byte.take();
         #[cfg(feature = "editor")]
-        let nibble = (self.edit.mode == EditMode::Mutable).then(|| {
-            if self.edit.edit_high_nibble { NibbleCursor::High } else { NibbleCursor::Low }
-        });
+        let nibble = (self.edit.mode == EditMode::Mutable)
+            .then_some(if self.edit.edit_high_nibble { NibbleCursor::High } else { NibbleCursor::Low });
         #[cfg(not(feature = "editor"))]
         let nibble: Option<NibbleCursor> = None;
         ViewParts {
