@@ -54,15 +54,20 @@ pub struct State {
     /// (Backspace deletes the selected suggestion, or the cursor
     /// moves off the end without typing). Stays set until the
     /// user types another char at the end of `query`. While set,
-    /// `show` ignores the `completion_suggestion` the host
+    /// the widget ignores the `completion_suggestion` the host
     /// staged so the user's next Backspace eats from their typed
     /// prefix instead of being intercepted by a re-rendered
-    /// ghost.
-    pub completion_dismissed: bool,
-    /// Snapshot of `query` from the previous frame. When the
-    /// palette detects `query != last_query` it snaps `selected`
-    /// back to the top (best match), matching VS Code / Zed UX.
-    pub last_query: String,
+    /// ghost. Private: the widget drives this latch only through
+    /// [`Self::completion_dismissed`], [`Self::dismiss_completion`],
+    /// and [`Self::rearm_completion`] so a host can't desync it from
+    /// the frame it was computed for.
+    completion_dismissed: bool,
+    /// Snapshot of `query` from the previous frame, used by
+    /// [`Self::query_changed_since_last_frame`] to detect edits and
+    /// snap `selected` back to the top (best match), matching VS
+    /// Code / Zed UX. Private: only that method may advance the
+    /// snapshot, keeping it in sync with the comparison it guards.
+    last_query: String,
 }
 
 impl State {
@@ -84,6 +89,43 @@ impl State {
         self.open = false;
         self.bypass_filter = false;
         self.completion_suggestion = None;
+        self.completion_dismissed = false;
+    }
+
+    /// Returns `true` if `query` differs from the snapshot taken on
+    /// the last call to this method, and advances the snapshot to
+    /// match. Call once per frame before deriving frame-local state
+    /// (e.g. resetting `selected`) from the comparison.
+    pub fn query_changed_since_last_frame(&mut self) -> bool {
+        if self.query != self.last_query {
+            // Reuse the `last_query` buffer instead of allocating a
+            // fresh String every time the query changes; the typical
+            // edit tacks on or deletes a handful of bytes, so the
+            // existing capacity will fit.
+            self.last_query.clone_from(&self.query);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the inline completion ghost is currently latched
+    /// dismissed (see the field docs on the latch above).
+    pub fn completion_dismissed(&self) -> bool {
+        self.completion_dismissed
+    }
+
+    /// Latch the completion-ghost dismissal: the widget stops
+    /// re-staging a suggestion until [`Self::rearm_completion`] is
+    /// called.
+    pub fn dismiss_completion(&mut self) {
+        self.completion_dismissed = true;
+    }
+
+    /// Clear the completion-ghost dismissal latch, e.g. once the
+    /// user resumes typing at the end of the query and a fresh
+    /// suggestion becomes eligible again.
+    pub fn rearm_completion(&mut self) {
         self.completion_dismissed = false;
     }
 }
