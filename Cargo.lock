@@ -1686,7 +1686,7 @@ name = "egui-palette"
 version = "0.7.0"
 dependencies = [
  "egui",
- "nucleo-matcher",
+ "palette-core",
 ]
 
 [[package]]
@@ -4794,6 +4794,13 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "palette-core"
+version = "0.3.0"
+dependencies = [
+ "nucleo-matcher",
 ]
 
 [[package]]

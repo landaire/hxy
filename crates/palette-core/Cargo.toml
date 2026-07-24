@@ -1,0 +1,13 @@
+[package]
+name = "palette-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Framework-agnostic command palette state and fuzzy filtering"
+publish = false
+
+[dependencies]
+nucleo-matcher = "0.3.1"

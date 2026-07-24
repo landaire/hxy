@@ -13,6 +13,7 @@ members = [
     "crates/hxy-imhex-lang",
     "crates/hxy-calculator",
     "crates/egui-palette",
+    "crates/palette-core",
     "crates/egui_minimap",
     "crates/egui_dock_picker",
 ]
@@ -40,6 +41,7 @@ hxy-010-lang = { path = "crates/hxy-010-lang", version = "0.5.0" }
 hxy-imhex-lang = { path = "crates/hxy-imhex-lang", version = "0.5.0" }
 hxy-calculator = { path = "crates/hxy-calculator", version = "0.5.0" }
 egui-palette = { path = "crates/egui-palette", version = "0.7.0" }
+palette-core = { path = "crates/palette-core", version = "0.5.0" }
 egui_minimap = { path = "crates/egui_minimap", version = "0.5.0" }
 egui_dock_picker = { path = "crates/egui_dock_picker", version = "0.5.0" }
 
