@@ -54,6 +54,15 @@ pub enum Pane {
     Ascii,
 }
 
+/// Which half of the byte under the cursor the next typed hex digit
+/// lands on. `None` from [`HexEditor::view_parts`] means no nibble
+/// cursor should render (readonly editor or editor feature off).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NibbleCursor {
+    High,
+    Low,
+}
+
 /// Borrowed view state a UI adapter needs to render one frame.
 /// Produced by [`HexEditor::view_parts`]. `selection` is mutable so
 /// the renderer can update the caret from click / drag interaction;
@@ -63,10 +72,11 @@ pub struct ViewParts<'e> {
     pub source: &'e std::sync::Arc<dyn HexSource>,
     pub selection: &'e mut Option<Selection>,
     pub active_pane: Pane,
-    /// `Some(true)` when the next hex-digit keystroke overwrites the
-    /// high nibble, `Some(false)` for the low nibble. `None` when the
-    /// editor feature is off or the editor is read-only.
-    pub nibble_high: Option<bool>,
+    /// [`NibbleCursor::High`] when the next hex-digit keystroke
+    /// overwrites the high nibble, [`NibbleCursor::Low`] for the low
+    /// nibble. `None` when the editor feature is off or the editor is
+    /// read-only.
+    pub nibble: Option<NibbleCursor>,
     pub pending_scroll: Option<f32>,
     pub pending_scroll_to_byte: Option<ByteOffset>,
 }
@@ -598,14 +608,16 @@ impl HexEditor {
         let pending_scroll = self.pending_scroll.take();
         let pending_scroll_to_byte = self.pending_scroll_to_byte.take();
         #[cfg(feature = "editor")]
-        let nibble_high = (self.edit.mode == EditMode::Mutable).then_some(self.edit.edit_high_nibble);
+        let nibble = (self.edit.mode == EditMode::Mutable).then(|| {
+            if self.edit.edit_high_nibble { NibbleCursor::High } else { NibbleCursor::Low }
+        });
         #[cfg(not(feature = "editor"))]
-        let nibble_high: Option<bool> = None;
+        let nibble: Option<NibbleCursor> = None;
         ViewParts {
             source: &self.source,
             selection: &mut self.selection,
             active_pane: self.active_pane,
-            nibble_high,
+            nibble,
             pending_scroll,
             pending_scroll_to_byte,
         }

@@ -21,6 +21,7 @@ pub use hxy_editor::InputEvent;
 pub use hxy_editor::InputMode;
 pub use hxy_editor::Key;
 pub use hxy_editor::Modifiers;
+pub use hxy_editor::NibbleCursor;
 pub use hxy_editor::Pane;
 pub use hxy_editor::VimMode;
 pub use hxy_editor::VimState;
@@ -28,10 +29,10 @@ pub use hxy_editor::VimState;
 pub use hxy_editor::{EditEntry, EditMode, TypingMode, WriteError};
 
 /// Egui-side conveniences for [`HexEditor`]: build the per-frame
-/// [`HexView`], drain egui input, and latch the frame response.
-/// Import this trait to keep the pre-split call sites
-/// (`editor.view()`, `editor.handle_input(ctx)`,
-/// `editor.on_response(..)`) compiling unchanged.
+/// [`HexView`] (`view`), drain egui input into the editor
+/// (`handle_input`), and latch the frame's response geometry back into
+/// the editor (`on_response`). Import this trait to call those three
+/// methods on a [`HexEditor`].
 pub trait HexEditorExt {
     fn view(&mut self) -> HexView<'_, dyn HexSource>;
     fn handle_input(&mut self, ctx: &egui::Context);
@@ -41,7 +42,10 @@ pub trait HexEditorExt {
 impl HexEditorExt for HexEditor {
     fn view(&mut self) -> HexView<'_, dyn HexSource> {
         let parts = self.view_parts();
-        let nibble = parts.nibble_high.map(|h| if h { NibbleSide::High } else { NibbleSide::Low });
+        let nibble = parts.nibble.map(|c| match c {
+            NibbleCursor::High => NibbleSide::High,
+            NibbleCursor::Low => NibbleSide::Low,
+        });
         let mut view = HexView::new(parts.source.as_ref(), parts.selection)
             .active_pane(Some(parts.active_pane))
             .nibble_cursor(nibble);
