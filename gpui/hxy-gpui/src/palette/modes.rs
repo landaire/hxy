@@ -103,7 +103,10 @@ pub enum PaletteAction {
     /// Move the caret to an absolute offset (relative inputs are
     /// resolved against the cursor before the action is built).
     GoToOffset(u64),
-    SetSelection { start: u64, end_exclusive: u64 },
+    SetSelection {
+        start: u64,
+        end_exclusive: u64,
+    },
     SetColumns(ColumnCount),
     /// Copy a literal string (the `=<expr>` calculator rows).
     CopyText(String),
@@ -181,7 +184,9 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     }
     out.push(open);
 
-    out.push(Entry::new(hxy_i18n::t("gpui-palette-close-tab"), PaletteAction::CloseTab).with_disabled(!ctx.has_active_file));
+    out.push(
+        Entry::new(hxy_i18n::t("gpui-palette-close-tab"), PaletteAction::CloseTab).with_disabled(!ctx.has_active_file),
+    );
 
     let mut toggle_vim = Entry::new(hxy_i18n::t("palette-toggle-vim"), PaletteAction::ToggleVim).with_subtitle(
         hxy_i18n::t(if ctx.vim_on { "palette-toggle-vim-subtitle-on" } else { "palette-toggle-vim-subtitle-off" }),
@@ -191,8 +196,7 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     }
     out.push(toggle_vim);
 
-    let mut toggle_inspector =
-        Entry::new(hxy_i18n::t("gpui-palette-toggle-inspector"), PaletteAction::ToggleInspector);
+    let mut toggle_inspector = Entry::new(hxy_i18n::t("gpui-palette-toggle-inspector"), PaletteAction::ToggleInspector);
     if let Some(hint) = &shortcuts.toggle_inspector {
         toggle_inspector = toggle_inspector.with_shortcut(hint.clone());
     }
@@ -219,11 +223,11 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     );
 
     let has_selection = ctx.selection.is_some();
-    for (key, format) in [
-        ("gpui-palette-copy-selection-hex", CopyFormat::Hex),
-        ("gpui-palette-copy-selection-bytes", CopyFormat::Bytes),
-    ] {
-        let mut entry = Entry::new(hxy_i18n::t(key), PaletteAction::CopySelection(format)).with_disabled(!has_selection);
+    for (key, format) in
+        [("gpui-palette-copy-selection-hex", CopyFormat::Hex), ("gpui-palette-copy-selection-bytes", CopyFormat::Bytes)]
+    {
+        let mut entry =
+            Entry::new(hxy_i18n::t(key), PaletteAction::CopySelection(format)).with_disabled(!has_selection);
         if !has_selection {
             entry = entry.with_subtitle(hxy_i18n::t("gpui-palette-copy-selection-none"));
         }
@@ -427,10 +431,10 @@ mod tests {
         // Every row enabled when a file is active (copy needs a
         // selection, so those two are the exception).
         let disabled: Vec<_> = entries.iter().filter(|e| e.disabled).map(|e| e.data.clone()).collect();
-        assert_eq!(disabled, vec![
-            PaletteAction::CopySelection(CopyFormat::Hex),
-            PaletteAction::CopySelection(CopyFormat::Bytes),
-        ]);
+        assert_eq!(
+            disabled,
+            vec![PaletteAction::CopySelection(CopyFormat::Hex), PaletteAction::CopySelection(CopyFormat::Bytes),]
+        );
     }
 
     #[test]
@@ -528,10 +532,10 @@ mod tests {
     #[test]
     fn calculator_equals_builds_decimal_and_hex_copy_rows() {
         let entries = build_entries(PaletteMode::Main, "=2+2", active_ctx(), &Shortcuts::default());
-        assert_eq!(actions(&entries), vec![
-            PaletteAction::CopyText("4".into()),
-            PaletteAction::CopyText("0x4".into()),
-        ]);
+        assert_eq!(
+            actions(&entries),
+            vec![PaletteAction::CopyText("4".into()), PaletteAction::CopyText("0x4".into()),]
+        );
     }
 
     #[test]

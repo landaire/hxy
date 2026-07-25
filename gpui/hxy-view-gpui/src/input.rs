@@ -92,17 +92,29 @@ mod tests {
 
     #[test]
     fn named_keys_map_to_arrows_and_escape() {
-        assert_eq!(translate(&ks("left", None, gpui::Modifiers::default())).0, Some(InputEvent::Key { key: Key::ArrowLeft, modifiers: Modifiers::default() }));
-        assert_eq!(translate(&ks("escape", None, gpui::Modifiers::default())).0, Some(InputEvent::Key { key: Key::Escape, modifiers: Modifiers::default() }));
+        assert_eq!(
+            translate(&ks("left", None, gpui::Modifiers::default())).0,
+            Some(InputEvent::Key { key: Key::ArrowLeft, modifiers: Modifiers::default() })
+        );
+        assert_eq!(
+            translate(&ks("escape", None, gpui::Modifiers::default())).0,
+            Some(InputEvent::Key { key: Key::Escape, modifiers: Modifiers::default() })
+        );
     }
 
     #[test]
     fn shift_four_and_dollar_both_reach_line_end() {
         let shifted = translate(&ks("4", Some("4"), gpui::Modifiers::shift())).0;
-        assert_eq!(shifted, Some(InputEvent::Key { key: Key::Digit(4), modifiers: Modifiers { shift: true, ..Default::default() } }));
+        assert_eq!(
+            shifted,
+            Some(InputEvent::Key { key: Key::Digit(4), modifiers: Modifiers { shift: true, ..Default::default() } })
+        );
 
         let dollar = translate(&ks("$", None, gpui::Modifiers::default())).0;
-        assert_eq!(dollar, Some(InputEvent::Key { key: Key::Digit(4), modifiers: Modifiers { shift: true, ..Default::default() } }));
+        assert_eq!(
+            dollar,
+            Some(InputEvent::Key { key: Key::Digit(4), modifiers: Modifiers { shift: true, ..Default::default() } })
+        );
     }
 
     #[test]

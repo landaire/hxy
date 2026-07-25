@@ -92,7 +92,12 @@ fn hex_point_scrolled(frame: &FrameInfo, offset: u64) -> Point<Pixels> {
 /// returns the new frame. gpui's wheel delta is negative in that
 /// direction (see `on_scroll_wheel`'s comment in pane.rs), so this
 /// negates `forward_rows` before building the event.
-fn scroll_by_rows(cx: &mut VisualTestContext, pane: &gpui::Entity<HexPane>, at: Point<Pixels>, forward_rows: f32) -> FrameInfo {
+fn scroll_by_rows(
+    cx: &mut VisualTestContext,
+    pane: &gpui::Entity<HexPane>,
+    at: Point<Pixels>,
+    forward_rows: f32,
+) -> FrameInfo {
     cx.simulate_event(ScrollWheelEvent {
         position: at,
         delta: ScrollDelta::Lines(point(0.0, -forward_rows)),
@@ -163,7 +168,8 @@ fn click_after_fractional_scroll_hits_correct_byte(cx: &mut TestAppContext) {
     focus(cx, &pane);
     let frame1 = frame(cx, &pane);
 
-    let frame2 = scroll_by_rows(cx, &pane, point(frame1.content_origin.x + px(5.0), frame1.content_origin.y + px(5.0)), 2.5);
+    let frame2 =
+        scroll_by_rows(cx, &pane, point(frame1.content_origin.x + px(5.0), frame1.content_origin.y + px(5.0)), 2.5);
     assert_eq!(frame2.first_visible_row, 2);
 
     let offset = 5 * COLUMNS + 4;
@@ -185,7 +191,8 @@ fn drag_above_true_top_after_fractional_scroll_scrolls_up(cx: &mut TestAppContex
     focus(cx, &pane);
     let frame1 = frame(cx, &pane);
 
-    let frame2 = scroll_by_rows(cx, &pane, point(frame1.content_origin.x + px(5.0), frame1.content_origin.y + px(5.0)), 2.5);
+    let frame2 =
+        scroll_by_rows(cx, &pane, point(frame1.content_origin.x + px(5.0), frame1.content_origin.y + px(5.0)), 2.5);
     assert_eq!(frame2.first_visible_row, 2);
 
     let down = hex_point_scrolled(&frame2, 3 * COLUMNS);
@@ -256,7 +263,6 @@ fn minimap_click_scrolls_viewport(cx: &mut TestAppContext) {
     let centered_row = scroll_rows + frame.rows_visible / 2.0;
     assert!((centered_row - 500.0).abs() <= 1.0, "expected centered row near 500, got {centered_row}");
 }
-
 
 /// Fix 1 proof: with the canvas sized to fill the pane, a real paint
 /// in the test harness measures a nonzero viewport instead of the

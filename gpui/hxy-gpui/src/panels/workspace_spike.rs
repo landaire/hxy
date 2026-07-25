@@ -309,9 +309,7 @@ mod tests {
 
         let window2 = cx.add_window(|window, cx| DockArea::new("spike-outer-2", None, window, cx));
         window2
-            .update(cx, |outer, window, cx| {
-                outer.load(reloaded, window, cx).expect("outer dock area load succeeds")
-            })
+            .update(cx, |outer, window, cx| outer.load(reloaded, window, cx).expect("outer dock area load succeeds"))
             .unwrap();
 
         let inner_panel_names = window2
@@ -319,7 +317,10 @@ mod tests {
                 let mut outer_panels = Vec::new();
                 collect_panels(outer.items(), &mut outer_panels);
                 assert_eq!(outer_panels.len(), 1, "outer center has exactly the rebuilt host panel");
-                let host = outer_panels[0].view().downcast::<WorkspaceHostPanel>().expect("registry rebuilt a real WorkspaceHostPanel");
+                let host = outer_panels[0]
+                    .view()
+                    .downcast::<WorkspaceHostPanel>()
+                    .expect("registry rebuilt a real WorkspaceHostPanel");
                 let mut inner_panels = Vec::new();
                 collect_panels(host.read(cx).inner_dock().read(cx).items(), &mut inner_panels);
                 inner_panels.iter().map(|p| p.panel_name(cx)).collect::<Vec<_>>()

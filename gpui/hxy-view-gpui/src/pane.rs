@@ -26,13 +26,13 @@ use gpui::Window;
 use gpui::div;
 use gpui::point;
 use gpui::px;
-use hxy_editor::Disposition;
-use hxy_editor::Effect;
 use gpui_component::ActiveTheme;
 use hxy_core::ByteOffset;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
 use hxy_core::Selection;
+use hxy_editor::Disposition;
+use hxy_editor::Effect;
 
 use crate::GridGeometry;
 use crate::GridHit;
@@ -166,7 +166,12 @@ impl HexPane {
     /// only matter within one batch, so single-event batches stay
     /// semantically safe -- Escape still pops the mode; there are simply
     /// no same-batch followers for the latch to drop.
-    pub(crate) fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let (key_event, text_event) = crate::input::translate(&event.keystroke);
         let mut filter = self.editor.input_filter();
         let mut consumed = false;
@@ -355,7 +360,11 @@ impl HexPane {
     /// A pixel target is dropped if no frame has painted yet (no known
     /// line height to divide by); a byte target needs no line height,
     /// so it still works pre-paint. Returns whether the scroll changed.
-    fn apply_pending_scroll(&mut self, pending_scroll: Option<f32>, pending_scroll_to_byte: Option<ByteOffset>) -> bool {
+    fn apply_pending_scroll(
+        &mut self,
+        pending_scroll: Option<f32>,
+        pending_scroll_to_byte: Option<ByteOffset>,
+    ) -> bool {
         let target_rows = if let Some(byte) = pending_scroll_to_byte {
             Some((byte.get() / self.columns.as_u64()) as f32)
         } else if let Some(offset_px) = pending_scroll {
@@ -499,8 +508,9 @@ mod tests {
         // A large backward scroll clamps so the last row stops at the
         // viewport bottom (overscroll parity), short of row_count - 1.
         window.update(cx, |p, window, cx| p.on_scroll_wheel(&lines_event(-1_000.0), window, cx)).unwrap();
-        let (scroll, max, floor) =
-            window.update(cx, |p, _, _| (p.scroll_rows(), p.max_scroll_rows(), p.row_count().saturating_sub(1) as f32)).unwrap();
+        let (scroll, max, floor) = window
+            .update(cx, |p, _, _| (p.scroll_rows(), p.max_scroll_rows(), p.row_count().saturating_sub(1) as f32))
+            .unwrap();
         assert_eq!(scroll, max);
         assert!(max < floor, "overscroll clamp must stop short of row_count - 1 once a frame is latched");
     }

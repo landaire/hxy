@@ -9,12 +9,6 @@
 //! `row_count.div_ceil(capacity)` source rows, matching the task
 //! brief's simpler "whole file always visible" downsampling contract.
 
-use gpui::bounds;
-use gpui::fill;
-use gpui::outline;
-use gpui::point;
-use gpui::px;
-use gpui::size;
 use gpui::BorderStyle;
 use gpui::Bounds;
 use gpui::Hsla;
@@ -23,14 +17,20 @@ use gpui::Point;
 use gpui::Rgba;
 use gpui::Size;
 use gpui::Window;
+use gpui::bounds;
+use gpui::fill;
+use gpui::outline;
+use gpui::point;
+use gpui::px;
+use gpui::size;
 use hxy_core::ByteLen;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
 
-use crate::paint::is_printable;
 use crate::paint::PaintColors;
+use crate::paint::is_printable;
 
 /// Gap between the grid's content and the strip.
 pub(crate) const STRIP_GAP: f32 = 8.0;

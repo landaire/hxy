@@ -16,7 +16,9 @@ pub fn status_file_name_text(path: Option<&Path>) -> String {
             // `file_name()` is `None` for paths ending in `..` or a
             // trailing separator; the full path is still meaningful
             // to show in that case rather than nothing at all.
-            path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
         }
         None => hxy_i18n::t("gpui-status-no-file"),
     }
@@ -26,9 +28,10 @@ pub fn status_file_name_text(path: Option<&Path>) -> String {
 /// open.
 pub fn window_title_text(path: Option<&Path>) -> String {
     match path {
-        Some(path) => {
-            hxy_i18n::t_args("gpui-window-title", &[("file", &status_file_name_text(Some(path))), ("app", &hxy_i18n::t("app-name"))])
-        }
+        Some(path) => hxy_i18n::t_args(
+            "gpui-window-title",
+            &[("file", &status_file_name_text(Some(path))), ("app", &hxy_i18n::t("app-name"))],
+        ),
         None => hxy_i18n::t("app-name"),
     }
 }

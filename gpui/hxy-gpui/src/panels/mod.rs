@@ -68,7 +68,11 @@ mod tests {
             .update(cx, |_dock, window, cx| {
                 let weak = cx.entity().downgrade();
                 for name in [FILE_PANEL_NAME, WELCOME_PANEL_NAME, INSPECTOR_PANEL_NAME] {
-                    let state = PanelState { panel_name: name.to_string(), children: Vec::new(), info: PanelInfo::panel(serde_json::json!({})) };
+                    let state = PanelState {
+                        panel_name: name.to_string(),
+                        children: Vec::new(),
+                        info: PanelInfo::panel(serde_json::json!({})),
+                    };
                     let view = PanelRegistry::build_panel(name, weak.clone(), &state, &state.info, window, cx);
                     assert_eq!(view.panel_name(cx), name, "{name} must build a real panel, not InvalidPanel");
                 }

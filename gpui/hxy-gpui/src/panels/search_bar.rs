@@ -186,7 +186,13 @@ impl SearchBar {
         }
     }
 
-    fn on_replace_event(&mut self, _input: &Entity<InputState>, event: &InputEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_replace_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let InputEvent::Change = event {
             self.state.replace_query = self.replace_input.read(cx).value().to_string();
             self.state.refresh_replace_pattern();
@@ -310,7 +316,10 @@ impl SearchBar {
         let end_inclusive = off.saturating_add(pattern.len() as u64).saturating_sub(1);
         let pane = self.pane.clone();
         pane.update(cx, |pane, cx| {
-            pane.editor_mut().set_selection(Some(Selection { anchor: ByteOffset::new(off), cursor: ByteOffset::new(end_inclusive) }));
+            pane.editor_mut().set_selection(Some(Selection {
+                anchor: ByteOffset::new(off),
+                cursor: ByteOffset::new(end_inclusive),
+            }));
             pane.editor_mut().set_scroll_to_byte(ByteOffset::new(off));
             pane.sync_pending_scroll(cx);
         });
@@ -352,8 +361,11 @@ impl SearchBar {
         let pane = self.pane.clone();
         let result = pane.update(cx, |pane, cx| {
             let editor = pane.editor_mut();
-            let result =
-                if find.len() == repl.len() { editor.request_write(offset, repl.to_vec()) } else { editor.splice(offset, find.len() as u64, repl.to_vec()) };
+            let result = if find.len() == repl.len() {
+                editor.request_write(offset, repl.to_vec())
+            } else {
+                editor.splice(offset, find.len() as u64, repl.to_vec())
+            };
             if result.is_ok() {
                 let next_offset = offset + repl.len() as u64;
                 editor.set_selection(Some(Selection::caret(ByteOffset::new(next_offset))));
@@ -407,7 +419,14 @@ impl SearchBar {
         }
     }
 
-    fn continue_replace_all(&mut self, matches: Vec<u64>, find_len: u64, replace_len: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn continue_replace_all(
+        &mut self,
+        matches: Vec<u64>,
+        find_len: u64,
+        replace_len: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if find_len != replace_len && !self.state.splice_prompt_acked {
             self.open_length_mismatch_dialog_for_all(matches, find_len, replace_len, window, cx);
             return;
@@ -451,7 +470,14 @@ impl SearchBar {
         }
     }
 
-    fn open_length_mismatch_dialog(&mut self, offset: u64, find_len: u64, replace_len: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_length_mismatch_dialog(
+        &mut self,
+        offset: u64,
+        find_len: u64,
+        replace_len: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let this = this.clone();
@@ -465,7 +491,10 @@ impl SearchBar {
                 .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.state.splice_prompt_acked = true;
-                        let (Some(find), Some(repl)) = (bar.state.pattern.clone(), bar.state.replace_pattern.clone()) else { return };
+                        let (Some(find), Some(repl)) = (bar.state.pattern.clone(), bar.state.replace_pattern.clone())
+                        else {
+                            return;
+                        };
                         bar.perform_replace_current(offset, &find, &repl, window, cx);
                     });
                     true
@@ -473,7 +502,14 @@ impl SearchBar {
         });
     }
 
-    fn open_length_mismatch_dialog_for_all(&mut self, matches: Vec<u64>, find_len: u64, replace_len: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_length_mismatch_dialog_for_all(
+        &mut self,
+        matches: Vec<u64>,
+        find_len: u64,
+        replace_len: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let this = this.clone();
@@ -496,7 +532,14 @@ impl SearchBar {
         });
     }
 
-    fn open_replace_all_confirm(&mut self, matches: Vec<u64>, find_len: u64, replace_len: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_replace_all_confirm(
+        &mut self,
+        matches: Vec<u64>,
+        find_len: u64,
+        replace_len: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity();
         let count = matches.len();
         window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -504,17 +547,26 @@ impl SearchBar {
             let matches = matches.clone();
             dialog
                 .title(hxy_i18n::t("search-replace-all-confirm-title"))
-                .child(Label::new(hxy_i18n::t_args("search-replace-all-confirm-body", &[("count", &count.to_string())])))
+                .child(Label::new(hxy_i18n::t_args(
+                    "search-replace-all-confirm-body",
+                    &[("count", &count.to_string())],
+                )))
                 .confirm()
                 .on_ok(move |_, window, cx| {
-                    this.update(cx, |bar, cx| bar.continue_replace_all(matches.clone(), find_len, replace_len, window, cx));
+                    this.update(cx, |bar, cx| {
+                        bar.continue_replace_all(matches.clone(), find_len, replace_len, window, cx)
+                    });
                     true
                 })
         });
     }
 
     fn kind_button(&self, kind: SearchKind, label_key: &str, id: &'static str, cx: &Context<Self>) -> Button {
-        Button::new(id).label(hxy_i18n::t(label_key)).compact().selected(self.state.kind == kind).on_click(cx.listener(move |this, _, _window, cx| this.set_kind(kind, cx)))
+        Button::new(id)
+            .label(hxy_i18n::t(label_key))
+            .compact()
+            .selected(self.state.kind == kind)
+            .on_click(cx.listener(move |this, _, _window, cx| this.set_kind(kind, cx)))
     }
 
     fn width_button(&self, width: NumberWidth, cx: &Context<Self>) -> Button {
@@ -547,13 +599,18 @@ impl SearchBar {
         if self.state.all_results {
             let total = self.state.matches.len();
             let text = match self.state.active_idx {
-                Some(i) => hxy_i18n::t_args("search-status-active-of-total", &[("index", &(i + 1).to_string()), ("total", &total.to_string())]),
+                Some(i) => hxy_i18n::t_args(
+                    "search-status-active-of-total",
+                    &[("index", &(i + 1).to_string()), ("total", &total.to_string())],
+                ),
                 None => hxy_i18n::t_args("search-status-match-count", &[("count", &total.to_string())]),
             };
             return Label::new(text).text_color(cx.theme().muted_foreground).into_any_element();
         }
         if self.state.pattern.is_some() {
-            return Label::new(hxy_i18n::t("search-status-press-enter")).text_color(cx.theme().muted_foreground).into_any_element();
+            return Label::new(hxy_i18n::t("search-status-press-enter"))
+                .text_color(cx.theme().muted_foreground)
+                .into_any_element();
         }
         div().into_any_element()
     }
@@ -583,8 +640,11 @@ impl SearchBar {
                 .child(self.endian_button(Endian::Big, "search-endian-big", "search-endian-big-btn", cx));
         }
 
-        let replace_toggle_label =
-            if self.state.replace_open { hxy_i18n::t("search-replace-toggle-hide") } else { hxy_i18n::t("search-replace-toggle-show") };
+        let replace_toggle_label = if self.state.replace_open {
+            hxy_i18n::t("search-replace-toggle-hide")
+        } else {
+            hxy_i18n::t("search-replace-toggle-show")
+        };
 
         row.child(div().w(px(220.0)).child(Input::new(&self.query_input)))
             .child(
@@ -664,7 +724,9 @@ impl SearchBar {
                     .disabled(!can_replace)
                     .on_click(cx.listener(|this, _, window, cx| this.queue_replace_all(window, cx))),
             )
-            .when_some(self.state.replace_error.clone(), |row, err| row.child(Label::new(err).text_color(cx.theme().danger)))
+            .when_some(self.state.replace_error.clone(), |row, err| {
+                row.child(Label::new(err).text_color(cx.theme().danger))
+            })
     }
 }
 
@@ -936,7 +998,11 @@ mod tests {
                 cx.notify();
             });
         });
-        assert_eq!(read_bytes(&bar, whole, cx), vec![0xDE, 0xAD, 0u8, 0xDE, 0xAD, 0u8], "one undo must revert the whole batch");
+        assert_eq!(
+            read_bytes(&bar, whole, cx),
+            vec![0xDE, 0xAD, 0u8, 0xDE, 0xAD, 0u8],
+            "one undo must revert the whole batch"
+        );
     }
 
     /// Opening the bar over a non-caret selection seeds a selection scope
@@ -955,7 +1021,8 @@ mod tests {
         cx.update(|_window, cx| {
             bar.update(cx, |bar, cx| {
                 bar.pane.update(cx, |pane, _| {
-                    pane.editor_mut().set_selection(Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
+                    pane.editor_mut()
+                        .set_selection(Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
                 });
             });
         });
@@ -972,7 +1039,11 @@ mod tests {
         bar.update(cx, |bar, cx| bar.set_all_results(true, cx));
 
         let (scope, matches) = bar.read_with(cx, |bar, _| (bar.state().scope, bar.state().matches.clone()));
-        assert_eq!(scope, SearchScope::Selection { start: 0, end_exclusive: 2 }, "opening over a selection seeds a selection scope");
+        assert_eq!(
+            scope,
+            SearchScope::Selection { start: 0, end_exclusive: 2 },
+            "opening over a selection seeds a selection scope"
+        );
         assert_eq!(matches, vec![0], "only the match inside the selection is found");
 
         bar.update(cx, |bar, cx| bar.clear_scope(cx));

@@ -223,14 +223,12 @@ fn render_decoded(decoded: Option<Decoded>, cx: &App) -> gpui::AnyElement {
         Some(Decoded::Color { rgba, label }) => h_flex()
             .gap_2()
             .items_center()
-            .child(
-                div()
-                    .size(px(12.0))
-                    .rounded(px(3.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(Rgba { r: f32::from(rgba[0]) / 255.0, g: f32::from(rgba[1]) / 255.0, b: f32::from(rgba[2]) / 255.0, a: f32::from(rgba[3]) / 255.0 }),
-            )
+            .child(div().size(px(12.0)).rounded(px(3.0)).border_1().border_color(cx.theme().border).bg(Rgba {
+                r: f32::from(rgba[0]) / 255.0,
+                g: f32::from(rgba[1]) / 255.0,
+                b: f32::from(rgba[2]) / 255.0,
+                a: f32::from(rgba[3]) / 255.0,
+            }))
             .child(Label::new(label))
             .into_any_element(),
         None => Label::new(hxy_i18n::t("gpui-inspector-decode-empty")).into_any_element(),

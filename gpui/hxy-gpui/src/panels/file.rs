@@ -209,7 +209,8 @@ mod tests {
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle.clone()), "grid starts focused");
 
         cx.simulate_keystrokes("cmd-f");
-        let (is_open, query_handle) = panel.read_with(cx, |panel, cx| (panel.search.read(cx).is_open(), panel.search.read(cx).focus_handle(cx)));
+        let (is_open, query_handle) =
+            panel.read_with(cx, |panel, cx| (panel.search.read(cx).is_open(), panel.search.read(cx).focus_handle(cx)));
         assert!(is_open, "cmd-f opens the search bar");
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(query_handle), "cmd-f focuses the query input");
 

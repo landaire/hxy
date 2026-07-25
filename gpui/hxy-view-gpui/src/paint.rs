@@ -96,7 +96,13 @@ pub(crate) fn hex_canvas(snap: GridSnapshot, entity: Entity<HexPane>) -> impl gp
     .size_full()
 }
 
-fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixels>, window: &mut Window, app: &mut App) {
+fn paint_grid(
+    snap: &GridSnapshot,
+    entity: &Entity<HexPane>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    app: &mut App,
+) {
     let mono = font(snap.mono_family.clone());
     let metrics = cell_metrics(&mono, snap.mono_size, window);
     let source_len = snap.source.len();
@@ -307,7 +313,8 @@ fn paint_cursor_cell(ctx: &RowCtx, snap: &GridSnapshot, cursor: Option<u64>, win
     let line_h = ctx.line_h();
     let fill_color = snap.colors.accent.opacity(CURSOR_FILL_ALPHA);
 
-    let hex_b = band_bounds(ctx.origin_x + g.hex_x(col), ctx.origin_x + g.hex_x(col) + g.hex_cell_w(), ctx.row_y, line_h);
+    let hex_b =
+        band_bounds(ctx.origin_x + g.hex_x(col), ctx.origin_x + g.hex_x(col) + g.hex_cell_w(), ctx.row_y, line_h);
     let ascii_b = band_bounds(ctx.origin_x + g.ascii_x(col), ctx.origin_x + g.ascii_x(col + 1), ctx.row_y, line_h);
 
     let (active, inactive) = match snap.active_pane {
@@ -321,7 +328,15 @@ fn paint_cursor_cell(ctx: &RowCtx, snap: &GridSnapshot, cursor: Option<u64>, win
 fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, bytes: &[u8], window: &mut Window, app: &mut App) {
     let g = ctx.geometry;
     let addr = format!("{:0width$X}", ctx.row_start, width = g.address_chars);
-    paint_line(mono, &addr, snap.mono_size, snap.colors.muted, point(ctx.origin_x + g.address_x(), ctx.row_y), window, app);
+    paint_line(
+        mono,
+        &addr,
+        snap.mono_size,
+        snap.colors.muted,
+        point(ctx.origin_x + g.address_x(), ctx.row_y),
+        window,
+        app,
+    );
 
     let len = ctx.source_len.get();
     let mut ascii = String::with_capacity(ctx.cols as usize);
@@ -372,7 +387,15 @@ fn paint_nibble_caret(ctx: &RowCtx, snap: &GridSnapshot, cursor: Option<u64>, wi
     window.paint_quad(fill(b, snap.colors.accent));
 }
 
-fn paint_line(mono: &Font, text: &str, size: Pixels, color: Hsla, origin: Point<Pixels>, window: &mut Window, app: &mut App) {
+fn paint_line(
+    mono: &Font,
+    text: &str,
+    size: Pixels,
+    color: Hsla,
+    origin: Point<Pixels>,
+    window: &mut Window,
+    app: &mut App,
+) {
     let runs = [run(text.len(), color, mono)];
     let shaped = window.text_system().shape_line(text.to_string().into(), size, &runs, None);
     let _ = shaped.paint(origin, window.line_height(), window, app);
