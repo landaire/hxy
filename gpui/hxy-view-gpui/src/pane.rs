@@ -116,9 +116,21 @@ impl HexPane {
         self.last_frame.map(|f| f.geometry.metrics.line_h).unwrap_or(px(FALLBACK_LINE_H))
     }
 
+    /// Largest scroll offset (in rows) that still fills the viewport:
+    /// the last row stops at the viewport bottom instead of parking at
+    /// the top with blank space below (egui's overscroll clamp). Once a
+    /// frame is latched, subtract the visible-row count; pre-first-paint
+    /// there is no viewport height, so fall back to `row_count - 1`.
+    fn max_scroll_rows(&self) -> f32 {
+        match self.last_frame {
+            Some(frame) => (self.row_count() as f32 - frame.rows_visible).max(0.0),
+            None => self.row_count().saturating_sub(1) as f32,
+        }
+    }
+
     fn on_scroll_wheel(&mut self, ev: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let delta_rows = scroll_delta_to_rows(ev.delta, self.line_height());
-        let max = self.row_count().saturating_sub(1) as f32;
+        let max = self.max_scroll_rows();
         // gpui scroll deltas are negative when the wheel moves toward
         // later content, which should advance the top row.
         self.scroll_rows = (self.scroll_rows - delta_rows).clamp(0.0, max);
@@ -197,9 +209,8 @@ impl HexPane {
             return;
         }
         let frac = ((y - b.origin.y) / b.size.height).clamp(0.0, 1.0);
-        let row_count = self.row_count();
-        let target_row = frac * row_count as f32;
-        let max = row_count.saturating_sub(1) as f32;
+        let target_row = frac * self.row_count() as f32;
+        let max = self.max_scroll_rows();
         self.scroll_rows = (target_row - frame.rows_visible / 2.0).clamp(0.0, max);
     }
 
@@ -313,7 +324,7 @@ impl HexPane {
         } else {
             return false;
         };
-        let max = self.row_count().saturating_sub(1) as f32;
+        let max = self.max_scroll_rows();
         let scroll_rows = (self.scroll_rows + delta).clamp(0.0, max);
         if scroll_rows == self.scroll_rows {
             return false;
@@ -341,7 +352,7 @@ impl HexPane {
             None
         };
         let Some(target_rows) = target_rows else { return false };
-        let max = self.row_count().saturating_sub(1) as f32;
+        let max = self.max_scroll_rows();
         let clamped = target_rows.clamp(0.0, max);
         if clamped == self.scroll_rows {
             return false;
@@ -445,7 +456,10 @@ mod tests {
         cx.update(gpui_component::init);
         let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
         let pane = window.root(cx).unwrap();
-        let max = window.update(cx, |p, _, _| p.row_count().saturating_sub(1) as f32).unwrap();
+        // Force a real paint so a frame is latched; the overscroll clamp
+        // then keeps the last row at the viewport bottom.
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.run_until_parked();
 
         // Wheel toward later content advances the top row.
         window.update(cx, |p, window, cx| p.on_scroll_wheel(&lines_event(-3.0), window, cx)).unwrap();
@@ -455,8 +469,12 @@ mod tests {
         window.update(cx, |p, window, cx| p.on_scroll_wheel(&lines_event(1_000.0), window, cx)).unwrap();
         assert_eq!(pane.read_with(cx, |p, _| p.scroll_rows()), 0.0);
 
-        // A large backward scroll clamps at the last row.
+        // A large backward scroll clamps so the last row stops at the
+        // viewport bottom (overscroll parity), short of row_count - 1.
         window.update(cx, |p, window, cx| p.on_scroll_wheel(&lines_event(-1_000.0), window, cx)).unwrap();
-        assert_eq!(pane.read_with(cx, |p, _| p.scroll_rows()), max);
+        let (scroll, max, floor) =
+            window.update(cx, |p, _, _| (p.scroll_rows(), p.max_scroll_rows(), p.row_count().saturating_sub(1) as f32)).unwrap();
+        assert_eq!(scroll, max);
+        assert!(max < floor, "overscroll clamp must stop short of row_count - 1 once a frame is latched");
     }
 }
