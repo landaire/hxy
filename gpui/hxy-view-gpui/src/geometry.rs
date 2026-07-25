@@ -27,6 +27,13 @@ pub struct CellMetrics {
 /// address gutter = address_chars + 2 chars gap; each hex cell is
 /// 3 chars wide (2 glyphs + 1 space); 2 chars gap before the ascii
 /// pane; ascii cells 1 char wide.
+///
+/// `address_chars` is a snapshot of [`Self::address_chars_for`] taken
+/// at construction time, not recomputed from the `source_len` passed
+/// to [`Self::row_count`] / [`Self::hit_test`]. Rebuild the geometry
+/// (call [`Self::new`] again) after the source grows or shrinks past
+/// an address-width boundary, or x positions will be sized for the
+/// stale width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridGeometry {
     pub metrics: CellMetrics,
@@ -202,10 +209,10 @@ mod tests {
 
     /// Points to the right of the ascii pane's last column are outside
     /// the grid entirely and return `None`, matching egui hxy-view's
-    /// hovered_byte, which treats out-of-bounds x the same as an
+    /// `hovered_byte`, which treats out-of-bounds x the same as an
     /// inter-pane gap: no hit.
     #[test]
-    fn hit_test_clamps_past_last_column() {
+    fn hit_test_x_past_last_column_is_none() {
         let g = geo();
         let x = g.ascii_x(15) + px(100.0);
         let hit = g.hit_test(point(x, px(0.0)), ByteLen::new(256));
