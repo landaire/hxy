@@ -33,6 +33,8 @@ pub use geometry::ByteOffset;
 pub use geometry::ByteRange;
 pub use geometry::ColumnCount;
 pub use geometry::RowIndex;
+pub use geometry::RowSlot;
+pub use geometry::row_for_byte;
 pub use patched::PatchedSource;
 pub use selection::Selection;
 pub use source::HexSource;

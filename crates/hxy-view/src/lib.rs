@@ -203,48 +203,10 @@ pub enum NibbleSide {
     Low,
 }
 
-/// One visual row in the rendered hex view. Default rendering is
-/// linear -- row N covers bytes `[N*cols, (N+1)*cols)`. Consumers
-/// that want a non-linear row stream (the file-comparison view's
-/// gap-row alignment between two sides) supply a list of `RowSlot`
-/// entries via [`HexView::row_map`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RowSlot {
-    /// Render `len` bytes starting at `offset`. `len <= cols`.
-    /// `offset` does not have to be a multiple of `cols`.
-    Real { offset: u64, len: u16 },
-    /// Render nothing for this row -- no address, no bytes, no
-    /// selection. The row still occupies one row's worth of
-    /// vertical space so two parallel-rendered views can stay
-    /// horizontally aligned even when their byte streams diverge.
-    Gap,
-}
-
-impl RowSlot {
-    pub fn real(offset: u64, len: u16) -> Self {
-        Self::Real { offset, len }
-    }
-    pub fn is_gap(self) -> bool {
-        matches!(self, Self::Gap)
-    }
-    /// Inclusive byte range, or `None` for [`RowSlot::Gap`].
-    pub fn byte_range(self) -> Option<(u64, u64)> {
-        match self {
-            Self::Real { offset, len } => Some((offset, offset + len as u64)),
-            Self::Gap => None,
-        }
-    }
-}
-
-/// Find the visual row whose slot contains `byte`. Returns the
-/// first row whose slot covers (offset..offset+len). `None` when
-/// no slot owns it (e.g. gap rows or off-the-end).
-fn row_for_byte(slots: &[RowSlot], byte: u64) -> Option<usize> {
-    slots.iter().position(|s| match s {
-        RowSlot::Real { offset, len } => *offset <= byte && byte < *offset + *len as u64,
-        RowSlot::Gap => false,
-    })
-}
+/// Non-linear row stream for [`HexView::row_map`]. Moved to
+/// `hxy_core` (framework-agnostic, shared with the GPUI port);
+/// re-exported here under the original path.
+pub use hxy_core::RowSlot;
 
 impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     pub fn new(source: &'s S, selection: &'s mut Option<Selection>) -> Self {
@@ -494,7 +456,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             let pending_v_offset = scroll_to_byte
                 .and_then(|b| {
                     let row = match row_map.as_ref() {
-                        Some(slots) => row_for_byte(slots, b.get())?,
+                        Some(slots) => hxy_core::row_for_byte(slots, b.get())?,
                         None => (b.get() / u64::from(columns.get())) as usize,
                     };
                     Some((row as f32) * row_height)

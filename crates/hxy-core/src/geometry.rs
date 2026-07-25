@@ -190,6 +190,48 @@ impl fmt::Display for RowIndex {
     }
 }
 
+/// One visual row in a rendered hex view. Default rendering is linear
+/// -- row N covers bytes `[N*cols, (N+1)*cols)`. Consumers that want a
+/// non-linear row stream (e.g. a file-comparison view's gap-row
+/// alignment between two sides) supply a list of `RowSlot` entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowSlot {
+    /// Render `len` bytes starting at `offset`. `len <= cols`.
+    /// `offset` does not have to be a multiple of `cols`.
+    Real { offset: u64, len: u16 },
+    /// Render nothing for this row -- no address, no bytes, no
+    /// selection. The row still occupies one row's worth of
+    /// vertical space so two parallel-rendered views can stay
+    /// horizontally aligned even when their byte streams diverge.
+    Gap,
+}
+
+impl RowSlot {
+    pub fn real(offset: u64, len: u16) -> Self {
+        Self::Real { offset, len }
+    }
+    pub fn is_gap(self) -> bool {
+        matches!(self, Self::Gap)
+    }
+    /// Inclusive byte range, or `None` for [`RowSlot::Gap`].
+    pub fn byte_range(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Real { offset, len } => Some((offset, offset + len as u64)),
+            Self::Gap => None,
+        }
+    }
+}
+
+/// Find the visual row whose slot contains `byte`. Returns the
+/// first row whose slot covers (offset..offset+len). `None` when
+/// no slot owns it (e.g. gap rows or off-the-end).
+pub fn row_for_byte(slots: &[RowSlot], byte: u64) -> Option<usize> {
+    slots.iter().position(|s| match s {
+        RowSlot::Real { offset, len } => *offset <= byte && byte < *offset + *len as u64,
+        RowSlot::Gap => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
