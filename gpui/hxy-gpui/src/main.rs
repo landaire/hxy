@@ -13,6 +13,7 @@ use gpui_component::Root;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 
+mod menu;
 mod palette;
 mod panels;
 mod persist;
@@ -39,6 +40,9 @@ fn main() -> ExitCode {
         gpui_component::init(cx);
         panels::register(cx);
         workspace::init_keybindings(cx);
+        menu::init_keybindings(cx);
+        menu::init_global_actions(cx);
+        cx.set_menus(menu::build_menus());
         let layout_path = persist::layout_path();
         let bounds = Bounds::centered(None, size(px(1024.0), px(768.0)), cx);
         cx.open_window(

@@ -425,3 +425,57 @@ App obligations to restore a layout:
   child node wins `focusable_node_ids`; the focus path ends at the child and
   its `on_key_down` fires. Verified end-to-end: keystrokes reach the inner
   HexPane through the dock with no extra handler.
+
+## Task 6 field corrections (menus, actions, toasts)
+
+- Native menu shortcut text is auto-derived, not `os_action`: macOS's
+  `create_menu_item` (GP/src/platform/mac/platform.rs:305-323) looks up
+  `keymap.bindings_for_action(action)` and shows that keystroke next to the
+  item. So a plain `MenuItem::action(name, MyAction)` picks up whatever
+  `cx.bind_keys` registered for `MyAction` automatically -- no need to also
+  pass `MenuItem::os_action` unless you want the item to fall through to a
+  native `NSResponder` selector (`cut:`/`copy:`/`paste:`/`selectAll:`; `Undo`/
+  `Redo` os_actions are dead code per that file's own comment: "always
+  disabled ... we don't have a NSTextView/NSTextField to enable them on").
+  hxy-gpui's menu items all use plain `MenuItem::action`, since every one has
+  its own real `on_action` handler.
+- Dynamic menu enable/disable exists mechanically but hxy-gpui's binding
+  strategy makes it a no-op. `App::is_action_available` (app.rs:1824, called
+  by the platform's `on_validate_app_menu_command`) walks the *currently
+  focused element's* dispatch path for a registered `on_action` listener
+  (key_dispatch.rs:381-393) -- it does not know or care whether that handler
+  would actually do anything. Every hxy-gpui menu handler (Undo/Redo/Copy
+  Bytes/Copy Hex/Close Tab/Toggle Edit Mode/...) is bound once on
+  `Workspace`'s root `div`, which sits on every focus path in the window
+  regardless of editor state. So every item reports "available" all the
+  time; there is no grey-Undo-when-history-is-empty behavior. Getting real
+  semantic disable would mean conditionally attaching/detaching the
+  `on_action` listener based on state (e.g. only bind `Undo` on the div when
+  `editor.can_undo()`), which M2 does not do -- every handler instead
+  no-ops cleanly on empty state (see `Workspace::on_undo` etc.).
+- `App::dispatch_action` (app.rs:1879) routes through the *active window's*
+  focused-dispatch-path when one exists, and only falls back to
+  `global_action_listeners` when there is no active window. But
+  `Window::dispatch_action_on_node` (window.rs:3992) checks
+  `global_action_listeners` in BOTH a capture pass (before window/element
+  `on_action`s) and, if nothing along the window path stopped propagation, a
+  bubble pass after them (window.rs:4064-4085). So `cx.on_action::<Quit>(...)`
+  registered globally on `App` still fires correctly even with a window
+  focused, as long as nothing on the focused dispatch path also handles
+  `Quit` (nothing in hxy-gpui does).
+- `WindowExt::push_notification` (`Root::update`, root.rs:169) panics if the
+  window's actual root view isn't yet a `gpui_component::Root` -- true during
+  `Workspace::new`/`build_initial` (main.rs wraps `Workspace` in `Root` only
+  *after* `Workspace::new` returns), and true again if you're already inside
+  a `Root::update` closure (a second nested `Root::update` double-borrows the
+  same entity and panics: "cannot update ... while it is already being
+  updated"). Fixes used here: (1) boot-time toasts (the layout-restore
+  warning) go through `window.defer(cx, ...)`, which runs after the current
+  update finishes -- by then `Root` is installed; (2) tests that need a real
+  `Root` build one explicitly (`open_workspace_with_root` in
+  `workspace.rs`'s tests, mirroring the `DialogTestHost` pattern already used
+  in `search_bar.rs`/`file.rs`), and drive it via
+  `AppContext::update_window` (gives `window`/`cx: &mut App` without
+  entity-borrowing the root view) rather than `WindowHandle<Root>::update`
+  (which pre-borrows `Root`, so a `push_notification` inside the callback
+  double-borrows it).

@@ -15,11 +15,12 @@
 //! Replace-All's ">1 match" confirm and the length-mismatch splice
 //! warning are real [`WindowExt::open_dialog`] dialogs (unlike egui's
 //! next-frame modal queue, gpui-component's dialog layer renders
-//! immediately). The wrap-around toast is the one side effect left
-//! queued rather than surfaced: it's pushed onto
-//! `SearchState::pending_effects` the same way the egui bar does, and
-//! Task 6 (toasts) is expected to drain it -- see [`Self::next_match`]
-//! / [`Self::prev_match`].
+//! immediately). Wrap-around and replace-count both still push onto
+//! `SearchState::pending_effects` (kept for observability / parity with
+//! the egui bar's queue), and are additionally surfaced immediately as
+//! a [`WindowExt::push_notification`] toast at the same call site --
+//! see [`Self::next_match`] / [`Self::prev_match`] /
+//! [`Self::perform_replace_current`] / [`Self::perform_replace_all`].
 
 use gpui::App;
 use gpui::AppContext;
@@ -49,6 +50,7 @@ use gpui_component::input::Input;
 use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
+use gpui_component::notification::Notification;
 use gpui_component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::HexSource;
@@ -132,7 +134,13 @@ impl SearchBar {
         }
     }
 
-    fn on_query_event(&mut self, _input: &Entity<InputState>, event: &InputEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_query_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             InputEvent::Change => {
                 self.state.query = self.query_input.read(cx).value().to_string();
@@ -142,8 +150,8 @@ impl SearchBar {
             // `secondary` is cmd/ctrl-Enter, not shift-Enter: 0.5.1's
             // `InputState` only distinguishes those two, so Prev rides
             // the secondary-Enter binding rather than egui's shift-Enter.
-            InputEvent::PressEnter { secondary: false } => self.next_match(cx),
-            InputEvent::PressEnter { secondary: true } => self.prev_match(cx),
+            InputEvent::PressEnter { secondary: false } => self.next_match(window, cx),
+            InputEvent::PressEnter { secondary: true } => self.prev_match(window, cx),
             InputEvent::Focus | InputEvent::Blur => {}
         }
     }
@@ -227,7 +235,7 @@ impl SearchBar {
 
     /// Find the next match after the caret, wrapping past EOF. Mirrors
     /// `crates/hxy/src/app/mod.rs`'s `SearchEvent::Next` arm.
-    fn next_match(&mut self, cx: &mut Context<Self>) {
+    fn next_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pattern) = self.state.pattern.clone() else { return };
         let hit = {
             let pane = self.pane.read(cx);
@@ -239,16 +247,15 @@ impl SearchBar {
         let Some(hit) = hit else { return };
         self.apply_match_jump(hit.offset, &pattern, cx);
         if hit.wrapped {
-            // Task 6 drains `pending_effects` into a toast; queued here
-            // so the state change (and this seam) exist now.
             self.state.pending_effects.push(SearchSideEffect::WrappedForward);
+            window.push_notification(Notification::info(hxy_i18n::t("search-wrapped-forward")), cx);
         }
         cx.notify();
     }
 
     /// Find the previous match before the caret, wrapping past offset
     /// 0. Mirrors `SearchEvent::Prev`.
-    fn prev_match(&mut self, cx: &mut Context<Self>) {
+    fn prev_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pattern) = self.state.pattern.clone() else { return };
         let hit = {
             let pane = self.pane.read(cx);
@@ -261,6 +268,7 @@ impl SearchBar {
         self.apply_match_jump(hit.offset, &pattern, cx);
         if hit.wrapped {
             self.state.pending_effects.push(SearchSideEffect::WrappedBackward);
+            window.push_notification(Notification::info(hxy_i18n::t("search-wrapped-backward")), cx);
         }
         cx.notify();
     }
@@ -298,12 +306,19 @@ impl SearchBar {
             self.open_length_mismatch_dialog(offset, find.len() as u64, repl.len() as u64, window, cx);
             return;
         }
-        self.perform_replace_current(offset, &find, &repl, cx);
+        self.perform_replace_current(offset, &find, &repl, window, cx);
     }
 
     /// Overwrite (or splice, if the length changed) the match at
     /// `offset`. Mirrors `replace::perform_replace_current`.
-    fn perform_replace_current(&mut self, offset: u64, find: &[u8], repl: &[u8], cx: &mut Context<Self>) {
+    fn perform_replace_current(
+        &mut self,
+        offset: u64,
+        find: &[u8],
+        repl: &[u8],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let pane = self.pane.clone();
         let result = pane.update(cx, |pane, cx| {
             let editor = pane.editor_mut();
@@ -324,6 +339,8 @@ impl SearchBar {
                 if self.state.all_results {
                     self.recompute_all_results(cx);
                 }
+                let text = hxy_i18n::t_args("search-replaced-toast", &[("count", "1")]);
+                window.push_notification(Notification::success(text), cx);
                 // The `cx.notify()` inside `pane.update` above repaints
                 // the `HexPane` entity; the bar's own status label /
                 // button-disabled state also changed and needs its own.
@@ -366,13 +383,20 @@ impl SearchBar {
             return;
         }
         let Some(repl) = self.state.replace_pattern.clone() else { return };
-        self.perform_replace_all(&matches, find_len, &repl, cx);
+        self.perform_replace_all(&matches, find_len, &repl, window, cx);
     }
 
     /// Apply every match as one batched `splice_many`, so the whole
     /// Replace All is a single undo entry. Mirrors
     /// `replace::perform_replace_all`.
-    fn perform_replace_all(&mut self, matches: &[u64], find_len: u64, repl: &[u8], cx: &mut Context<Self>) {
+    fn perform_replace_all(
+        &mut self,
+        matches: &[u64],
+        find_len: u64,
+        repl: &[u8],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let pane = self.pane.clone();
         let ops: Vec<(u64, u64, Vec<u8>)> = matches.iter().map(|off| (*off, find_len, repl.to_vec())).collect();
         let result = pane.update(cx, |pane, cx| {
@@ -382,12 +406,15 @@ impl SearchBar {
         });
         match result {
             Ok(()) => {
-                self.state.pending_effects.push(SearchSideEffect::Replaced { count: matches.len() });
+                let count = matches.len();
+                self.state.pending_effects.push(SearchSideEffect::Replaced { count });
                 self.state.refresh_pattern();
                 self.state.splice_prompt_acked = true;
                 if self.state.all_results {
                     self.recompute_all_results(cx);
                 }
+                let text = hxy_i18n::t_args("search-replaced-toast", &[("count", &count.to_string())]);
+                window.push_notification(Notification::success(text), cx);
                 cx.notify();
             }
             Err(error) => tracing::warn!(%error, "replace-all batch"),
@@ -405,11 +432,11 @@ impl SearchBar {
                     &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
                 )))
                 .confirm()
-                .on_ok(move |_, _window, cx| {
+                .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.state.splice_prompt_acked = true;
                         let (Some(find), Some(repl)) = (bar.state.pattern.clone(), bar.state.replace_pattern.clone()) else { return };
-                        bar.perform_replace_current(offset, &find, &repl, cx);
+                        bar.perform_replace_current(offset, &find, &repl, window, cx);
                     });
                     true
                 })
@@ -428,11 +455,11 @@ impl SearchBar {
                     &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
                 )))
                 .confirm()
-                .on_ok(move |_, _window, cx| {
+                .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.state.splice_prompt_acked = true;
                         let Some(repl) = bar.state.replace_pattern.clone() else { return };
-                        bar.perform_replace_all(&matches, find_len, &repl, cx);
+                        bar.perform_replace_all(&matches, find_len, &repl, window, cx);
                     });
                     true
                 })
@@ -535,7 +562,7 @@ impl SearchBar {
                     .icon(IconName::ChevronDown)
                     .tooltip(hxy_i18n::t("search-next-tooltip"))
                     .compact()
-                    .on_click(cx.listener(|this, _, _window, cx| this.next_match(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.next_match(window, cx))),
             )
             .child(
                 Button::new("search-prev")
@@ -546,7 +573,7 @@ impl SearchBar {
                     // differs from the shared `search-prev-tooltip`.
                     .tooltip(hxy_i18n::t("gpui-search-prev-tooltip"))
                     .compact()
-                    .on_click(cx.listener(|this, _, _window, cx| this.prev_match(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.prev_match(window, cx))),
             )
             .child(
                 Checkbox::new("search-all-results")
@@ -732,7 +759,7 @@ mod tests {
 
         // Enter on the query field routes to `next_match` via the
         // `InputEvent::PressEnter { secondary: false }` subscription.
-        bar.update(cx, |bar, cx| bar.next_match(cx));
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
 
         assert_eq!(selection(&bar, cx), Some(Selection { anchor: ByteOffset::new(2), cursor: ByteOffset::new(3) }));
         let (matches, active_idx) = bar.read_with(cx, |bar, _| (bar.state().matches.clone(), bar.state().active_idx));
@@ -740,11 +767,13 @@ mod tests {
         assert_eq!(active_idx, Some(0));
     }
 
-    /// Next wraps past EOF back to the only match and queues a
-    /// wrap-forward side effect (the toast itself is Task 6's job; this
-    /// only proves the state change and the queued seam).
+    /// Next wraps past EOF back to the only match, queues a
+    /// wrap-forward side effect, and surfaces an info toast through the
+    /// `Root` notification layer `DialogTestHost` doesn't even have to
+    /// render explicitly -- `push_notification` writes straight into
+    /// `Root`'s own state.
     #[gpui::test]
-    fn next_wraps_past_eof_and_queues_wrap_effect(cx: &mut TestAppContext) {
+    fn next_wraps_past_eof_and_toasts(cx: &mut TestAppContext) {
         setup(cx);
         let bytes = vec![0xDE, 0xAD, 0u8, 0u8];
         let (bar, cx) = build(cx, bytes);
@@ -752,15 +781,18 @@ mod tests {
         bar.update(cx, |bar, _| bar.state.kind = SearchKind::HexBytes);
         set_query(&bar, "DE AD", cx);
 
-        // First Next lands on the only match, at offset 0.
-        bar.update(cx, |bar, cx| bar.next_match(cx));
+        // First Next already wraps: it scans from caret+1 = 1, and the
+        // only match sits at offset 0, behind the scan start.
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
         assert_eq!(selection(&bar, cx), Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
+        assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 1, "the first hit already wrapped");
 
         // Second Next has nowhere to go but wrap back to the same match.
-        bar.update(cx, |bar, cx| bar.next_match(cx));
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
         assert_eq!(selection(&bar, cx), Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
         let effects = bar.read_with(cx, |bar, _| bar.state.pending_effects.clone());
-        assert!(effects.contains(&SearchSideEffect::WrappedForward), "wrap must be queued for Task 6 to surface");
+        assert!(effects.contains(&SearchSideEffect::WrappedForward), "wrap must be queued");
+        assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 2, "each wrap surfaces its own toast");
     }
 
     /// Replace-current overwrites the matched bytes in place when the
@@ -773,7 +805,7 @@ mod tests {
 
         bar.update(cx, |bar, _| bar.state.kind = SearchKind::HexBytes);
         set_query(&bar, "DE AD", cx);
-        bar.update(cx, |bar, cx| bar.next_match(cx));
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
         set_replace(&bar, "CA FE", cx);
 
         cx.update(|window, cx| bar.update(cx, |bar, cx| bar.queue_replace_current(window, cx)));
@@ -784,6 +816,12 @@ mod tests {
         // The caret advances past the replacement, matching egui's
         // `perform_replace_current`.
         assert_eq!(selection(&bar, cx), Some(Selection::caret(ByteOffset::new(2))));
+        // 2, not 1: the positioning `next_match` above also wraps (the
+        // only match sits at offset 0, behind its offset-1 scan start)
+        // and toasts, same as `next_wraps_past_eof_and_toasts`; the
+        // replace itself adds a second, success toast.
+        let count = cx.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(count, 2, "wrap + a completed replace must both toast");
     }
 
     /// A find/replace pair of different lengths routes replace-current
@@ -797,7 +835,7 @@ mod tests {
 
         bar.update(cx, |bar, _| bar.state.kind = SearchKind::HexBytes);
         set_query(&bar, "DE AD", cx);
-        bar.update(cx, |bar, cx| bar.next_match(cx));
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
         set_replace(&bar, "CA FE 01", cx);
 
         cx.update(|window, cx| bar.update(cx, |bar, cx| bar.queue_replace_current(window, cx)));

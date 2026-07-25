@@ -31,6 +31,7 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::WindowExt;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
 use gpui_component::dock::DockItem;
@@ -41,12 +42,26 @@ use gpui_component::dock::PanelState;
 use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
+use gpui_component::notification::Notification;
+use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::Selection;
+use hxy_editor::EditMode;
 use hxy_editor::InputMode;
 use hxy_view_gpui::HexPane;
 
+use crate::menu::CloseTab;
+use crate::menu::CopyBytes;
+use crate::menu::CopyHex;
+use crate::menu::Redo;
+use crate::menu::ShowAbout;
+use crate::menu::ToggleEditMode;
+use crate::menu::Undo;
 use crate::palette::Palette;
+use crate::palette::apply;
+use crate::palette::modes::CopyFormat;
+use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
@@ -111,9 +126,6 @@ pub struct Workspace {
     /// changes.
     active_pane_observe: Option<Subscription>,
     _dock_subscription: Subscription,
-    /// Message for the most recent failed open attempt; cleared on the
-    /// next successful open.
-    open_error: Option<String>,
     last_title: Option<String>,
     /// Tracked on the root div so `cmd-o` / `cmd-alt-v` stay reachable
     /// even with no pane focused (fresh launch showing Welcome): gpui
@@ -189,7 +201,6 @@ impl Workspace {
             active_file: None,
             active_pane_observe: None,
             _dock_subscription: dock_subscription,
-            open_error: None,
             last_title: None,
             focus_handle: cx.focus_handle(),
             focus_pending: true,
@@ -221,6 +232,15 @@ impl Workspace {
                 persist::prune_for_restore(&mut state);
                 if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
                     tracing::warn!(%err, "load dock layout failed; using default");
+                    // `Root` (the window's actual top-level view) isn't
+                    // installed yet -- it wraps this `Workspace` entity
+                    // after `Workspace::new` returns (see `main.rs`) --
+                    // so `push_notification` would panic here. Defer to
+                    // after the current update finishes.
+                    window.defer(cx, |window, cx| {
+                        let text = hxy_i18n::t("gpui-status-layout-restore-failed");
+                        window.push_notification(Notification::warning(text), cx);
+                    });
                 }
                 // The load-built cache is accurate; register the restored
                 // panels so a later resync can reuse them.
@@ -350,7 +370,6 @@ impl Workspace {
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(existing) = self.open_file_for_path(&path, cx) {
             self.focus_existing_tab(existing, window, cx);
-            self.open_error = None;
             cx.notify();
             return;
         }
@@ -359,11 +378,10 @@ impl Workspace {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
                 self.add_file_panel(panel, window, cx);
-                self.open_error = None;
             }
             Err(error) => {
                 tracing::error!(?path, %error, "failed to open file");
-                self.open_error = Some(status_open_error_text(&path, &error.to_string()));
+                window.push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
             }
         }
         cx.notify();
@@ -413,8 +431,8 @@ impl Workspace {
                 }
                 Ok(Err(err)) => {
                     tracing::error!(%err, "file picker failed");
-                    workspace.open_error = Some(hxy_i18n::t_args("gpui-status-open-error-dialog", &[("error", &err.to_string())]));
-                    cx.notify();
+                    let text = hxy_i18n::t_args("gpui-status-open-error-dialog", &[("error", &err.to_string())]);
+                    window.push_notification(Notification::error(text), cx);
                 }
                 Err(_) => {
                     // Channel dropped (window closing); nothing to show.
@@ -441,6 +459,79 @@ impl Workspace {
             };
             pane.editor_mut().set_input_mode(next);
             cx.notify();
+        });
+    }
+
+    /// `cmd-e` / Edit > Toggle Edit Mode: flip the active file between
+    /// read-only and mutable. No-op with no active file.
+    fn on_toggle_edit_mode(&mut self, _: &ToggleEditMode, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.active_file.clone() else { return };
+        let pane = file.read(cx).pane().clone();
+        pane.update(cx, |pane, cx| {
+            let next = match pane.editor().edit_mode() {
+                EditMode::Readonly => EditMode::Mutable,
+                EditMode::Mutable => EditMode::Readonly,
+            };
+            pane.editor_mut().set_edit_mode(next);
+            cx.notify();
+        });
+    }
+
+    /// `cmd-z` / Edit > Undo: revert the active file's most recent edit
+    /// and park the caret at the change site. No-op with no active file
+    /// or an empty undo stack.
+    fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane(cx) else { return };
+        pane.update(cx, |pane, cx| {
+            if let Some(entry) = pane.editor_mut().undo() {
+                jump_cursor_to(pane, entry.offset, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    /// `cmd-shift-z` / Edit > Redo: mirrors [`Self::on_undo`].
+    fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane(cx) else { return };
+        pane.update(cx, |pane, cx| {
+            if let Some(entry) = pane.editor_mut().redo() {
+                jump_cursor_to(pane, entry.offset, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    /// `cmd-w` / File > Close Tab: reuses the palette's `CloseTab`
+    /// dispatch so the menu, the palette entry, and any future shortcut
+    /// all go through the same code path.
+    fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        apply::apply(self, PaletteAction::CloseTab, window, cx);
+    }
+
+    /// `cmd-c` / Edit > Copy Bytes: copies the active selection as
+    /// lossy UTF-8 text. Reuses the palette's copy dispatch (same
+    /// formatting the vim ASCII-pane yank uses); no-op with no
+    /// selection.
+    fn on_copy_bytes(&mut self, _: &CopyBytes, window: &mut Window, cx: &mut Context<Self>) {
+        apply::apply(self, PaletteAction::CopySelection(CopyFormat::Bytes), window, cx);
+    }
+
+    /// `cmd-shift-c` / Edit > Copy Hex: copies the active selection as
+    /// space-separated uppercase hex (matching the vim hex-pane yank).
+    /// No-op with no selection.
+    fn on_copy_hex(&mut self, _: &CopyHex, window: &mut Window, cx: &mut Context<Self>) {
+        apply::apply(self, PaletteAction::CopySelection(CopyFormat::Hex), window, cx);
+    }
+
+    /// App > About: a minimal info dialog naming the app and its
+    /// version. gpui 0.2.2 has no predefined "About" menu item (unlike
+    /// `muda`'s `PredefinedMenuItem::about`), so this hand-rolls one.
+    fn on_show_about(&mut self, _: &ShowAbout, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            dialog.title(hxy_i18n::t("menu-help-about")).child(Label::new(hxy_i18n::t_args(
+                "gpui-menu-about-body",
+                &[("name", &hxy_i18n::t("app-name")), ("version", env!("CARGO_PKG_VERSION"))],
+            )))
         });
     }
 
@@ -630,6 +721,21 @@ impl Workspace {
     }
 }
 
+/// Park the caret at `offset` (clamped to the source length) after an
+/// undo/redo, scrolling it into view if needed, and reset the edit
+/// nibble so typing right after the jump starts on the high nibble.
+/// Mirrors `crates/hxy/src/app/mod.rs::jump_cursor_to`.
+fn jump_cursor_to(pane: &mut HexPane, offset: u64, cx: &mut Context<HexPane>) {
+    let len = pane.editor().source().len().get();
+    let clamped = ByteOffset::new(offset.min(len.saturating_sub(1)));
+    pane.editor_mut().set_selection(Some(Selection::caret(clamped)));
+    pane.editor_mut().reset_edit_nibble();
+    if !pane.editor().is_offset_visible(clamped) {
+        pane.editor_mut().set_scroll_to_byte(clamped);
+    }
+    pane.sync_pending_scroll(cx);
+}
+
 /// Total file panels anywhere under `state`, used to decide whether the
 /// welcome placeholder should show.
 fn count_file_panels(state: &PanelState) -> usize {
@@ -803,11 +909,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
+            .on_action(cx.listener(Self::on_toggle_edit_mode))
+            .on_action(cx.listener(Self::on_copy_bytes))
+            .on_action(cx.listener(Self::on_copy_hex))
+            .on_action(cx.listener(Self::on_show_about))
             .child(div().flex_1().child(self.dock.clone()));
-
-        if let Some(error) = &self.open_error {
-            root = root.child(div().px_3().py_1().text_color(cx.theme().danger).child(error.clone()));
-        }
 
         root = root.child(self.render_status_bar(cx));
 
@@ -819,15 +928,18 @@ impl Render for Workspace {
         // `gpui_component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is
         // responsible for appending the dialog/sheet/notification
-        // layers each frame. Only the dialog layer is needed so far
-        // (the in-file search bar's replace-all / length-mismatch
-        // confirms); sheet and notification layers are for later tasks.
+        // layers each frame. File-open errors, layout-restore warnings,
+        // and the search bar's wrap/replace toasts all render through
+        // the notification layer; the search bar's length-mismatch and
+        // replace-all confirms render through the dialog layer.
         root.children(gpui_component::Root::render_dialog_layer(window, cx))
+            .children(gpui_component::Root::render_notification_layer(window, cx))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use gpui::AppContext as _;
     use gpui::TestAppContext;
     use gpui::WindowHandle;
     use hxy_core::ByteOffset;
@@ -842,6 +954,7 @@ mod tests {
             gpui_component::init(cx);
             crate::panels::register(cx);
             init_keybindings(cx);
+            crate::menu::init_keybindings(cx);
         });
     }
 
@@ -866,6 +979,30 @@ mod tests {
         });
         cx.run_until_parked();
         window
+    }
+
+    /// Like [`open_workspace`], but wraps the `Workspace` in a real
+    /// `gpui_component::Root` -- required by anything that touches the
+    /// notification layer (`WindowExt::push_notification` panics
+    /// without a `Root` as the window's actual root view). Returns the
+    /// `Workspace` entity directly rather than a `WindowHandle<Workspace>`,
+    /// since that handle type requires the window's root to literally
+    /// be a `Workspace`, which it is not here (it's `Root`, mirroring
+    /// the `DialogTestHost` pattern in `panels::search_bar`'s tests).
+    fn open_workspace_with_root(
+        cx: &mut TestAppContext,
+        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        layout_path: Option<PathBuf>,
+    ) -> (WindowHandle<gpui_component::Root>, Entity<Workspace>) {
+        let window = cx.add_window(move |window, cx| {
+            let subscription = window.observe_window_appearance(|_, _| {});
+            let workspace = cx.new(|cx| Workspace::new(initial, subscription, layout_path, window, cx));
+            gpui_component::Root::new(workspace, window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let workspace = root.read_with(cx, |root, _| root.view().clone().downcast::<Workspace>().unwrap());
+        cx.run_until_parked();
+        (window, workspace)
     }
 
     fn file_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
@@ -1430,6 +1567,129 @@ mod tests {
         // A hex digit at the cursor edits the buffer.
         cx.simulate_keystrokes(window.into(), "a");
         assert!(editor_state(cx).1, "hex digit typed into the active pane must edit its buffer");
+    }
+
+    /// `cmd-z` (Edit > Undo, and the shared `Undo` action) reverts the
+    /// most recent typed edit and clears the dirty flag -- the same
+    /// action a native Edit menu click would dispatch.
+    #[gpui::test]
+    fn cmd_z_undoes_a_typed_edit(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+
+        let dirty = |cx: &mut TestAppContext| {
+            window
+                .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor().is_dirty())
+                .unwrap()
+        };
+
+        cx.simulate_keystrokes(window.into(), "down");
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(dirty(cx), "typing a hex digit must dirty the buffer");
+
+        cx.simulate_keystrokes(window.into(), "cmd-z");
+        assert!(!dirty(cx), "cmd-z must undo the typed edit");
+    }
+
+    /// `cmd-shift-c` (Edit > Copy Hex) copies the active selection as
+    /// space-separated uppercase hex -- the same format the palette's
+    /// `CopySelection(Hex)` entry and the vim hex-pane yank use.
+    #[gpui::test]
+    fn cmd_shift_c_copies_selection_as_hex(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+
+        window
+            .update(cx, |ws, _window, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, _| {
+                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
+                    pane.editor_mut().set_selection(Some(selection));
+                });
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "cmd-shift-c");
+        let clip = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(clip.as_deref(), Some("DE AD"));
+    }
+
+    /// `cmd-c` (Edit > Copy Bytes) copies the active selection as lossy
+    /// UTF-8 text, matching `CopyKind::BytesLossyUtf8` (the egui app's
+    /// Copy Bytes semantics -- see `crates/hxy/src/files/copy.rs`).
+    #[gpui::test]
+    fn cmd_c_copies_selection_as_lossy_utf8(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", b"hxy!!!!");
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+
+        window
+            .update(cx, |ws, _window, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, _| {
+                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(2) };
+                    pane.editor_mut().set_selection(Some(selection));
+                });
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "cmd-c");
+        let clip = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(clip.as_deref(), Some("hxy"));
+    }
+
+    /// `cmd-w` (File > Close Tab) closes the active tab through the
+    /// shared `CloseTab` action -- the same dispatch the palette's
+    /// entry uses (`palette::apply::apply`).
+    #[gpui::test]
+    fn cmd_w_closes_the_active_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+        assert_eq!(file_count(window, cx), 1);
+
+        cx.simulate_keystrokes(window.into(), "cmd-w");
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 0);
+    }
+
+    /// Opening a path that fails to read surfaces an error toast
+    /// through the `Root` notification layer (replacing the old inline
+    /// status-text banner). Uses [`open_workspace_with_root`] (not the
+    /// plain [`open_workspace`] every other test uses): `push_notification`
+    /// needs a real `gpui_component::Root` as the window's root view,
+    /// which production always has (see `main.rs`) but the bare
+    /// `open_workspace` helper does not.
+    #[gpui::test]
+    fn open_missing_file_surfaces_an_error_toast(cx: &mut TestAppContext) {
+        setup(cx);
+        let (window, workspace) = open_workspace_with_root(cx, None, None);
+        let missing = PathBuf::from("/definitely/not/a/real/path-for-hxy-gpui-tests.bin");
+
+        // Not `window.update(cx, |_root, window, cx| ...)`: that goes
+        // through `Root::update`, and `ws.open_path`'s failure branch
+        // calls `push_notification`, which does its own `Root::update`
+        // -- nesting two updates of the same `Root` entity panics.
+        // `AppContext::update_window` gives `window`/`cx` without
+        // borrowing the root view, so the later `push_notification`
+        // inside `open_path` is the only (successful) `Root` borrow.
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.open_path(missing.clone(), window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap(), 1);
     }
 
     fn collect_file_paths(state: &PanelState) -> Vec<PathBuf> {

@@ -38,6 +38,9 @@ gpui-palette-no-matches = No matches.
 gpui-palette-search-placeholder = Search commands...
 gpui-palette-invalid-nonzero = count must be nonzero
 gpui-palette-invalid-at-eof = at end of file
+gpui-status-layout-restore-failed = Could not restore the saved window layout; using the default layout.
+gpui-menu-toggle-edit-mode = Toggle Edit Mode
+gpui-menu-about-body = { $name } { $version }
 
 # Menus
 menu-file = File
