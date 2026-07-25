@@ -16,6 +16,8 @@ mod file;
 pub mod inspector;
 mod search_bar;
 mod welcome;
+#[cfg(feature = "dock-spike")]
+pub mod workspace_spike;
 
 pub use file::FILE_PANEL_NAME;
 pub use file::FilePanel;

@@ -9,6 +9,13 @@ repository.workspace = true
 description = "GPUI port of the hxy hex editor"
 publish = false
 
+[features]
+# Nested-dock (workspace-in-a-tab) feasibility spike -- Task 8 of the M2
+# plan. See gpui/hxy-gpui/src/panels/workspace_spike.rs and
+# docs/superpowers/plans/2026-07-25-m2-nested-dock-verdict.md. Out of the
+# default build: throwaway investigation, not product code.
+dock-spike = []
+
 [dependencies]
 gpui = { workspace = true }
 gpui-component = { workspace = true }
