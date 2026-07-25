@@ -16,7 +16,10 @@ extern crate alloc;
 pub mod handler {
     wit_bindgen::generate!({
         world: "plugin",
-        path: "../../wit",
+        // Relative to this crate so the WIT ships in the published
+        // package; `cargo publish` builds from the tarball, where
+        // paths outside the crate root do not exist.
+        path: "wit",
         pub_export_macro: true,
         export_macro_name: "export_handler",
     });
@@ -41,7 +44,7 @@ pub mod handler {
 pub mod template {
     wit_bindgen::generate!({
         world: "template-runtime",
-        path: "../../wit",
+        path: "wit",
         pub_export_macro: true,
         export_macro_name: "export_template_runtime",
     });
