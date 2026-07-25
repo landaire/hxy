@@ -131,7 +131,7 @@ pub fn show(
                     events.push(GlobalSearchEvent::Close);
                 }
                 if let Some(err) = &state.query_state.error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, err);
+                    ui.colored_label(ui.visuals().error_fg_color, err);
                 } else {
                     ui.weak(format!("{} matches across files", state.matches.len()));
                 }

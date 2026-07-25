@@ -44,9 +44,10 @@ const CLOSED_TABS_CAPACITY_WASM: usize = 32;
 
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
         install_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_global_style(crate::style::hxy_style());
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, crate::style::hxy_style());
+        cc.egui_ctx.set_style_of(egui::Theme::Light, crate::style::hxy_light_style());
+        cc.egui_ctx.set_theme(egui::ThemePreference::System);
         let initial_zoom = state.read().app.zoom_factor;
         cc.egui_ctx.set_zoom_factor(initial_zoom);
         let limit = hxy_core::CacheLimit::from_mib(state.read().app.byte_cache_limit_mib);

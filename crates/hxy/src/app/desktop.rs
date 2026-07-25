@@ -69,8 +69,9 @@ use crate::tabs::Tab;
 impl HxyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: SharedPersistedState) -> Self {
         install_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
-        cc.egui_ctx.set_global_style(crate::style::hxy_style());
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, crate::style::hxy_style());
+        cc.egui_ctx.set_style_of(egui::Theme::Light, crate::style::hxy_light_style());
+        cc.egui_ctx.set_theme(egui::ThemePreference::System);
         // Spin up the shared CPU-bound worker pool eagerly so the
         // first template / diff / entropy job doesn't pay thread
         // creation latency on the UI hot path.

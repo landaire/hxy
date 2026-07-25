@@ -531,7 +531,7 @@ fn show_inner(
     ui.label(summary);
     if result.truncated {
         ui.colored_label(
-            egui::Color32::from_rgb(245, 204, 78),
+            ui.visuals().warn_fg_color,
             hxy_i18n::t_args("strings-truncated", &[("max", &MAX_RESULTS.to_string())]),
         );
     }

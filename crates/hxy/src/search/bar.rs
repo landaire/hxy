@@ -169,7 +169,7 @@ fn find_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<SearchE
             events.push(SearchEvent::Close);
         }
         if let Some(err) = &state.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, err);
+            ui.colored_label(ui.visuals().error_fg_color, err);
         } else if state.all_results {
             let n = state.matches.len();
             let label = match state.active_idx {
@@ -216,7 +216,7 @@ fn replace_row(ui: &mut egui::Ui, state: &mut SearchState, events: &mut Vec<Sear
     }
 
     if let Some(err) = &state.replace_error {
-        ui.colored_label(egui::Color32::LIGHT_RED, err);
+        ui.colored_label(ui.visuals().error_fg_color, err);
     }
 }
 

@@ -271,10 +271,23 @@ impl egui_table::TableDelegate for CompareTableDelegate<'_> {
         ui.add_space(6.0);
         match cell.col_nr {
             0 => {
+                // Hunk-kind text colors need dark variants on light
+                // surfaces; the pane's marker fills keep one set of
+                // constants because they draw over hex content.
+                let dark = ui.visuals().dark_mode;
                 let (key, color) = match hunk.kind {
-                    HunkKind::Added => ("compare-kind-added", egui::Color32::from_rgb(60, 200, 100)),
-                    HunkKind::Removed => ("compare-kind-removed", egui::Color32::from_rgb(220, 90, 90)),
-                    HunkKind::Changed => ("compare-kind-changed", egui::Color32::from_rgb(220, 160, 60)),
+                    HunkKind::Added => (
+                        "compare-kind-added",
+                        if dark { egui::Color32::from_rgb(60, 200, 100) } else { egui::Color32::from_rgb(22, 138, 64) },
+                    ),
+                    HunkKind::Removed => (
+                        "compare-kind-removed",
+                        if dark { egui::Color32::from_rgb(220, 90, 90) } else { egui::Color32::from_rgb(178, 45, 45) },
+                    ),
+                    HunkKind::Changed => (
+                        "compare-kind-changed",
+                        if dark { egui::Color32::from_rgb(220, 160, 60) } else { egui::Color32::from_rgb(158, 110, 10) },
+                    ),
                     HunkKind::Equal => return,
                 };
                 ui.label(egui::RichText::new(hxy_i18n::t(key)).color(color).strong());

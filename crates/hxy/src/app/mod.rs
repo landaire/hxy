@@ -3833,8 +3833,8 @@ fn console_ui(ui: &mut egui::Ui, console: &std::collections::VecDeque<ConsoleEnt
             for entry in console.iter() {
                 let (icon, color) = match entry.severity {
                     ConsoleSeverity::Info => (egui_phosphor::regular::INFO, None),
-                    ConsoleSeverity::Warning => (egui_phosphor::regular::WARNING, Some(egui::Color32::YELLOW)),
-                    ConsoleSeverity::Error => (egui_phosphor::regular::X_CIRCLE, Some(egui::Color32::LIGHT_RED)),
+                    ConsoleSeverity::Warning => (egui_phosphor::regular::WARNING, Some(ui.visuals().warn_fg_color)),
+                    ConsoleSeverity::Error => (egui_phosphor::regular::X_CIRCLE, Some(ui.visuals().error_fg_color)),
                 };
                 let time = format_console_time(entry.timestamp);
                 ui.label(egui::RichText::new(&time).monospace().weak());
