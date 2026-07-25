@@ -43,6 +43,8 @@ use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
+use gpui_dock_picker::DockPicker;
+use gpui_dock_picker::PickTarget;
 use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
@@ -77,7 +79,7 @@ use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
 
-actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette]);
+actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette, PickPane]);
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
 /// into a single layout save.
@@ -97,6 +99,8 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-f", ToggleSearch, None),
         // Mirror the egui app's `COMMAND_PALETTE` chord (Cmd+Shift+P).
         gpui::KeyBinding::new("cmd-shift-p", OpenPalette, None),
+        // Mirror the egui app's `FOCUS_PANE` chord (Cmd+K).
+        gpui::KeyBinding::new("cmd-k", PickPane, None),
         // Palette navigation, scoped to the overlay's own key context so
         // these keys are inert everywhere else; the palette's text input
         // is a descendant, so with it focused these still dispatch here.
@@ -160,6 +164,9 @@ pub struct Workspace {
     /// The command-palette overlay. Always childed by `render`; renders
     /// an inert empty element while closed (see [`Palette`]).
     palette: Entity<Palette>,
+    /// The vimium-style pane-focus picker (`cmd-k`). Always childed by
+    /// `render`; renders an inert empty element while inactive.
+    pane_picker: Entity<DockPicker>,
     /// Test-only handle to the inspector panel `ensure_inspector_dock`
     /// creates on fresh construction (never populated on the registry-
     /// restore path -- see that method's doc), so integration tests can
@@ -194,6 +201,7 @@ impl Workspace {
             let weak = cx.entity().downgrade();
             cx.new(|cx| Palette::new(weak, window, cx))
         };
+        let pane_picker = cx.new(DockPicker::new);
 
         let mut workspace = Self {
             dock,
@@ -210,6 +218,7 @@ impl Workspace {
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
             palette,
+            pane_picker,
             #[cfg(test)]
             inspector_for_test: None,
         };
@@ -338,6 +347,50 @@ impl Workspace {
         if !center_has_empty_tab_panel(self.dock.read(cx).items(), cx) {
             return;
         }
+        self.rebuild_center_cache(window, cx);
+    }
+
+    /// Whether the center's cached `DockItem` tree (`DockArea::items()`)
+    /// is missing a live leaf entirely -- e.g. a user drag-splitting a
+    /// pane (`TabPanel::add_panel_at`) grows the LIVE `StackPanel` without
+    /// gpui-component ever touching `DockArea`'s cached
+    /// `DockItem::Split.items` (verified against the gpui-component 0.5.1
+    /// source). `DockArea::dump` walks the live tree, so its tab-leaf
+    /// count is ground truth to compare the cache's own leaf count
+    /// against.
+    ///
+    /// Deliberately NOT folded into `resync_center_if_stale`'s general
+    /// hazard check (which fires on every `reconcile`, i.e. on every
+    /// `DockEvent::LayoutChanged`): a rebuild replaces every live
+    /// `TabPanel` entity (`rebuild_item` -> `DockItem::tabs` always
+    /// constructs fresh ones), so firing it on every drag-split -- rather
+    /// than only when something actually needs an accurate snapshot right
+    /// now -- would invalidate in-flight `TabPanel` handles far more
+    /// often than today. The pane picker is the one caller that genuinely
+    /// needs `items()` to be a complete leaf list at a specific moment
+    /// (right before it enumerates targets), so it checks this directly
+    /// instead of widening the general resync cadence.
+    fn center_cache_missing_a_live_leaf(&self, cx: &App) -> bool {
+        let items = self.dock.read(cx).items();
+        count_dock_item_tab_leaves(items) != count_panel_state_tab_leaves(&self.dock.read(cx).dump(cx).center)
+    }
+
+    /// Rebuild the center's cached `DockItem` tree from the live panel
+    /// tree unconditionally (see `resync_center_if_stale`'s doc for why
+    /// the cache goes stale, and this fn's reuse of live entities rather
+    /// than calling `PanelRegistry::build_panel`). Callers should check a
+    /// staleness predicate first (`resync_center_if_stale` for the
+    /// "orphaned empty tab panel" hazard, `center_cache_missing_a_live_leaf`
+    /// for the "drag-split the cache never learned about" one) -- calling
+    /// this unconditionally leaks a `Subscription` into `DockArea`'s
+    /// internal subscription list on every call (gpui-component 0.5.1's
+    /// `set_center` -> `subscribe_item` never prunes it) and silently
+    /// drops any `TabPanel` UI state `dump()` doesn't capture (e.g.
+    /// zoom). Sets `focus_pending`, which refocuses the active pane on
+    /// the next render; `render` itself skips that refocus while the pane
+    /// picker is active, so a rebuild triggered mid-pick session cannot
+    /// steal focus back from the picker overlay.
+    fn rebuild_center_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.dock.read(cx).dump(cx);
         let mut reusable: HashMap<PathBuf, Arc<dyn PanelView>> = HashMap::new();
         for file in &self.open_files {
@@ -541,6 +594,83 @@ impl Workspace {
     fn on_open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         let restore = window.focused(cx);
         self.palette.update(cx, |palette, cx| palette.toggle(restore, window, cx));
+    }
+
+    /// `cmd-k`: activate the vimium-style pane picker over the center
+    /// dock's tab-panel leaves plus the inspector (a side-dock panel
+    /// `gpui_dock_picker` cannot discover on its own -- see
+    /// `PickTarget::from_dock_area`'s doc -- so it's composed on here by
+    /// hand, sourced from the [`ActiveInspectorPanel`](crate::panels::inspector)
+    /// global). No-op while a pick session is already active (mirrors the
+    /// egui app's `dispatch_focus_pane_shortcut`) so a double-press
+    /// doesn't rebind state mid-pick.
+    ///
+    /// Resyncs the center cache first, checking both known staleness
+    /// hazards (only rebuilding, at most once, when either actually
+    /// applies -- see `resync_center_if_stale` and
+    /// `center_cache_missing_a_live_leaf`): `gpui_dock_picker` enumerates
+    /// leaves through `DockArea::items()`, and without the second check a
+    /// freshly drag-split pane would never show up as a pickable target
+    /// (the first check alone only heals AFTER a leaf later goes empty).
+    /// A rebuild, when it fires, sets `focus_pending`; that's safe to
+    /// leave alone here because `render`'s `focus_pending` handling itself
+    /// skips the refocus while the picker is active, so it can never
+    /// steal focus back from the overlay `activate` is about to focus.
+    fn on_pick_pane(&mut self, _: &PickPane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane_picker.read(cx).is_active() {
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        if self.center_cache_missing_a_live_leaf(cx) {
+            self.rebuild_center_cache(window, cx);
+        }
+        let mut targets = PickTarget::from_dock_area(&self.dock, hxy_i18n::t("gpui-dock-picker-empty-pane"), cx);
+        if let Some(inspector) = crate::panels::inspector::active_inspector_panel(cx) {
+            let focus = inspector.read(cx).focus_handle(cx);
+            let focus_for_activate = focus.clone();
+            let dock = self.dock.clone();
+            targets.push(PickTarget::new(hxy_i18n::t("tab-inspector"), focus).with_on_activate(move |window, cx| {
+                // The inspector's own `FocusHandle` doesn't attach to a
+                // rendered node while its dock is collapsed, so open the
+                // dock first (a no-op when it's already open) before
+                // moving focus -- otherwise picking it while collapsed
+                // would silently do nothing visible.
+                if !dock.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                    dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Right, window, cx));
+                }
+                window.focus(&focus_for_activate);
+            }));
+        }
+        let workspace = cx.entity().downgrade();
+        self.pane_picker.update(cx, |picker, cx| {
+            picker.activate(
+                targets,
+                move |_target, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| workspace.sync_active_file_after_pick(window, cx));
+                    }
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// The picker jumps focus straight to a target's `FocusHandle`
+    /// (default activation) or wherever its `on_activate` override moves
+    /// it, bypassing the dock's own tab-activation path that `reconcile`
+    /// otherwise relies on (which always tracks the first tab container
+    /// with an active file). Since `PickTarget` no longer carries the
+    /// underlying `TabPanel` identity, re-derive the newly active file
+    /// from wherever focus actually landed rather than from the picked
+    /// target itself: walk the center tree for the leaf whose live
+    /// `focus_handle` now matches, and point the status bar /
+    /// `ActiveHexPane` global at its `FilePanel`. No-op when focus landed
+    /// somewhere that isn't a center-dock file leaf (e.g. the inspector).
+    fn sync_active_file_after_pick(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(focused) = window.focused(cx) else { return };
+        let Some(file) = focused_center_file_panel(self.dock.read(cx).items(), &focused, cx) else { return };
+        self.set_active_file(Some(file), cx);
     }
 
     /// Snapshot of the active file for the palette's entry builders.
@@ -757,6 +887,27 @@ fn center_has_empty_tab_panel(item: &DockItem, cx: &App) -> bool {
     }
 }
 
+/// Number of tab-panel leaves in the CACHED `DockItem` tree (one per
+/// `DockItem::Tabs`). Compare against [`count_panel_state_tab_leaves`] on
+/// a live `dump()` to detect a cache the live tree has outgrown.
+fn count_dock_item_tab_leaves(item: &DockItem) -> usize {
+    match item {
+        DockItem::Split { items, .. } => items.iter().map(count_dock_item_tab_leaves).sum(),
+        DockItem::Tabs { .. } => 1,
+        DockItem::Panel { .. } | DockItem::Tiles { .. } => 0,
+    }
+}
+
+/// Number of tab-panel leaves in a LIVE `dump()` tree (one per
+/// `PanelInfo::Tabs`). See [`count_dock_item_tab_leaves`].
+fn count_panel_state_tab_leaves(state: &PanelState) -> usize {
+    match &state.info {
+        PanelInfo::Tabs { .. } => 1,
+        PanelInfo::Stack { .. } => state.children.iter().map(count_panel_state_tab_leaves).sum(),
+        PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => 0,
+    }
+}
+
 /// Mirror a dumped `PanelState` subtree into a fresh `DockItem`,
 /// reusing existing panel entities (via `resolve_leaf`) so their editor
 /// state survives. Structure (splits, tab order, active index) matches
@@ -866,6 +1017,26 @@ fn active_file_panel(item: &DockItem, cx: &App) -> Option<Entity<FilePanel>> {
     }
 }
 
+/// The `FilePanel` in whichever center-dock `Tabs` leaf's live
+/// `focus_handle` equals `focused`, if any. `TabPanel::focus_handle`
+/// resolves to its active panel's own handle (gpui-component 0.5.1), so
+/// this correctly identifies "which leaf does the currently-focused
+/// element belong to" without needing the leaf's `TabPanel` identity
+/// tracked separately. Used by `sync_active_file_after_pick` to re-derive
+/// the active file after the pane picker moves focus directly.
+fn focused_center_file_panel(item: &DockItem, focused: &FocusHandle, cx: &App) -> Option<Entity<FilePanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            if &view.read(cx).focus_handle(cx) != focused {
+                return None;
+            }
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<FilePanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| focused_center_file_panel(item, focused, cx)),
+        DockItem::Panel { .. } | DockItem::Tiles { .. } => None,
+    }
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -892,11 +1063,19 @@ impl Render for Workspace {
 
         if self.focus_pending {
             self.focus_pending = false;
-            let handle = match &self.active_file {
-                Some(file) => file.read(cx).pane().read(cx).focus_handle(cx),
-                None => self.focus_handle.clone(),
-            };
-            window.focus(&handle);
+            // Skip the actual focus move while the pane picker holds
+            // keyboard focus: any center-cache rebuild that lands mid-pick
+            // (e.g. `cmd-w` closing a tab down to an empty leaf while the
+            // picker overlay is up) would otherwise steal focus back to
+            // the active pane, leaving the overlay visibly open but deaf
+            // to further letter/Escape presses.
+            if !self.pane_picker.read(cx).is_active() {
+                let handle = match &self.active_file {
+                    Some(file) => file.read(cx).pane().read(cx).focus_handle(cx),
+                    None => self.focus_handle.clone(),
+                };
+                window.focus(&handle);
+            }
         }
 
         let mut root = div()
@@ -909,6 +1088,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_pick_pane))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
@@ -924,6 +1104,12 @@ impl Render for Workspace {
         // empty element while closed and a full top-center overlay while
         // open (absolutely positioned, so it floats over the dock).
         root = root.child(self.palette.clone());
+
+        // The pane picker overlay, likewise always childed: inert while
+        // inactive, a centered target list while a `cmd-k` session is
+        // open (see `gpui_dock_picker`'s crate docs for why it's a list
+        // rather than badges over each pane).
+        root = root.child(self.pane_picker.clone());
 
         // `gpui_component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is
@@ -1499,6 +1685,224 @@ mod tests {
     fn window_open(window: WindowHandle<Workspace>, path: &Path, cx: &mut TestAppContext) {
         window.update(cx, |ws, window, cx| ws.open_path(path.to_path_buf(), window, cx)).unwrap();
         cx.run_until_parked();
+    }
+
+    /// `cmd-k` then a target letter jumps focus to a background split
+    /// pane's `HexPane` and re-points the status bar / `ActiveHexPane`
+    /// global at that pane's file -- proving `sync_active_file_after_pick`
+    /// overrides `reconcile`'s "first tab container" default, not just
+    /// that focus moved.
+    #[gpui::test]
+    fn cmd_k_picks_a_split_pane_and_syncs_the_active_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+
+        let original = window
+            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .unwrap()
+            .expect("a center tab panel");
+        let f2_pane = window
+            .update(cx, |ws, window, cx| {
+                let bytes = std::fs::read(&f2).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
+                // Register like a real drag-split would find it already
+                // registered (the panel being dragged always already went
+                // through `add_file_panel`/`register_open_file`); without
+                // this the picker's forced `rebuild_center_cache` (see
+                // `on_pick_pane`'s doc) would not find a live entity to
+                // reuse and would silently rebuild a fresh FilePanel.
+                ws.open_files.push(panel.clone());
+                let pane = panel.read(cx).pane().clone();
+                let view: Arc<dyn PanelView> = Arc::new(panel);
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                pane
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2);
+        // Sanity: the split-add alone must not have moved the status bar
+        // off A (the first/left leaf) -- otherwise this test would not
+        // be exercising the picker's override at all.
+        assert_eq!(active_path(window, cx), Some(f1.clone()));
+
+        window
+            .update(cx, |ws, window, cx| {
+                window.focus(&ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "cmd-k");
+        // Read the letter the picker actually assigned to B's leaf back
+        // out through its public `targets()` accessor (matched by label,
+        // i.e. B's file name -- `FilePanel::tab_name`), rather than
+        // assuming tree-walk order -- this test only cares that *some*
+        // letter reaches B, not which one.
+        let b_name = f2.file_name().unwrap().to_string_lossy().into_owned();
+        let letter = window
+            .read_with(cx, |ws, cx| {
+                ws.pane_picker
+                    .read(cx)
+                    .targets()
+                    .iter()
+                    .find(|(_, target)| target.label().as_ref() == b_name)
+                    .map(|(letter, _)| *letter)
+            })
+            .unwrap()
+            .expect("B's leaf must be a pickable target");
+        cx.simulate_keystrokes(window.into(), &letter.to_string());
+
+        let f2_handle = f2_pane.read_with(cx, |pane, cx| pane.focus_handle(cx));
+        assert_eq!(
+            window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap(),
+            Some(f2_handle),
+            "cmd-k moved focus to B's pane"
+        );
+        assert_eq!(active_path(window, cx), Some(f2), "picking B's leaf must re-point the status bar at B");
+    }
+
+    /// `cmd-k` then Escape cancels without touching the active file and
+    /// restores whatever pane had focus -- no leak through the real
+    /// production wiring (not just the picker crate's own unit tests).
+    #[gpui::test]
+    fn cmd_k_then_escape_restores_focus_and_active_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Some((source(), PathBuf::from("t.bin"))), None);
+        let pane_handle = window
+            .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "cmd-k");
+        cx.simulate_keystrokes(window.into(), "escape");
+
+        assert_eq!(
+            window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap(),
+            Some(pane_handle),
+            "escape restores the pane's focus"
+        );
+        assert_eq!(active_path(window, cx), Some(PathBuf::from("t.bin")), "cancelling must not change the active file");
+    }
+
+    /// The inspector -- a right-dock panel `gpui_dock_picker` cannot
+    /// discover on its own (see `on_pick_pane`'s doc) -- is composed onto
+    /// the picker's target list by hand and is pickable like any center
+    /// leaf. Picking it while its dock is collapsed (the default) opens
+    /// the dock and focuses the panel; the active file is untouched (the
+    /// inspector isn't a `FilePanel`, so `sync_active_file_after_pick`'s
+    /// focus-based lookup finds nothing to sync).
+    #[gpui::test]
+    fn cmd_k_picks_the_inspector_and_opens_its_collapsed_dock(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Some((source(), PathBuf::from("t.bin"))), None);
+        assert!(
+            !window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            "inspector dock starts collapsed"
+        );
+
+        cx.simulate_keystrokes(window.into(), "cmd-k");
+        let inspector_letter = window
+            .read_with(cx, |ws, cx| {
+                ws.pane_picker
+                    .read(cx)
+                    .targets()
+                    .iter()
+                    .find(|(_, target)| target.label().as_ref() == "Inspector")
+                    .map(|(letter, _)| *letter)
+            })
+            .unwrap()
+            .expect("the inspector must be a pickable target");
+        cx.simulate_keystrokes(window.into(), &inspector_letter.to_string());
+
+        assert!(
+            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            "picking the inspector opens its collapsed dock"
+        );
+        let inspector_handle = window
+            .read_with(cx, |_ws, cx| {
+                crate::panels::inspector::active_inspector_panel(cx).map(|insp| insp.read(cx).focus_handle(cx))
+            })
+            .unwrap()
+            .expect("inspector panel must be live");
+        assert_eq!(
+            window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap(),
+            Some(inspector_handle),
+            "picking the inspector focuses it"
+        );
+        assert_eq!(active_path(window, cx), Some(PathBuf::from("t.bin")), "the active file is untouched");
+    }
+
+    /// Regression: the picker only intercepts letters/Escape via raw
+    /// key-down, not gpui's action-dispatch path, so other shortcuts
+    /// (`cmd-w` here) still fire while a pick session is open -- mirrors
+    /// `egui_dock_picker`'s own choice not to consume unrelated keys. If
+    /// that shortcut triggers a center-cache resync (closing a tab down to
+    /// an empty, orphaned leaf does), the resync's `focus_pending` must
+    /// NOT steal keyboard focus back from the still-open picker overlay,
+    /// or the picker would keep rendering while going deaf to further
+    /// letter/Escape presses.
+    #[gpui::test]
+    fn cmd_w_while_picker_is_open_does_not_steal_its_focus(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+
+        let original = window
+            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .unwrap()
+            .expect("a center tab panel");
+        window
+            .update(cx, |ws, window, cx| {
+                let bytes = std::fs::read(&f2).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
+                ws.open_files.push(panel.clone());
+                let view: Arc<dyn PanelView> = Arc::new(panel);
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2);
+        assert_eq!(active_path(window, cx), Some(f1.clone()), "A (first/left leaf) is still active");
+
+        cx.simulate_keystrokes(window.into(), "cmd-k");
+        let picker_handle = window.read_with(cx, |ws, cx| ws.pane_picker.read(cx).focus_handle(cx)).unwrap();
+        assert_eq!(
+            window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap(),
+            Some(picker_handle.clone()),
+            "activating the picker takes keyboard focus"
+        );
+
+        // Close A's tab (still `active_file`) while the picker overlay is
+        // up. This collapses A's leaf, orphaning it in the center cache --
+        // the exact hazard that used to trigger a focus-stealing rebuild.
+        cx.simulate_keystrokes(window.into(), "cmd-w");
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1, "A's tab actually closed");
+
+        assert!(
+            window.read_with(cx, |ws, cx| ws.pane_picker.read(cx).is_active()).unwrap(),
+            "the picker session survives the collapse"
+        );
+        assert_eq!(
+            window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap(),
+            Some(picker_handle),
+            "the collapse's cache resync must not steal focus back from the picker"
+        );
+
+        // And it must still be responsive, not just visually open.
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(
+            !window.read_with(cx, |ws, cx| ws.pane_picker.read(cx).is_active()).unwrap(),
+            "escape still cancels it"
+        );
     }
 
     /// An unparseable layout file must not crash startup; the workspace

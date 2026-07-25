@@ -13,6 +13,14 @@
 //! every `InspectorPanel` (freshly built or restored) self-subscribes
 //! to it. This assumes a single live workspace per process, true of
 //! this shell (one window, `main.rs`).
+//!
+//! The same "no way to fetch it back" gap runs the other direction too:
+//! nothing outside this module can ask `DockArea` for the live
+//! `InspectorPanel` entity either (needed, e.g., to make it a pane-picker
+//! target). So `InspectorPanel` self-publishes into [`ActiveInspectorPanel`]
+//! at construction (both the fresh-build and registry-restore paths run
+//! through the same `with_state`), mirroring `ActiveHexPane`'s pattern in
+//! the opposite direction.
 
 use std::sync::Arc;
 
@@ -77,6 +85,21 @@ fn active_hex_pane(cx: &App) -> Option<Entity<HexPane>> {
     cx.try_global::<ActiveHexPane>().and_then(|active| active.0.clone())
 }
 
+/// The most recently constructed `InspectorPanel`, self-published so a
+/// host with no other way to fetch a live side-dock panel entity back out
+/// of `DockArea` (see module doc) can still find it -- e.g. to make the
+/// inspector a pane-picker target. Same single-workspace-per-process
+/// assumption as [`ActiveHexPane`].
+#[derive(Clone)]
+pub(crate) struct ActiveInspectorPanel(pub Entity<InspectorPanel>);
+
+impl Global for ActiveInspectorPanel {}
+
+/// The live inspector entity, if one has been constructed this session.
+pub(crate) fn active_inspector_panel(cx: &App) -> Option<Entity<InspectorPanel>> {
+    cx.try_global::<ActiveInspectorPanel>().map(|active| active.0.clone())
+}
+
 pub struct InspectorPanel {
     state: InspectorState,
     decoders: Vec<Arc<dyn Decoder>>,
@@ -114,6 +137,8 @@ impl InspectorPanel {
         };
         let initial_pane = active_hex_pane(cx);
         this.set_active_pane(initial_pane, cx);
+        let self_entity = cx.entity();
+        cx.set_global(ActiveInspectorPanel(self_entity));
         this
     }
 

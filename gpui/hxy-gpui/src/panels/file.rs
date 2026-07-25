@@ -121,6 +121,13 @@ impl Panel for FilePanel {
         SharedString::from(tab_title(self.path.as_deref()))
     }
 
+    /// Same text as `title`, just via the `&self` (non-rendering) path
+    /// `Panel::tab_name` provides -- defaults to `None`, which would
+    /// otherwise leave every file leaf's pane-picker row unlabeled.
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(tab_title(self.path.as_deref())))
+    }
+
     /// Persist the backing path so the tab can be re-opened next launch.
     fn dump(&self, _cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
