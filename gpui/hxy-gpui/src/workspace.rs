@@ -128,6 +128,13 @@ pub struct Workspace {
     /// cancels the pending write.
     save_debounce: Option<Task<()>>,
     _appearance_subscription: Subscription,
+    /// Test-only handle to the inspector panel `ensure_inspector_dock`
+    /// creates on fresh construction (never populated on the registry-
+    /// restore path -- see that method's doc), so integration tests can
+    /// observe the inspector through the real workspace instead of only
+    /// through the `ActiveHexPane` global directly.
+    #[cfg(test)]
+    inspector_for_test: Option<Entity<InspectorPanel>>,
 }
 
 impl Workspace {
@@ -166,6 +173,8 @@ impl Workspace {
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
+            #[cfg(test)]
+            inspector_for_test: None,
         };
         workspace.build_initial(initial, window, cx);
         workspace
@@ -217,7 +226,12 @@ impl Workspace {
         if self.dock.read(cx).has_dock(DockPlacement::Right) {
             return;
         }
-        let inspector: Arc<dyn PanelView> = Arc::new(cx.new(InspectorPanel::new));
+        let inspector = cx.new(InspectorPanel::new);
+        #[cfg(test)]
+        {
+            self.inspector_for_test = Some(inspector.clone());
+        }
+        let inspector: Arc<dyn PanelView> = Arc::new(inspector);
         let weak = self.dock.downgrade();
         let item = DockItem::tabs(vec![inspector], &weak, window, cx);
         self.dock.update(cx, |dock, cx| dock.set_right_dock(item, Some(INSPECTOR_DOCK_WIDTH), false, window, cx));
@@ -713,8 +727,10 @@ impl Render for Workspace {
 mod tests {
     use gpui::TestAppContext;
     use gpui::WindowHandle;
+    use hxy_core::ByteOffset;
     use hxy_core::HexSource;
     use hxy_core::MemorySource;
+    use hxy_core::Selection;
 
     use super::*;
 
@@ -1199,6 +1215,45 @@ mod tests {
             second.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
             "inspector open state must restore",
         );
+    }
+
+    /// Switching the active tab through the real workspace path (opening
+    /// a second file, which the dock makes active) updates the
+    /// inspector's decoded caret window end to end -- the panel's own
+    /// unit tests only prove the `ActiveHexPane` global wiring works when
+    /// poked directly; this proves `Workspace::set_active_file` actually
+    /// publishes the real active pane on a real tab switch.
+    #[gpui::test]
+    fn switching_tabs_updates_the_inspectors_decoded_window(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0xAAu8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[0xBBu8; 16]);
+        let window = open_workspace(cx, None, None);
+
+        let inspector = window.read_with(cx, |ws, _| ws.inspector_for_test.clone()).unwrap().expect("inspector stashed on fresh construction");
+
+        window_open(window, &f1, cx);
+        seed_active_caret(window, cx);
+        let (_, bytes_a) = inspector.read_with(cx, |insp, cx| insp.caret_window(cx)).expect("caret window for A");
+        assert_eq!(bytes_a, vec![0xAAu8; 16], "inspector must decode file A's bytes while A is active");
+
+        window_open(window, &f2, cx);
+        seed_active_caret(window, cx);
+        let (_, bytes_b) = inspector.read_with(cx, |insp, cx| insp.caret_window(cx)).expect("caret window for B");
+        assert_eq!(bytes_b, vec![0xBBu8; 16], "switching the active tab must update the inspector's decoded window");
+    }
+
+    /// Seed a caret at offset 0 on the workspace's currently active
+    /// file's pane, so the inspector has a window to decode.
+    fn seed_active_caret(window: WindowHandle<Workspace>, cx: &mut TestAppContext) {
+        window
+            .update(cx, |ws, _window, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, _| pane.editor_mut().set_selection(Some(Selection::caret(ByteOffset::new(0)))));
+            })
+            .unwrap();
+        cx.run_until_parked();
     }
 
     fn window_open(window: WindowHandle<Workspace>, path: &Path, cx: &mut TestAppContext) {

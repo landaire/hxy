@@ -128,8 +128,9 @@ impl InspectorPanel {
 
     /// The active pane's caret offset and up to [`WINDOW_LEN`] bytes
     /// starting there, or `None` when there's no active pane or no
-    /// caret.
-    fn caret_window(&self, cx: &App) -> Option<(u64, Vec<u8>)> {
+    /// caret. `pub(crate)` so `workspace`'s integration tests can read
+    /// it off the test-stashed `Entity<InspectorPanel>`.
+    pub(crate) fn caret_window(&self, cx: &App) -> Option<(u64, Vec<u8>)> {
         let pane = self.active_pane.as_ref()?;
         caret_window(pane.read(cx).editor())
     }
@@ -474,6 +475,28 @@ mod tests {
         let corrupt_state = state_from_info(&corrupt_info);
         assert_eq!(corrupt_state.endian, Endian::Little);
         assert_eq!(corrupt_state.radix, IntRadix::Decimal);
+    }
+
+    /// `Panel::dump` (the encode direction) and `state_from_info` (the
+    /// decode direction) must agree: flip both settings through the same
+    /// setters the toolbar buttons call, dump, and confirm decoding the
+    /// dump gives back what was set. Catches a mismatch between
+    /// `endian_key`/`radix_key` and `state_from_info`'s match arms that
+    /// hand-built JSON (as in `state_from_info_round_trips_endian_and_radix`)
+    /// wouldn't.
+    #[gpui::test]
+    fn dump_round_trips_with_state_from_info(cx: &mut TestAppContext) {
+        setup(cx);
+        let inspector = cx.update(|cx| cx.new(InspectorPanel::new));
+        inspector.update(cx, |insp, cx| {
+            insp.set_endian(Endian::Big, cx);
+            insp.set_radix(IntRadix::Binary, cx);
+        });
+
+        let dumped = inspector.read_with(cx, |insp, cx| insp.dump(cx));
+        let restored = state_from_info(&dumped.info);
+        assert_eq!(restored.endian, Endian::Big);
+        assert_eq!(restored.radix, IntRadix::Binary);
     }
 
     #[test]
