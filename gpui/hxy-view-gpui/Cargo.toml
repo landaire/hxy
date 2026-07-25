@@ -1,0 +1,16 @@
+[package]
+name = "hxy-view-gpui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "GPUI hex-view widget driven by hxy-editor"
+publish = false
+
+[dependencies]
+gpui = { workspace = true }
+hxy-core = { workspace = true }
+hxy-editor = { workspace = true, features = ["editor"] }
+tracing = { workspace = true }

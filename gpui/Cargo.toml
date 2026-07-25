@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["hxy-gpui"]
+members = ["hxy-gpui", "hxy-view-gpui"]
 
 [workspace.package]
 version = "0.3.0"
@@ -25,6 +25,7 @@ gpui-component = "=0.5.1"
 hxy-core = { path = "../crates/hxy-core", version = "0.3.0" }
 hxy-editor = { path = "../crates/hxy-editor", version = "0.3.0" }
 hxy-i18n = { path = "../crates/hxy-i18n", version = "0.3.0" }
+hxy-view-gpui = { path = "hxy-view-gpui", version = "0.3.0" }
 tracing = "0.1.44"
 
 [profile.dev.package."*"]

@@ -2805,6 +2805,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hxy-view-gpui"
+version = "0.3.0"
+dependencies = [
+ "gpui",
+ "hxy-core",
+ "hxy-editor",
+ "tracing",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
