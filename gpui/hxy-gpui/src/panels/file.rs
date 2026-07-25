@@ -1,6 +1,7 @@
-//! [`FilePanel`]: one open file rendered through a [`HexPane`], wrapped
-//! as a dock [`Panel`] so it can live in a tab and round-trip through
-//! layout persistence.
+//! [`FilePanel`]: one open file rendered through a [`HexPane`], with an
+//! in-file search/replace bar ([`SearchBar`]) that slots in below it,
+//! wrapped as a dock [`Panel`] so it can live in a tab and round-trip
+//! through layout persistence.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use gpui::Entity;
 use gpui::EventEmitter;
 use gpui::FocusHandle;
 use gpui::Focusable;
+use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::ParentElement;
 use gpui::Render;
@@ -20,6 +22,7 @@ use gpui::SharedString;
 use gpui::Styled;
 use gpui::Window;
 use gpui::div;
+use gpui::prelude::FluentBuilder;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -28,25 +31,31 @@ use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_view_gpui::HexPane;
 
+use super::search_bar::SearchBar;
+use crate::workspace::CloseSearch;
+use crate::workspace::ToggleSearch;
+
 /// Stable identifier for layout (de)serialization; must never change.
 pub const FILE_PANEL_NAME: &str = "FilePanel";
 
 pub struct FilePanel {
     pane: Entity<HexPane>,
     path: Option<PathBuf>,
+    search: Entity<SearchBar>,
 }
 
 impl FilePanel {
-    pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
-        Self { pane, path }
+        let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
+        Self { pane, path, search }
     }
 
     /// Rebuild a panel from persisted [`PanelInfo`]. The path is
     /// re-read from disk; callers prune unreadable paths before restore
     /// (see `persist::prune_for_restore`), so a read failure here is
     /// only a defensive fallback to an empty buffer.
-    pub fn restore(info: &PanelInfo, cx: &mut Context<Self>) -> Self {
+    pub fn restore(info: &PanelInfo, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let path = path_from_info(info);
         let source: Arc<dyn HexSource> = match &path {
             Some(path) => match std::fs::read(path) {
@@ -58,7 +67,7 @@ impl FilePanel {
             },
             None => Arc::new(MemorySource::new(Vec::new())),
         };
-        Self::new(source, path, cx)
+        Self::new(source, path, window, cx)
     }
 
     pub fn pane(&self) -> &Entity<HexPane> {
@@ -67,6 +76,20 @@ impl FilePanel {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// `cmd-f`: open the bar (focusing the query field) or, if already
+    /// open, close it and hand focus back to the grid.
+    fn on_toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |bar, cx| bar.toggle(window, cx));
+    }
+
+    /// `escape`, scoped to the search bar's own key context so it only
+    /// fires while a search input has focus (see [`SearchBar::render`]'s
+    /// `key_context`); the input's own escape handling propagates here
+    /// when it doesn't consume the key itself (not `clean_on_escape`).
+    fn on_close_search(&mut self, _: &CloseSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |bar, cx| bar.close(window, cx));
     }
 }
 
@@ -119,7 +142,73 @@ impl Focusable for FilePanel {
 impl EventEmitter<PanelEvent> for FilePanel {}
 
 impl Render for FilePanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.pane.clone())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let open = self.search.read(cx).is_open();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(Self::on_toggle_search))
+            .on_action(cx.listener(Self::on_close_search))
+            .child(div().flex_1().min_h_0().child(self.pane.clone()))
+            .when(open, |root| root.child(self.search.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::*;
+
+    fn setup(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::workspace::init_keybindings(cx);
+        });
+    }
+
+    fn source() -> Arc<dyn HexSource> {
+        Arc::new(MemorySource::new(vec![0u8; 16]))
+    }
+
+    /// Builds a `FilePanel` inside a real `gpui_component::Root` window
+    /// (like the production shell does): `InputState`'s focus tracking
+    /// -- and thus the search bar's query field -- needs the Root layer
+    /// present, not just dialogs.
+    fn build(cx: &mut TestAppContext) -> (Entity<FilePanel>, &mut gpui::VisualTestContext) {
+        let window = cx.add_window(|window, cx| {
+            let panel = cx.new(|cx| FilePanel::new(source(), None, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+        (panel, vcx)
+    }
+
+    /// `cmd-f` opens the bar and focuses the query field; `escape`
+    /// closes it again and hands focus back to the grid -- the exact
+    /// focus flow the search bar's UX depends on.
+    #[gpui::test]
+    fn cmd_f_opens_and_escape_closes_and_refocuses_grid(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx);
+
+        let grid_handle = panel.read_with(cx, |panel, cx| panel.pane.read(cx).focus_handle(cx));
+        cx.update(|window, _cx| window.focus(&grid_handle));
+        cx.run_until_parked();
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle.clone()), "grid starts focused");
+
+        cx.simulate_keystrokes("cmd-f");
+        let (is_open, query_handle) = panel.read_with(cx, |panel, cx| (panel.search.read(cx).is_open(), panel.search.read(cx).focus_handle(cx)));
+        assert!(is_open, "cmd-f opens the search bar");
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(query_handle), "cmd-f focuses the query input");
+
+        cx.simulate_keystrokes("escape");
+        let is_open_after = panel.read_with(cx, |panel, cx| panel.search.read(cx).is_open());
+        assert!(!is_open_after, "escape closes the search bar");
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle), "escape refocuses the grid");
     }
 }

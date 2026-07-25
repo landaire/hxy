@@ -59,7 +59,7 @@ use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
 
-actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector]);
+actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch]);
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
 /// into a single layout save.
@@ -76,6 +76,12 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-o", OpenFile, None),
         gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None),
         gpui::KeyBinding::new("cmd-i", ToggleInspector, None),
+        gpui::KeyBinding::new("cmd-f", ToggleSearch, None),
+        // Scoped to the search bar's own key context (set on its
+        // render root) so plain Escape elsewhere is left alone; the
+        // bar's `InputState`s propagate Escape up to this binding when
+        // they don't handle it themselves (not `clean_on_escape`).
+        gpui::KeyBinding::new("escape", CloseSearch, Some("SearchBar")),
     ]);
 }
 
@@ -202,7 +208,7 @@ impl Workspace {
             }
             None => {
                 if let Some((source, path)) = initial {
-                    let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
+                    let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
                     self.add_file_panel(panel, window, cx);
                 }
             }
@@ -331,7 +337,7 @@ impl Workspace {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-                let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
                 self.add_file_panel(panel, window, cx);
                 self.open_error = None;
             }
@@ -719,7 +725,15 @@ impl Render for Workspace {
             root = root.child(div().px_3().py_1().text_color(cx.theme().danger).child(error.clone()));
         }
 
-        root.child(self.render_status_bar(cx))
+        root = root.child(self.render_status_bar(cx));
+
+        // `gpui_component::Root` (the window's actual top-level view,
+        // see `main.rs`) only renders its child; the child is
+        // responsible for appending the dialog/sheet/notification
+        // layers each frame. Only the dialog layer is needed so far
+        // (the in-file search bar's replace-all / length-mismatch
+        // confirms); sheet and notification layers are for later tasks.
+        root.children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -909,7 +923,7 @@ mod tests {
             .update(cx, |_ws, window, cx| {
                 let bytes = std::fs::read(&f3).unwrap();
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-                let f3_panel = cx.new(|cx| FilePanel::new(source, Some(f3.clone()), cx));
+                let f3_panel = cx.new(|cx| FilePanel::new(source, Some(f3.clone()), window, cx));
                 let view: Arc<dyn PanelView> = Arc::new(f3_panel);
                 original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
             })
@@ -975,7 +989,7 @@ mod tests {
             .update(cx, |ws, window, cx| {
                 let bytes = std::fs::read(&fa).unwrap();
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-                let panel = cx.new(|cx| FilePanel::new(source, Some(fa.clone()), cx));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(fa.clone()), window, cx));
                 ws.open_files.push(panel.clone());
                 let view: Arc<dyn PanelView> = Arc::new(panel.clone());
                 original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));

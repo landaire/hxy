@@ -28,6 +28,7 @@ gpui-inspector-radix-hex = Hex
 gpui-inspector-radix-binary = Bin
 gpui-inspector-no-caret = No caret -- click a byte in the hex view.
 gpui-inspector-decode-empty = --
+gpui-search-prev-tooltip = Previous match (Cmd/Ctrl+Enter)
 
 # Menus
 menu-file = File

@@ -374,6 +374,21 @@ impl HexPane {
     pub fn last_frame(&self) -> Option<FrameInfo> {
         self.last_frame
     }
+
+    /// Applies any scroll request the editor queued (`set_scroll_to` /
+    /// `set_scroll_to_byte`) and repaints. Key-driven navigation gets
+    /// this for free via [`Self::handle_key_down`]; callers that move
+    /// the selection programmatically -- search match jumps, goto --
+    /// must call this afterward or the pane's scroll position won't
+    /// follow the new selection.
+    pub fn sync_pending_scroll(&mut self, cx: &mut Context<Self>) {
+        let (pending_scroll, pending_scroll_to_byte) = {
+            let parts = self.editor.view_parts();
+            (parts.pending_scroll, parts.pending_scroll_to_byte)
+        };
+        self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
+        cx.notify();
+    }
 }
 
 /// Pure delta-to-rows conversion. `Lines` deltas are rows already;
