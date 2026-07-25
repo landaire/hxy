@@ -11,22 +11,31 @@ use gpui::Focusable;
 use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::KeyDownEvent;
+use gpui::MouseButton;
+use gpui::MouseDownEvent;
+use gpui::MouseMoveEvent;
+use gpui::MouseUpEvent;
 use gpui::ParentElement;
 use gpui::Pixels;
+use gpui::Point;
 use gpui::Render;
 use gpui::ScrollDelta;
 use gpui::ScrollWheelEvent;
 use gpui::Styled;
 use gpui::Window;
 use gpui::div;
+use gpui::point;
 use gpui::px;
 use hxy_editor::Disposition;
 use hxy_editor::Effect;
 use gpui_component::ActiveTheme;
+use hxy_core::ByteOffset;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
+use hxy_core::Selection;
 
 use crate::GridGeometry;
+use crate::GridHit;
 use crate::paint::GridSnapshot;
 use crate::paint::PaintColors;
 use crate::paint::hex_canvas;
@@ -55,6 +64,10 @@ pub struct HexPane {
     scroll_rows: f32,
     /// Set during paint, consumed by input handlers.
     pub(crate) last_frame: Option<FrameInfo>,
+    /// Byte the left button went down on; `Some` for the duration of a
+    /// drag, pinning the selection anchor while the cursor follows the
+    /// pointer. `None` when no drag is in progress.
+    drag_anchor: Option<ByteOffset>,
 }
 
 impl HexPane {
@@ -65,6 +78,7 @@ impl HexPane {
             columns: ColumnCount::DEFAULT,
             scroll_rows: 0.0,
             last_frame: None,
+            drag_anchor: None,
         }
     }
 
@@ -137,9 +151,104 @@ impl HexPane {
         consumed
     }
 
+    /// Map a window position through the latched [`FrameInfo`] into a
+    /// grid hit. `None` before the first paint (no frame latched yet)
+    /// or when the position falls outside both panes.
+    fn hit_at(&self, position: Point<Pixels>) -> Option<GridHit> {
+        let frame = self.last_frame?;
+        let line_h = frame.geometry.metrics.line_h;
+        let x = position.x - frame.content_origin.x;
+        let y = position.y - frame.content_origin.y + line_h * frame.first_visible_row as f32;
+        frame.geometry.hit_test(point(x, y), self.editor.source().len())
+    }
+
+    /// Left-down: place the caret at the hit, switch the active pane,
+    /// start a drag, and take keyboard focus. Mirrors egui's
+    /// `apply_interaction` press branch (hxy-view/src/lib.rs), which
+    /// also rebinds `Selection::caret` on press.
+    fn handle_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.hit_at(event.position) else { return };
+        self.editor.set_active_pane(hit.pane);
+        self.editor.set_selection(Some(Selection::caret(hit.offset)));
+        self.drag_anchor = Some(hit.offset);
+        window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
+    /// Move-with-left-held: extend the cursor to the hit under the
+    /// pointer while the anchor stays pinned at the press byte, and
+    /// auto-scroll one row when the pointer strays above or below the
+    /// grid. Cursor movement mirrors egui's `apply_interaction` held
+    /// branch (anchor pinned, cursor follows the pointer). One
+    /// divergence: egui mutates `Selection::cursor` directly through
+    /// `HexEditor::view_parts`, leaving any pending nibble edit alone;
+    /// `hxy-editor` exposes no equivalent low-level mutator here, so
+    /// this goes through `set_selection`, which resets the nibble to
+    /// High and marks a history break on every drag-move frame, not
+    /// just on press.
+    fn handle_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(anchor) = self.drag_anchor else { return };
+        if event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let scrolled = self.auto_scroll_for_drag(event.position);
+        let extended = if let Some(hit) = self.hit_at(event.position) {
+            self.editor.set_selection(Some(Selection { anchor, cursor: hit.offset }));
+            true
+        } else {
+            false
+        };
+        if scrolled || extended {
+            cx.notify();
+        }
+    }
+
+    /// Left-up: end the drag.
+    fn handle_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.drag_anchor = None;
+    }
+
+    /// Scrolls one row toward the pointer when it is above or below the
+    /// grid's content area, clamped to the row range. Returns whether
+    /// the scroll position changed.
+    ///
+    /// `FrameInfo::content_origin` is shifted up by the fractional part
+    /// of the scroll position (paint.rs bakes that in so `hit_at`'s row
+    /// math lines up); undo that shift here to get the widget's actual
+    /// fixed screen-space top edge, or a mid-scroll drag would trigger
+    /// auto-scroll while the pointer is still visually inside the grid.
+    fn auto_scroll_for_drag(&mut self, position: Point<Pixels>) -> bool {
+        let Some(frame) = self.last_frame else { return false };
+        let line_h = frame.geometry.metrics.line_h;
+        let frac = self.scroll_rows - frame.first_visible_row as f32;
+        let grid_top = frame.content_origin.y + line_h * frac;
+        let grid_bottom = grid_top + line_h * frame.rows_visible;
+        let delta = if position.y < grid_top {
+            -1.0
+        } else if position.y > grid_bottom {
+            1.0
+        } else {
+            return false;
+        };
+        let max = self.row_count().saturating_sub(1) as f32;
+        let scroll_rows = (self.scroll_rows + delta).clamp(0.0, max);
+        if scroll_rows == self.scroll_rows {
+            return false;
+        }
+        self.scroll_rows = scroll_rows;
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_rows(&self) -> f32 {
         self.scroll_rows
+    }
+
+    /// The last frame's latched geometry. Lets integration tests (and
+    /// any future consumer) compute click coordinates from real font
+    /// metrics; same visibility as [`Self::editor`].
+    pub fn last_frame(&self) -> Option<FrameInfo> {
+        self.last_frame
     }
 }
 
@@ -183,6 +292,9 @@ impl Render for HexPane {
                     cx.stop_propagation();
                 }
             }))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_mouse_move(cx.listener(Self::handle_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
             .child(div().size_full().child(canvas))
     }
 }
