@@ -116,10 +116,13 @@ review, commit); this spec governs all of them.
 - M2: DockArea workspace, tabs, nested-dock spike, gpui_dock_picker,
   command palette with calculator, search, goto, data inspector, menus,
   toasts.
-- M3: strings, entropy, checksums, compare/diff, visualizers, VFS browser,
-  file watching, snapshots, save.
-- M4: template runner (010/ImHex), plugins and mounts, IPC single-instance,
-  settings persistence, i18n sweep, welcome and console tabs.
+- M3: strings, entropy, checksums, compare/diff, VFS browser (including
+  workspace tabs via the nested-dock wrapper), file watching, snapshots,
+  save, global search.
+- M4: template runner (010/ImHex), visualizers (they are driven by
+  template visualize attributes and have no data source before templates
+  exist), plugins and mounts, IPC single-instance, settings persistence,
+  i18n sweep, welcome and console tabs.
 
 ## Verification and review
 
