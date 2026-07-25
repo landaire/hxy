@@ -19,6 +19,7 @@ use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::WELCOME_PANEL_NAME;
+use crate::panels::WORKSPACE_HOST_PANEL_NAME;
 
 /// Bumped when the persisted layout shape changes incompatibly; a
 /// mismatch at load time discards the old layout and starts fresh.
@@ -175,6 +176,14 @@ enum PanelKind {
     /// compare is dropped -- mirrors the egui app dropping open-file-side
     /// compares on restore.
     Compare,
+    /// A VFS workspace host tab, kept only when its recorded archive path
+    /// (`parent_path`) still reads -- restore re-mounts from it. A missing
+    /// or unreadable archive is dropped here. Mountability cannot be
+    /// checked at this layer (`prune_for_restore` has no registry access),
+    /// so a readable-but-unmountable archive survives pruning and is
+    /// handled at restore instead: it falls back to an empty read-only
+    /// mount with a warning (see `WorkspaceHostPanel::restore`).
+    WorkspaceHost,
 }
 
 /// Look up the pruning rule for a panel name, or `None` for a generic
@@ -187,6 +196,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         ENTROPY_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "entropy panel" }),
         CHECKSUMS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "checksums panel" }),
         COMPARE_PANEL_NAME => Some(PanelKind::Compare),
+        WORKSPACE_HOST_PANEL_NAME => Some(PanelKind::WorkspaceHost),
         _ => None,
     }
 }
@@ -226,6 +236,13 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
                 }
             }
         }
+        Some(PanelKind::WorkspaceHost) => match workspace_parent_path(&panel.info) {
+            Some(path) if path_is_readable(&path) => true,
+            _ => {
+                tracing::warn!("restore: workspace archive missing/unreadable; dropping tab");
+                false
+            }
+        },
         None => {
             panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
             let surviving = panel.children.len();
@@ -255,6 +272,12 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
 fn file_path(info: &PanelInfo) -> Option<PathBuf> {
     let PanelInfo::Panel(value) = info else { return None };
     value.get("path").and_then(|p| p.as_str()).map(PathBuf::from)
+}
+
+/// A workspace host's recorded archive path (`parent_path`), if present.
+fn workspace_parent_path(info: &PanelInfo) -> Option<PathBuf> {
+    let PanelInfo::Panel(value) = info else { return None };
+    value.get("parent_path").and_then(|p| p.as_str()).map(PathBuf::from)
 }
 
 /// One compare side's recorded path (`a_path` / `b_path`), if present.

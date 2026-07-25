@@ -128,6 +128,10 @@ pub enum PaletteAction {
     /// Open (or focus) the checksums panel for the active file, hashing
     /// the whole file under the panel's own auto-run rule.
     OpenChecksums,
+    /// Mount the active file through its detected VFS handler and swap its
+    /// tab for a nested-dock workspace. Only meaningful when the active
+    /// file has a detected handler (`PaletteContext::can_browse_vfs`).
+    BrowseVfs,
     /// Cascade into an argument mode without closing the palette.
     SwitchMode(PaletteMode),
     /// Move the caret to an absolute offset (relative inputs are
@@ -168,6 +172,9 @@ pub struct PaletteContext {
     /// `Some((start, end_exclusive))` when a selection exists.
     pub selection: Option<(u64, u64)>,
     pub vim_on: bool,
+    /// The active file has a detected VFS handler, so "Browse VFS" would
+    /// mount it rather than no-op.
+    pub can_browse_vfs: bool,
 }
 
 /// Resolved keybinding hints for the Main-list commands that mirror a
@@ -263,6 +270,16 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
             .with_subtitle(hxy_i18n::t("palette-checksums-whole-file-subtitle"))
             .with_disabled(!ctx.has_active_file),
     );
+
+    // Surfaced whether or not it applies (mirrors the egui "Browse VFS"
+    // entry) so the command is discoverable; disabled with a reason when
+    // the active file has no detected handler.
+    let mut browse_vfs =
+        Entry::new(hxy_i18n::t("gpui-palette-browse-vfs"), PaletteAction::BrowseVfs).with_disabled(!ctx.can_browse_vfs);
+    if !ctx.can_browse_vfs {
+        browse_vfs = browse_vfs.with_subtitle(hxy_i18n::t("gpui-palette-browse-vfs-unavailable"));
+    }
+    out.push(browse_vfs);
 
     out.push(
         Entry::new(hxy_i18n::t("palette-go-to-offset-entry"), PaletteAction::SwitchMode(PaletteMode::GoToOffset))
@@ -473,7 +490,14 @@ mod tests {
     use super::*;
 
     fn active_ctx() -> PaletteContext {
-        PaletteContext { has_active_file: true, cursor: 0, source_len: 256, selection: None, vim_on: false }
+        PaletteContext {
+            has_active_file: true,
+            cursor: 0,
+            source_len: 256,
+            selection: None,
+            vim_on: false,
+            can_browse_vfs: true,
+        }
     }
 
     fn actions(entries: &[Entry<PaletteAction>]) -> Vec<PaletteAction> {
@@ -508,6 +532,22 @@ mod tests {
             disabled,
             vec![PaletteAction::CopySelection(CopyFormat::Hex), PaletteAction::CopySelection(CopyFormat::Bytes),]
         );
+    }
+
+    #[test]
+    fn browse_vfs_entry_gates_on_a_detected_handler() {
+        // Present and enabled when a handler was detected.
+        let entries = build_entries(PaletteMode::Main, "", active_ctx(), &Shortcuts::default());
+        let browse = entries.iter().find(|e| e.data == PaletteAction::BrowseVfs).expect("browse vfs row present");
+        assert!(!browse.disabled, "enabled when the file has a detected handler");
+
+        // Present but disabled (with a reason) when none was detected.
+        let mut ctx = active_ctx();
+        ctx.can_browse_vfs = false;
+        let entries = build_entries(PaletteMode::Main, "", ctx, &Shortcuts::default());
+        let browse = entries.iter().find(|e| e.data == PaletteAction::BrowseVfs).expect("browse vfs row present");
+        assert!(browse.disabled, "disabled when no handler matches the file");
+        assert!(browse.subtitle.is_some(), "shows a reason when disabled");
     }
 
     #[test]

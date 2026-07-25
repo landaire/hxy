@@ -29,6 +29,7 @@ use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_vfs::VfsHandler;
 use hxy_view_gpui::HexPane;
 
 use super::search_bar::SearchBar;
@@ -41,6 +42,12 @@ pub const FILE_PANEL_NAME: &str = "FilePanel";
 pub struct FilePanel {
     pane: Entity<HexPane>,
     path: Option<PathBuf>,
+    /// Tab label for a pathless buffer -- set for a VFS entry (its leaf
+    /// name) so the tab reads sensibly instead of "Untitled".
+    title_override: Option<String>,
+    /// VFS handler that claimed this file's header, if any, enabling the
+    /// "Browse VFS" command. `None` for a plain file or a VFS entry.
+    detected_handler: Option<Arc<dyn VfsHandler>>,
     search: Entity<SearchBar>,
 }
 
@@ -48,7 +55,31 @@ impl FilePanel {
     pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
-        Self { pane, path, search }
+        Self { pane, path, title_override: None, detected_handler: None, search }
+    }
+
+    /// A file panel over a VFS entry: no on-disk path, but a stable tab
+    /// title (the entry's leaf name).
+    pub fn new_vfs_entry(
+        source: Arc<dyn HexSource>,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(source, None, window, cx);
+        panel.title_override = Some(title);
+        panel
+    }
+
+    /// Record the VFS handler that matched this file's header (enables
+    /// the "Browse VFS" command for this tab).
+    pub fn set_detected_handler(&mut self, handler: Option<Arc<dyn VfsHandler>>) {
+        self.detected_handler = handler;
+    }
+
+    /// The VFS handler matching this file, if one was detected.
+    pub fn detected_handler(&self) -> Option<Arc<dyn VfsHandler>> {
+        self.detected_handler.clone()
     }
 
     /// Rebuild a panel from persisted [`PanelInfo`]. The path is
@@ -76,6 +107,15 @@ impl FilePanel {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// The tab label: the VFS entry title if set, else the file leaf name,
+    /// else the untitled placeholder.
+    fn tab_label(&self) -> String {
+        match &self.title_override {
+            Some(title) => title.clone(),
+            None => tab_title(self.path.as_deref()),
+        }
     }
 
     /// `cmd-f`: open the bar (focusing the query field) or, if already
@@ -118,14 +158,14 @@ impl Panel for FilePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(tab_title(self.path.as_deref()))
+        SharedString::from(self.tab_label())
     }
 
     /// Same text as `title`, just via the `&self` (non-rendering) path
     /// `Panel::tab_name` provides -- defaults to `None`, which would
     /// otherwise leave every file leaf's pane-picker row unlabeled.
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(tab_title(self.path.as_deref())))
+        Some(SharedString::from(self.tab_label()))
     }
 
     /// Persist the backing path so the tab can be re-opened next launch.

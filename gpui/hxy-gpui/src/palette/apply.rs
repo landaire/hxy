@@ -29,6 +29,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::OpenStrings => ws.open_strings_for_active_file(window, cx),
         PaletteAction::OpenEntropy => ws.open_entropy_for_active_file(window, cx),
         PaletteAction::OpenChecksums => ws.open_checksums_for_active_file(window, cx),
+        PaletteAction::BrowseVfs => ws.browse_active_file_as_workspace(window, cx),
         PaletteAction::GoToOffset(target) => {
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| {

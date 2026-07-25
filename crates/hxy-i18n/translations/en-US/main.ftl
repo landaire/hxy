@@ -44,6 +44,11 @@ gpui-status-restore-dropped-file = Dropped restored tab: { $file } no longer exi
 gpui-status-restore-dropped-summary = Dropped { $count } restored tabs whose files no longer exist.
 gpui-menu-toggle-edit-mode = Toggle Edit Mode
 gpui-menu-about-body = { $name } { $version }
+gpui-palette-browse-vfs = Browse VFS
+gpui-palette-browse-vfs-unavailable = no VFS handler for this file
+gpui-workspace-tab-untitled = Workspace
+gpui-workspace-ejected-foreign-tab = Moved { $tab } back out of the workspace.
+gpui-vfs-tree-title = Files
 
 # Menus
 menu-file = File

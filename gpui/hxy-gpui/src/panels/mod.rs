@@ -19,6 +19,7 @@ mod file;
 pub mod inspector;
 mod search_bar;
 pub mod strings;
+pub mod vfs_tree;
 mod welcome;
 pub mod workspace_host;
 
@@ -37,6 +38,7 @@ pub use strings::StringsPanel;
 pub use welcome::WELCOME_PANEL_NAME;
 pub use welcome::WelcomePanel;
 pub use workspace_host::WORKSPACE_HOST_PANEL_NAME;
+pub use workspace_host::WorkspaceHostPanel;
 
 /// Register every panel name so `DockArea::load` can rebuild a saved
 /// layout. Must run once at startup, before any layout is loaded.

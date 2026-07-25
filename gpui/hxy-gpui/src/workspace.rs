@@ -77,7 +77,9 @@ use crate::panels::InspectorPanel;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
 use crate::panels::WELCOME_PANEL_NAME;
+use crate::panels::WORKSPACE_HOST_PANEL_NAME;
 use crate::panels::WelcomePanel;
+use crate::panels::WorkspaceHostPanel;
 use crate::panels::compare::CompareSideInit;
 use crate::panels::compare::leaf_name;
 use crate::panels::inspector::ActiveHexPane;
@@ -911,8 +913,13 @@ impl Workspace {
         }
         match std::fs::read(&path) {
             Ok(bytes) => {
+                // Detect a VFS handler against the first ~4 KiB so the
+                // "Browse VFS" command can enable itself for this tab
+                // (mirrors the egui app's per-open `registry.detect`).
+                let handler = crate::panels::workspace_host::detect_handler(cx, &bytes[..bytes.len().min(4096)]);
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
+                panel.update(cx, |panel, _cx| panel.set_detected_handler(handler));
                 self.add_file_panel(panel, window, cx);
                 Ok(())
             }
@@ -1176,12 +1183,14 @@ impl Workspace {
             let range = s.range();
             (range.start().get(), range.end().get())
         });
+        let can_browse_vfs = file.read(cx).detected_handler().is_some();
         PaletteContext {
             has_active_file: true,
             cursor,
             source_len,
             selection,
             vim_on: matches!(editor.input_mode(), InputMode::Vim),
+            can_browse_vfs,
         }
     }
 
@@ -1201,6 +1210,42 @@ impl Workspace {
 
     pub(crate) fn toggle_inspector_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.on_toggle_inspector(&ToggleInspector, window, cx);
+    }
+
+    /// "Browse VFS": mount the reference file through its detected handler
+    /// and swap its tab for a nested-dock [`WorkspaceHostPanel`]. Mirrors
+    /// the egui app's `mount_active_file` (palette "Browse VFS" entry) --
+    /// the file tab is removed and replaced by the workspace tab. No-op
+    /// with no reference file or no detected handler (the palette entry is
+    /// disabled in that case, but a direct caller is guarded here too).
+    pub(crate) fn browse_active_file_as_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let Some(handler) = file.read(cx).detected_handler() else { return };
+        let source = file.read(cx).pane().read(cx).editor().source().clone();
+        let parent_path = file.read(cx).path().map(Path::to_path_buf);
+        let mount = match handler.mount(source) {
+            Ok(mount) => Arc::new(mount),
+            Err(err) => {
+                tracing::warn!(%err, handler = handler.name(), "browse vfs: mount failed");
+                let text = hxy_i18n::t_args("gpui-status-open-error-dialog", &[("error", &err.to_string())]);
+                window.push_notification(Notification::error(text), cx);
+                return;
+            }
+        };
+
+        // Remove the plain file tab, then add the workspace tab in its
+        // place (mirrors egui swapping Tab::File for Tab::Workspace).
+        self.resync_center_if_stale(window, cx);
+        let closed = file.entity_id();
+        let view: Arc<dyn PanelView> = Arc::new(file);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.open_files.retain(|f| f.entity_id() != closed);
+
+        let outer = self.dock.downgrade();
+        let host = cx.new(|cx| WorkspaceHostPanel::new(outer, mount, parent_path, window, cx));
+        let view: Arc<dyn PanelView> = Arc::new(host);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -1358,12 +1403,16 @@ impl Workspace {
     /// exactly when no file tab is open, and refresh the active file.
     /// Runs after layout changes, where a `&mut Window` is available.
     fn reconcile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let file_count = {
+        let has_content = {
             let state = self.dock.read(cx).dump(cx);
-            count_file_panels(&state.center)
+            // A workspace host tab is content too (its own file tabs live
+            // inside its nested dock, invisible to `count_file_panels`),
+            // so it must suppress the welcome placeholder just like a
+            // plain file tab does.
+            count_file_panels(&state.center) > 0 || count_workspace_host_panels(&state.center) > 0
         };
 
-        if file_count == 0 {
+        if !has_content {
             if self.welcome.is_none() {
                 let welcome = cx.new(WelcomePanel::new);
                 let view: Arc<dyn PanelView> = Arc::new(welcome.clone());
@@ -1614,6 +1663,15 @@ fn restore_pruned_texts(pruned: &[PathBuf]) -> Vec<String> {
 fn count_file_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == FILE_PANEL_NAME);
     here + state.children.iter().map(count_file_panels).sum::<usize>()
+}
+
+/// Total workspace-host tabs anywhere under `state`. Counted alongside
+/// file panels when deciding whether the welcome placeholder should show
+/// -- a workspace tab is content whose nested file tabs `count_file_panels`
+/// cannot see (they are serialized inside the host's own `PanelInfo`).
+fn count_workspace_host_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == WORKSPACE_HOST_PANEL_NAME);
+    here + state.children.iter().map(count_workspace_host_panels).sum::<usize>()
 }
 
 #[cfg(test)]
