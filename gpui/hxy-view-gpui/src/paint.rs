@@ -31,6 +31,7 @@ use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
+use hxy_core::RowSlot;
 use hxy_core::Selection;
 use hxy_editor::NibbleCursor;
 use hxy_editor::Pane;
@@ -64,6 +65,11 @@ pub(crate) struct PaintColors {
     pub muted: Hsla,
     pub accent: Hsla,
     pub selection: Hsla,
+    /// Softer, semi-transparent selection tint for the hover-span band.
+    /// Distinct from `selection` so the two bands read apart when they
+    /// overlap; mirrors egui hxy-view, which gamma-multiplies the
+    /// selection background for its hover fill (lib.rs:1358).
+    pub hover: Hsla,
 }
 
 /// Snapshot of the editor state a single paint pass needs. Captured in
@@ -79,6 +85,12 @@ pub(crate) struct GridSnapshot {
     pub colors: PaintColors,
     pub mono_family: gpui::SharedString,
     pub mono_size: Pixels,
+    /// Non-linear row stream; `None` keeps the linear fast path.
+    pub row_map: Option<Vec<RowSlot>>,
+    /// Secondary highlight band, painted under the selection band.
+    pub hover_span: Option<ByteRange>,
+    /// Per-byte color override consulted in the paint loop.
+    pub byte_styler: Option<crate::ByteStyler>,
 }
 
 /// Build the canvas element that paints the grid. `entity` is used from
@@ -116,7 +128,12 @@ fn paint_grid(
     let grid_area_h = (bounds.size.height - px(PAD_Y) - metrics.line_h).max(px(0.0));
     let rows_visible = f32::from(grid_area_h) / f32::from(metrics.line_h);
 
-    let row_count = geometry.row_count(source_len);
+    // A row map sets the row count to its slot count; otherwise the
+    // linear rule (with its trailing EOF-cursor row) applies.
+    let row_count = match snap.row_map.as_deref() {
+        Some(slots) => slots.len() as u64,
+        None => geometry.row_count(source_len),
+    };
     // Paint one extra row past the clipped viewport so a partially
     // scrolled row at the bottom edge is never blank.
     let last_visible_row = (first_visible_row + rows_visible.ceil() as u64 + 1).min(row_count.saturating_sub(1));
@@ -145,10 +162,18 @@ fn paint_grid(
     // `pending_scroll`, which it does since the pane converts back
     // through the same `line_h`. `interacted_pane` stays `None`: mouse
     // handlers call `set_active_pane` directly rather than routing
-    // through this frame-latch.
-    let visible_start = first_visible_row.saturating_mul(cols).min(source_len.get());
-    let visible_end = on_frame_end_row.saturating_mul(cols).min(source_len.get());
-    let visible_range = ByteRange::new(ByteOffset::new(visible_start), ByteOffset::new(visible_end)).ok();
+    // through this frame-latch. The byte span must be the one actually
+    // on screen: with a row map that is the union of the visible slots'
+    // ranges (mirroring egui's `read_visible_rows` aggregate), not the
+    // linear `row * cols` span.
+    let visible_range = match snap.row_map.as_deref() {
+        Some(slots) => mapped_visible_range(slots, first_visible_row, on_frame_end_row),
+        None => {
+            let visible_start = first_visible_row.saturating_mul(cols).min(source_len.get());
+            let visible_end = on_frame_end_row.saturating_mul(cols).min(source_len.get());
+            ByteRange::new(ByteOffset::new(visible_start), ByteOffset::new(visible_end)).ok()
+        }
+    };
     let scroll_offset_px = snap.scroll_rows * f32::from(metrics.line_h);
 
     entity.update(app, |pane, _cx| {
@@ -156,6 +181,11 @@ fn paint_grid(
         pane.editor_mut().on_frame(scroll_offset_px, snap.columns, visible_range, None);
     });
 
+    // The minimap ignores the row map for its downsampling: it reads
+    // the source linearly and scales to `row_count` (the slot count
+    // when mapped), exactly as egui hxy-view does -- egui passes
+    // `total_rows = slots.len()` to `draw_minimap` but its
+    // `HexMinimapSource` still reads `row * cols` (lib.rs:2049-2057).
     crate::minimap::paint_minimap(
         snap.source.as_ref(),
         source_len,
@@ -168,10 +198,23 @@ fn paint_grid(
         window,
     );
 
-    let bytes = read_visible(snap.source.as_ref(), first_visible_row, last_visible_row, cols, source_len);
     let selected = snap.selection.map(|s| s.range());
     let cursor = snap.selection.map(|s| s.cursor.get());
+
+    // Linear fast path reads one contiguous block and sub-slices each
+    // row out of it (no per-row allocation). The row-map path issues a
+    // read per visible slot so non-contiguous / partial offsets work
+    // and gap rows contribute an empty entry; the allocation only
+    // happens when a map is actually set.
     let block_start = first_visible_row.saturating_mul(cols);
+    let block_bytes = match snap.row_map.as_deref() {
+        Some(_) => Vec::new(),
+        None => read_visible(snap.source.as_ref(), first_visible_row, last_visible_row, cols, source_len),
+    };
+    let mapped_rows = match snap.row_map.as_deref() {
+        Some(slots) => read_mapped_rows(snap.source.as_ref(), slots, first_visible_row, last_visible_row),
+        None => Vec::new(),
+    };
 
     // Clip the header and rows to the width left after the strip and
     // its gap, so the grid can never paint over the minimap.
@@ -181,34 +224,134 @@ fn paint_grid(
         paint_header(snap, &geometry, &mono, content_origin, bounds.origin.y + px(PAD_Y), window, app);
 
         for row in first_visible_row..=last_visible_row {
+            let row_y = content_origin.y + metrics.line_h * (row - first_visible_row) as f32;
+            let (row_start, row_len, row_bytes) = match snap.row_map.as_deref() {
+                Some(_) => {
+                    // A row past the slot list (e.g. an empty map) has no
+                    // read entry; skip it. Gap rows paint nothing but
+                    // still occupy their height.
+                    let Some(read) = mapped_rows.get((row - first_visible_row) as usize) else { continue };
+                    if read.is_gap {
+                        continue;
+                    }
+                    (read.offset.get(), read.bytes.len() as u64, read.bytes.as_slice())
+                }
+                None => {
+                    let start = row.saturating_mul(cols);
+                    // Clamp the slice window to the block: a short read
+                    // (source returned fewer bytes than requested) must
+                    // paint an empty row, not panic on an out-of-range
+                    // slice.
+                    let idx = ((start - block_start) as usize).min(block_bytes.len());
+                    let n = (cols as usize).min(block_bytes.len() - idx);
+                    (start, cols, &block_bytes[idx..idx + n])
+                }
+            };
             let ctx = RowCtx {
                 geometry: &geometry,
                 origin_x: content_origin.x,
-                row_y: content_origin.y + metrics.line_h * (row - first_visible_row) as f32,
-                row_start: row.saturating_mul(cols),
+                row_y,
+                row_start,
+                row_len,
                 cols,
-                block_start,
-                source_len,
+                bytes: row_bytes,
             };
+            paint_hover_band(&ctx, snap.hover_span, snap.colors.hover, window);
             paint_selection_bands(&ctx, selected, snap.colors.selection, window);
+            paint_styler_tints(&ctx, snap, window);
             paint_cursor_cell(&ctx, snap, cursor, window);
-            paint_row_text(&ctx, snap, &mono, &bytes, window, app);
+            paint_row_text(&ctx, snap, &mono, window, app);
             paint_nibble_caret(&ctx, snap, cursor, window);
         }
     });
 }
 
+/// Bytes + metadata for one rendered row when a row map is active.
+/// `bytes` is empty for a [`RowSlot::Gap`] (the renderer skips it).
+struct RowRead {
+    offset: ByteOffset,
+    bytes: Vec<u8>,
+    is_gap: bool,
+}
+
+/// Read every visible slot's bytes, one read per [`RowSlot::Real`] row.
+/// Mirrors egui hxy-view's `read_visible_rows` map branch: a gap row
+/// yields an empty entry, a real row reads exactly its `[offset,
+/// offset+len)` span so partial and non-contiguous rows both work. A
+/// per-row read failure logs once and paints that row empty rather than
+/// aborting the frame.
+fn read_mapped_rows(source: &dyn HexSource, slots: &[RowSlot], first_row: u64, last_row: u64) -> Vec<RowRead> {
+    let first = first_row as usize;
+    if first >= slots.len() {
+        return Vec::new();
+    }
+    let last = (last_row as usize).min(slots.len() - 1);
+    let mut rows = Vec::with_capacity(last.saturating_sub(first) + 1);
+    let mut warned = false;
+    for slot in &slots[first..=last] {
+        match *slot {
+            RowSlot::Real { offset, len } => {
+                let end = offset + u64::from(len);
+                let bytes = match ByteRange::new(ByteOffset::new(offset), ByteOffset::new(end)) {
+                    Ok(range) => match source.read(range) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            if !warned {
+                                tracing::warn!(?range, %err, "mapped row read failed; painting empty rows");
+                                warned = true;
+                            }
+                            Vec::new()
+                        }
+                    },
+                    Err(err) => {
+                        tracing::warn!(%err, offset, len, "mapped row range invalid; painting empty row");
+                        Vec::new()
+                    }
+                };
+                rows.push(RowRead { offset: ByteOffset::new(offset), bytes, is_gap: false });
+            }
+            RowSlot::Gap => rows.push(RowRead { offset: ByteOffset::new(0), bytes: Vec::new(), is_gap: true }),
+        }
+    }
+    rows
+}
+
+/// Union of the [`RowSlot::Real`] byte ranges in `slots[first..end]`,
+/// the mapped equivalent of the linear `row * cols` visible span fed to
+/// the editor's scrolloff bookkeeping.
+fn mapped_visible_range(slots: &[RowSlot], first_row: u64, end_row: u64) -> Option<ByteRange> {
+    let first = (first_row as usize).min(slots.len());
+    let end = (end_row as usize).min(slots.len());
+    let mut lo: Option<u64> = None;
+    let mut hi: Option<u64> = None;
+    for slot in &slots[first..end] {
+        if let RowSlot::Real { offset, len } = *slot {
+            lo = Some(lo.map_or(offset, |v| v.min(offset)));
+            hi = Some(hi.map_or(offset + u64::from(len), |v| v.max(offset + u64::from(len))));
+        }
+    }
+    match (lo, hi) {
+        (Some(lo), Some(hi)) => ByteRange::new(ByteOffset::new(lo), ByteOffset::new(hi)).ok(),
+        _ => None,
+    }
+}
+
 /// Per-row invariants shared by the paint helpers: the row's screen
-/// origin, its byte span, and the frame's read-block offset for indexing
-/// into the bytes buffer.
+/// origin, its byte span, and the row's own byte slice (already sliced
+/// out of the read block or the per-slot read, indexed from column 0).
 struct RowCtx<'a> {
     geometry: &'a GridGeometry,
     origin_x: Pixels,
     row_y: Pixels,
+    /// First byte offset of this row (linear `row * cols`, or the slot
+    /// offset under a row map).
     row_start: u64,
+    /// Count of real byte columns this row spans, for selection / hover
+    /// band and cursor-column math: `cols` linearly, the slot's `len`
+    /// under a row map.
+    row_len: u64,
     cols: u64,
-    block_start: u64,
-    source_len: ByteLen,
+    bytes: &'a [u8],
 }
 
 impl RowCtx<'_> {
@@ -218,8 +361,13 @@ impl RowCtx<'_> {
 
     /// Column of `cursor` within this row, or `None` if it lies outside.
     fn cursor_col(&self, cursor: u64) -> Option<u16> {
-        (cursor >= self.row_start && cursor < self.row_start.saturating_add(self.cols))
+        (cursor >= self.row_start && cursor < self.row_start.saturating_add(self.row_len))
             .then(|| (cursor - self.row_start) as u16)
+    }
+
+    /// Exclusive byte end of this row's real span.
+    fn row_end(&self) -> u64 {
+        self.row_start.saturating_add(self.row_len)
     }
 }
 
@@ -281,10 +429,27 @@ fn read_visible(source: &dyn HexSource, first_row: u64, last_row: u64, cols: u64
 /// both the hex and ascii panes. A single quad per pane spans the whole
 /// column run (gaps between cells included).
 fn paint_selection_bands(ctx: &RowCtx, selected: Option<ByteRange>, color: Hsla, window: &mut Window) {
-    let Some(sel) = selected else { return };
-    let row_end = ctx.row_start.saturating_add(ctx.cols);
-    let lo = sel.start().get().max(ctx.row_start);
-    let hi = sel.end().get().min(row_end);
+    if let Some(sel) = selected {
+        paint_range_band(ctx, sel, color, window);
+    }
+}
+
+/// Secondary hover-highlight band. Painted before the selection band so
+/// the user's explicit selection color stays authoritative where the
+/// two overlap. Mirrors egui hxy-view's hover-under-selection intent
+/// (lib.rs:1353-1358), which softens the selection color for the
+/// secondary marker.
+fn paint_hover_band(ctx: &RowCtx, hover: Option<ByteRange>, color: Hsla, window: &mut Window) {
+    if let Some(span) = hover {
+        paint_range_band(ctx, span, color, window);
+    }
+}
+
+/// Fill the columns of `range` that fall in this row with `color`, one
+/// quad in the hex pane and one in the ascii pane.
+fn paint_range_band(ctx: &RowCtx, range: ByteRange, color: Hsla, window: &mut Window) {
+    let lo = range.start().get().max(ctx.row_start);
+    let hi = range.end().get().min(ctx.row_end());
     if lo >= hi {
         return;
     }
@@ -325,7 +490,7 @@ fn paint_cursor_cell(ctx: &RowCtx, snap: &GridSnapshot, cursor: Option<u64>, win
     window.paint_quad(outline(inactive, snap.colors.accent, gpui::BorderStyle::Solid));
 }
 
-fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, bytes: &[u8], window: &mut Window, app: &mut App) {
+fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut Window, app: &mut App) {
     let g = ctx.geometry;
     let addr = format!("{:0width$X}", ctx.row_start, width = g.address_chars);
     paint_line(
@@ -338,19 +503,16 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, bytes: &[u8], 
         app,
     );
 
-    let len = ctx.source_len.get();
     let mut ascii = String::with_capacity(ctx.cols as usize);
     let mut ascii_runs: Vec<TextRun> = Vec::with_capacity(ctx.cols as usize);
 
-    for c in 0..ctx.cols {
-        let offset = ctx.row_start + c;
-        if offset >= len {
-            break;
-        }
-        let idx = (offset - ctx.block_start) as usize;
-        let Some(&byte) = bytes.get(idx) else { break };
-        let color = byte_color(byte, &snap.colors);
+    for (c, &byte) in ctx.bytes.iter().enumerate().take(ctx.cols as usize) {
         let col = c as u16;
+        let offset = ByteOffset::new(ctx.row_start + c as u64);
+        // Styler foreground overrides the byte-class color (egui
+        // lib.rs:1400-1418: `fg_override` wins over the palette).
+        let fg_override = snap.byte_styler.as_ref().and_then(|f| f(byte, offset).fg);
+        let color = fg_override.unwrap_or_else(|| byte_color(byte, &snap.colors));
 
         let hex = format!("{byte:02X}");
         paint_line(mono, &hex, snap.mono_size, color, point(ctx.origin_x + g.hex_x(col), ctx.row_y), window, app);
@@ -364,6 +526,37 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, bytes: &[u8], 
         let shaped = window.text_system().shape_line(ascii.into(), snap.mono_size, &ascii_runs, None);
         let _ = shaped.paint(point(ctx.origin_x + g.ascii_x(0), ctx.row_y), ctx.line_h(), window, app);
     }
+}
+
+/// Byte-styler background pass: fills each cell whose styler returns a
+/// `bg`. Runs after the selection / hover bands but before the cursor
+/// emphasis and glyphs, so the styler tint sits under the cursor fill
+/// (brief: styler consulted before selection/cursor emphasis). Cells
+/// the selection or hover band already covers are skipped so those
+/// bands stay authoritative, matching egui hxy-view (lib.rs:1404-1409).
+fn paint_styler_tints(ctx: &RowCtx, snap: &GridSnapshot, window: &mut Window) {
+    let Some(styler) = snap.byte_styler.as_ref() else { return };
+    let selected = snap.selection.map(|s| s.range());
+    for (c, &byte) in ctx.bytes.iter().enumerate().take(ctx.cols as usize) {
+        let offset = ByteOffset::new(ctx.row_start + c as u64);
+        let is_sel = selected.is_some_and(|r| r.contains(offset));
+        let is_hovered = snap.hover_span.is_some_and(|r| r.contains(offset));
+        if let Some(bg) = styler(byte, offset).bg.filter(|_| !is_sel && !is_hovered) {
+            paint_cell_tint(ctx, c as u16, bg, window);
+        }
+    }
+}
+
+/// Fill one cell's background in both the hex and ascii panes with the
+/// byte styler's `bg` override.
+fn paint_cell_tint(ctx: &RowCtx, col: u16, color: Hsla, window: &mut Window) {
+    let g = ctx.geometry;
+    let line_h = ctx.line_h();
+    let hex_b =
+        band_bounds(ctx.origin_x + g.hex_x(col), ctx.origin_x + g.hex_x(col) + g.hex_cell_w(), ctx.row_y, line_h);
+    let ascii_b = band_bounds(ctx.origin_x + g.ascii_x(col), ctx.origin_x + g.ascii_x(col + 1), ctx.row_y, line_h);
+    window.paint_quad(fill(hex_b, color));
+    window.paint_quad(fill(ascii_b, color));
 }
 
 /// Two-pixel underline under the active nibble's glyph, only in the hex
@@ -421,6 +614,12 @@ pub(crate) fn is_printable(byte: u8) -> bool {
     (0x20..=0x7e).contains(&byte)
 }
 
+/// Opacity applied to the selection color to derive the hover-span
+/// tint: soft enough to read as a secondary marker under the primary
+/// selection band. Mirrors egui hxy-view's `gamma_multiply(0.45)` on
+/// its hover fill (lib.rs:1358).
+const HOVER_TINT_ALPHA: f32 = 0.45;
+
 impl PaintColors {
     pub(crate) fn from_theme(theme: &gpui_component::Theme) -> Self {
         Self {
@@ -428,6 +627,7 @@ impl PaintColors {
             muted: theme.muted_foreground,
             accent: theme.accent_foreground,
             selection: theme.selection,
+            hover: theme.selection.opacity(HOVER_TINT_ALPHA),
         }
     }
 }

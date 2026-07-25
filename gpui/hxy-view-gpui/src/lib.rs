@@ -10,5 +10,7 @@ mod pane;
 
 pub use geometry::*;
 pub use minimap::MinimapBounds;
+pub use pane::ByteStyleOverride;
+pub use pane::ByteStyler;
 pub use pane::FrameInfo;
 pub use pane::HexPane;

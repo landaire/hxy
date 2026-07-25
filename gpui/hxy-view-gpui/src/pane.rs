@@ -8,6 +8,7 @@ use gpui::ClipboardItem;
 use gpui::Context;
 use gpui::FocusHandle;
 use gpui::Focusable;
+use gpui::Hsla;
 use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::KeyDownEvent;
@@ -28,8 +29,10 @@ use gpui::point;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use hxy_core::ByteOffset;
+use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
+use hxy_core::RowSlot;
 use hxy_core::Selection;
 use hxy_editor::Disposition;
 use hxy_editor::Effect;
@@ -44,6 +47,23 @@ use crate::paint::hex_canvas;
 /// Row height fallback used to convert pixel scroll deltas before the
 /// first frame measures the real line height.
 const FALLBACK_LINE_H: f32 = 16.0;
+
+/// Per-byte foreground / background override returned by a
+/// [`ByteStyler`]. Mirrors egui hxy-view's `ByteStyle`: a `Some` field
+/// wins over the built-in byte-class color for that cell, a `None`
+/// field falls back to the default palette decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ByteStyleOverride {
+    /// Background tint for the cell, or `None` for no tint.
+    pub bg: Option<Hsla>,
+    /// Glyph color, or `None` to keep the byte-class color.
+    pub fg: Option<Hsla>,
+}
+
+/// Per-byte styler closure: given a byte value and its absolute file
+/// offset, returns a [`ByteStyleOverride`]. Stored behind an [`Arc`] so
+/// each paint pass can cheaply clone a handle into the frame snapshot.
+pub type ByteStyler = Arc<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send>;
 
 /// Geometry and viewport facts latched during paint, consumed by input
 /// handlers (hit testing, page-size scrolling).
@@ -74,6 +94,17 @@ pub struct HexPane {
     /// minimap strip. Scrubs `scroll_rows` continuously while held and
     /// never touches `drag_anchor` or the selection.
     minimap_scrubbing: bool,
+    /// Non-linear row stream. When `Some`, visual row N renders slot N
+    /// (a [`RowSlot::Real`] partial row or a [`RowSlot::Gap`]) instead
+    /// of the linear `row * cols` mapping. `None` keeps the zero-cost
+    /// linear path.
+    row_map: Option<Vec<RowSlot>>,
+    /// Secondary highlight band painted under the selection band (e.g.
+    /// a template-panel field hover). `None` when nothing is hovered.
+    hover_span: Option<ByteRange>,
+    /// Per-byte color override consulted in the paint loop. `None`
+    /// leaves the built-in byte-class palette in charge.
+    byte_styler: Option<ByteStyler>,
 }
 
 impl HexPane {
@@ -86,6 +117,9 @@ impl HexPane {
             last_frame: None,
             drag_anchor: None,
             minimap_scrubbing: false,
+            row_map: None,
+            hover_span: None,
+            byte_styler: None,
         }
     }
 
@@ -115,11 +149,50 @@ impl HexPane {
         self.editor = hxy_editor::HexEditor::new(source);
         self.scroll_rows = 0.0;
         self.last_frame = None;
+        // The overlays are keyed to the old source's byte offsets, so
+        // they can't carry over to a different source.
+        self.row_map = None;
+        self.hover_span = None;
+        self.byte_styler = None;
         cx.notify();
     }
 
-    /// Total rows including the trailing EOF-cursor row.
+    /// Install (or clear) a non-linear row stream. Once set, every
+    /// visual row renders its [`RowSlot`] -- addresses, bytes, hit-test,
+    /// selection, and scroll all honor the map. `None` restores the
+    /// linear layout. Mirrors egui hxy-view's `HexView::row_map`.
+    pub fn set_row_map(&mut self, slots: Option<Vec<RowSlot>>, cx: &mut Context<Self>) {
+        self.row_map = slots;
+        cx.notify();
+    }
+
+    /// Install (or clear) the secondary hover-highlight band. Painted
+    /// under the primary selection band. Mirrors egui hxy-view's
+    /// `HexView::hover_span`.
+    pub fn set_hover_span(&mut self, span: Option<ByteRange>, cx: &mut Context<Self>) {
+        self.hover_span = span;
+        cx.notify();
+    }
+
+    /// Install (or clear) the per-byte color override consulted in the
+    /// paint loop. The boxed closure is wrapped in an [`Arc`] so each
+    /// frame can snapshot a cheap handle. Mirrors egui hxy-view's
+    /// `HexView::byte_styler`.
+    pub fn set_byte_styler(
+        &mut self,
+        styler: Option<Box<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.byte_styler = styler.map(Arc::from);
+        cx.notify();
+    }
+
+    /// Total visual rows. With a row map, that is the slot count; the
+    /// linear layout reserves a trailing EOF-cursor row.
     fn row_count(&self) -> u64 {
+        if let Some(slots) = &self.row_map {
+            return slots.len() as u64;
+        }
         let cols = self.columns.as_u64();
         self.editor.source().len().get().saturating_add(1).div_ceil(cols).max(1)
     }
@@ -204,7 +277,10 @@ impl HexPane {
         let line_h = frame.geometry.metrics.line_h;
         let x = position.x - frame.content_origin.x;
         let y = position.y - frame.content_origin.y + line_h * frame.first_visible_row as f32;
-        frame.geometry.hit_test(point(x, y), self.editor.source().len())
+        match &self.row_map {
+            Some(slots) => frame.geometry.hit_test_slots(point(x, y), slots),
+            None => frame.geometry.hit_test(point(x, y), self.editor.source().len()),
+        }
     }
 
     /// `true` when `x` falls inside this frame's minimap strip.
@@ -366,7 +442,7 @@ impl HexPane {
         pending_scroll_to_byte: Option<ByteOffset>,
     ) -> bool {
         let target_rows = if let Some(byte) = pending_scroll_to_byte {
-            Some((byte.get() / self.columns.as_u64()) as f32)
+            self.byte_to_row(byte).map(|row| row as f32)
         } else if let Some(offset_px) = pending_scroll {
             self.last_frame.map(|frame| offset_px / f32::from(frame.geometry.metrics.line_h))
         } else {
@@ -380,6 +456,18 @@ impl HexPane {
         }
         self.scroll_rows = clamped;
         true
+    }
+
+    /// Visual row that owns `byte`. Linear layout divides by the column
+    /// count; a row map searches the slots (mirroring egui hxy-view's
+    /// `row_for_byte`). Returns `None` when the byte lands in a gap or
+    /// past the last slot, in which case the caller leaves scroll put --
+    /// matching egui's `scroll_to_byte` closure, which bails via `?`.
+    fn byte_to_row(&self, byte: ByteOffset) -> Option<u64> {
+        match &self.row_map {
+            Some(slots) => hxy_core::row_for_byte(slots, byte.get()).map(|row| row as u64),
+            None => Some(byte.get() / self.columns.as_u64()),
+        }
     }
 
     /// Current vertical scroll, in fractional rows. Same visibility as
@@ -439,6 +527,9 @@ impl Render for HexPane {
             colors: PaintColors::from_theme(cx.theme()),
             mono_family: cx.theme().mono_font_family.clone(),
             mono_size: cx.theme().mono_font_size,
+            row_map: self.row_map.clone(),
+            hover_span: self.hover_span,
+            byte_styler: self.byte_styler.clone(),
         };
         let canvas = hex_canvas(snap, cx.entity());
 

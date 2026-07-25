@@ -8,6 +8,7 @@ use gpui::px;
 use hxy_core::ByteLen;
 use hxy_core::ByteOffset;
 use hxy_core::ColumnCount;
+use hxy_core::RowSlot;
 use hxy_editor::NibbleCursor;
 use hxy_editor::Pane;
 
@@ -134,32 +135,67 @@ impl GridGeometry {
     /// EOF position.
     pub fn hit_test(&self, pos: Point<Pixels>, source_len: ByteLen) -> Option<GridHit> {
         let max_row = self.row_count(source_len).saturating_sub(1);
-        let row_raw = (pos.y / self.metrics.line_h).max(0.0).floor() as u64;
-        let row = row_raw.min(max_row);
+        let row = self.row_at(pos.y).min(max_row);
+        let (pane, col, nibble) = self.column_at(pos.x)?;
+        let raw_offset = row.saturating_mul(u64::from(self.columns)).saturating_add(u64::from(col));
+        let offset = raw_offset.min(source_len.get());
+        Some(GridHit { pane, offset: ByteOffset::new(offset), nibble })
+    }
 
+    /// Slot-aware hit-test: the vertical row indexes into `slots`
+    /// (its length is the row count), and the byte offset comes from
+    /// that row's [`RowSlot`] rather than the linear `row * cols + col`.
+    /// Mirrors egui hxy-view's `HitCtx::byte_offset_at`: a [`RowSlot::Gap`]
+    /// row returns `None`, and a column past a [`RowSlot::Real`] row's
+    /// `len` (a click over the empty tail of a partial row) returns `None`
+    /// too. A `y` past the last slot clamps to it, matching the linear
+    /// [`Self::hit_test`]'s bottom-row clamp.
+    pub fn hit_test_slots(&self, pos: Point<Pixels>, slots: &[RowSlot]) -> Option<GridHit> {
+        let max_row = (slots.len() as u64).saturating_sub(1);
+        let row = self.row_at(pos.y).min(max_row);
+        let (pane, col, nibble) = self.column_at(pos.x)?;
+        match *slots.get(row as usize)? {
+            RowSlot::Real { offset, len } => {
+                if u64::from(col) >= u64::from(len) {
+                    return None;
+                }
+                Some(GridHit { pane, offset: ByteOffset::new(offset + u64::from(col)), nibble })
+            }
+            RowSlot::Gap => None,
+        }
+    }
+
+    /// Visual row under `y` (relative to content origin, scroll already
+    /// applied), floored and clamped to non-negative. Callers clamp the
+    /// upper bound against the row count / slot count themselves.
+    fn row_at(&self, y: Pixels) -> u64 {
+        (y / self.metrics.line_h).max(0.0).floor() as u64
+    }
+
+    /// Resolve the pane, column, and hovered nibble for an `x` (relative
+    /// to content origin). `None` for the address gutter or past the
+    /// ascii pane's last column. Shared by the linear and slot-aware
+    /// hit-tests so both honor egui's identical x-axis rules (see
+    /// [`Self::hit_test`]'s doc).
+    fn column_at(&self, x: Pixels) -> Option<(Pane, u16, NibbleCursor)> {
         let hex_start = self.hex_pane_start();
         let ascii_start = self.ascii_pane_start();
         let ascii_end = self.ascii_x(self.columns);
         let last_col = self.columns.saturating_sub(1);
 
-        let (pane, col, nibble) = if pos.x >= hex_start && pos.x < ascii_start {
-            let local_chars = (pos.x - hex_start) / self.metrics.char_w;
-            let col = (local_chars / HEX_CELL_STRIDE_CHARS).floor() as u16;
-            let col = col.min(last_col);
+        if x >= hex_start && x < ascii_start {
+            let local_chars = (x - hex_start) / self.metrics.char_w;
+            let col = ((local_chars / HEX_CELL_STRIDE_CHARS).floor() as u16).min(last_col);
             let cell_local_chars = local_chars - f32::from(col) * HEX_CELL_STRIDE_CHARS;
             let nibble =
                 if cell_local_chars < HEX_CELL_GLYPH_CHARS / 2.0 { NibbleCursor::High } else { NibbleCursor::Low };
-            (Pane::Hex, col, nibble)
-        } else if pos.x >= ascii_start && pos.x < ascii_end {
-            let col = ((pos.x - ascii_start) / self.metrics.char_w).floor() as u16;
-            (Pane::Ascii, col, NibbleCursor::High)
+            Some((Pane::Hex, col, nibble))
+        } else if x >= ascii_start && x < ascii_end {
+            let col = ((x - ascii_start) / self.metrics.char_w).floor() as u16;
+            Some((Pane::Ascii, col, NibbleCursor::High))
         } else {
-            return None;
-        };
-
-        let raw_offset = row.saturating_mul(u64::from(self.columns)).saturating_add(u64::from(col));
-        let offset = raw_offset.min(source_len.get());
-        Some(GridHit { pane, offset: ByteOffset::new(offset), nibble })
+            None
+        }
     }
 }
 
@@ -177,6 +213,7 @@ mod tests {
     use gpui::px;
     use hxy_core::ByteLen;
     use hxy_core::ColumnCount;
+    use hxy_core::RowSlot;
 
     fn geo() -> GridGeometry {
         let metrics = CellMetrics { char_w: px(8.0), line_h: px(16.0) };
@@ -268,5 +305,67 @@ mod tests {
         assert_eq!(hit.pane, hxy_editor::Pane::Hex);
         // Last row is the EOF row (row_count - 1 == 16), byte offset 256.
         assert_eq!(hit.offset.get(), 256);
+    }
+
+    /// A hit on a [`RowSlot::Real`] row reads the byte offset from the
+    /// slot, not from `row * cols`: slot 0 starts at an arbitrary
+    /// offset (200 here), so column 3 of the first visual row lands on
+    /// offset 203.
+    #[test]
+    fn hit_test_slots_reads_offset_from_slot() {
+        let g = geo();
+        let slots = [RowSlot::real(200, 16), RowSlot::real(216, 16)];
+        let x = g.hex_x(3) + px(1.0);
+        let hit = g.hit_test_slots(point(x, px(0.0)), &slots).unwrap();
+        assert_eq!(hit.pane, hxy_editor::Pane::Hex);
+        assert_eq!(hit.offset.get(), 203);
+
+        // Second visual row indexes slot 1.
+        let hit = g.hit_test_slots(point(x, g.metrics.line_h), &slots).unwrap();
+        assert_eq!(hit.offset.get(), 219);
+    }
+
+    /// A click over the empty tail of a partial [`RowSlot::Real`] row
+    /// (column at or past the slot's `len`) is a no-hit, matching egui
+    /// `HitCtx::byte_offset_at`.
+    #[test]
+    fn hit_test_slots_partial_row_tail_is_none() {
+        let g = geo();
+        let slots = [RowSlot::real(0, 4)];
+        // Column 3 is the last real byte.
+        let x3 = g.hex_x(3) + px(1.0);
+        assert_eq!(g.hit_test_slots(point(x3, px(0.0)), &slots).unwrap().offset.get(), 3);
+        // Column 5 is past the 4-byte slot: no hit.
+        let x5 = g.hex_x(5) + px(1.0);
+        assert!(g.hit_test_slots(point(x5, px(0.0)), &slots).is_none());
+    }
+
+    /// Hit-testing a [`RowSlot::Gap`] row returns `None`: gap rows own
+    /// no bytes even though they occupy a row's height.
+    #[test]
+    fn hit_test_slots_gap_row_is_none() {
+        let g = geo();
+        let slots = [RowSlot::real(0, 16), RowSlot::Gap, RowSlot::real(16, 16)];
+        let x = g.hex_x(2) + px(1.0);
+        // Row 1 is the gap.
+        assert!(g.hit_test_slots(point(x, g.metrics.line_h), &slots).is_none());
+        // Row 2 is real again.
+        let hit = g.hit_test_slots(point(x, g.metrics.line_h * 2.0), &slots).unwrap();
+        assert_eq!(hit.offset.get(), 18);
+    }
+
+    /// `hxy_core::row_for_byte` is the offset->row inverse the pane uses
+    /// for scroll targets: it finds the slot covering a byte and skips
+    /// gaps / off-the-end bytes.
+    #[test]
+    fn row_for_byte_maps_through_slots() {
+        let slots = [RowSlot::real(200, 16), RowSlot::Gap, RowSlot::real(300, 8)];
+        assert_eq!(hxy_core::row_for_byte(&slots, 205), Some(0));
+        assert_eq!(hxy_core::row_for_byte(&slots, 300), Some(2));
+        assert_eq!(hxy_core::row_for_byte(&slots, 307), Some(2));
+        // Past the last slot's real bytes: no row.
+        assert_eq!(hxy_core::row_for_byte(&slots, 308), None);
+        // A byte between the two real slots that no slot owns.
+        assert_eq!(hxy_core::row_for_byte(&slots, 250), None);
     }
 }
