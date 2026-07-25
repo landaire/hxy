@@ -275,6 +275,57 @@ impl SearchState {
     }
 }
 
+/// One cross-file search hit. `Id` is the host's file-identifier
+/// type (e.g. hxy's tab-scoped `FileId`) -- generic here because
+/// this crate doesn't know about the host's file/tab model.
+#[derive(Clone, Debug)]
+pub struct GlobalMatch<Id> {
+    pub file_id: Id,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GlobalSearchEvent {
+    /// User edited the query / settings -- re-encode the pattern. The
+    /// host doesn't auto-rescan; the user runs the scan explicitly via
+    /// `Run`.
+    Refresh,
+    /// Run the scan against every open file's source.
+    Run,
+    /// Close the tab.
+    Close,
+    /// Click on a result row. Carries the index into `matches`.
+    JumpTo(usize),
+}
+
+/// Aggregated cross-file search state. The query, type, width,
+/// endianness, etc. mirror `SearchState` so the user sees the same UI
+/// in both bars; matches are accumulated by walking every open file.
+pub struct GlobalSearchState<Id> {
+    pub open: bool,
+    pub query_state: SearchState,
+    pub matches: Vec<GlobalMatch<Id>>,
+    pub active_idx: Option<usize>,
+}
+
+impl<Id> Default for GlobalSearchState<Id> {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query_state: SearchState {
+                kind: SearchKind::HexBytes,
+                width: NumberWidth::W32,
+                signed: false,
+                endian: Endian::Little,
+                all_results: true,
+                ..SearchState::default()
+            },
+            matches: Vec::new(),
+            active_idx: None,
+        }
+    }
+}
+
 /// Encode the user's query into a byte pattern. Empty input maps to
 /// `Empty`, surfaced by callers as "no error, no matches".
 pub fn encode_query(

@@ -1,58 +1,19 @@
 //! Cross-file search backing the `Tab::SearchResults` tab.
+//!
+//! State types moved to `hxy_panels::search` (framework-agnostic,
+//! shared with the GPUI port), generic over the file-id type since
+//! that crate doesn't know about hxy's `FileId`. Re-exported here
+//! specialized to `FileId`. Rendering stays here -- it touches egui.
 
 use crate::files::FileId;
 use crate::search::Endian;
 use crate::search::NumberWidth;
 use crate::search::SearchKind;
-use crate::search::SearchState;
 
-#[derive(Clone, Debug)]
-pub struct GlobalMatch {
-    pub file_id: FileId,
-    pub offset: u64,
-}
+pub use hxy_panels::search::GlobalSearchEvent;
 
-#[derive(Debug, Clone, Copy)]
-pub enum GlobalSearchEvent {
-    /// User edited the query / settings -- re-encode the pattern. The
-    /// host doesn't auto-rescan; the user runs the scan explicitly via
-    /// `Run`.
-    Refresh,
-    /// Run the scan against every open file's source.
-    Run,
-    /// Close the tab.
-    Close,
-    /// Click on a result row. Carries the index into `matches`.
-    JumpTo(usize),
-}
-
-/// Aggregated cross-file search state. The query, type, width,
-/// endianness, etc. mirror `SearchState` so the user sees the same UI
-/// in both bars; matches are accumulated by walking every open file.
-pub struct GlobalSearchState {
-    pub open: bool,
-    pub query_state: SearchState,
-    pub matches: Vec<GlobalMatch>,
-    pub active_idx: Option<usize>,
-}
-
-impl Default for GlobalSearchState {
-    fn default() -> Self {
-        Self {
-            open: false,
-            query_state: SearchState {
-                kind: SearchKind::HexBytes,
-                width: NumberWidth::W32,
-                signed: false,
-                endian: Endian::Little,
-                all_results: true,
-                ..SearchState::default()
-            },
-            matches: Vec::new(),
-            active_idx: None,
-        }
-    }
-}
+pub type GlobalMatch = hxy_panels::search::GlobalMatch<FileId>;
+pub type GlobalSearchState = hxy_panels::search::GlobalSearchState<FileId>;
 
 /// Render the cross-file search tab. Returns events to apply post-dock.
 /// `file_names` provides display names for every open file (used in
