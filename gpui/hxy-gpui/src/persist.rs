@@ -97,33 +97,43 @@ pub fn save(path: &Path, state: &DockAreaState) -> Result<(), SaveError> {
 }
 
 /// Drop panels that must not be restored verbatim before handing the
-/// state to `DockArea::load`:
+/// state to `DockArea::load`, returning the paths of the file tabs that
+/// were dropped so the caller can toast them:
 ///
 /// - `FilePanel` whose backing path no longer reads (deleted/moved):
-///   dropped with a warning; the tab simply does not come back (toast
-///   integration is Task 6).
+///   dropped with a warning and its path collected; the tab simply does
+///   not come back.
 /// - `WelcomePanel`: never restored; the workspace re-adds a fresh one
 ///   whenever it ends up with zero file tabs, so persisting it would
 ///   only risk a stale duplicate.
 ///
-/// Side docks are left untouched: this shell never creates them, and
-/// `DockState`'s fields are private, so there is nothing to walk.
-pub fn prune_for_restore(state: &mut DockAreaState) {
-    keep(&mut state.center);
+/// Side docks are left untouched: the inspector is the only one, and it
+/// is rebuilt from the panel registry on restore (or re-added fresh by
+/// `Workspace::ensure_inspector_dock`), never pruned here.
+pub fn prune_for_restore(state: &mut DockAreaState) -> Vec<PathBuf> {
+    let mut pruned = Vec::new();
+    keep(&mut state.center, &mut pruned);
+    pruned
 }
 
 /// Returns whether `panel` should survive pruning, recursively pruning
-/// container children and clamping a tab container's active index into
-/// the surviving range.
-fn keep(panel: &mut PanelState) -> bool {
+/// container children (collecting dropped file paths into `pruned`) and
+/// clamping a tab container's active index into the surviving range.
+fn keep(panel: &mut PanelState, pruned: &mut Vec<PathBuf>) -> bool {
     if panel.panel_name == FILE_PANEL_NAME {
-        return file_readable(&panel.info);
+        if file_readable(&panel.info) {
+            return true;
+        }
+        if let Some(path) = file_path(&panel.info) {
+            pruned.push(path);
+        }
+        return false;
     }
     if panel.panel_name == WELCOME_PANEL_NAME {
         return false;
     }
 
-    panel.children.retain_mut(keep);
+    panel.children.retain_mut(|child| keep(child, pruned));
     let surviving = panel.children.len();
     // A pruned tab only needs the active index clamped back into range. A
     // pruned split pane leaves `PanelInfo::Stack.sizes` one entry long;
@@ -143,6 +153,12 @@ fn keep(panel: &mut PanelState) -> bool {
 /// criterion `FilePanel::restore` uses (`std::fs::read`), so prune and
 /// restore never disagree (a directory or a read-denied path is dropped
 /// here rather than silently restored as an empty buffer).
+/// The recorded backing path of a `FilePanel` leaf, if present.
+fn file_path(info: &PanelInfo) -> Option<PathBuf> {
+    let PanelInfo::Panel(value) = info else { return None };
+    value.get("path").and_then(|p| p.as_str()).map(PathBuf::from)
+}
+
 fn file_readable(info: &PanelInfo) -> bool {
     let PanelInfo::Panel(value) = info else { return false };
     let Some(path) = value.get("path").and_then(|p| p.as_str()) else { return false };

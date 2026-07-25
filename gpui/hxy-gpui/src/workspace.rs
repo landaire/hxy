@@ -238,7 +238,7 @@ impl Workspace {
 
         match restored {
             Some(mut state) => {
-                persist::prune_for_restore(&mut state);
+                let pruned = persist::prune_for_restore(&mut state);
                 if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
                     tracing::warn!(%err, "load dock layout failed; using default");
                     // `Root` (the window's actual top-level view) isn't
@@ -254,6 +254,16 @@ impl Workspace {
                 // The load-built cache is accurate; register the restored
                 // panels so a later resync can reuse them.
                 collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+                if !pruned.is_empty() {
+                    // Deferred like the load-failure toast above: `Root`
+                    // is not installed yet, so `push_notification` would
+                    // panic if called inline (see that branch's note).
+                    window.defer(cx, move |window, cx| {
+                        for text in restore_pruned_texts(&pruned) {
+                            window.push_notification(Notification::warning(text), cx);
+                        }
+                    });
+                }
             }
             None => {
                 if let Some((source, path)) = initial {
@@ -877,6 +887,26 @@ fn jump_cursor_to(pane: &mut HexPane, offset: u64, cx: &mut Context<HexPane>) {
         pane.editor_mut().set_scroll_to_byte(clamped);
     }
     pane.sync_pending_scroll(cx);
+}
+
+/// Warning-toast text for tabs dropped during layout restore: one toast
+/// naming each file when few were dropped, or a single count-summary
+/// toast past a small threshold so a large stale layout does not spray
+/// the notification stack.
+fn restore_pruned_texts(pruned: &[PathBuf]) -> Vec<String> {
+    if pruned.len() > 2 {
+        return vec![hxy_i18n::t_args("gpui-status-restore-dropped-summary", &[("count", &pruned.len().to_string())])];
+    }
+    pruned
+        .iter()
+        .map(|path| {
+            // A path with no final component (root, `..`) is not a real
+            // restored tab; fall back to its full display so the toast
+            // still names something.
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+            hxy_i18n::t_args("gpui-status-restore-dropped-file", &[("file", &name)])
+        })
+        .collect()
 }
 
 /// Total file panels anywhere under `state`, used to decide whether the
@@ -1535,7 +1565,9 @@ mod tests {
     }
 
     /// A restored tab whose file has since disappeared is pruned, the
-    /// rest are kept, and restore does not crash.
+    /// rest are kept, restore does not crash, and the drop surfaces a
+    /// warning toast. Uses [`open_workspace_with_root`] for the restoring
+    /// workspace so the deferred `push_notification` has a real `Root`.
     #[gpui::test]
     fn restore_prunes_missing_file_and_keeps_the_rest(cx: &mut TestAppContext) {
         setup(cx);
@@ -1551,11 +1583,15 @@ mod tests {
 
         std::fs::remove_file(&f1).unwrap();
 
-        let second = open_workspace(cx, None, Some(layout));
-        assert_eq!(file_count(second, cx), 1);
-        let paths = second.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        let (window, second) = open_workspace_with_root(cx, None, Some(layout));
+        let count = second.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center));
+        assert_eq!(count, 1);
+        let paths = second.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center));
         assert!(!paths.contains(&f1), "missing file must be pruned");
         assert!(paths.contains(&f2), "readable file must survive");
+
+        let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(toasts, 1, "the pruned tab must surface a warning toast");
     }
 
     /// A burst of layout changes coalesces into a single debounced write:
