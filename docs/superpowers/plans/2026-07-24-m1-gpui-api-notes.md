@@ -397,6 +397,54 @@ crates.io registry while implementing the hex grid paint pass.
   closure writes `FrameInfo` back onto the entity mid-frame; a captured
   strong `Entity<HexPane>` handle is safe because the canvas element (and
   its `FnOnce` closures) is dropped at frame end.
+### Task 4 corrections (keyboard input at 0.2.2)
+
+Verified against `gpui-0.2.2` in the local crates.io registry while wiring
+keyboard dispatch through the shared hxy-editor filter.
+
+- **`KeyDownEvent` has only two fields at 0.2.2**:
+  `KeyDownEvent { keystroke: Keystroke, is_held: bool }`
+  (`gpui-0.2.2/src/interactive.rs:22`). The `prefer_character_input` field
+  this doc's section 4 cited is git-HEAD only.
+- **One keystroke carries both `key` and `key_char`; there is no separate
+  Text event.** `Window::dispatch_keystroke` calls
+  `keystroke.with_simulated_ime()` (fills `key_char`) then dispatches a
+  single `KeyDownEvent` (`gpui-0.2.2/src/window.rs:3540`). If the
+  `on_key_down` handler calls `cx.stop_propagation()`, the built-in IME
+  `dispatch_input` (text) path is skipped entirely. So the adapter must
+  synthesize egui's separate `Event::Text` itself from `keystroke.key_char`
+  -- this is exactly what `translate()` returns as its second slot.
+- **`Keystroke::parse` grammar** (`gpui-0.2.2/src/platform/keystroke.rs:120`),
+  used by `simulate_keystrokes` (space-separated, each token parsed):
+  modifiers are dash-prefixed (`shift-`, `alt-`, `ctrl-`, `cmd`/`super`/`win`,
+  `fn-`, `secondary-`); a bare uppercase single char (`"Z"`) becomes
+  `shift` + lowercased key (`"z"`); other tokens are lowercased. Named keys:
+  `"left"`, `"right"`, `"up"`, `"down"`, `"escape"`, `"tab"`, `"backspace"`.
+- **`with_simulated_ime`** (`.../keystroke.rs:241`) fills `key_char` only when
+  no `platform`/`control`/`alt`/`function` modifier is held: `"space" -> " "`,
+  `"tab" -> "\t"`, `"enter" -> "\n"`, non-printable keys -> `None`, otherwise
+  the key uppercased when `shift` is set. Consequences verified:
+  - `cmd-a` -> `key "a"`, `platform` set, `key_char None` (modifier suppresses
+    it) -> no Text event, so command combos never type a hex/ascii byte.
+  - `shift-4` -> `key "4"`, `shift` set, `key_char Some("4")` (uppercasing a
+    digit is a no-op; it is NOT `"$"`). So vim's `$`/LineEnd must key off
+    `Digit(4) + shift`, not a `"$"` key string. `translate()` also maps a
+    literal `"$"` key (possible on a physical macOS layout) to `Digit(4)` with
+    `shift` forced true, covering both.
+- **Modifier field mapping**: gpui `Modifiers { control, alt, shift, platform,
+  function }`. The editor's `command` is the OS primary modifier; use
+  `keystroke.modifiers.secondary()` (`.../keystroke.rs:482`; `platform` on
+  macOS, `control` elsewhere) for it -- this reproduces egui's `command`
+  (cmd on macOS, ctrl elsewhere) on every platform. `alt -> alt`; `function`
+  and bare mac `control` are ignored, matching the egui adapter.
+- **Focused key dispatch in `#[gpui::test]`**: mount with
+  `let (view, cx) = cx.add_window_view(|_, cx| View::new(cx))` (draws once,
+  returns `&mut VisualTestContext`), then
+  `cx.update(|window, cx| { let h = view.read(cx).focus_handle(cx); window.focus(&h); window.activate_window(); })`,
+  then `cx.simulate_keystrokes("a b")`. This is gpui's own canonical pattern
+  (`gpui-0.2.2/src/key_dispatch.rs:835`). `FocusHandle::focus(&self, &mut Window)`
+  and `Window::focus(&mut self, &FocusHandle)` both exist at 0.2.2.
+
 - **`#[gpui::test]` needs `gpui`'s `test-support` feature.**
   `TestAppContext` / `run_test` are gated behind it
   (`gpui-0.2.2/Cargo.toml [features] test-support`); add

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod geometry;
+mod input;
 mod paint;
 mod pane;
 

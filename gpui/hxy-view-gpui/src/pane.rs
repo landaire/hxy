@@ -4,11 +4,13 @@
 use std::sync::Arc;
 
 use gpui::App;
+use gpui::ClipboardItem;
 use gpui::Context;
 use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::InteractiveElement;
 use gpui::IntoElement;
+use gpui::KeyDownEvent;
 use gpui::ParentElement;
 use gpui::Pixels;
 use gpui::Render;
@@ -18,6 +20,8 @@ use gpui::Styled;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
+use hxy_editor::Disposition;
+use hxy_editor::Effect;
 use gpui_component::ActiveTheme;
 use hxy_core::ColumnCount;
 use hxy_core::HexSource;
@@ -100,6 +104,39 @@ impl HexPane {
         cx.notify();
     }
 
+    /// Feed one key-down through the editor. Returns true when the
+    /// editor consumed it (callers stop propagation).
+    ///
+    /// Mirrors the egui adapter's dispatch contract: translate the
+    /// keystroke into a key event plus the synthesized text event, feed
+    /// both through one input filter, then apply the batch. `apply_input`
+    /// runs UNCONDITIONALLY -- even an empty batch advances the editor's
+    /// once-per-frame bookkeeping (external-cursor-move detection,
+    /// history boundaries).
+    ///
+    /// One intentional divergence from egui: the egui adapter drains a
+    /// whole frame of queued events into a single filter/apply batch,
+    /// whereas each gpui key-down is its own single-event batch. The
+    /// editor's per-event dispatch and the Insert/Replace Escape latch
+    /// only matter within one batch, so single-event batches stay
+    /// semantically safe -- Escape still pops the mode; there are simply
+    /// no same-batch followers for the latch to drop.
+    pub(crate) fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let (key_event, text_event) = crate::input::translate(&event.keystroke);
+        let mut filter = self.editor.input_filter();
+        let mut consumed = false;
+        for event in [key_event, text_event].into_iter().flatten() {
+            consumed |= filter.feed(&event) == Disposition::Consumed;
+        }
+        for effect in self.editor.apply_input(filter.finish()) {
+            match effect {
+                Effect::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            }
+        }
+        cx.notify();
+        consumed
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_rows(&self) -> f32 {
         self.scroll_rows
@@ -141,6 +178,11 @@ impl Render for HexPane {
             .size_full()
             .bg(cx.theme().background)
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.handle_key_down(event, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .child(div().size_full().child(canvas))
     }
 }
