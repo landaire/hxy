@@ -13,6 +13,7 @@ use gpui_component::Root;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 
+mod panels;
 mod status;
 mod workspace;
 
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
 
     gpui::Application::new().run(move |cx: &mut App| {
         gpui_component::init(cx);
+        panels::register(cx);
         workspace::init_keybindings(cx);
         let bounds = Bounds::centered(None, size(px(1024.0), px(768.0)), cx);
         cx.open_window(
@@ -43,11 +45,17 @@ fn main() -> ExitCode {
                 let appearance_subscription = window.observe_window_appearance(|window, cx| {
                     gpui_component::Theme::sync_system_appearance(Some(window), cx);
                 });
-                // Initial keyboard focus (pane if a CLI file loaded
-                // one, otherwise the workspace itself so cmd-o stays
+                // Initial keyboard focus (active pane if a file loaded,
+                // otherwise the workspace itself so cmd-o stays
                 // reachable) is assigned by `Workspace`'s own first
                 // render -- see its `focus_pending` field.
-                let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, cx));
+                //
+                // gpui-component's Root must be the window's top-level
+                // view (it manages the dialog/sheet/notification
+                // layers); its render shows only this child, which is
+                // all Task 2 needs -- no modal surfaces yet (toasts are
+                // Task 6).
+                let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, window, cx));
                 cx.new(|cx| Root::new(workspace, window, cx))
             },
         )

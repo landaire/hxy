@@ -1,11 +1,15 @@
-//! The GPUI shell's root view: hosts the [`HexPane`], the bottom
-//! status bar, file-open (CLI + `cmd-o` dialog), the `cmd-alt-v` vim
-//! toggle, live system-theme sync, and the window title.
+//! The GPUI workbench root view: owns a [`DockArea`] whose center tabs
+//! hold one [`FilePanel`] per open file (or a [`WelcomePanel`] when
+//! empty), plus the bottom status bar reflecting the active tab. Drives
+//! file-open (CLI + `cmd-o`), the `cmd-alt-v` vim toggle, live
+//! system-theme sync, and the window title.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::App;
+use gpui::Axis;
 use gpui::Context;
 use gpui::Entity;
 use gpui::FocusHandle;
@@ -22,13 +26,21 @@ use gpui::actions;
 use gpui::div;
 use gpui::prelude::*;
 use gpui_component::ActiveTheme;
+use gpui_component::dock::DockArea;
+use gpui_component::dock::DockEvent;
+use gpui_component::dock::DockItem;
+use gpui_component::dock::DockPlacement;
+use gpui_component::dock::PanelState;
+use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_editor::InputMode;
-use hxy_view_gpui::HexPane;
 
+use crate::panels::FILE_PANEL_NAME;
+use crate::panels::FilePanel;
+use crate::panels::WelcomePanel;
 use crate::status::dirty_marker;
 use crate::status::status_file_name_text;
 use crate::status::status_offset_text;
@@ -38,124 +50,117 @@ use crate::status::window_title_text;
 
 actions!(hxy_gpui, [OpenFile, ToggleVim]);
 
+/// Default-layout version stamped on the `DockArea`.
+const WORKBENCH_VERSION: usize = 1;
+
 /// Register the shell's keybindings. Called once at startup before any
 /// window opens.
 pub fn init_keybindings(cx: &mut App) {
     cx.bind_keys([gpui::KeyBinding::new("cmd-o", OpenFile, None), gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None)]);
 }
 
-/// A file read from the CLI path argument or the open dialog, ready
-/// to become (or replace) the pane's source.
-struct OpenedFile {
-    source: Arc<dyn HexSource>,
-    path: PathBuf,
-}
-
-/// A failed attempt to read a file chosen via the open dialog.
-struct OpenFileError {
-    path: PathBuf,
-    error: std::io::Error,
-}
-
-fn read_file(path: PathBuf) -> Result<OpenedFile, OpenFileError> {
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(OpenedFile { source: Arc::new(MemorySource::new(bytes)), path }),
-        Err(error) => Err(OpenFileError { path, error }),
-    }
-}
-
 pub struct Workspace {
-    pane: Option<Entity<HexPane>>,
-    file_path: Option<PathBuf>,
-    /// Message for the most recent failed open attempt (CLI or
-    /// dialog); cleared on the next successful open.
+    dock: Entity<DockArea>,
+    /// The welcome placeholder while it occupies the center; `None`
+    /// whenever any file tab is open. Owned so it can be removed by
+    /// identity when the first file opens.
+    welcome: Option<Entity<WelcomePanel>>,
+    /// The file panel backing the active center tab; drives the status
+    /// bar and receives the vim toggle. `None` when the welcome
+    /// placeholder is showing.
+    active_file: Option<Entity<FilePanel>>,
+    /// Repaints the workspace (hence the status bar) when the active
+    /// pane's editor changes. Re-established whenever the active file
+    /// changes.
+    active_pane_observe: Option<Subscription>,
+    _dock_subscription: Subscription,
+    /// Message for the most recent failed open attempt; cleared on the
+    /// next successful open.
     open_error: Option<String>,
     last_title: Option<String>,
-    /// Tracked on the root div so `cmd-o` / `cmd-alt-v` stay
-    /// reachable even before any pane exists to click into: gpui
-    /// dispatches actions along the path from the focused element up
-    /// to the window root, and falls back to the root alone when
-    /// nothing is focused at all. Without an ancestor of the action
-    /// listeners holding focus by default, the two shortcuts would be
-    /// dead on a fresh launch with no file open. Once a pane exists,
-    /// `render` moves keyboard focus onto it instead (see
-    /// `focus_pending`) -- `HexPane`, as a descendant of this div,
-    /// keeps the same action reachability while also letting
-    /// keystrokes reach `HexPane::on_key_down` immediately, with no
-    /// click required first.
+    /// Tracked on the root div so `cmd-o` / `cmd-alt-v` stay reachable
+    /// even with no pane focused (fresh launch showing Welcome): gpui
+    /// dispatches actions from the focused element up to the window
+    /// root. The dock's panels are descendants of this div, so their
+    /// focus keeps the shortcuts reachable while letting keystrokes
+    /// reach the active pane directly.
     focus_handle: FocusHandle,
-    /// Set on construction and whenever a pane is created or its
-    /// source is replaced. Consumed on the next `render`, which has
-    /// the `&mut Window` needed to move focus (window creation and
-    /// the async open-dialog task that creates or replaces a pane do
-    /// not have one) -- assigns the pane's handle if one exists,
-    /// otherwise falls back to the workspace's own handle so `cmd-o`
-    /// stays reachable with no file open.
+    /// Consumed on the next `render` (which has the `&mut Window` needed
+    /// to move focus): focuses the active file's pane if one exists,
+    /// else the workspace handle so `cmd-o` stays reachable with no
+    /// file open. Only needed at boot; runtime opens focus via the
+    /// dock's own active-tab focusing.
     focus_pending: bool,
+    /// Set when a `LayoutChanged` event arrives; consumed by `render`,
+    /// which defers reconciliation (welcome presence + active tracking)
+    /// to just after the frame, where a `&mut Window` is available.
+    needs_reconcile: bool,
     _appearance_subscription: Subscription,
 }
 
 impl Workspace {
-    /// `initial` is the CLI path argument's already-read bytes, if
-    /// any; `appearance_subscription` keeps the live system-theme
-    /// observer alive for the workspace's lifetime.
-    pub fn new(initial: Option<(Arc<dyn HexSource>, PathBuf)>, appearance_subscription: Subscription, cx: &mut Context<Self>) -> Self {
-        let (pane, file_path) = match initial {
-            Some((source, path)) => (Some(cx.new(|cx| HexPane::new(source, cx))), Some(path)),
-            None => (None, None),
-        };
-        Self {
-            pane,
-            file_path,
+    /// `initial` is the CLI path argument's already-read bytes, if any.
+    pub fn new(
+        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        appearance_subscription: Subscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let dock = cx.new(|cx| DockArea::new("workspace", Some(WORKBENCH_VERSION), window, cx));
+        let dock_subscription = cx.subscribe(&dock, |workspace, _dock, event: &DockEvent, cx| match event {
+            DockEvent::LayoutChanged => {
+                workspace.needs_reconcile = true;
+                cx.notify();
+            }
+            DockEvent::DragDrop(_) => {}
+        });
+
+        let mut workspace = Self {
+            dock,
+            welcome: None,
+            active_file: None,
+            active_pane_observe: None,
+            _dock_subscription: dock_subscription,
             open_error: None,
             last_title: None,
             focus_handle: cx.focus_handle(),
             focus_pending: true,
+            needs_reconcile: false,
             _appearance_subscription: appearance_subscription,
+        };
+        workspace.build_initial(initial, window, cx);
+        workspace
+    }
+
+    /// Populate the dock at construction: a CLI file becomes the first
+    /// tab, or nothing (leaving reconciliation to add the welcome
+    /// placeholder).
+    fn build_initial(&mut self, initial: Option<(Arc<dyn HexSource>, PathBuf)>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((source, path)) = initial {
+            let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
+            self.add_file_panel(panel, window, cx);
         }
+        self.reconcile(window, cx);
     }
 
-    fn on_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
-        cx.spawn(async move |this, cx| {
-            let result = receiver.await;
-            let _ = this.update(cx, |workspace, cx| {
-                match result {
-                    Ok(Ok(Some(mut paths))) => {
-                        // `multiple: false` above; at most one path.
-                        if let Some(path) = paths.pop() {
-                            workspace.apply_open_result(read_file(path), cx);
-                        }
-                    }
-                    Ok(Ok(None)) => {
-                        // User cancelled the dialog; normal no-op.
-                    }
-                    Ok(Err(err)) => {
-                        tracing::error!(%err, "file picker failed");
-                        workspace.open_error = Some(hxy_i18n::t_args("gpui-status-open-error-dialog", &[("error", &err.to_string())]));
-                        cx.notify();
-                    }
-                    Err(_) => {
-                        // Channel dropped (window closing); nothing to show.
-                    }
-                }
-            });
-        })
-        .detach();
+    /// Add a file tab to the center dock, making it active (the dock
+    /// focuses the new tab's pane itself when the active tab changes).
+    fn add_file_panel(&mut self, panel: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
-    fn apply_open_result(&mut self, result: Result<OpenedFile, OpenFileError>, cx: &mut Context<Self>) {
-        match result {
-            Ok(opened) => {
-                match &self.pane {
-                    Some(pane) => pane.update(cx, |pane, cx| pane.set_source(opened.source, cx)),
-                    None => self.pane = Some(cx.new(|cx| HexPane::new(opened.source, cx))),
-                }
-                self.file_path = Some(opened.path);
+    /// Read `path` and add it as a new file tab. Called by `cmd-o` and
+    /// by tests. Multiple opens accumulate tabs.
+    pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
+                self.add_file_panel(panel, window, cx);
                 self.open_error = None;
-                self.focus_pending = true;
             }
-            Err(OpenFileError { path, error }) => {
+            Err(error) => {
                 tracing::error!(?path, %error, "failed to open file");
                 self.open_error = Some(status_open_error_text(&path, &error.to_string()));
             }
@@ -163,8 +168,35 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = receiver.await;
+            let _ = this.update_in(cx, |workspace, window, cx| match result {
+                Ok(Ok(Some(paths))) => {
+                    for path in paths {
+                        workspace.open_path(path, window, cx);
+                    }
+                }
+                Ok(Ok(None)) => {
+                    // User cancelled the dialog; normal no-op.
+                }
+                Ok(Err(err)) => {
+                    tracing::error!(%err, "file picker failed");
+                    workspace.open_error = Some(hxy_i18n::t_args("gpui-status-open-error-dialog", &[("error", &err.to_string())]));
+                    cx.notify();
+                }
+                Err(_) => {
+                    // Channel dropped (window closing); nothing to show.
+                }
+            });
+        })
+        .detach();
+    }
+
     fn on_toggle_vim(&mut self, _: &ToggleVim, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.pane.clone() else { return };
+        let Some(file) = self.active_file.clone() else { return };
+        let pane = file.read(cx).pane().clone();
         pane.update(cx, |pane, cx| {
             let next = match pane.editor().input_mode() {
                 InputMode::Default => InputMode::Vim,
@@ -175,29 +207,83 @@ impl Workspace {
         });
     }
 
-    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
-        let file_label = Label::new(status_file_name_text(self.file_path.as_deref()));
-
-        let middle = match &self.pane {
-            Some(pane) => {
-                let editor = pane.read(cx).editor();
-                Label::new(status_offset_text(editor.selection()))
-            }
-            None => Label::new(String::new()),
+    /// Bring the workspace's own tracking back in sync with the dock's
+    /// live tab set: add or remove the welcome placeholder so it shows
+    /// exactly when no file tab is open, and refresh the active file.
+    /// Runs after layout changes, where a `&mut Window` is available.
+    fn reconcile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let file_count = {
+            let state = self.dock.read(cx).dump(cx);
+            count_file_panels(&state.center)
         };
 
-        let right = match &self.pane {
-            Some(pane) => {
-                let editor = pane.read(cx).editor();
-                let mut text = String::new();
-                if matches!(editor.input_mode(), InputMode::Vim) {
-                    text.push_str(&status_vim_mode_text(editor.vim_state().mode));
-                    text.push(' ');
-                }
-                text.push_str(dirty_marker(editor.is_dirty()));
-                Label::new(text)
+        if file_count == 0 {
+            if self.welcome.is_none() {
+                let welcome = cx.new(WelcomePanel::new);
+                let view: Arc<dyn PanelView> = Arc::new(welcome.clone());
+                let weak = self.dock.downgrade();
+                self.dock.update(cx, |dock, cx| {
+                    // Reset the center to a fresh, subscribed Split before
+                    // adding welcome. When the last file tab closes, its
+                    // now-empty TabPanel removes itself from the StackPanel,
+                    // but the center DockItem's cached `items` still points at
+                    // that orphaned TabPanel; routing the welcome add through
+                    // the stale cache would attach it to a detached panel that
+                    // never renders (and every later open would vanish too).
+                    // Rebuilding the center sidesteps the stale cache and keeps
+                    // the Split-wrapping invariant that propagates
+                    // LayoutChanged.
+                    let center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
+                    dock.set_center(center, window, cx);
+                    dock.add_panel(view, DockPlacement::Center, None, window, cx);
+                });
+                self.welcome = Some(welcome);
             }
-            None => Label::new(String::new()),
+        } else if let Some(welcome) = self.welcome.take() {
+            let view: Arc<dyn PanelView> = Arc::new(welcome);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        }
+
+        let active = active_file_panel(self.dock.read(cx).items(), cx);
+        self.set_active_file(active, cx);
+    }
+
+    /// Point the status bar / vim toggle at `active`, re-observing its
+    /// pane so editor changes repaint the status bar. No-op when the
+    /// active file is unchanged.
+    fn set_active_file(&mut self, active: Option<Entity<FilePanel>>, cx: &mut Context<Self>) {
+        if self.active_file.as_ref().map(Entity::entity_id) == active.as_ref().map(Entity::entity_id) {
+            return;
+        }
+        self.active_pane_observe = active.as_ref().map(|file| {
+            let pane = file.read(cx).pane().clone();
+            cx.observe(&pane, |_workspace, _pane, cx| cx.notify())
+        });
+        self.active_file = active;
+        cx.notify();
+    }
+
+    fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.active_file.as_ref().and_then(|file| file.read(cx).path().map(Path::to_path_buf))
+    }
+
+    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let file_label = Label::new(status_file_name_text(self.active_path(cx).as_deref()));
+
+        let (offset, mode) = match &self.active_file {
+            Some(file) => {
+                let file = file.read(cx);
+                let editor = file.pane().read(cx).editor();
+                let offset = status_offset_text(editor.selection());
+                let mut mode = String::new();
+                if matches!(editor.input_mode(), InputMode::Vim) {
+                    mode.push_str(&status_vim_mode_text(editor.vim_state().mode));
+                    mode.push(' ');
+                }
+                mode.push_str(dirty_marker(editor.is_dirty()));
+                (offset, mode)
+            }
+            None => (String::new(), String::new()),
         };
 
         h_flex()
@@ -212,8 +298,28 @@ impl Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().muted_foreground)
             .child(file_label)
-            .child(middle)
-            .child(right)
+            .child(Label::new(offset))
+            .child(Label::new(mode))
+    }
+}
+
+/// Total file panels anywhere under `state`, used to decide whether the
+/// welcome placeholder should show.
+fn count_file_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == FILE_PANEL_NAME);
+    here + state.children.iter().map(count_file_panels).sum::<usize>()
+}
+
+/// The file panel backing the active tab, if the active tab is a file.
+/// With splits, the first tab container that has an active file wins.
+fn active_file_panel(item: &DockItem, cx: &App) -> Option<Entity<FilePanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<FilePanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_file_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<FilePanel>().ok(),
+        DockItem::Tiles { .. } => None,
     }
 }
 
@@ -225,25 +331,30 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = window_title_text(self.file_path.as_deref());
+        let title = window_title_text(self.active_path(cx).as_deref());
         if self.last_title.as_deref() != Some(title.as_str()) {
             window.set_window_title(&title);
             self.last_title = Some(title);
         }
 
+        if self.needs_reconcile {
+            self.needs_reconcile = false;
+            let this = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |workspace, cx| workspace.reconcile(window, cx));
+                }
+            });
+        }
+
         if self.focus_pending {
-            let handle = match &self.pane {
-                Some(pane) => pane.read(cx).focus_handle(cx),
+            self.focus_pending = false;
+            let handle = match &self.active_file {
+                Some(file) => file.read(cx).pane().read(cx).focus_handle(cx),
                 None => self.focus_handle.clone(),
             };
             window.focus(&handle);
-            self.focus_pending = false;
         }
-
-        let body = match &self.pane {
-            Some(pane) => div().flex_1().child(pane.clone()),
-            None => div().flex_1().flex().items_center().justify_center().child(hxy_i18n::t("gpui-shell-no-file")),
-        };
 
         let mut root = div()
             .track_focus(&self.focus_handle)
@@ -253,7 +364,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_toggle_vim))
-            .child(body);
+            .child(div().flex_1().child(self.dock.clone()));
 
         if let Some(error) = &self.open_error {
             root = root.child(div().px_3().py_1().text_color(cx.theme().danger).child(error.clone()));
@@ -266,74 +377,182 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
+    use gpui::WindowHandle;
     use hxy_core::HexSource;
     use hxy_core::MemorySource;
 
     use super::*;
 
+    fn setup(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::panels::register(cx);
+        });
+    }
+
     fn source() -> Arc<dyn HexSource> {
         Arc::new(MemorySource::new(vec![0u8; 16]))
     }
 
-    /// `Workspace::render` gives initial focus to the pane when a file
-    /// is open (see `focus_pending`), so CLI-loaded keystrokes reach
-    /// `HexPane::on_key_down` without a click into the grid first. These
-    /// tests pin that focus routing against regressions.
-    #[gpui::test]
-    fn cli_open_focuses_the_pane_not_the_workspace(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let subscription = window.observe_window_appearance(|_, _| {});
-            Workspace::new(Some((source(), PathBuf::from("test.bin"))), subscription, cx)
-        });
-
-        let pane_handle = workspace.read_with(cx, |ws, cx| ws.pane.as_ref().unwrap().read(cx).focus_handle(cx));
-        let workspace_handle = workspace.read_with(cx, |ws, cx| ws.focus_handle(cx));
-        cx.update(|window, cx| {
-            let focused = window.focused(cx);
-            assert_eq!(focused, Some(pane_handle));
-            assert_ne!(focused, Some(workspace_handle));
-        });
+    fn temp_file(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
     }
 
-    /// With no file open there is nothing to focus the pane onto;
-    /// `cmd-o` / `cmd-alt-v` must still be reachable, so focus stays
-    /// on `Workspace`'s own handle.
-    #[gpui::test]
-    fn no_file_focuses_the_workspace(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (workspace, cx) = cx.add_window_view(|window, cx| {
+    fn open_workspace(
+        cx: &mut TestAppContext,
+        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+    ) -> WindowHandle<Workspace> {
+        let window = cx.add_window(move |window, cx| {
             let subscription = window.observe_window_appearance(|_, _| {});
-            Workspace::new(None, subscription, cx)
-        });
-
-        let workspace_handle = workspace.read_with(cx, |ws, cx| ws.focus_handle(cx));
-        cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), Some(workspace_handle));
-        });
-    }
-
-    /// Regression test for the `cmd-o` half of the same bug: applying
-    /// a successful open result (what the dialog's async callback
-    /// does once the user picks a file) must also move focus onto
-    /// the pane, whether it was freshly created or reused via
-    /// `set_source` on an already-open pane.
-    #[gpui::test]
-    fn open_result_focuses_the_pane(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let subscription = window.observe_window_appearance(|_, _| {});
-            Workspace::new(None, subscription, cx)
-        });
-
-        workspace.update(cx, |ws, cx| {
-            ws.apply_open_result(Ok(OpenedFile { source: source(), path: PathBuf::from("opened.bin") }), cx);
+            Workspace::new(initial, subscription, window, cx)
         });
         cx.run_until_parked();
+        window
+    }
 
-        let pane_handle = workspace.read_with(cx, |ws, cx| ws.pane.as_ref().unwrap().read(cx).focus_handle(cx));
-        cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), Some(pane_handle));
-        });
+    fn file_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    fn active_path(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> Option<PathBuf> {
+        window.read_with(cx, |ws, cx| ws.active_path(cx)).unwrap()
+    }
+
+    /// A CLI-loaded file lands in a focused pane so keystrokes reach the
+    /// editor with no click first (regression of the M1 focus test,
+    /// adapted to the dock's active-panel routing).
+    #[gpui::test]
+    fn cli_open_focuses_the_active_pane(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Some((source(), PathBuf::from("test.bin"))));
+
+        let pane_handle = window
+            .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
+            .unwrap();
+        let focused = window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap();
+        assert_eq!(focused, Some(pane_handle));
+    }
+
+    /// With no file open the welcome placeholder shows and focus rests
+    /// on the workspace handle so `cmd-o` stays reachable.
+    #[gpui::test]
+    fn no_file_shows_welcome_and_focuses_workspace(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, None);
+
+        assert_eq!(file_count(window, cx), 0);
+        let (welcome_present, workspace_handle) =
+            window.read_with(cx, |ws, cx| (ws.welcome.is_some(), ws.focus_handle(cx))).unwrap();
+        assert!(welcome_present);
+        let focused = window.update(cx, |_ws, window, cx| window.focused(cx)).unwrap();
+        assert_eq!(focused, Some(workspace_handle));
+    }
+
+    /// `cmd-o` accumulates tabs; each open becomes the active tab, so
+    /// the status bar / vim toggle follow the newest file.
+    #[gpui::test]
+    fn opening_files_adds_tabs_and_switches_active(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let window = open_workspace(cx, None);
+
+        window.update(cx, |ws, window, cx| ws.open_path(f1.clone(), window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+        assert_eq!(active_path(window, cx), Some(f1.clone()));
+        assert!(window.read_with(cx, |ws, _| ws.welcome.is_none()).unwrap());
+
+        window.update(cx, |ws, window, cx| ws.open_path(f2.clone(), window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2);
+        assert_eq!(active_path(window, cx), Some(f2));
+    }
+
+    /// Closing tabs shrinks the set; closing the last file tab brings
+    /// the welcome placeholder back and clears the active file.
+    #[gpui::test]
+    fn closing_last_tab_returns_to_welcome(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let window = open_workspace(cx, None);
+
+        window.update(cx, |ws, window, cx| ws.open_path(f1, window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+
+        window
+            .update(cx, |ws, window, cx| {
+                let active = ws.active_file.clone().unwrap();
+                let view: Arc<dyn PanelView> = Arc::new(active);
+                ws.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(file_count(window, cx), 0);
+        assert_eq!(active_path(window, cx), None);
+        assert!(window.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
+        // The welcome tab must be live in the rendered tree, not attached to
+        // an orphaned TabPanel: it has to appear in the dock's own dump.
+        let welcome_live = window
+            .read_with(cx, |ws, cx| {
+                count_welcome_panels(&ws.dock.read(cx).dump(cx).center) == 1
+            })
+            .unwrap();
+        assert!(welcome_live, "welcome tab must be attached to the live center");
+
+        // Reopening after closing to zero must show the file again -- proves
+        // the center was rebuilt rather than left pointing at a dead panel.
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        window_open(window, &f2, cx);
+        assert_eq!(file_count(window, cx), 1);
+        assert_eq!(active_path(window, cx), Some(f2));
+    }
+
+    fn count_welcome_panels(state: &PanelState) -> usize {
+        let here = usize::from(state.panel_name == crate::panels::WELCOME_PANEL_NAME);
+        here + state.children.iter().map(count_welcome_panels).sum::<usize>()
+    }
+
+    fn window_open(window: WindowHandle<Workspace>, path: &Path, cx: &mut TestAppContext) {
+        window.update(cx, |ws, window, cx| ws.open_path(path.to_path_buf(), window, cx)).unwrap();
+        cx.run_until_parked();
+    }
+
+    /// Typing reaches the active pane's editor: an arrow key moves the
+    /// cursor and a following hex digit dirties the buffer, confirming
+    /// keystrokes route to the active grid (not swallowed by the dock
+    /// chrome). Guards the M1 focus-routing behavior through the dock.
+    #[gpui::test]
+    fn typing_reaches_the_active_pane(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
+        let window = open_workspace(cx, None);
+        window_open(window, &f1, cx);
+
+        let editor_state = |cx: &mut TestAppContext| {
+            window
+                .read_with(cx, |ws, cx| {
+                    let editor = ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor();
+                    (editor.selection().map(|s| s.cursor.get()), editor.is_dirty())
+                })
+                .unwrap()
+        };
+
+        assert_eq!(editor_state(cx), (None, false));
+
+        // Arrow-down establishes and advances the cursor by one row.
+        cx.simulate_keystrokes(window.into(), "down");
+        assert_eq!(editor_state(cx).0, Some(16));
+
+        // A hex digit at the cursor edits the buffer.
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(editor_state(cx).1, "hex digit typed into the active pane must edit its buffer");
     }
 }

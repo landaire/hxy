@@ -2840,6 +2840,8 @@ dependencies = [
  "hxy-editor",
  "hxy-i18n",
  "hxy-view-gpui",
+ "serde_json",
+ "tempfile",
  "tracing",
 ]
 

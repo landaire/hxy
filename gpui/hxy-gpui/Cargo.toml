@@ -16,7 +16,9 @@ hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
 hxy-view-gpui = { workspace = true }
+serde_json = "1"
 tracing = { workspace = true }
 
 [dev-dependencies]
 gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
+tempfile = "3"

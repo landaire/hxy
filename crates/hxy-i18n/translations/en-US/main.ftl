@@ -16,6 +16,9 @@ gpui-status-vim-mode-visual = VISUAL
 gpui-status-vim-mode-visual-line = V-LINE
 gpui-status-vim-mode-insert = INSERT
 gpui-status-vim-mode-replace = REPLACE
+gpui-file-untitled = Untitled
+gpui-welcome-title = Welcome
+gpui-welcome-body = Open a file with Cmd-O to get started.
 
 # Menus
 menu-file = File

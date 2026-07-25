@@ -342,3 +342,53 @@ App obligations to restore a layout:
   research are git-only and may target newer APIs.
 - DockItem::split_with_sizes double-add quirk (mod.rs:221-231) is benign but
   do not rely on add order side effects.
+
+## Task 2 field corrections (verified building the workbench)
+
+- A BARE center Tabs never emits DockEvent::LayoutChanged. `set_center`
+  (mod.rs:596) calls `subscribe_item`, whose `DockItem::Tabs` arm is a no-op
+  (mod.rs:979-981: "We subscribe to the tab panel event in StackPanel's
+  insert_panel"). Only a TabPanel inserted INTO a StackPanel gets subscribed
+  (stack_panel.rs:237-244 -> DockArea::subscribe_panel -> re-emits
+  DockEvent::LayoutChanged on PanelEvent::LayoutChanged). Practical rule:
+  keep the center a Split(StackPanel) wrapping the Tabs, and never call
+  set_center for a bare Tabs -- build the first tab via
+  `DockArea::add_panel(_, Center, ..)` onto the initial empty Split created by
+  `DockArea::new` (that Split's StackPanel is subscribed in `new`, mod.rs:548).
+  Then tab switches (set_active_ix, tab_panel.rs:234), adds, removes, and
+  closes all reach a DockEvent::LayoutChanged subscriber.
+- `DockArea::load` (mod.rs:898) does NOT call `subscribe_item` on the restored
+  center; it relies on `to_item` -> `split_with_sizes` -> StackPanel inserts
+  subscribing each child TabPanel. A saved bare-Tabs center would restore
+  unsubscribed. Since dumps of a Split center round-trip as a StackPanel with
+  TabPanel children, the "always a Split" rule above also keeps restore
+  subscribed.
+- The `items: Vec<Arc<dyn PanelView>>` cached inside `DockItem::Tabs` is NOT
+  authoritative: `DockArea::add_panel(Center)` routed through
+  `DockItem::Split::add_panel` (mod.rs:410-419) updates only the TabPanel
+  entity, and `DockItem::Tabs::remove_panel` (mod.rs:452-457) never pops from
+  it. Enumerate live tabs via `dump()` (TabPanel::dump reads its real panels)
+  or `TabPanel::active_panel`, never by walking `DockItem::Tabs.items`.
+- STALE Split.items after auto-removal (bit us hard). When a TabPanel's last
+  panel is removed, `remove_self_if_empty` (tab_panel.rs:351) tells its parent
+  StackPanel to drop it (`StackPanel::remove_panel`, stack_panel.rs:274-291).
+  That updates the LIVE tree (StackPanel.panels, and what dump()/render walk),
+  but NOT the cached `items: Vec<DockItem>` inside the parent
+  `DockItem::Split`/`DockItem::Tabs` held by `DockArea.items` -- that vec is
+  only rebuilt by `new`/`load`/`set_center` (mod.rs:598,919). So after closing
+  to zero tabs, `DockArea::add_panel(_, Center, ..)` routes through
+  `DockItem::Split::add_panel` (mod.rs:411-420), finds the STALE detached
+  TabPanel in `items`, and adds into it -> the panel never renders and dump()
+  never sees it; every later center add vanishes too. Fix: when reducing the
+  center to empty, do not reuse it -- rebuild via `set_center(DockItem::split(
+  axis, vec![], &weak, window, cx))` (fresh, re-subscribed StackPanel) then
+  `add_panel`. Verified: routing an add through the post-auto-removal cache is
+  a dead panel.
+- Delegating a Panel's `Focusable::focus_handle` to an inner child handle is
+  safe even though `TabPanel::render` also `track_focus`es the same handle
+  (tab_panel.rs:1191, focus_handle = active_panel.focus_handle). gpui's
+  `set_focus_id` (key_dispatch.rs:219-222) inserts focus_id -> node with
+  last-writer-wins, and the child paints after the TabPanel wrapper, so the
+  child node wins `focusable_node_ids`; the focus path ends at the child and
+  its `on_key_down` fires. Verified end-to-end: keystrokes reach the inner
+  HexPane through the dock with no extra handler.
