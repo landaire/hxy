@@ -4,6 +4,7 @@
 //! a UI toolkit or the app's file/tab types.
 
 pub mod checksums;
+pub mod diff;
 pub mod entropy;
 pub mod goto;
 pub mod inspector;

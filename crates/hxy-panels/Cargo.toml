@@ -29,3 +29,8 @@ crc32fast = "1"
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.11.0"
+
+# Byte diff (compare view): Myers via `similar`; `web-time` backs
+# the debounce clock so it also builds on wasm32-unknown-unknown.
+similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
+web-time = "1.1.0"
