@@ -233,6 +233,22 @@ impl HexEditor {
         self.active_pane
     }
 
+    /// Which nibble the next hex-digit keystroke would overwrite, or
+    /// `None` when the editor feature is off or the editor is
+    /// read-only. Read-only mirror of the value [`Self::view_parts`]
+    /// reports, so renderers that only have `&self` (e.g. a paint pass)
+    /// can draw the nibble caret without taking `&mut`.
+    #[cfg(feature = "editor")]
+    pub fn nibble(&self) -> Option<NibbleCursor> {
+        (self.edit.mode == EditMode::Mutable)
+            .then_some(if self.edit.edit_high_nibble { NibbleCursor::High } else { NibbleCursor::Low })
+    }
+
+    #[cfg(not(feature = "editor"))]
+    pub fn nibble(&self) -> Option<NibbleCursor> {
+        None
+    }
+
     pub fn set_active_pane(&mut self, pane: Pane) {
         if self.active_pane != pane {
             self.active_pane = pane;
@@ -607,11 +623,7 @@ impl HexEditor {
     pub fn view_parts(&mut self) -> ViewParts<'_> {
         let pending_scroll = self.pending_scroll.take();
         let pending_scroll_to_byte = self.pending_scroll_to_byte.take();
-        #[cfg(feature = "editor")]
-        let nibble = (self.edit.mode == EditMode::Mutable)
-            .then_some(if self.edit.edit_high_nibble { NibbleCursor::High } else { NibbleCursor::Low });
-        #[cfg(not(feature = "editor"))]
-        let nibble: Option<NibbleCursor> = None;
+        let nibble = self.nibble();
         ViewParts {
             source: &self.source,
             selection: &mut self.selection,

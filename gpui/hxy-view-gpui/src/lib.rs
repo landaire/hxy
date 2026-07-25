@@ -3,5 +3,9 @@
 #![forbid(unsafe_code)]
 
 mod geometry;
+mod paint;
+mod pane;
 
 pub use geometry::*;
+pub use pane::FrameInfo;
+pub use pane::HexPane;

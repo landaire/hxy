@@ -15,4 +15,5 @@ gpui-component = { workspace = true }
 hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
+hxy-view-gpui = { workspace = true }
 tracing = { workspace = true }

@@ -357,3 +357,53 @@ and `.../gpui-component-0.5.1`:
   `build_root_view` closure is just
   `cx.new(|cx| Root::new(workspace, window, cx))` -- no `.bg(...)` call,
   and no need to set a background on `Root` itself.
+
+### Task 3 corrections (canvas / text / theme at 0.2.2)
+
+Verified against `gpui-0.2.2` and `gpui-component-0.5.1` in the local
+crates.io registry while implementing the hex grid paint pass.
+
+- **`ShapedLine::paint` has NO `align` / `align_width` params at 0.2.2.**
+  The git-HEAD signature this doc cited (section 3) was
+  `paint(origin, line_height, align, align_width, window, cx)`; the
+  published 0.2.2 signature is
+  `paint(&self, origin: Point<Pixels>, line_height: Pixels, window: &mut Window, cx: &mut App) -> Result<()>`
+  (`gpui-0.2.2/src/text_system/line.rs:67`). `paint_background` matches.
+  Alignment is hardcoded to `TextAlign::default()` internally.
+- **`resolve_font` / `em_advance` live on `TextSystem`, not
+  `WindowTextSystem`,** but `WindowTextSystem` `#[deref]`s to
+  `Arc<TextSystem>` (`gpui-0.2.2/src/text_system.rs:333`), so
+  `window.text_system().resolve_font(&font)` and
+  `.em_advance(font_id, size)` both resolve through Deref. `resolve_font`
+  PANICS if neither the font nor any fallback resolves; `em_advance`
+  returns `Result`.
+- **`outline(bounds, border_color, border_style)`** takes a
+  `BorderStyle` (`BorderStyle::Solid` / `Dashed`,
+  `gpui-0.2.2/src/scene.rs:508`) as its third arg and produces a 1px
+  border; `fill(bounds, background)` produces a filled quad. Free fn
+  `bounds(origin, size)` builds a `Bounds`. `Hsla::opacity(factor)`
+  scales alpha (`gpui-0.2.2/src/color.rs:549`).
+- **Theme mono tokens**: `gpui_component::Theme` (0.5.1) exposes
+  `mono_font_family: SharedString` and `mono_font_size: Pixels` directly
+  (`gpui-component-0.5.1/src/theme/mod.rs:59,61`); on macOS the family
+  defaults to Menlo. `Theme` `Deref`s to `ThemeColor`, whose fields
+  include `background`, `foreground`, `muted_foreground`, `accent`,
+  `accent_foreground`, `selection`, `border`
+  (`.../theme/theme_color.rs`). No separate "mono color" token; the byte
+  classes map onto `foreground` / `muted_foreground` / `accent_foreground`.
+- **`Entity::update` on `&mut App` returns `R` directly** (not a
+  `Result`): `App`'s `AppContext::Result<R> = R`
+  (`gpui-0.2.2/src/app/entity_map.rs:430`). This is how the canvas paint
+  closure writes `FrameInfo` back onto the entity mid-frame; a captured
+  strong `Entity<HexPane>` handle is safe because the canvas element (and
+  its `FnOnce` closures) is dropped at frame end.
+- **`#[gpui::test]` needs `gpui`'s `test-support` feature.**
+  `TestAppContext` / `run_test` are gated behind it
+  (`gpui-0.2.2/Cargo.toml [features] test-support`); add
+  `gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }`
+  as a dev-dependency. `TestAppContext::add_window(build) ->
+  WindowHandle<V>`; drive the entity via `window.update(cx, |view, window,
+  cx| ...)` (returns `Result`) and read via `entity.read_with(cx, |v, _|
+  ...)` (returns the value directly). Rendering touches `cx.theme()`, so
+  call `cx.update(gpui_component::init)` before `add_window` or the theme
+  global is missing and render panics.
