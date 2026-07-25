@@ -179,9 +179,10 @@ pub struct CellMetrics {
 /// content origin) for the address gutter and each hex / ascii cell.
 /// All math in character units times char_w, mirroring the egui
 /// RowLayout proportions (hxy-view/src/lib.rs, RowLayout::compute):
-/// address gutter = address_chars + 2 chars gap; each hex cell is
-/// 3 chars wide (2 glyphs + 1 space); 2 chars gap before the ascii
-/// pane; ascii cells 1 char wide.
+/// address gutter = address_chars + 2 chars gap; hex cells are
+/// 2 chars of glyphs with a 0.5-char gap between cells (stride 2.5,
+/// no trailing gap after the last column); a 2-char section gap
+/// before the ascii pane; ascii cells 1 char wide.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridGeometry {
     pub metrics: CellMetrics,
@@ -273,9 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn hex_cells_are_three_chars_apart() {
+    fn hex_cells_use_egui_stride() {
         let g = geo();
-        assert_eq!(g.hex_x(1) - g.hex_x(0), px(24.0));
+        // egui RowLayout: cell 2.0 chars + 0.5 char gap = 2.5 stride.
+        assert_eq!(g.hex_x(1) - g.hex_x(0), px(20.0));
         assert_eq!(g.hex_cell_w(), px(16.0));
     }
 
@@ -308,7 +310,7 @@ mod tests {
 }
 ```
 
-Fix the last test's assertion while implementing: decide (and encode in the test) the documented rule -- points right of the ascii pane return `None`; points in the gap between panes return `None`; y below the last row clamps to the last row. Match egui hxy-view's hovered_byte behavior where visible (it treats gaps as no-hit).
+Fix the last test's assertion while implementing: encode egui RowLayout::hit_test's ACTUAL rules (crates/hxy-view/src/lib.rs:910-929): x in [hex_start, ascii_start) maps to the hex pane with the column clamped to cols-1 (the trailing section gap is absorbed into the last hex column, NOT a no-hit); x left of hex_start is None; x right of the ascii pane's end is None; y below the last row clamps to the last row.
 
 - [ ] **Step 3: Run to verify failure**
 

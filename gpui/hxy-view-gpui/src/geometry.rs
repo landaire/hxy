@@ -22,11 +22,12 @@ pub struct CellMetrics {
 
 /// Horizontal layout of one row: x origins (relative to the grid's
 /// content origin) for the address gutter and each hex / ascii cell.
-/// All math in character units times char_w, mirroring the egui
-/// RowLayout proportions (hxy-view/src/lib.rs, RowLayout::compute):
-/// address gutter = address_chars + 2 chars gap; each hex cell is
-/// 3 chars wide (2 glyphs + 1 space); 2 chars gap before the ascii
-/// pane; ascii cells 1 char wide.
+/// All math in character units times char_w, matching egui's
+/// RowLayout proportions exactly (hxy-view/src/lib.rs,
+/// RowLayout::compute): address gutter = address_chars + 2 chars
+/// gap; each hex cell is 2 chars wide with a 0.5-char gap between
+/// cells (stride 2.5 chars, no trailing gap after the last column);
+/// 2 chars gap before the ascii pane; ascii cells 1 char wide.
 ///
 /// `address_chars` is a snapshot of [`Self::address_chars_for`] taken
 /// at construction time, not recomputed from the `source_len` passed
@@ -41,10 +42,14 @@ pub struct GridGeometry {
     pub address_chars: usize,
 }
 
-/// Chars of glyph pair + trailing space per hex cell.
-const HEX_CELL_STRIDE_CHARS: f32 = 3.0;
-/// Chars of glyph pair only (excludes the trailing space).
+/// Chars of glyph pair only, per hex cell.
 const HEX_CELL_GLYPH_CHARS: f32 = 2.0;
+/// Chars of gap between adjacent hex cells (egui's `hex_gap`).
+const HEX_CELL_GAP_CHARS: f32 = 0.5;
+/// Left-edge-to-left-edge distance between adjacent hex cells:
+/// glyph pair + inter-cell gap. There is no trailing gap after the
+/// last column (egui's `hex_total = cols*hex_cell_w + (cols-1)*hex_gap`).
+const HEX_CELL_STRIDE_CHARS: f32 = HEX_CELL_GLYPH_CHARS + HEX_CELL_GAP_CHARS;
 /// Chars of gap between the address gutter and the hex pane, and
 /// between the hex pane and the ascii pane.
 const SECTION_GAP_CHARS: f32 = 2.0;
@@ -70,10 +75,13 @@ impl GridGeometry {
         self.metrics.char_w * (self.address_chars as f32 + SECTION_GAP_CHARS)
     }
 
-    /// x origin one past the last hex cell's trailing space, i.e. the
-    /// start of the gap before the ascii pane.
+    /// x origin one past the last hex cell's glyph pair (no trailing
+    /// gap), i.e. the start of the section gap before the ascii pane.
+    /// `columns * stride - gap`: `stride` includes one inter-cell gap
+    /// per column, but the last column has no gap after it.
     fn hex_pane_end(&self) -> Pixels {
-        self.hex_pane_start() + self.metrics.char_w * (f32::from(self.columns) * HEX_CELL_STRIDE_CHARS)
+        self.hex_pane_start()
+            + self.metrics.char_w * (f32::from(self.columns) * HEX_CELL_STRIDE_CHARS - HEX_CELL_GAP_CHARS)
     }
 
     pub fn hex_x(&self, col: u16) -> Pixels {
@@ -109,26 +117,31 @@ impl GridGeometry {
     /// Hit-test a point (relative to content origin, y already
     /// adjusted for scroll) to a pane/byte/nibble.
     ///
-    /// Points left of the hex pane (the address gutter), in the gap
-    /// between the hex and ascii panes, or right of the ascii pane's
-    /// last column return `None` -- those spans belong to no pane.
-    /// A `y` past the last row clamps to the last row (the EOF-cursor
-    /// row) rather than returning `None`. The resulting byte offset
-    /// is clamped to `source_len`, so the EOF row's cursor position
-    /// can land exactly on `source_len` (one past the last byte).
+    /// Matches egui's `RowLayout::hit_test` (hxy-view/src/lib.rs):
+    /// x left of the hex pane (the address gutter) returns `None`.
+    /// Any x in `[hex_pane_start, ascii_pane_start)` -- including the
+    /// section gap trailing the last hex column -- belongs to the
+    /// hex pane, with the column clamped to the last one; the gap
+    /// does not read as a no-hit. x past the ascii pane's last
+    /// column returns `None`. A `y` past the last row clamps to the
+    /// last row (the EOF-cursor row) rather than returning `None`.
+    /// The resulting byte offset is clamped to `source_len`, so the
+    /// EOF row's cursor position can land exactly on `source_len`
+    /// (one past the last byte).
     pub fn hit_test(&self, pos: Point<Pixels>, source_len: ByteLen) -> Option<GridHit> {
         let max_row = self.row_count(source_len).saturating_sub(1);
         let row_raw = (pos.y / self.metrics.line_h).max(0.0).floor() as u64;
         let row = row_raw.min(max_row);
 
         let hex_start = self.hex_pane_start();
-        let hex_end = self.hex_pane_end();
         let ascii_start = self.ascii_pane_start();
         let ascii_end = self.ascii_x(self.columns);
+        let last_col = self.columns.saturating_sub(1);
 
-        let (pane, col, nibble) = if pos.x >= hex_start && pos.x < hex_end {
+        let (pane, col, nibble) = if pos.x >= hex_start && pos.x < ascii_start {
             let local_chars = (pos.x - hex_start) / self.metrics.char_w;
             let col = (local_chars / HEX_CELL_STRIDE_CHARS).floor() as u16;
+            let col = col.min(last_col);
             let cell_local_chars = local_chars - f32::from(col) * HEX_CELL_STRIDE_CHARS;
             let nibble =
                 if cell_local_chars < HEX_CELL_GLYPH_CHARS / 2.0 { NibbleCursor::High } else { NibbleCursor::Low };
@@ -182,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn hex_cells_are_three_chars_apart() {
+    fn hex_cells_use_egui_stride() {
         let g = geo();
-        assert_eq!(g.hex_x(1) - g.hex_x(0), px(24.0));
+        assert_eq!(g.hex_x(1) - g.hex_x(0), px(20.0));
         assert_eq!(g.hex_cell_w(), px(16.0));
     }
 
@@ -219,17 +232,25 @@ mod tests {
         assert!(hit.is_none());
     }
 
-    /// The gap between the address gutter and the hex pane, and the
-    /// gap between the hex pane and the ascii pane, are dead space:
-    /// no pane owns them, so hit-testing there returns `None`.
+    /// The address gutter (left of the hex pane) is dead space: no
+    /// pane owns it, so hit-testing there returns `None`. The section
+    /// gap trailing the last hex column, by contrast, is NOT dead
+    /// space: it belongs to the hex pane's last column (clamped),
+    /// matching egui's `RowLayout::hit_test`, which maps any x in
+    /// `[hex_start_x, ascii_start_x)` to the hex pane. A click there
+    /// also lands on the Low nibble, since it falls past the
+    /// clamped cell's glyph-pair midpoint.
     #[test]
-    fn hit_test_gap_between_panes_is_none() {
+    fn hit_test_gutter_is_none_and_section_gap_clamps_to_last_hex_column() {
         let g = geo();
-        let gap_x = g.hex_x(0) - px(1.0);
-        assert!(g.hit_test(point(gap_x, px(0.0)), ByteLen::new(256)).is_none());
+        let gutter_x = g.hex_x(0) - px(1.0);
+        assert!(g.hit_test(point(gutter_x, px(0.0)), ByteLen::new(256)).is_none());
 
-        let inter_pane_gap_x = g.ascii_x(0) - px(1.0);
-        assert!(g.hit_test(point(inter_pane_gap_x, px(0.0)), ByteLen::new(256)).is_none());
+        let section_gap_x = g.ascii_x(0) - px(1.0);
+        let hit = g.hit_test(point(section_gap_x, px(0.0)), ByteLen::new(256)).unwrap();
+        assert_eq!(hit.pane, hxy_editor::Pane::Hex);
+        assert_eq!(hit.offset.get(), 15);
+        assert_eq!(hit.nibble, hxy_editor::NibbleCursor::Low);
     }
 
     /// A y past the last row clamps to the last row (the EOF-cursor
