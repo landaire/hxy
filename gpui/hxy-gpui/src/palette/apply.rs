@@ -27,6 +27,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::ToggleVim => ws.toggle_active_vim(cx),
         PaletteAction::ToggleInspector => ws.toggle_inspector_dock(window, cx),
         PaletteAction::OpenStrings => ws.open_strings_for_active_file(window, cx),
+        PaletteAction::OpenEntropy => ws.open_entropy_for_active_file(window, cx),
         PaletteAction::GoToOffset(target) => {
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| {

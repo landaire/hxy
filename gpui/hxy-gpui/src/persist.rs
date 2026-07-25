@@ -13,6 +13,7 @@ use gpui_component::dock::DockAreaState;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 
+use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::WELCOME_PANEL_NAME;
@@ -108,12 +109,12 @@ pub fn save(path: &Path, state: &DockAreaState) -> Result<(), SaveError> {
 /// - `WelcomePanel`: never restored; the workspace re-adds a fresh one
 ///   whenever it ends up with zero file tabs, so persisting it would
 ///   only risk a stale duplicate.
-/// - `StringsPanel` whose owning file (recorded path) does not
-///   survive pruning as a `FilePanel`: dropped with a `tracing::warn`
-///   (no toast -- this is a secondary tab, not a lost file). Computed
-///   from a first pass over the surviving `FilePanel` paths so a
-///   strings tab's fate never depends on tree walk order relative to
-///   its file's tab.
+/// - `StringsPanel` / `EntropyPanel` whose owning file (recorded path)
+///   does not survive pruning as a `FilePanel`: dropped with a
+///   `tracing::warn` (no toast -- these are secondary tabs, not a lost
+///   file). Computed from a first pass over the surviving `FilePanel`
+///   paths so neither kind's fate depends on tree walk order relative
+///   to its file's tab.
 ///
 /// Side docks are left untouched: the inspector is the only one, and it
 /// is rebuilt from the panel registry on restore (or re-added fresh by
@@ -178,6 +179,19 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
             }
         };
     }
+    if panel.panel_name == ENTROPY_PANEL_NAME {
+        return match file_path(&panel.info) {
+            Some(path) if surviving_files.contains(&path) => true,
+            Some(path) => {
+                tracing::warn!(?path, "restore: entropy panel's owning file is not open; dropping tab");
+                false
+            }
+            None => {
+                tracing::warn!("restore: entropy panel has no owning path; dropping tab");
+                false
+            }
+        };
+    }
 
     panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
     let surviving = panel.children.len();
@@ -199,9 +213,9 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
 /// criterion `FilePanel::restore` uses (`std::fs::read`), so prune and
 /// restore never disagree (a directory or a read-denied path is dropped
 /// here rather than silently restored as an empty buffer).
-/// The recorded `"path"` field of a `FilePanel` or `StringsPanel`
-/// leaf's `PanelInfo::Panel` payload, if present -- both panel kinds
-/// use the same JSON shape for their owning path.
+/// The recorded `"path"` field of a `FilePanel`, `StringsPanel`, or
+/// `EntropyPanel` leaf's `PanelInfo::Panel` payload, if present -- all
+/// three panel kinds use the same JSON shape for their owning path.
 fn file_path(info: &PanelInfo) -> Option<PathBuf> {
     let PanelInfo::Panel(value) = info else { return None };
     value.get("path").and_then(|p| p.as_str()).map(PathBuf::from)
@@ -241,6 +255,14 @@ mod tests {
         }
     }
 
+    fn entropy_panel(path: Option<&Path>) -> PanelState {
+        PanelState {
+            panel_name: ENTROPY_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({ "path": path.map(|p| p.to_string_lossy()) })),
+        }
+    }
+
     fn tabs(children: Vec<PanelState>) -> PanelState {
         PanelState { panel_name: "TabPanel".to_string(), children, info: PanelInfo::Tabs { active_index: 0 } }
     }
@@ -272,6 +294,40 @@ mod tests {
 
         let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
         assert_eq!(names, vec![FILE_PANEL_NAME, STRINGS_PANEL_NAME], "only the file and its own strings tab survive");
+        assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
+    }
+
+    /// Same rule as the strings panel, for entropy: a tab whose owning
+    /// file survives pruning is kept; one whose file does not (or that
+    /// never recorded a path) is dropped. Regression test for the
+    /// entropy panel review finding: `keep()` originally had no
+    /// `ENTROPY_PANEL_NAME` branch, so every entropy leaf fell into the
+    /// generic container-recursion arm, which always reports zero
+    /// surviving children for a leaf and drops it unconditionally.
+    #[test]
+    fn entropy_panel_kept_only_when_its_owning_file_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept_path = dir.path().join("kept.bin");
+        std::fs::write(&kept_path, b"hello").unwrap();
+        let missing_path = dir.path().join("missing.bin");
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![
+                file_panel(&kept_path),
+                entropy_panel(Some(&kept_path)),
+                entropy_panel(Some(&missing_path)),
+                entropy_panel(None),
+            ]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![FILE_PANEL_NAME, ENTROPY_PANEL_NAME], "only the file and its own entropy tab survive");
         assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
     }
 }

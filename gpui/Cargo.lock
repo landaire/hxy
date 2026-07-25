@@ -2879,6 +2879,7 @@ dependencies = [
  "hxy-i18n",
  "hxy-panels",
  "hxy-view-gpui",
+ "jiff",
  "palette-core",
  "serde_json",
  "tempfile",

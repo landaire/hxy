@@ -101,6 +101,9 @@ pub enum PaletteAction {
     /// Open (or focus) the strings panel for the active file, scanning
     /// the whole file under the panel's own auto-run rule.
     OpenStrings,
+    /// Open (or focus) the entropy panel for the active file, scanning
+    /// the whole file under the panel's own auto-run rule.
+    OpenEntropy,
     /// Cascade into an argument mode without closing the palette.
     SwitchMode(PaletteMode),
     /// Move the caret to an absolute offset (relative inputs are
@@ -208,6 +211,12 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     out.push(
         Entry::new(hxy_i18n::t("palette-strings-whole-file"), PaletteAction::OpenStrings)
             .with_subtitle(hxy_i18n::t("palette-strings-whole-file-subtitle"))
+            .with_disabled(!ctx.has_active_file),
+    );
+
+    out.push(
+        Entry::new(hxy_i18n::t("palette-compute-entropy"), PaletteAction::OpenEntropy)
+            .with_subtitle(hxy_i18n::t("palette-compute-entropy-subtitle"))
             .with_disabled(!ctx.has_active_file),
     );
 
@@ -436,6 +445,7 @@ mod tests {
         assert!(data.contains(&PaletteAction::ToggleVim));
         assert!(data.contains(&PaletteAction::ToggleInspector));
         assert!(data.contains(&PaletteAction::OpenStrings));
+        assert!(data.contains(&PaletteAction::OpenEntropy));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumns)));
         // Every row enabled when a file is active (copy needs a
@@ -454,6 +464,7 @@ mod tests {
         let find = |a: &PaletteAction| entries.iter().find(|e| &e.data == a).expect("row present");
         assert!(find(&PaletteAction::CloseTab).disabled);
         assert!(find(&PaletteAction::OpenStrings).disabled);
+        assert!(find(&PaletteAction::OpenEntropy).disabled);
         assert!(find(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)).disabled);
         assert!(find(&PaletteAction::CopySelection(CopyFormat::Hex)).disabled);
         // Open File / Toggle Vim / Toggle Inspector stay enabled.

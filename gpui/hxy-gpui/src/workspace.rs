@@ -65,6 +65,8 @@ use crate::palette::apply;
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
+use crate::panels::ENTROPY_PANEL_NAME;
+use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
 use crate::panels::InspectorPanel;
@@ -85,7 +87,7 @@ use crate::status::window_title_text;
 
 actions!(
     hxy_gpui,
-    [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette, PickPane, OpenStrings]
+    [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette, PickPane, OpenStrings, OpenEntropy]
 );
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
@@ -190,6 +192,13 @@ pub struct Workspace {
     /// source entity just makes its subscription inert), only replaced
     /// wholesale alongside `strings_panels` on a center-cache rebuild.
     strings_panel_subs: Vec<Subscription>,
+    /// `EntropyPanel` entities the workspace has opened. Same registry
+    /// shape and staleness caveat as `strings_panels` (needed for the
+    /// same reason: `DockItem::Tabs.items` isn't authoritative for
+    /// incremental adds -- see `resolve_leaf`'s doc), minus a
+    /// subscription list: `EntropyPanel` has no jump event to observe
+    /// (egui's entropy panel has no click-to-jump either).
+    entropy_panels: Vec<Entity<EntropyPanel>>,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -252,6 +261,7 @@ impl Workspace {
             open_files: Vec::new(),
             strings_panels: Vec::new(),
             strings_panel_subs: Vec::new(),
+            entropy_panels: Vec::new(),
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
@@ -297,6 +307,11 @@ impl Workspace {
             collect_strings_entities(self.dock.read(cx).items(), &mut restored_strings);
             for panel in restored_strings {
                 self.track_strings_panel(panel, window, cx);
+            }
+            let mut restored_entropy = Vec::new();
+            collect_entropy_entities(self.dock.read(cx).items(), &mut restored_entropy);
+            for panel in restored_entropy {
+                self.track_entropy_panel(panel);
             }
             if !pruned.is_empty() {
                 // Deferred like the load-failure toast above: `Root`
@@ -365,6 +380,10 @@ impl Workspace {
 
     fn on_open_strings(&mut self, _: &OpenStrings, window: &mut Window, cx: &mut Context<Self>) {
         self.open_strings_for_active_file(window, cx);
+    }
+
+    fn on_open_entropy(&mut self, _: &OpenEntropy, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_entropy_for_active_file(window, cx);
     }
 
     /// Open (or focus an existing) `StringsPanel` tab for the
@@ -461,6 +480,67 @@ impl Workspace {
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
         self.resync_center_if_stale(window, cx);
         let panel = self.strings_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
+        let Some(panel) = panel else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Open (or focus an existing) `EntropyPanel` tab for the
+    /// reference file. Mirrors `open_strings_for_active_file` exactly,
+    /// minus the jump-event subscription `EntropyPanel` has no
+    /// equivalent of.
+    pub(crate) fn open_entropy_for_active_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let path = file.read(cx).path().map(Path::to_path_buf);
+
+        if let Some(panel) = self.open_entropy_panel_for_path(path.as_deref(), cx) {
+            self.focus_entropy_tab(panel, window, cx);
+            return;
+        }
+
+        let pane = file.read(cx).pane().clone();
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| EntropyPanel::new(pane, path, window, cx));
+        self.track_entropy_panel(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Register `panel` in `entropy_panels` if not already tracked.
+    /// Called for every `EntropyPanel` the workspace discovers: freshly
+    /// opened (`open_entropy_for_active_file`), restored at boot
+    /// (`build_initial`), and rebuilt by a center-cache resync
+    /// (`rebuild_center_cache`).
+    fn track_entropy_panel(&mut self, panel: Entity<EntropyPanel>) {
+        if self.entropy_panels.iter().any(|p| p.entity_id() == panel.entity_id()) {
+            return;
+        }
+        self.entropy_panels.push(panel);
+    }
+
+    /// The live `EntropyPanel` for `path` if it already has a tab, else
+    /// `None`. Mirrors `open_strings_panel_for_path`.
+    fn open_entropy_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<EntropyPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_entropy_path(&dump.center, path) {
+            return None;
+        }
+        self.entropy_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
+    }
+
+    /// Bring an already-open entropy tab to the foreground. Mirrors
+    /// `focus_strings_tab`.
+    fn focus_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if active_entropy_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        let path = panel.read(cx).owning_path().map(Path::to_path_buf);
+        self.resync_center_if_stale(window, cx);
+        let panel = self.entropy_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
@@ -576,11 +656,11 @@ impl Workspace {
             let center = rebuild_item(&state.center, &mut reusable, welcome.as_ref(), &weak, window, cx);
             dock.set_center(center, window, cx);
         });
-        // The rebuilt cache is accurate: refresh both registries from
-        // it. `StringsPanel` entities are never carried over by this
-        // rebuild (see `resolve_leaf`'s doc), so the old entries in
-        // `strings_panels` (and their `StringsJumped` subscriptions)
-        // are dead and must be replaced, not merged.
+        // The rebuilt cache is accurate: refresh every registry from
+        // it. Neither `StringsPanel` nor `EntropyPanel` entities are
+        // carried over by this rebuild (see `resolve_leaf`'s doc), so
+        // the old entries (and `strings_panels`'s `StringsJumped`
+        // subscriptions) are dead and must be replaced, not merged.
         let mut live_files = Vec::new();
         collect_file_entities(self.dock.read(cx).items(), &mut live_files);
         self.open_files = live_files;
@@ -590,6 +670,12 @@ impl Workspace {
         self.strings_panel_subs.clear();
         for panel in live_strings {
             self.track_strings_panel(panel, window, cx);
+        }
+        let mut live_entropy = Vec::new();
+        collect_entropy_entities(self.dock.read(cx).items(), &mut live_entropy);
+        self.entropy_panels.clear();
+        for panel in live_entropy {
+            self.track_entropy_panel(panel);
         }
         self.focus_pending = true;
     }
@@ -934,15 +1020,16 @@ impl Workspace {
         self.active_file.is_some()
     }
 
-    /// Close the active center tab. A strings tab takes priority when
-    /// it's the front-most one (`self.active_file` only ever names a
-    /// `FilePanel` -- see `active_file_panel`'s doc -- so without this
-    /// check `cmd-w` would silently no-op, or close a background file
-    /// tab, while the user is looking at a strings tab). Otherwise
-    /// closes the active file tab, if one is focused, and drops its
-    /// entity from the reuse registry so the closed file's buffer is
-    /// released promptly rather than lingering until a rare cache
-    /// rebuild; any strings tab bound to that file closes with it.
+    /// Close the active center tab. A strings or entropy tab takes
+    /// priority when it's the front-most one (`self.active_file` only
+    /// ever names a `FilePanel` -- see `active_file_panel`'s doc -- so
+    /// without this check `cmd-w` would silently no-op, or close a
+    /// background file tab, while the user is looking at one of
+    /// those). Otherwise closes the active file tab, if one is
+    /// focused, and drops its entity from the reuse registry so the
+    /// closed file's buffer is released promptly rather than lingering
+    /// until a rare cache rebuild; any strings/entropy tab bound to
+    /// that file closes with it.
     ///
     /// Pruning here (on the close path) rather than in `reconcile` is
     /// deliberate: a file is transiently absent from `dump()` mid-split
@@ -957,13 +1044,17 @@ impl Workspace {
             self.close_strings_tab(strings, window, cx);
             return;
         }
+        if let Some(entropy) = active_entropy_panel(self.dock.read(cx).items(), cx) {
+            self.close_entropy_tab(entropy, window, cx);
+            return;
+        }
         let Some(active) = self.active_file.clone() else { return };
         self.close_file_tab(active, window, cx);
     }
 
     /// Close `file`'s tab and drop its entity from the reuse registry,
-    /// cascading to close any `StringsPanel` tab bound to it (see
-    /// `close_strings_tabs_for_path`'s doc). Factored out of
+    /// cascading to close any `StringsPanel` / `EntropyPanel` tab bound
+    /// to it (see `close_strings_tabs_for_path`'s doc). Factored out of
     /// `close_active_tab` so tests (and, if a future task adds a
     /// per-tab close button, that button too) can close a specific
     /// file regardless of which tab is currently front-most --
@@ -975,6 +1066,34 @@ impl Workspace {
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
         self.open_files.retain(|f| f.entity_id() != closed);
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
+        self.close_entropy_tabs_for_path(closed_path.as_deref(), window, cx);
+    }
+
+    /// Close one `EntropyPanel` tab by identity. Mirrors `close_strings_tab`.
+    fn close_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        self.entropy_panels.retain(|p| p.entity_id() != panel.entity_id());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+    }
+
+    /// Close every `EntropyPanel` tab bound to `path`. Mirrors
+    /// `close_strings_tabs_for_path`: a left-open entropy tab would pin
+    /// the closed file's `HexPane` alive and block a later reopen of
+    /// the same path from rebinding.
+    fn close_entropy_tabs_for_path(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) {
+        let mut closing = Vec::new();
+        self.entropy_panels.retain(|panel| {
+            if panel.read(cx).owning_path() == path {
+                closing.push(panel.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for panel in closing {
+            let view: Arc<dyn PanelView> = Arc::new(panel);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        }
     }
 
     /// Close one `StringsPanel` tab by identity.
@@ -1258,6 +1377,12 @@ fn count_strings_panels(state: &PanelState) -> usize {
     here + state.children.iter().map(count_strings_panels).sum::<usize>()
 }
 
+#[cfg(test)]
+fn count_entropy_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == ENTROPY_PANEL_NAME);
+    here + state.children.iter().map(count_entropy_panels).sum::<usize>()
+}
+
 /// Whether any tab container in the center cache has no live panels,
 /// i.e. a `TabPanel` that emptied and detached itself from the live tree
 /// while its `DockItem::Tabs` entry lingers in the cache. This is the
@@ -1385,6 +1510,13 @@ fn dump_has_strings_path(state: &PanelState, target: Option<&Path>) -> bool {
         || state.children.iter().any(|child| dump_has_strings_path(child, target))
 }
 
+/// Same idea as `dump_has_strings_path` but for an `EntropyPanel`'s
+/// owning path.
+fn dump_has_entropy_path(state: &PanelState, target: Option<&Path>) -> bool {
+    (state.panel_name == ENTROPY_PANEL_NAME && file_path_from_info(&state.info).as_deref() == target)
+        || state.children.iter().any(|child| dump_has_entropy_path(child, target))
+}
+
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
@@ -1430,6 +1562,27 @@ fn collect_strings_entities(item: &DockItem, out: &mut Vec<Entity<StringsPanel>>
         DockItem::Panel { view, .. } => {
             if let Ok(strings) = view.view().downcast::<StringsPanel>() {
                 out.push(strings);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
+/// Collect the live `EntropyPanel` entities from a `DockItem` tree.
+/// Mirrors `collect_strings_entities`.
+fn collect_entropy_entities(item: &DockItem, out: &mut Vec<Entity<EntropyPanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_entropy_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(entropy) = panel.view().downcast::<EntropyPanel>() {
+                    out.push(entropy);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(entropy) = view.view().downcast::<EntropyPanel>() {
+                out.push(entropy);
             }
         }
         DockItem::Tiles { .. } => {}
@@ -1483,6 +1636,19 @@ fn active_strings_panel(item: &DockItem, cx: &App) -> Option<Entity<StringsPanel
         }
         DockItem::Split { items, .. } => items.iter().find_map(|item| active_strings_panel(item, cx)),
         DockItem::Panel { view, .. } => view.view().downcast::<StringsPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
+/// The `EntropyPanel` backing the active tab, if the active tab is an
+/// entropy tab. Mirrors `active_strings_panel`.
+fn active_entropy_panel(item: &DockItem, cx: &App) -> Option<Entity<EntropyPanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<EntropyPanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_entropy_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<EntropyPanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
 }
@@ -1559,6 +1725,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_open_strings))
+            .on_action(cx.listener(Self::on_open_entropy))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_pick_pane))
             .on_action(cx.listener(Self::on_close_tab))
@@ -1666,6 +1833,10 @@ mod tests {
 
     fn strings_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
         window.read_with(cx, |ws, cx| count_strings_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    fn entropy_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |ws, cx| count_entropy_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
     }
 
     fn active_path(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> Option<PathBuf> {
@@ -2775,6 +2946,72 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(strings_tab_count(window, cx), 0, "the strings tab closed");
         assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+    }
+
+    /// Closing a file's tab also closes any `EntropyPanel` tab bound to
+    /// it, for the same reason as the strings cascade above (a left-open
+    /// entropy tab would pin the closed file's `HexPane` alive).
+    #[gpui::test]
+    fn cmd_w_closes_the_files_entropy_tab_too(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[1u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window_open(window, &f2, cx);
+        window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        window_open(window, &f1, cx);
+        assert_eq!(entropy_tab_count(window, cx), 2, "both files have an entropy tab");
+
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+        assert_eq!(entropy_tab_count(window, cx), 1, "f2's entropy tab survives");
+    }
+
+    /// `cmd-w` while an entropy tab is the front-most center tab closes
+    /// just that tab, not the (background) file tab it's bound to.
+    /// Mirrors `cmd_w_closes_the_front_most_strings_tab_not_the_file`.
+    #[gpui::test]
+    fn cmd_w_closes_the_front_most_entropy_tab_not_the_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(entropy_tab_count(window, cx), 1);
+
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(entropy_tab_count(window, cx), 0, "the entropy tab closed");
+        assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+    }
+
+    /// Opening the entropy panel twice for the same file focuses the
+    /// existing tab instead of duplicating it (mirrors the strings
+    /// open-or-focus dedup).
+    #[gpui::test]
+    fn open_entropy_twice_focuses_the_existing_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(entropy_tab_count(window, cx), 1);
+
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(entropy_tab_count(window, cx), 1, "no duplicate tab");
     }
 
     /// Hovering a strings-panel row paints a hover band on the owning
