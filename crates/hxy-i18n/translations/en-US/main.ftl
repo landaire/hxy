@@ -2,6 +2,9 @@
 app-name = hxy
 app-tagline = A hex editor
 
+# GPUI shell
+gpui-shell-no-file = No file open. Pass a path on the command line.
+
 # Menus
 menu-file = File
 menu-file-new = New
