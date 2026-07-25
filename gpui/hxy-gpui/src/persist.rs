@@ -150,62 +150,78 @@ fn collect_surviving_file_paths(panel: &PanelState, out: &mut HashSet<PathBuf>) 
     }
 }
 
+/// How `keep()` prunes one panel kind. A new per-file secondary panel
+/// (strings, entropy, ...) registers one [`PanelKind::OwningPathLeaf`]
+/// entry in [`panel_kind`] instead of a duplicated match arm here.
+enum PanelKind {
+    File,
+    /// Never restored; the workspace re-adds a fresh one whenever it
+    /// ends up with zero file tabs.
+    Welcome,
+    /// A per-file leaf tab (strings, entropy, checksums, ...) kept only
+    /// when its recorded owning path survived pruning as a `FilePanel`.
+    /// `log_label` names the panel kind in the drop warning, e.g.
+    /// "strings panel" -> "restore: strings panel's owning file is not
+    /// open; dropping tab".
+    OwningPathLeaf {
+        log_label: &'static str,
+    },
+}
+
+/// Look up the pruning rule for a panel name, or `None` for a generic
+/// container (`TabPanel`/`StackPanel`), which `keep` recurses into.
+fn panel_kind(name: &str) -> Option<PanelKind> {
+    match name {
+        FILE_PANEL_NAME => Some(PanelKind::File),
+        WELCOME_PANEL_NAME => Some(PanelKind::Welcome),
+        STRINGS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "strings panel" }),
+        ENTROPY_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "entropy panel" }),
+        _ => None,
+    }
+}
+
 /// Returns whether `panel` should survive pruning, recursively pruning
 /// container children (collecting dropped file paths into `pruned`) and
 /// clamping a tab container's active index into the surviving range.
 fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut Vec<PathBuf>) -> bool {
-    if panel.panel_name == FILE_PANEL_NAME {
-        if file_readable(&panel.info) {
-            return true;
+    match panel_kind(&panel.panel_name) {
+        Some(PanelKind::File) => {
+            if file_readable(&panel.info) {
+                return true;
+            }
+            if let Some(path) = file_path(&panel.info) {
+                pruned.push(path);
+            }
+            false
         }
-        if let Some(path) = file_path(&panel.info) {
-            pruned.push(path);
-        }
-        return false;
-    }
-    if panel.panel_name == WELCOME_PANEL_NAME {
-        return false;
-    }
-    if panel.panel_name == STRINGS_PANEL_NAME {
-        return match file_path(&panel.info) {
+        Some(PanelKind::Welcome) => false,
+        Some(PanelKind::OwningPathLeaf { log_label }) => match file_path(&panel.info) {
             Some(path) if surviving_files.contains(&path) => true,
             Some(path) => {
-                tracing::warn!(?path, "restore: strings panel's owning file is not open; dropping tab");
+                tracing::warn!(?path, "restore: {log_label}'s owning file is not open; dropping tab");
                 false
             }
             None => {
-                tracing::warn!("restore: strings panel has no owning path; dropping tab");
+                tracing::warn!("restore: {log_label} has no owning path; dropping tab");
                 false
             }
-        };
-    }
-    if panel.panel_name == ENTROPY_PANEL_NAME {
-        return match file_path(&panel.info) {
-            Some(path) if surviving_files.contains(&path) => true,
-            Some(path) => {
-                tracing::warn!(?path, "restore: entropy panel's owning file is not open; dropping tab");
-                false
+        },
+        None => {
+            panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
+            let surviving = panel.children.len();
+            // A pruned tab only needs the active index clamped back into range. A
+            // pruned split pane leaves `PanelInfo::Stack.sizes` one entry long;
+            // `split_with_sizes` indexes sizes defensively (missing -> auto size), so
+            // restored pane sizes are at worst slightly off, never a panic. Splits are
+            // best-effort here (this shell builds a single center container).
+            if let PanelInfo::Tabs { active_index } = &mut panel.info
+                && surviving > 0
+            {
+                *active_index = (*active_index).min(surviving - 1);
             }
-            None => {
-                tracing::warn!("restore: entropy panel has no owning path; dropping tab");
-                false
-            }
-        };
+            surviving != 0
+        }
     }
-
-    panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
-    let surviving = panel.children.len();
-    // A pruned tab only needs the active index clamped back into range. A
-    // pruned split pane leaves `PanelInfo::Stack.sizes` one entry long;
-    // `split_with_sizes` indexes sizes defensively (missing -> auto size), so
-    // restored pane sizes are at worst slightly off, never a panic. Splits are
-    // best-effort here (this shell builds a single center container).
-    if let PanelInfo::Tabs { active_index } = &mut panel.info
-        && surviving > 0
-    {
-        *active_index = (*active_index).min(surviving - 1);
-    }
-    surviving != 0
 }
 
 /// A restored file tab is kept only if its recorded path still resolves
