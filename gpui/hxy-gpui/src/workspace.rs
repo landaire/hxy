@@ -262,9 +262,21 @@ impl Workspace {
         self.focus_pending = true;
     }
 
-    /// Read `path` and add it as a new file tab. Called by `cmd-o` and
-    /// by tests. Multiple opens accumulate tabs.
+    /// Read `path` and add it as a new file tab. Called by `cmd-o`
+    /// (which can pass several paths) and by tests. A path that is
+    /// already open does NOT get a second tab: the existing one is
+    /// focused instead (standard editor behavior; the egui app does the
+    /// same, though it also offers a focus/second-copy/cancel dialog that
+    /// is out of scope here). Deduping at the source also keeps the
+    /// resync reuse registry one-entry-per-path, so a reopened file can
+    /// never lose its live (possibly dirty) entity to a rebuild.
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(existing) = self.open_file_for_path(&path, cx) {
+            self.focus_existing_tab(existing, window, cx);
+            self.open_error = None;
+            cx.notify();
+            return;
+        }
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
@@ -278,6 +290,35 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The live `FilePanel` for `path` if it already has a tab, else
+    /// `None`. Confirms liveness against the dump (reliable, unlike the
+    /// `DockItem` cache) before mapping to the registered entity.
+    fn open_file_for_path(&self, path: &Path, cx: &App) -> Option<Entity<FilePanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_file_path(&dump.center, path) {
+            return None;
+        }
+        // Most-recently registered entity for the path is the live one.
+        self.open_files.iter().rev().find(|file| file.read(cx).path() == Some(path)).cloned()
+    }
+
+    /// Bring an already-open file's tab to the foreground. If it is
+    /// already the active tab, just take keyboard focus; otherwise
+    /// re-add it through the dock (0.5.1 has no public "activate tab"),
+    /// which reuses the same entity (state intact), makes it active, and
+    /// focuses its pane.
+    fn focus_existing_tab(&mut self, existing: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_file.as_ref().map(Entity::entity_id) == Some(existing.entity_id()) {
+            let handle = existing.read(cx).pane().read(cx).focus_handle(cx);
+            window.focus(&handle);
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let view: Arc<dyn PanelView> = Arc::new(existing.clone());
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.add_file_panel(existing, window, cx);
     }
 
     fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -521,6 +562,13 @@ fn resolve_leaf(
         return Arc::new(welcome.clone());
     }
     Arc::from(PanelRegistry::build_panel(&leaf.panel_name, dock_area.clone(), leaf, &leaf.info, window, cx))
+}
+
+/// Whether any file panel in a dumped `PanelState` tree has `target` as
+/// its path.
+fn dump_has_file_path(state: &PanelState, target: &Path) -> bool {
+    (state.panel_name == FILE_PANEL_NAME && file_path_from_info(&state.info).as_deref() == Some(target))
+        || state.children.iter().any(|child| dump_has_file_path(child, target))
 }
 
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
@@ -920,6 +968,69 @@ mod tests {
         assert_eq!(file_count(window, cx), 2);
         let paths = window.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
         assert!(paths.contains(&fc) && paths.contains(&fa));
+    }
+
+    /// Opening an already-open file focuses its existing tab instead of
+    /// adding a duplicate, and reuses the SAME live entity so its editor
+    /// state (dirty edits) survives -- both when it is already active and
+    /// when it is a background tab. Deduping keeps the resync reuse
+    /// registry one-entry-per-path, closing the duplicate-path data-loss
+    /// class.
+    #[gpui::test]
+    fn opening_an_already_open_file_focuses_its_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let fa = temp_file(&dir, "a.bin", &[0u8; 32]);
+        let fb = temp_file(&dir, "b.bin", &[0u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &fa, cx);
+        assert_eq!(file_count(window, cx), 1);
+
+        // Dirty file A (the active tab).
+        let fa_entity = window.read_with(cx, |ws, _| ws.active_file.clone()).unwrap().expect("A active");
+        window
+            .update(cx, |_ws, window, cx| {
+                let handle = fa_entity.read(cx).pane().read(cx).focus_handle(cx);
+                window.focus(&handle);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "down");
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(window.read_with(cx, |_ws, cx| fa_entity.read(cx).pane().read(cx).editor().is_dirty()).unwrap());
+
+        // Reopening the active file: no duplicate, same entity, still dirty.
+        window_open(window, &fa, cx);
+        assert_eq!(file_count(window, cx), 1, "reopening the active file must not duplicate it");
+        assert_eq!(active_path(window, cx), Some(fa.clone()));
+        assert_eq!(
+            window.read_with(cx, |ws, _| ws.active_file.as_ref().unwrap().entity_id()).unwrap(),
+            fa_entity.entity_id(),
+            "reopen must reuse the same entity",
+        );
+
+        // Open B (now active), then reopen A from the background: it must
+        // activate the existing A tab (not add a second) and keep A's edits.
+        window_open(window, &fb, cx);
+        assert_eq!(active_path(window, cx), Some(fb));
+        window_open(window, &fa, cx);
+        assert_eq!(file_count(window, cx), 2, "background reopen must not duplicate A");
+        assert_eq!(active_path(window, cx), Some(fa.clone()), "background reopen must focus A");
+        assert_eq!(
+            window.read_with(cx, |ws, _| ws.active_file.as_ref().unwrap().entity_id()).unwrap(),
+            fa_entity.entity_id(),
+            "background reopen must reuse A's entity",
+        );
+        assert!(
+            window.read_with(cx, |_ws, cx| fa_entity.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "background reopen must preserve A's dirty edits",
+        );
+
+        // Registry holds exactly one entry for A's path.
+        let registered = window
+            .read_with(cx, |ws, cx| ws.open_files.iter().filter(|file| file.read(cx).path() == Some(fa.as_path())).count())
+            .unwrap();
+        assert_eq!(registered, 1, "one registry entry per open path");
     }
 
     /// A restored tab whose file has since disappeared is pruned, the
