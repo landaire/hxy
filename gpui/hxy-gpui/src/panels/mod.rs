@@ -12,6 +12,7 @@ use gpui::AppContext;
 use gpui_component::dock::PanelView;
 use gpui_component::dock::register_panel;
 
+pub mod checksums;
 pub mod entropy;
 mod file;
 pub mod inspector;
@@ -21,6 +22,8 @@ mod welcome;
 #[cfg(feature = "dock-spike")]
 pub mod workspace_spike;
 
+pub use checksums::CHECKSUMS_PANEL_NAME;
+pub use checksums::ChecksumsPanel;
 pub use entropy::ENTROPY_PANEL_NAME;
 pub use entropy::EntropyPanel;
 pub use file::FILE_PANEL_NAME;
@@ -49,6 +52,9 @@ pub fn register(cx: &mut App) {
     });
     register_panel(cx, ENTROPY_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| EntropyPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    });
+    register_panel(cx, CHECKSUMS_PANEL_NAME, |_dock, _state, info, window, cx| {
+        Box::new(cx.new(|cx| ChecksumsPanel::restore(info, window, cx))) as Box<dyn PanelView>
     });
 }
 
@@ -79,9 +85,14 @@ mod tests {
         window
             .update(cx, |_dock, window, cx| {
                 let weak = cx.entity().downgrade();
-                for name in
-                    [FILE_PANEL_NAME, WELCOME_PANEL_NAME, INSPECTOR_PANEL_NAME, STRINGS_PANEL_NAME, ENTROPY_PANEL_NAME]
-                {
+                for name in [
+                    FILE_PANEL_NAME,
+                    WELCOME_PANEL_NAME,
+                    INSPECTOR_PANEL_NAME,
+                    STRINGS_PANEL_NAME,
+                    ENTROPY_PANEL_NAME,
+                    CHECKSUMS_PANEL_NAME,
+                ] {
                     let state = PanelState {
                         panel_name: name.to_string(),
                         children: Vec::new(),

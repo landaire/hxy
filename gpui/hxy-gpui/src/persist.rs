@@ -13,6 +13,7 @@ use gpui_component::dock::DockAreaState;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 
+use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
@@ -109,12 +110,13 @@ pub fn save(path: &Path, state: &DockAreaState) -> Result<(), SaveError> {
 /// - `WelcomePanel`: never restored; the workspace re-adds a fresh one
 ///   whenever it ends up with zero file tabs, so persisting it would
 ///   only risk a stale duplicate.
-/// - `StringsPanel` / `EntropyPanel` whose owning file (recorded path)
-///   does not survive pruning as a `FilePanel`: dropped with a
-///   `tracing::warn` (no toast -- these are secondary tabs, not a lost
-///   file). Computed from a first pass over the surviving `FilePanel`
-///   paths so neither kind's fate depends on tree walk order relative
-///   to its file's tab.
+/// - `StringsPanel` / `EntropyPanel` / `ChecksumsPanel` whose owning
+///   file (recorded path) does not survive pruning as a `FilePanel`:
+///   dropped with a `tracing::warn` (no toast -- these are secondary
+///   tabs, not a lost file). Computed from a first pass over the
+///   surviving `FilePanel` paths so no kind's fate depends on tree walk
+///   order relative to its file's tab. See [`panel_kind`] for the
+///   per-panel-name pruning table these three share.
 ///
 /// Side docks are left untouched: the inspector is the only one, and it
 /// is rebuilt from the panel registry on restore (or re-added fresh by
@@ -176,6 +178,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         WELCOME_PANEL_NAME => Some(PanelKind::Welcome),
         STRINGS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "strings panel" }),
         ENTROPY_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "entropy panel" }),
+        CHECKSUMS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "checksums panel" }),
         _ => None,
     }
 }
@@ -279,6 +282,14 @@ mod tests {
         }
     }
 
+    fn checksums_panel(path: Option<&Path>) -> PanelState {
+        PanelState {
+            panel_name: CHECKSUMS_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({ "path": path.map(|p| p.to_string_lossy()) })),
+        }
+    }
+
     fn tabs(children: Vec<PanelState>) -> PanelState {
         PanelState { panel_name: "TabPanel".to_string(), children, info: PanelInfo::Tabs { active_index: 0 } }
     }
@@ -344,6 +355,40 @@ mod tests {
 
         let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
         assert_eq!(names, vec![FILE_PANEL_NAME, ENTROPY_PANEL_NAME], "only the file and its own entropy tab survive");
+        assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
+    }
+
+    /// Same rule again, for checksums: the fourth panel kind registered
+    /// in `panel_kind` rather than a fourth duplicated match arm in
+    /// `keep()`.
+    #[test]
+    fn checksums_panel_kept_only_when_its_owning_file_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept_path = dir.path().join("kept.bin");
+        std::fs::write(&kept_path, b"hello").unwrap();
+        let missing_path = dir.path().join("missing.bin");
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![
+                file_panel(&kept_path),
+                checksums_panel(Some(&kept_path)),
+                checksums_panel(Some(&missing_path)),
+                checksums_panel(None),
+            ]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![FILE_PANEL_NAME, CHECKSUMS_PANEL_NAME],
+            "only the file and its own checksums tab survive"
+        );
         assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
     }
 }

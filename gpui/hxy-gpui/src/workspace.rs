@@ -65,6 +65,8 @@ use crate::palette::apply;
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
+use crate::panels::CHECKSUMS_PANEL_NAME;
+use crate::panels::ChecksumsPanel;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
@@ -87,7 +89,18 @@ use crate::status::window_title_text;
 
 actions!(
     hxy_gpui,
-    [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette, PickPane, OpenStrings, OpenEntropy]
+    [
+        OpenFile,
+        ToggleVim,
+        ToggleInspector,
+        ToggleSearch,
+        CloseSearch,
+        OpenPalette,
+        PickPane,
+        OpenStrings,
+        OpenEntropy,
+        OpenChecksums
+    ]
 );
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
@@ -199,6 +212,10 @@ pub struct Workspace {
     /// subscription list: `EntropyPanel` has no jump event to observe
     /// (egui's entropy panel has no click-to-jump either).
     entropy_panels: Vec<Entity<EntropyPanel>>,
+    /// `ChecksumsPanel` entities the workspace has opened. Same
+    /// registry shape and staleness caveat as `entropy_panels` (no
+    /// jump event either).
+    checksums_panels: Vec<Entity<ChecksumsPanel>>,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -262,6 +279,7 @@ impl Workspace {
             strings_panels: Vec::new(),
             strings_panel_subs: Vec::new(),
             entropy_panels: Vec::new(),
+            checksums_panels: Vec::new(),
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
@@ -312,6 +330,11 @@ impl Workspace {
             collect_entropy_entities(self.dock.read(cx).items(), &mut restored_entropy);
             for panel in restored_entropy {
                 self.track_entropy_panel(panel);
+            }
+            let mut restored_checksums = Vec::new();
+            collect_checksums_entities(self.dock.read(cx).items(), &mut restored_checksums);
+            for panel in restored_checksums {
+                self.track_checksums_panel(panel);
             }
             if !pruned.is_empty() {
                 // Deferred like the load-failure toast above: `Root`
@@ -384,6 +407,10 @@ impl Workspace {
 
     fn on_open_entropy(&mut self, _: &OpenEntropy, window: &mut Window, cx: &mut Context<Self>) {
         self.open_entropy_for_active_file(window, cx);
+    }
+
+    fn on_open_checksums(&mut self, _: &OpenChecksums, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_checksums_for_active_file(window, cx);
     }
 
     /// Open (or focus an existing) `StringsPanel` tab for the
@@ -547,6 +574,67 @@ impl Workspace {
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
+    /// Open (or focus an existing) `ChecksumsPanel` tab for the
+    /// reference file. Mirrors `open_strings_for_active_file` exactly,
+    /// minus the jump-event subscription neither `ChecksumsPanel` nor
+    /// `EntropyPanel` have an equivalent of.
+    pub(crate) fn open_checksums_for_active_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let path = file.read(cx).path().map(Path::to_path_buf);
+
+        if let Some(panel) = self.open_checksums_panel_for_path(path.as_deref(), cx) {
+            self.focus_checksums_tab(panel, window, cx);
+            return;
+        }
+
+        let pane = file.read(cx).pane().clone();
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| ChecksumsPanel::new(pane, path, window, cx));
+        self.track_checksums_panel(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Register `panel` in `checksums_panels` if not already tracked.
+    /// Called for every `ChecksumsPanel` the workspace discovers:
+    /// freshly opened (`open_checksums_for_active_file`), restored at
+    /// boot (`build_initial`), and rebuilt by a center-cache resync
+    /// (`rebuild_center_cache`).
+    fn track_checksums_panel(&mut self, panel: Entity<ChecksumsPanel>) {
+        if self.checksums_panels.iter().any(|p| p.entity_id() == panel.entity_id()) {
+            return;
+        }
+        self.checksums_panels.push(panel);
+    }
+
+    /// The live `ChecksumsPanel` for `path` if it already has a tab,
+    /// else `None`. Mirrors `open_entropy_panel_for_path`.
+    fn open_checksums_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<ChecksumsPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_checksums_path(&dump.center, path) {
+            return None;
+        }
+        self.checksums_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
+    }
+
+    /// Bring an already-open checksums tab to the foreground. Mirrors
+    /// `focus_entropy_tab`.
+    fn focus_checksums_tab(&mut self, panel: Entity<ChecksumsPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if active_checksums_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        let path = panel.read(cx).owning_path().map(Path::to_path_buf);
+        self.resync_center_if_stale(window, cx);
+        let panel = self.checksums_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
+        let Some(panel) = panel else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
     /// Add a file tab to the center dock, making it active (the dock
     /// focuses the new tab's pane itself when the active tab changes).
     fn add_file_panel(&mut self, panel: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
@@ -657,10 +745,11 @@ impl Workspace {
             dock.set_center(center, window, cx);
         });
         // The rebuilt cache is accurate: refresh every registry from
-        // it. Neither `StringsPanel` nor `EntropyPanel` entities are
-        // carried over by this rebuild (see `resolve_leaf`'s doc), so
-        // the old entries (and `strings_panels`'s `StringsJumped`
-        // subscriptions) are dead and must be replaced, not merged.
+        // it. Neither `StringsPanel`, `EntropyPanel`, nor
+        // `ChecksumsPanel` entities are carried over by this rebuild
+        // (see `resolve_leaf`'s doc), so the old entries (and
+        // `strings_panels`'s `StringsJumped` subscriptions) are dead
+        // and must be replaced, not merged.
         let mut live_files = Vec::new();
         collect_file_entities(self.dock.read(cx).items(), &mut live_files);
         self.open_files = live_files;
@@ -676,6 +765,12 @@ impl Workspace {
         self.entropy_panels.clear();
         for panel in live_entropy {
             self.track_entropy_panel(panel);
+        }
+        let mut live_checksums = Vec::new();
+        collect_checksums_entities(self.dock.read(cx).items(), &mut live_checksums);
+        self.checksums_panels.clear();
+        for panel in live_checksums {
+            self.track_checksums_panel(panel);
         }
         self.focus_pending = true;
     }
@@ -1020,16 +1115,16 @@ impl Workspace {
         self.active_file.is_some()
     }
 
-    /// Close the active center tab. A strings or entropy tab takes
-    /// priority when it's the front-most one (`self.active_file` only
-    /// ever names a `FilePanel` -- see `active_file_panel`'s doc -- so
-    /// without this check `cmd-w` would silently no-op, or close a
+    /// Close the active center tab. A strings, entropy, or checksums
+    /// tab takes priority when it's the front-most one (`self.active_file`
+    /// only ever names a `FilePanel` -- see `active_file_panel`'s doc --
+    /// so without this check `cmd-w` would silently no-op, or close a
     /// background file tab, while the user is looking at one of
     /// those). Otherwise closes the active file tab, if one is
     /// focused, and drops its entity from the reuse registry so the
     /// closed file's buffer is released promptly rather than lingering
-    /// until a rare cache rebuild; any strings/entropy tab bound to
-    /// that file closes with it.
+    /// until a rare cache rebuild; any strings/entropy/checksums tab
+    /// bound to that file closes with it.
     ///
     /// Pruning here (on the close path) rather than in `reconcile` is
     /// deliberate: a file is transiently absent from `dump()` mid-split
@@ -1048,13 +1143,18 @@ impl Workspace {
             self.close_entropy_tab(entropy, window, cx);
             return;
         }
+        if let Some(checksums) = active_checksums_panel(self.dock.read(cx).items(), cx) {
+            self.close_checksums_tab(checksums, window, cx);
+            return;
+        }
         let Some(active) = self.active_file.clone() else { return };
         self.close_file_tab(active, window, cx);
     }
 
     /// Close `file`'s tab and drop its entity from the reuse registry,
-    /// cascading to close any `StringsPanel` / `EntropyPanel` tab bound
-    /// to it (see `close_strings_tabs_for_path`'s doc). Factored out of
+    /// cascading to close any `StringsPanel` / `EntropyPanel` /
+    /// `ChecksumsPanel` tab bound to it (see
+    /// `close_strings_tabs_for_path`'s doc). Factored out of
     /// `close_active_tab` so tests (and, if a future task adds a
     /// per-tab close button, that button too) can close a specific
     /// file regardless of which tab is currently front-most --
@@ -1067,11 +1167,19 @@ impl Workspace {
         self.open_files.retain(|f| f.entity_id() != closed);
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_entropy_tabs_for_path(closed_path.as_deref(), window, cx);
+        self.close_checksums_tabs_for_path(closed_path.as_deref(), window, cx);
     }
 
     /// Close one `EntropyPanel` tab by identity. Mirrors `close_strings_tab`.
     fn close_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.entropy_panels.retain(|p| p.entity_id() != panel.entity_id());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+    }
+
+    /// Close one `ChecksumsPanel` tab by identity. Mirrors `close_strings_tab`.
+    fn close_checksums_tab(&mut self, panel: Entity<ChecksumsPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        self.checksums_panels.retain(|p| p.entity_id() != panel.entity_id());
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
     }
@@ -1083,6 +1191,24 @@ impl Workspace {
     fn close_entropy_tabs_for_path(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) {
         let mut closing = Vec::new();
         self.entropy_panels.retain(|panel| {
+            if panel.read(cx).owning_path() == path {
+                closing.push(panel.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for panel in closing {
+            let view: Arc<dyn PanelView> = Arc::new(panel);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        }
+    }
+
+    /// Close every `ChecksumsPanel` tab bound to `path`. Mirrors
+    /// `close_entropy_tabs_for_path`.
+    fn close_checksums_tabs_for_path(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) {
+        let mut closing = Vec::new();
+        self.checksums_panels.retain(|panel| {
             if panel.read(cx).owning_path() == path {
                 closing.push(panel.clone());
                 false
@@ -1383,6 +1509,12 @@ fn count_entropy_panels(state: &PanelState) -> usize {
     here + state.children.iter().map(count_entropy_panels).sum::<usize>()
 }
 
+#[cfg(test)]
+fn count_checksums_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == CHECKSUMS_PANEL_NAME);
+    here + state.children.iter().map(count_checksums_panels).sum::<usize>()
+}
+
 /// Whether any tab container in the center cache has no live panels,
 /// i.e. a `TabPanel` that emptied and detached itself from the live tree
 /// while its `DockItem::Tabs` entry lingers in the cache. This is the
@@ -1517,6 +1649,13 @@ fn dump_has_entropy_path(state: &PanelState, target: Option<&Path>) -> bool {
         || state.children.iter().any(|child| dump_has_entropy_path(child, target))
 }
 
+/// Same idea as `dump_has_strings_path` but for a `ChecksumsPanel`'s
+/// owning path.
+fn dump_has_checksums_path(state: &PanelState, target: Option<&Path>) -> bool {
+    (state.panel_name == CHECKSUMS_PANEL_NAME && file_path_from_info(&state.info).as_deref() == target)
+        || state.children.iter().any(|child| dump_has_checksums_path(child, target))
+}
+
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
@@ -1589,6 +1728,27 @@ fn collect_entropy_entities(item: &DockItem, out: &mut Vec<Entity<EntropyPanel>>
     }
 }
 
+/// Collect the live `ChecksumsPanel` entities from a `DockItem` tree.
+/// Mirrors `collect_strings_entities`.
+fn collect_checksums_entities(item: &DockItem, out: &mut Vec<Entity<ChecksumsPanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_checksums_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(checksums) = panel.view().downcast::<ChecksumsPanel>() {
+                    out.push(checksums);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(checksums) = view.view().downcast::<ChecksumsPanel>() {
+                out.push(checksums);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
 /// The file panel backing the active tab, if the active tab is a file.
 /// With splits, the first tab container that has an active file wins.
 ///
@@ -1649,6 +1809,19 @@ fn active_entropy_panel(item: &DockItem, cx: &App) -> Option<Entity<EntropyPanel
         }
         DockItem::Split { items, .. } => items.iter().find_map(|item| active_entropy_panel(item, cx)),
         DockItem::Panel { view, .. } => view.view().downcast::<EntropyPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
+/// The `ChecksumsPanel` backing the active tab, if the active tab is a
+/// checksums tab. Mirrors `active_strings_panel`.
+fn active_checksums_panel(item: &DockItem, cx: &App) -> Option<Entity<ChecksumsPanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<ChecksumsPanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_checksums_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<ChecksumsPanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
 }
@@ -1726,6 +1899,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_open_strings))
             .on_action(cx.listener(Self::on_open_entropy))
+            .on_action(cx.listener(Self::on_open_checksums))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_pick_pane))
             .on_action(cx.listener(Self::on_close_tab))
@@ -1837,6 +2011,10 @@ mod tests {
 
     fn entropy_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
         window.read_with(cx, |ws, cx| count_entropy_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    fn checksums_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |ws, cx| count_checksums_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
     }
 
     fn active_path(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> Option<PathBuf> {
@@ -3012,6 +3190,71 @@ mod tests {
         window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert_eq!(entropy_tab_count(window, cx), 1, "no duplicate tab");
+    }
+
+    /// Closing a file's tab also closes any `ChecksumsPanel` tab bound
+    /// to it. Mirrors `cmd_w_closes_the_files_entropy_tab_too`.
+    #[gpui::test]
+    fn cmd_w_closes_the_files_checksums_tab_too(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[1u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window_open(window, &f2, cx);
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        window_open(window, &f1, cx);
+        assert_eq!(checksums_tab_count(window, cx), 2, "both files have a checksums tab");
+
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+        assert_eq!(checksums_tab_count(window, cx), 1, "f2's checksums tab survives");
+    }
+
+    /// `cmd-w` while a checksums tab is the front-most center tab closes
+    /// just that tab, not the (background) file tab it's bound to.
+    /// Mirrors `cmd_w_closes_the_front_most_entropy_tab_not_the_file`.
+    #[gpui::test]
+    fn cmd_w_closes_the_front_most_checksums_tab_not_the_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(checksums_tab_count(window, cx), 1);
+
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(checksums_tab_count(window, cx), 0, "the checksums tab closed");
+        assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+    }
+
+    /// Opening the checksums panel twice for the same file focuses the
+    /// existing tab instead of duplicating it. Mirrors
+    /// `open_entropy_twice_focuses_the_existing_tab`.
+    #[gpui::test]
+    fn open_checksums_twice_focuses_the_existing_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(checksums_tab_count(window, cx), 1);
+
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(checksums_tab_count(window, cx), 1, "no duplicate tab");
     }
 
     /// Hovering a strings-panel row paints a hover band on the owning

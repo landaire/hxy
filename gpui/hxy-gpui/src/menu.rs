@@ -32,6 +32,7 @@ use gpui::Menu;
 use gpui::MenuItem;
 use gpui::actions;
 
+use crate::workspace::OpenChecksums;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenStrings;
@@ -108,6 +109,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("palette-strings-whole-file"), OpenStrings),
                 MenuItem::action(hxy_i18n::t("palette-compute-entropy"), OpenEntropy),
+                MenuItem::action(hxy_i18n::t("palette-checksums-whole-file"), OpenChecksums),
             ],
         },
     ]
@@ -135,6 +137,6 @@ mod tests {
         assert_eq!(item_count(0), 3, "App menu: About, separator, Quit");
         assert_eq!(item_count(1), 3, "File menu: Open, separator, Close Tab");
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
-        assert_eq!(item_count(3), 5, "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy");
+        assert_eq!(item_count(3), 6, "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy, Checksums");
     }
 }

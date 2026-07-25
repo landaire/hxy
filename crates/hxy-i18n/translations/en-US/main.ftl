@@ -527,6 +527,11 @@ palette-checksums-whole-file-subtitle = Run the selected hashes over every byte 
 palette-checksums-selection = Calculate checksums (selection)
 palette-checksums-selection-subtitle = Run the selected hashes over { $start } to { $end } only.
 
+# gpui checksums panel (range input row not present in the egui panel)
+gpui-checksums-range-label = Range:
+gpui-checksums-range-placeholder = whole file
+gpui-checksums-invalid-range = Invalid range: { $reason }
+
 # Visualizer panel
 visualizer-close = Hide visualizer
 visualizer-no-file = No active file -- open a file to view its visualizers.
