@@ -20,8 +20,7 @@ pub mod inspector;
 mod search_bar;
 pub mod strings;
 mod welcome;
-#[cfg(feature = "dock-spike")]
-pub mod workspace_spike;
+pub mod workspace_host;
 
 pub use checksums::CHECKSUMS_PANEL_NAME;
 pub use checksums::ChecksumsPanel;
@@ -37,6 +36,7 @@ pub use strings::STRINGS_PANEL_NAME;
 pub use strings::StringsPanel;
 pub use welcome::WELCOME_PANEL_NAME;
 pub use welcome::WelcomePanel;
+pub use workspace_host::WORKSPACE_HOST_PANEL_NAME;
 
 /// Register every panel name so `DockArea::load` can rebuild a saved
 /// layout. Must run once at startup, before any layout is loaded.
@@ -62,6 +62,7 @@ pub fn register(cx: &mut App) {
     register_panel(cx, COMPARE_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| ComparePanel::restore(info, window, cx))) as Box<dyn PanelView>
     });
+    workspace_host::register(cx);
 }
 
 #[cfg(test)]
@@ -99,6 +100,7 @@ mod tests {
                     ENTROPY_PANEL_NAME,
                     CHECKSUMS_PANEL_NAME,
                     COMPARE_PANEL_NAME,
+                    WORKSPACE_HOST_PANEL_NAME,
                 ] {
                     let state = PanelState {
                         panel_name: name.to_string(),

@@ -1,18 +1,16 @@
-//! Nested-dock (workspace-in-a-tab) feasibility spike -- Task 8 of the M2
-//! plan. Exercises whether a [`Panel`] can wrap and render its own inner
-//! [`DockArea`], and whether that inner layout can round-trip through the
-//! wrapper's [`PanelInfo::Panel`] json payload.
+//! [`WorkspaceHostPanel`]: a dock [`Panel`] that wraps and owns its own
+//! inner [`DockArea`], so a VFS mount can live inside a single outer tab
+//! as a full nested workspace (a VFS tree plus the entries opened from
+//! it). Promoted from the M2 nested-dock spike; the mechanism it relies
+//! on -- a `Panel` childing an `Entity<DockArea>`, with the inner layout
+//! hand-composed into the wrapper's [`PanelInfo::Panel`] json -- is the
+//! one the spike verdict validated end-to-end
+//! (`docs/superpowers/plans/2026-07-25-m2-nested-dock-verdict.md`).
 //!
-//! Feature-gated (`dock-spike`) and out of the default build: this is
-//! throwaway investigation backing
-//! `docs/superpowers/plans/2026-07-25-m2-nested-dock-verdict.md`, not
-//! product code. `WorkspaceHostPanel` wraps an inner `DockArea` seeded with
-//! two dummy tab panels ([`DummyPanel`] A and B).
-//!
-//! Deliberately not wired into `main.rs`/the running app (the brief scopes
-//! this to a self-contained spike): its only caller is this module's own
-//! `#[gpui::test]`s, so a plain (non-test) build under the feature flag
-//! sees every item here as unused.
+//! This first promotion step keeps the spike's dummy-panel seed and its
+//! two mechanism tests (render/focus through the wrapper, and inner-
+//! layout dump/load round-trip); the VFS tree, entry tabs, cross-area
+//! drag guards, and hand-composed VFS persistence land next.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -42,15 +40,13 @@ use gpui_component::dock::PanelState;
 use gpui_component::dock::PanelView;
 use gpui_component::dock::register_panel;
 
-/// Stable identifiers for layout (de)serialization within the spike.
-pub const WORKSPACE_HOST_PANEL_NAME: &str = "SpikeWorkspaceHostPanel";
-pub const DUMMY_PANEL_A_NAME: &str = "SpikeDummyPanelA";
-pub const DUMMY_PANEL_B_NAME: &str = "SpikeDummyPanelB";
+/// Stable identifiers for layout (de)serialization; must never change.
+pub const WORKSPACE_HOST_PANEL_NAME: &str = "WorkspaceHostPanel";
+pub const DUMMY_PANEL_A_NAME: &str = "WorkspaceHostDummyA";
+pub const DUMMY_PANEL_B_NAME: &str = "WorkspaceHostDummyB";
 
-/// Register the spike's panel names with gpui-component's `PanelRegistry`
-/// so `DockArea::load` can rebuild them. Kept separate from
-/// `panels::register` so the default (non-`dock-spike`) build never calls
-/// it.
+/// Register the host panel's names with gpui-component's `PanelRegistry`
+/// so `DockArea::load` can rebuild a persisted layout.
 pub fn register(cx: &mut App) {
     register_panel(cx, WORKSPACE_HOST_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| WorkspaceHostPanel::restore(info, window, cx))) as Box<dyn PanelView>
