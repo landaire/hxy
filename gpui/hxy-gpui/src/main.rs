@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use gpui::App;
 use gpui::Bounds;
@@ -10,8 +9,6 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
 use gpui_component::Root;
-use hxy_core::HexSource;
-use hxy_core::MemorySource;
 
 mod menu;
 mod palette;
@@ -23,18 +20,11 @@ mod workspace;
 use workspace::Workspace;
 
 fn main() -> ExitCode {
-    // Full file-open UX also covers cmd-o (workspace.rs); a CLI path
-    // argument opens the same way at startup.
-    let initial = match std::env::args().nth(1) {
-        Some(path) => match std::fs::read(&path) {
-            Ok(bytes) => Some((Arc::new(MemorySource::new(bytes)) as Arc<dyn HexSource>, PathBuf::from(path))),
-            Err(err) => {
-                eprintln!("hxy-gpui: cannot read {path}: {err}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => None,
-    };
+    // Full file-open UX also covers cmd-o (workspace.rs); every CLI path
+    // argument opens the same way at startup (read, dedup, error-toast
+    // on failure -- see `Workspace::build_initial`), so all of them open
+    // as tabs, not just the first.
+    let initial: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
 
     gpui::Application::new().run(move |cx: &mut App| {
         gpui_component::init(cx);

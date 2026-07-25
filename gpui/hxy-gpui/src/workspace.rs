@@ -177,11 +177,12 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `initial` is the CLI path argument's already-read bytes, if any;
+    /// `initial` is the CLI path arguments (unread; each is opened and
+    /// deduped the same way `cmd-o` opens paths -- see `build_initial`);
     /// `layout_path` is where the dock layout persists (injectable for
     /// tests; production passes [`persist::layout_path`]).
     pub fn new(
-        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        initial: Vec<PathBuf>,
         appearance_subscription: Subscription,
         layout_path: Option<PathBuf>,
         window: &mut Window,
@@ -226,58 +227,72 @@ impl Workspace {
         workspace
     }
 
-    /// Populate the dock at construction: a restored layout wins;
-    /// otherwise a CLI file becomes the first tab, or nothing (leaving
-    /// reconciliation to add the welcome placeholder).
-    fn build_initial(&mut self, initial: Option<(Arc<dyn HexSource>, PathBuf)>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Populate the dock at construction: a restored layout comes back
+    /// first, then every CLI path opens on top of it (deduped against
+    /// the restore and against each other, same as `cmd-o` -- see
+    /// `open_or_focus`); with neither, reconciliation adds the welcome
+    /// placeholder.
+    fn build_initial(&mut self, initial: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let restored = self
             .layout_path
             .as_ref()
             .and_then(|path| persist::load(path))
             .filter(|state| state.version == Some(persist::LAYOUT_VERSION));
 
-        match restored {
-            Some(mut state) => {
-                let pruned = persist::prune_for_restore(&mut state);
-                if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
-                    tracing::warn!(%err, "load dock layout failed; using default");
-                    // `Root` (the window's actual top-level view) isn't
-                    // installed yet -- it wraps this `Workspace` entity
-                    // after `Workspace::new` returns (see `main.rs`) --
-                    // so `push_notification` would panic here. Defer to
-                    // after the current update finishes.
-                    window.defer(cx, |window, cx| {
-                        let text = hxy_i18n::t("gpui-status-layout-restore-failed");
-                        window.push_notification(Notification::warning(text), cx);
-                    });
-                }
-                // The load-built cache is accurate; register the restored
-                // panels so a later resync can reuse them.
-                collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
-                if !pruned.is_empty() {
-                    // Deferred like the load-failure toast above: `Root`
-                    // is not installed yet, so `push_notification` would
-                    // panic if called inline (see that branch's note).
-                    window.defer(cx, move |window, cx| {
-                        for text in restore_pruned_texts(&pruned) {
-                            window.push_notification(Notification::warning(text), cx);
-                        }
-                    });
-                }
+        if let Some(mut state) = restored {
+            let pruned = persist::prune_for_restore(&mut state);
+            if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
+                tracing::warn!(%err, "load dock layout failed; using default");
+                // `Root` (the window's actual top-level view) isn't
+                // installed yet -- it wraps this `Workspace` entity
+                // after `Workspace::new` returns (see `main.rs`) --
+                // so `push_notification` would panic here. Defer to
+                // after the current update finishes.
+                window.defer(cx, |window, cx| {
+                    let text = hxy_i18n::t("gpui-status-layout-restore-failed");
+                    window.push_notification(Notification::warning(text), cx);
+                });
             }
-            None => {
-                if let Some((source, path)) = initial {
-                    let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
-                    self.add_file_panel(panel, window, cx);
-                }
+            // The load-built cache is accurate; register the restored
+            // panels so a later resync can reuse them.
+            collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+            if !pruned.is_empty() {
+                // Deferred like the load-failure toast above: `Root`
+                // is not installed yet, so `push_notification` would
+                // panic if called inline (see that branch's note).
+                window.defer(cx, move |window, cx| {
+                    for text in restore_pruned_texts(&pruned) {
+                        window.push_notification(Notification::warning(text), cx);
+                    }
+                });
             }
         }
-        // Must run before `reconcile` (which calls `set_active_file`,
-        // publishing the boot-time active pane into `ActiveHexPane`):
-        // the inspector's global subscription has to be live before that
-        // first publish, or a CLI-opened file would show an empty
-        // inspector until the user switched tabs.
+        // Must run before opening the CLI paths below and before
+        // `reconcile` (which calls `set_active_file`, publishing the
+        // boot-time active pane into `ActiveHexPane`): the inspector's
+        // global subscription has to be live before that first publish,
+        // or a CLI-opened file would show an empty inspector until the
+        // user switched tabs.
         self.ensure_inspector_dock(window, cx);
+
+        // Each successful open makes its tab the active one (see
+        // `open_or_focus` -> `add_file_panel` -> `TabPanel::add_panel`),
+        // so the last readable CLI path ends up focused -- mirrors the
+        // egui app, where `push_to_focused_leaf` does the same for each
+        // path in turn.
+        let open_errors: Vec<(PathBuf, std::io::Error)> =
+            initial.into_iter().filter_map(|path| self.open_or_focus(path, window, cx).err()).collect();
+        if !open_errors.is_empty() {
+            // Deferred like the restore toasts above: `Root` is not
+            // installed yet.
+            window.defer(cx, move |window, cx| {
+                for (path, error) in open_errors {
+                    window
+                        .push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
+                }
+            });
+        }
+
         self.reconcile(window, cx);
     }
 
@@ -423,31 +438,49 @@ impl Workspace {
     }
 
     /// Read `path` and add it as a new file tab. Called by `cmd-o`
-    /// (which can pass several paths) and by tests. A path that is
-    /// already open does NOT get a second tab: the existing one is
-    /// focused instead (standard editor behavior; the egui app does the
-    /// same, though it also offers a focus/second-copy/cancel dialog that
-    /// is out of scope here). Deduping at the source also keeps the
-    /// resync reuse registry one-entry-per-path, so a reopened file can
-    /// never lose its live (possibly dirty) entity to a rebuild.
+    /// (which can pass several paths), CLI boot (`build_initial`), and
+    /// by tests. A path that is already open does NOT get a second tab:
+    /// the existing one is focused instead (standard editor behavior;
+    /// the egui app does the same, though it also offers a
+    /// focus/second-copy/cancel dialog that is out of scope here).
+    /// Shows a read error as a toast right away; `build_initial` instead
+    /// collects errors via `open_or_focus` directly and defers them
+    /// (see its doc for why).
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err((path, error)) = self.open_or_focus(path, window, cx) {
+            window.push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
+        }
+        cx.notify();
+    }
+
+    /// Shared open logic: focus an already-open tab for `path` instead
+    /// of duplicating it, or read the file and add a new tab. Deduping
+    /// at the source keeps the resync reuse registry one-entry-per-path,
+    /// so a reopened file can never lose its live (possibly dirty)
+    /// entity to a rebuild. Returns the read error rather than showing
+    /// it, so callers decide how to surface it.
+    fn open_or_focus(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), (PathBuf, std::io::Error)> {
         if let Some(existing) = self.open_file_for_path(&path, cx) {
             self.focus_existing_tab(existing, window, cx);
-            cx.notify();
-            return;
+            return Ok(());
         }
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
                 self.add_file_panel(panel, window, cx);
+                Ok(())
             }
             Err(error) => {
                 tracing::error!(?path, %error, "failed to open file");
-                window.push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
+                Err((path, error))
             }
         }
-        cx.notify();
     }
 
     /// The live `FilePanel` for `path` if it already has a tab, else
@@ -480,7 +513,8 @@ impl Workspace {
     }
 
     fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        let receiver =
+            cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
         cx.spawn_in(window, async move |this, cx| {
             let result = receiver.await;
             let _ = this.update_in(cx, |workspace, window, cx| match result {
@@ -903,7 +937,10 @@ fn restore_pruned_texts(pruned: &[PathBuf]) -> Vec<String> {
             // A path with no final component (root, `..`) is not a real
             // restored tab; fall back to its full display so the toast
             // still names something.
-            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
             hxy_i18n::t_args("gpui-status-restore-dropped-file", &[("file", &name)])
         })
         .collect()
@@ -965,15 +1002,21 @@ fn rebuild_item(
 ) -> DockItem {
     match &state.info {
         PanelInfo::Stack { sizes, axis } => {
-            let items: Vec<DockItem> =
-                state.children.iter().map(|child| rebuild_item(child, reusable, welcome, dock_area, window, cx)).collect();
+            let items: Vec<DockItem> = state
+                .children
+                .iter()
+                .map(|child| rebuild_item(child, reusable, welcome, dock_area, window, cx))
+                .collect();
             let axis = if *axis == 0 { Axis::Horizontal } else { Axis::Vertical };
             let sizes: Vec<Option<gpui::Pixels>> = sizes.iter().map(|size| Some(*size)).collect();
             DockItem::split_with_sizes(axis, items, sizes, dock_area, window, cx)
         }
         PanelInfo::Tabs { active_index } => {
-            let panels: Vec<Arc<dyn PanelView>> =
-                state.children.iter().map(|leaf| resolve_leaf(leaf, reusable, welcome, dock_area, window, cx)).collect();
+            let panels: Vec<Arc<dyn PanelView>> = state
+                .children
+                .iter()
+                .map(|leaf| resolve_leaf(leaf, reusable, welcome, dock_area, window, cx))
+                .collect();
             let count = panels.len();
             let item = DockItem::tabs(panels, dock_area, window, cx);
             if count > 0 { item.active_index((*active_index).min(count - 1)) } else { item }
@@ -1188,10 +1231,6 @@ mod tests {
         });
     }
 
-    fn source() -> Arc<dyn HexSource> {
-        Arc::new(MemorySource::new(vec![0u8; 16]))
-    }
-
     fn temp_file(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> PathBuf {
         let path = dir.path().join(name);
         std::fs::write(&path, bytes).unwrap();
@@ -1200,7 +1239,7 @@ mod tests {
 
     fn open_workspace(
         cx: &mut TestAppContext,
-        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        initial: Vec<PathBuf>,
         layout_path: Option<PathBuf>,
     ) -> WindowHandle<Workspace> {
         let window = cx.add_window(move |window, cx| {
@@ -1221,7 +1260,7 @@ mod tests {
     /// the `DialogTestHost` pattern in `panels::search_bar`'s tests).
     fn open_workspace_with_root(
         cx: &mut TestAppContext,
-        initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        initial: Vec<PathBuf>,
         layout_path: Option<PathBuf>,
     ) -> (WindowHandle<gpui_component::Root>, Entity<Workspace>) {
         let window = cx.add_window(move |window, cx| {
@@ -1249,7 +1288,9 @@ mod tests {
     #[gpui::test]
     fn cli_open_focuses_the_active_pane(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, Some((source(), PathBuf::from("test.bin"))), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "test.bin", &[0u8; 16]);
+        let window = open_workspace(cx, vec![f1], None);
 
         let pane_handle = window
             .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
@@ -1258,12 +1299,70 @@ mod tests {
         assert_eq!(focused, Some(pane_handle));
     }
 
+    /// Every readable CLI path becomes a tab, and the last one opens on
+    /// top and ends up focused -- mirrors the egui app, where each
+    /// `push_to_focused_leaf`'d open makes its own tab active in turn.
+    #[gpui::test]
+    fn cli_boot_opens_every_path_and_focuses_the_last(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
+
+        let window = open_workspace(cx, vec![f1.clone(), f2.clone(), f3.clone()], None);
+
+        assert_eq!(file_count(window, cx), 3);
+        assert_eq!(active_path(window, cx), Some(f3));
+        let paths = window.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert!(paths.contains(&f1) && paths.contains(&f2));
+    }
+
+    /// An unreadable path among the CLI args does not abort the others:
+    /// the readable ones still open, and the failure surfaces as the
+    /// same error toast a failed `cmd-o` open would show, not a process
+    /// exit.
+    #[gpui::test]
+    fn cli_boot_with_unreadable_path_opens_the_rest_and_surfaces_an_error(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let missing = dir.path().join("missing.bin");
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+
+        let (window, ws) = open_workspace_with_root(cx, vec![f1.clone(), missing, f2.clone()], None);
+
+        let count = ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center));
+        assert_eq!(count, 2, "the unreadable path must not stop the readable ones from opening");
+        let paths = ws.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center));
+        assert!(paths.contains(&f1) && paths.contains(&f2));
+
+        let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(toasts, 1, "the unreadable path must surface an error toast");
+    }
+
+    /// A path repeated on the command line does not open a second tab;
+    /// it focuses the tab already opened for it, same as a repeated
+    /// `cmd-o`.
+    #[gpui::test]
+    fn cli_boot_dedups_duplicate_paths(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+
+        let window = open_workspace(cx, vec![f1.clone(), f2.clone(), f1.clone()], None);
+
+        assert_eq!(file_count(window, cx), 2, "a repeated CLI path must not duplicate the tab");
+        assert_eq!(active_path(window, cx), Some(f1), "the repeated path's tab must end up focused");
+    }
+
     /// With no file open the welcome placeholder shows and focus rests
     /// on the workspace handle so `cmd-o` stays reachable.
     #[gpui::test]
     fn no_file_shows_welcome_and_focuses_workspace(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
 
         assert_eq!(file_count(window, cx), 0);
         let (welcome_present, workspace_handle) =
@@ -1281,7 +1380,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
 
         window.update(cx, |ws, window, cx| ws.open_path(f1.clone(), window, cx)).unwrap();
         cx.run_until_parked();
@@ -1302,7 +1401,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
 
         window.update(cx, |ws, window, cx| ws.open_path(f1, window, cx)).unwrap();
         cx.run_until_parked();
@@ -1322,11 +1421,8 @@ mod tests {
         assert!(window.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
         // The welcome tab must be live in the rendered tree, not attached to
         // an orphaned TabPanel: it has to appear in the dock's own dump.
-        let welcome_live = window
-            .read_with(cx, |ws, cx| {
-                count_welcome_panels(&ws.dock.read(cx).dump(cx).center) == 1
-            })
-            .unwrap();
+        let welcome_live =
+            window.read_with(cx, |ws, cx| count_welcome_panels(&ws.dock.read(cx).dump(cx).center) == 1).unwrap();
         assert!(welcome_live, "welcome tab must be attached to the live center");
 
         // Reopening after closing to zero must show the file again -- proves
@@ -1365,7 +1461,7 @@ mod tests {
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
         let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
         let f4 = temp_file(&dir, "d.bin", &[4u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
         window_open(window, &f2, cx);
 
@@ -1381,7 +1477,8 @@ mod tests {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let f3_panel = cx.new(|cx| FilePanel::new(source, Some(f3.clone()), window, cx));
                 let view: Arc<dyn PanelView> = Arc::new(f3_panel);
-                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
             })
             .unwrap();
         cx.run_until_parked();
@@ -1432,7 +1529,7 @@ mod tests {
         let fx = temp_file(&dir, "x.bin", &[0u8; 16]);
         let fa = temp_file(&dir, "a.bin", &[0u8; 32]);
         let fc = temp_file(&dir, "c.bin", &[0u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &fx, cx);
 
         // Split file A into a new pane and register it as an open file --
@@ -1448,7 +1545,8 @@ mod tests {
                 let panel = cx.new(|cx| FilePanel::new(source, Some(fa.clone()), window, cx));
                 ws.open_files.push(panel.clone());
                 let view: Arc<dyn PanelView> = Arc::new(panel.clone());
-                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
                 panel
             })
             .unwrap();
@@ -1514,7 +1612,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fa = temp_file(&dir, "a.bin", &[0u8; 32]);
         let fb = temp_file(&dir, "b.bin", &[0u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &fa, cx);
         assert_eq!(file_count(window, cx), 1);
 
@@ -1560,7 +1658,9 @@ mod tests {
 
         // Registry holds exactly one entry for A's path.
         let registered = window
-            .read_with(cx, |ws, cx| ws.open_files.iter().filter(|file| file.read(cx).path() == Some(fa.as_path())).count())
+            .read_with(cx, |ws, cx| {
+                ws.open_files.iter().filter(|file| file.read(cx).path() == Some(fa.as_path())).count()
+            })
             .unwrap();
         assert_eq!(registered, 1, "one registry entry per open path");
     }
@@ -1577,14 +1677,14 @@ mod tests {
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
 
-        let first = open_workspace(cx, None, Some(layout.clone()));
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
         window_open(first, &f1, cx);
         window_open(first, &f2, cx);
         first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
 
         std::fs::remove_file(&f1).unwrap();
 
-        let (window, second) = open_workspace_with_root(cx, None, Some(layout));
+        let (window, second) = open_workspace_with_root(cx, Vec::new(), Some(layout));
         let count = second.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center));
         assert_eq!(count, 1);
         let paths = second.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center));
@@ -1607,7 +1707,7 @@ mod tests {
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
         let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
 
-        let window = open_workspace(cx, None, Some(layout.clone()));
+        let window = open_workspace(cx, Vec::new(), Some(layout.clone()));
         window_open(window, &f1, cx);
         window_open(window, &f2, cx);
         window_open(window, &f3, cx);
@@ -1620,7 +1720,10 @@ mod tests {
         let state: gpui_component::dock::DockAreaState =
             serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
         let paths = collect_file_paths(&state.center);
-        assert!(paths.contains(&f1) && paths.contains(&f2) && paths.contains(&f3), "coalesced write must hold the final state");
+        assert!(
+            paths.contains(&f1) && paths.contains(&f2) && paths.contains(&f3),
+            "coalesced write must hold the final state"
+        );
     }
 
     /// Layout persistence round-trips: a saved session's tab count and
@@ -1634,16 +1737,15 @@ mod tests {
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
 
-        let first = open_workspace(cx, None, Some(layout.clone()));
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
         window_open(first, &f1, cx);
         window_open(first, &f2, cx);
         first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
 
-        let second = open_workspace(cx, None, Some(layout.clone()));
+        let second = open_workspace(cx, Vec::new(), Some(layout.clone()));
         assert_eq!(file_count(second, cx), 2);
-        let restored: Vec<PathBuf> = second
-            .read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center))
-            .unwrap();
+        let restored: Vec<PathBuf> =
+            second.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
         assert!(restored.contains(&f1));
         assert!(restored.contains(&f2));
     }
@@ -1653,7 +1755,7 @@ mod tests {
     #[gpui::test]
     fn cmd_i_toggles_the_inspector_dock(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
 
         let is_open = |cx: &mut TestAppContext| {
             window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap()
@@ -1677,7 +1779,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = dir.path().join("layout.json");
 
-        let first = open_workspace(cx, None, Some(layout.clone()));
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
         cx.simulate_keystrokes(first.into(), "cmd-i");
         assert!(first.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap());
         first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
@@ -1686,7 +1788,7 @@ mod tests {
         assert_eq!(value["right_dock"]["open"], serde_json::json!(true));
         assert_eq!(value["right_dock"]["panel"]["children"][0]["panel_name"], serde_json::json!("InspectorPanel"));
 
-        let second = open_workspace(cx, None, Some(layout));
+        let second = open_workspace(cx, Vec::new(), Some(layout));
         assert!(
             second.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
             "inspector open state must restore",
@@ -1705,9 +1807,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0xAAu8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[0xBBu8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
 
-        let inspector = window.read_with(cx, |ws, _| ws.inspector_for_test.clone()).unwrap().expect("inspector stashed on fresh construction");
+        let inspector = window
+            .read_with(cx, |ws, _| ws.inspector_for_test.clone())
+            .unwrap()
+            .expect("inspector stashed on fresh construction");
 
         window_open(window, &f1, cx);
         seed_active_caret(window, cx);
@@ -1748,7 +1853,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         let original = window
@@ -1821,7 +1926,9 @@ mod tests {
     #[gpui::test]
     fn cmd_k_then_escape_restores_focus_and_active_file(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, Some((source(), PathBuf::from("t.bin"))), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "t.bin", &[0u8; 16]);
+        let window = open_workspace(cx, vec![f1.clone()], None);
         let pane_handle = window
             .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
             .unwrap();
@@ -1834,7 +1941,7 @@ mod tests {
             Some(pane_handle),
             "escape restores the pane's focus"
         );
-        assert_eq!(active_path(window, cx), Some(PathBuf::from("t.bin")), "cancelling must not change the active file");
+        assert_eq!(active_path(window, cx), Some(f1), "cancelling must not change the active file");
     }
 
     /// The inspector -- a right-dock panel `gpui_dock_picker` cannot
@@ -1847,7 +1954,9 @@ mod tests {
     #[gpui::test]
     fn cmd_k_picks_the_inspector_and_opens_its_collapsed_dock(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, Some((source(), PathBuf::from("t.bin"))), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "t.bin", &[0u8; 16]);
+        let window = open_workspace(cx, vec![f1.clone()], None);
         assert!(
             !window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
             "inspector dock starts collapsed"
@@ -1882,7 +1991,7 @@ mod tests {
             Some(inspector_handle),
             "picking the inspector focuses it"
         );
-        assert_eq!(active_path(window, cx), Some(PathBuf::from("t.bin")), "the active file is untouched");
+        assert_eq!(active_path(window, cx), Some(f1), "the active file is untouched");
     }
 
     /// Regression: the picker only intercepts letters/Escape via raw
@@ -1900,7 +2009,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         let original = window
@@ -1964,14 +2073,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
         window_open(window, &f2, cx);
 
         let registered = |cx: &mut TestAppContext| {
             window
                 .read_with(cx, |ws, cx| {
-                    ws.open_files.iter().filter_map(|file| file.read(cx).path().map(Path::to_path_buf)).collect::<Vec<_>>()
+                    ws.open_files
+                        .iter()
+                        .filter_map(|file| file.read(cx).path().map(Path::to_path_buf))
+                        .collect::<Vec<_>>()
                 })
                 .unwrap()
         };
@@ -2001,9 +2113,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let (window, ws) = open_workspace_with_root(cx, None, None);
+        let (window, ws) = open_workspace_with_root(cx, Vec::new(), None);
 
-        cx.update_window(window.into(), |_, window, cx| ws.update(cx, |ws, cx| ws.open_path(f1.clone(), window, cx))).unwrap();
+        cx.update_window(window.into(), |_, window, cx| ws.update(cx, |ws, cx| ws.open_path(f1.clone(), window, cx)))
+            .unwrap();
         cx.run_until_parked();
 
         // Split f2 into a new pane beside the original so closing f1 (the
@@ -2018,7 +2131,8 @@ mod tests {
                 let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
                 ws.open_files.push(panel.clone());
                 let view: Arc<dyn PanelView> = Arc::new(panel);
-                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
             });
         })
         .unwrap();
@@ -2040,7 +2154,11 @@ mod tests {
         // Close A's tab underneath the palette (collapses A's leaf).
         cx.simulate_keystrokes(window.into(), "cmd-w");
         cx.run_until_parked();
-        assert_eq!(ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)), 1, "A's tab actually closed");
+        assert_eq!(
+            ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)),
+            1,
+            "A's tab actually closed"
+        );
 
         assert!(ws.read_with(cx, |ws, cx| ws.palette.read(cx).is_open()), "the palette survives the collapse");
         assert_eq!(
@@ -2063,7 +2181,7 @@ mod tests {
         let layout = dir.path().join("layout.json");
         std::fs::write(&layout, b"{ not valid json").unwrap();
 
-        let window = open_workspace(cx, None, Some(layout));
+        let window = open_workspace(cx, Vec::new(), Some(layout));
         assert_eq!(file_count(window, cx), 0);
         assert!(window.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
     }
@@ -2077,7 +2195,7 @@ mod tests {
         let layout = dir.path().join("layout.json");
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
 
-        let first = open_workspace(cx, None, Some(layout.clone()));
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
         window_open(first, &f1, cx);
         first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
 
@@ -2085,7 +2203,7 @@ mod tests {
         value["version"] = serde_json::json!(persist::LAYOUT_VERSION + 1);
         std::fs::write(&layout, serde_json::to_vec(&value).unwrap()).unwrap();
 
-        let second = open_workspace(cx, None, Some(layout));
+        let second = open_workspace(cx, Vec::new(), Some(layout));
         assert_eq!(file_count(second, cx), 0);
         assert!(second.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
     }
@@ -2099,7 +2217,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         let editor_state = |cx: &mut TestAppContext| {
@@ -2130,7 +2248,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         let dirty = |cx: &mut TestAppContext| {
@@ -2155,7 +2273,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         window
@@ -2181,7 +2299,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", b"hxy!!!!");
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
 
         window
@@ -2207,7 +2325,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
-        let window = open_workspace(cx, None, None);
+        let window = open_workspace(cx, Vec::new(), None);
         window_open(window, &f1, cx);
         assert_eq!(file_count(window, cx), 1);
 
@@ -2226,7 +2344,7 @@ mod tests {
     #[gpui::test]
     fn open_missing_file_surfaces_an_error_toast(cx: &mut TestAppContext) {
         setup(cx);
-        let (window, workspace) = open_workspace_with_root(cx, None, None);
+        let (window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
         let missing = PathBuf::from("/definitely/not/a/real/path-for-hxy-gpui-tests.bin");
 
         // Not `window.update(cx, |_root, window, cx| ...)`: that goes

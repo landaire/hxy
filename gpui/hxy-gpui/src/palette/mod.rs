@@ -84,11 +84,17 @@ pub struct Palette {
 
 impl Palette {
     pub fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(hxy_i18n::t("gpui-palette-search-placeholder"))
-        });
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(hxy_i18n::t("gpui-palette-search-placeholder")));
         let input_sub = cx.subscribe_in(&input, window, Self::on_input_event);
-        Self { workspace, state: State::default(), mode: PaletteMode::Main, input, _input_sub: input_sub, restore_focus: None }
+        Self {
+            workspace,
+            state: State::default(),
+            mode: PaletteMode::Main,
+            input,
+            _input_sub: input_sub,
+            restore_focus: None,
+        }
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -180,7 +186,13 @@ impl Palette {
         cx.notify();
     }
 
-    fn on_input_event(&mut self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             InputEvent::Change => {
                 self.state.query = self.input.read(cx).value().to_string();
@@ -295,16 +307,22 @@ impl gpui::Render for Palette {
             .enumerate()
             .map(|(row, hit)| {
                 let entry = &entries[hit.index];
-                self.render_row(row, entry, &hit.match_indices, row == self.state.selected, base, muted, hit_color, selected_bg, cx)
+                self.render_row(
+                    row,
+                    entry,
+                    &hit.match_indices,
+                    row == self.state.selected,
+                    base,
+                    muted,
+                    hit_color,
+                    selected_bg,
+                    cx,
+                )
             })
             .collect();
 
         let list: gpui::AnyElement = if rows.is_empty() {
-            div()
-                .p_3()
-                .text_color(muted)
-                .child(hxy_i18n::t("gpui-palette-no-matches"))
-                .into_any_element()
+            div().p_3().text_color(muted).child(hxy_i18n::t("gpui-palette-no-matches")).into_any_element()
         } else {
             v_flex().p_1().gap_1().max_h(px(LIST_MAX_HEIGHT)).overflow_hidden().children(rows).into_any_element()
         };
@@ -378,15 +396,8 @@ impl Palette {
             left = left.child(div().text_color(muted).text_sm().child(subtitle.clone()));
         }
 
-        let mut row_el = h_flex()
-            .w_full()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .child(left);
+        let mut row_el =
+            h_flex().w_full().items_center().justify_between().gap_2().px_2().py_1().rounded_md().child(left);
         if let Some(shortcut) = &entry.shortcut {
             row_el = row_el.child(div().text_color(muted).text_sm().child(shortcut.clone()));
         }
@@ -440,14 +451,9 @@ impl Focusable for Palette {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
     use gpui::TestAppContext;
     use gpui::VisualTestContext;
     use hxy_core::ByteOffset;
-    use hxy_core::HexSource;
-    use hxy_core::MemorySource;
     use hxy_core::Selection;
 
     use super::*;
@@ -463,12 +469,16 @@ mod tests {
 
     /// A workspace inside a real `gpui_component::Root` (like the shell),
     /// opened on a `len`-byte scratch file so the palette has an active
-    /// pane to act on.
+    /// pane to act on. The backing temp file is read at construction and
+    /// dropped once `build` returns; its bytes already live in the
+    /// panel's in-memory source by then.
     fn build(cx: &mut TestAppContext, len: usize) -> (Entity<Workspace>, &mut VisualTestContext) {
-        let window = cx.add_window(|window, cx| {
-            let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0u8; len]));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.bin");
+        std::fs::write(&path, vec![0u8; len]).unwrap();
+        let window = cx.add_window(move |window, cx| {
             let sub = window.observe_window_appearance(|_, _| {});
-            let ws = cx.new(|cx| Workspace::new(Some((source, PathBuf::from("t.bin"))), sub, None, window, cx));
+            let ws = cx.new(|cx| Workspace::new(vec![path], sub, None, window, cx));
             gpui_component::Root::new(ws, window, cx)
         });
         let root = window.root(cx).unwrap();
@@ -483,7 +493,9 @@ mod tests {
     }
 
     fn caret(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<u64> {
-        ws.read_with(cx, |ws, cx| ws.active_pane(cx).and_then(|p| p.read(cx).editor().selection()).map(|s| s.cursor.get()))
+        ws.read_with(cx, |ws, cx| {
+            ws.active_pane(cx).and_then(|p| p.read(cx).editor().selection()).map(|s| s.cursor.get())
+        })
     }
 
     fn seed_caret(ws: &Entity<Workspace>, at: u64, cx: &mut VisualTestContext) {
