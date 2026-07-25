@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["hxy-gpui", "hxy-view-gpui"]
+members = ["gpui_dock_picker", "hxy-gpui", "hxy-view-gpui"]
 
 [workspace.package]
 version = "0.3.0"
@@ -22,6 +22,7 @@ repository = "https://github.com/landaire/hxy"
 [workspace.dependencies]
 gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
 gpui-component = "=0.5.1"
+gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.3.0" }
 hxy-core = { path = "../crates/hxy-core", version = "0.3.0" }
 hxy-editor = { path = "../crates/hxy-editor", version = "0.3.0" }

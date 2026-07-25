@@ -1,0 +1,17 @@
+[package]
+name = "gpui_dock_picker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Vimium-style keyboard pane picker for gpui-component docks"
+publish = false
+
+[dependencies]
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+
+[dev-dependencies]
+gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
