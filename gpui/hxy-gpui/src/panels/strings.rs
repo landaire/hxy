@@ -309,8 +309,23 @@ impl StringsPanel {
     }
 
     /// Set the editor selection to the entry's byte range and scroll
-    /// it into view. Mirrors `SearchBar::apply_match_jump`.
-    fn jump_to_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+    /// it into view, then emit [`StringsJumped`] so the workspace can
+    /// bring the owning file's tab to the front. `pub(crate)` so the
+    /// workspace's own tests can drive a jump directly (there is no
+    /// window in a `cx.subscribe` handler to build a synthetic table
+    /// click through).
+    ///
+    /// Mirrors egui's `jump_to_strings_match`
+    /// (`crates/hxy/src/app/mod.rs`), which calls `focus_file_tab`
+    /// before applying the selection -- `StringsPanel` has no handle
+    /// to the dock to do that itself (see [`StringsJumped`]'s doc), so
+    /// the tab-focus half of that happens in the workspace's
+    /// subscriber instead. Applying the selection before emitting
+    /// (rather than after, as egui does) makes no behavioral
+    /// difference here: gpui's effect queue flushes both the pane
+    /// update and the emitted event's subscriber before this
+    /// function's caller resumes.
+    pub(crate) fn jump_to_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         let Some(entry) = self.visible_entry(row_ix) else { return };
         let offset = entry.offset;
         let end_inclusive = entry.end.saturating_sub(1).max(entry.offset);
@@ -323,10 +338,13 @@ impl StringsPanel {
             pane.editor_mut().set_scroll_to_byte(ByteOffset::new(offset));
             pane.sync_pending_scroll(cx);
         });
+        cx.emit(StringsJumped);
     }
 
     /// Install (or clear) the owning pane's hover-highlight band.
-    fn set_hover(&mut self, span: Option<ByteRange>, cx: &mut Context<Self>) {
+    /// `pub(crate)` for the same reason as `jump_to_row`: tests drive
+    /// this directly rather than through a synthetic table hover.
+    pub(crate) fn set_hover(&mut self, span: Option<ByteRange>, cx: &mut Context<Self>) {
         let Some(pane) = self.owning_pane.clone() else { return };
         pane.update(cx, |pane, cx| pane.set_hover_span(span, cx));
     }
@@ -607,6 +625,19 @@ impl Panel for StringsPanel {
         }));
         state
     }
+
+    /// Clear the owning pane's hover band on removal, however the tab
+    /// closed (the workspace's own close paths, or the tab bar's own
+    /// close button, which bypasses the workspace entirely) --
+    /// `gpui_component::dock::Panel::on_removed` fires unconditionally
+    /// from `TabPanel::remove_panel`'s `detach_panel`, so this is the
+    /// one place that reliably catches all of them. Without it, a
+    /// pointer left resting on a row when the tab closes leaves a
+    /// stale hover band on a hex view with nothing left to clear it
+    /// (only `HexPane::set_source` resets `hover_span`).
+    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_hover(None, cx);
+    }
 }
 
 impl Focusable for StringsPanel {
@@ -616,6 +647,19 @@ impl Focusable for StringsPanel {
 }
 
 impl EventEmitter<PanelEvent> for StringsPanel {}
+
+/// Emitted by [`StringsPanel::jump_to_row`] after applying a jump.
+/// `StringsPanel` owns the target `HexPane` directly but has no handle
+/// to the dock/`Workspace` that could bring its tab to the front (the
+/// same "no way to reach a sibling panel" constraint documented at the
+/// top of this module for restore-time rebinding). The workspace
+/// subscribes to every `StringsPanel` it knows about (see
+/// `Workspace::track_strings_panel`) and reacts by focusing the
+/// owning file's tab.
+#[derive(Clone, Copy, Debug)]
+pub struct StringsJumped;
+
+impl EventEmitter<StringsJumped> for StringsPanel {}
 
 impl Render for StringsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -788,9 +832,10 @@ mod tests {
 
     /// Opening the panel on a small fixture auto-runs (under
     /// `AUTO_RUN_MAX_BYTES`) and produces the same rows
-    /// `hxy_panels::strings::extract` would, entirely off the UI
-    /// thread (`run` only ever calls `extract` inside
-    /// `cx.background_spawn`).
+    /// `hxy_panels::strings::extract` would. This test only confirms
+    /// the rows land correctly, not that `extract` ran off the UI
+    /// thread -- that's established by inspection instead (`run`'s
+    /// only call to `extract` is inside `cx.background_spawn`).
     #[gpui::test]
     fn run_over_fixture_produces_rows(cx: &mut TestAppContext) {
         setup(cx);

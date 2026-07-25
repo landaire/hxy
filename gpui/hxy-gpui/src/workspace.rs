@@ -74,6 +74,7 @@ use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WelcomePanel;
 use crate::panels::inspector::ActiveHexPane;
 use crate::panels::strings::OpenFilePanels;
+use crate::panels::strings::StringsJumped;
 use crate::persist;
 use crate::status::dirty_marker;
 use crate::status::status_file_name_text;
@@ -127,13 +128,25 @@ pub struct Workspace {
     /// whenever any file tab is open. Owned so it can be removed by
     /// identity when the first file opens.
     welcome: Option<Entity<WelcomePanel>>,
-    /// The file panel backing the active center tab; drives the status
-    /// bar and receives the vim toggle. `None` when the welcome
-    /// placeholder is showing.
+    /// The file panel backing the active center tab; drives `cmd-w` /
+    /// `focus_existing_tab`'s "already active" fast path, and the
+    /// close-tab dispatch. `None` whenever the active tab is not a
+    /// `FilePanel` (welcome, or a `StringsPanel`) -- deliberately never
+    /// widened to a fallback (see `active_file_panel`'s doc for why
+    /// that was tried and reverted). `reference_active_file` is the
+    /// fallback-aware read used for display purposes.
     active_file: Option<Entity<FilePanel>>,
-    /// Repaints the workspace (hence the status bar) when the active
-    /// pane's editor changes. Re-established whenever the active file
-    /// changes.
+    /// The most recent non-`None` value of `active_file`. Powers
+    /// `reference_active_file`'s fallback so the inspector / title /
+    /// status bar keep reflecting a file while a `StringsPanel` tab
+    /// (which has no `active_file` representation) is focused, until
+    /// that file actually closes (`reference_active_file` filters
+    /// against `open_files` membership, so this can go stale and be
+    /// ignored rather than needing to be cleared eagerly).
+    last_active_file: Option<Entity<FilePanel>>,
+    /// Repaints the workspace (hence the status bar) when the
+    /// reference file's pane's editor changes. Re-established whenever
+    /// `reference_active_file`'s result changes.
     active_pane_observe: Option<Subscription>,
     _dock_subscription: Subscription,
     last_title: Option<String>,
@@ -170,6 +183,13 @@ pub struct Workspace {
     /// reliable way to get a live `Entity<StringsPanel>` handle back
     /// out of the dock for open-or-focus dedup / close-cascade.
     strings_panels: Vec<Entity<StringsPanel>>,
+    /// One [`StringsJumped`](crate::panels::strings::StringsJumped)
+    /// subscription per entry in `strings_panels`, kept alive so
+    /// `on_strings_panel_jumped` fires for row clicks -- see
+    /// `track_strings_panel`. Never pruned individually (a dropped
+    /// source entity just makes its subscription inert), only replaced
+    /// wholesale alongside `strings_panels` on a center-cache rebuild.
+    strings_panel_subs: Vec<Subscription>,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -222,6 +242,7 @@ impl Workspace {
             dock,
             welcome: None,
             active_file: None,
+            last_active_file: None,
             active_pane_observe: None,
             _dock_subscription: dock_subscription,
             last_title: None,
@@ -230,6 +251,7 @@ impl Workspace {
             needs_reconcile: false,
             open_files: Vec::new(),
             strings_panels: Vec::new(),
+            strings_panel_subs: Vec::new(),
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
@@ -271,6 +293,11 @@ impl Workspace {
             // The load-built cache is accurate; register the restored
             // panels so a later resync can reuse them.
             collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+            let mut restored_strings = Vec::new();
+            collect_strings_entities(self.dock.read(cx).items(), &mut restored_strings);
+            for panel in restored_strings {
+                self.track_strings_panel(panel, window, cx);
+            }
             if !pruned.is_empty() {
                 // Deferred like the load-failure toast above: `Root`
                 // is not installed yet, so `push_notification` would
@@ -356,9 +383,42 @@ impl Workspace {
         let pane = file.read(cx).pane().clone();
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| StringsPanel::new(pane, path, window, cx));
-        self.strings_panels.push(panel.clone());
+        self.track_strings_panel(panel.clone(), window, cx);
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Register `panel` in `strings_panels` (if not already tracked)
+    /// and subscribe to its `StringsJumped` events, so a row click
+    /// brings the owning file's tab to the front. Called for every
+    /// `StringsPanel` the workspace discovers: freshly opened
+    /// (`open_strings_for_active_file`), restored at boot
+    /// (`build_initial`), and rebuilt by a center-cache resync
+    /// (`rebuild_center_cache`).
+    fn track_strings_panel(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.strings_panels.iter().any(|p| p.entity_id() == panel.entity_id()) {
+            return;
+        }
+        let sub = cx.subscribe_in(&panel, window, Self::on_strings_panel_jumped);
+        self.strings_panel_subs.push(sub);
+        self.strings_panels.push(panel);
+    }
+
+    /// Bring the owning file's tab to the front after a strings-panel
+    /// row jump. No-op if the owning path is unset or its file isn't
+    /// open (shouldn't happen in practice: the panel can't have
+    /// applied a jump without a live `owning_pane`, which only exists
+    /// while its file is open).
+    fn on_strings_panel_jumped(
+        &mut self,
+        panel: &Entity<StringsPanel>,
+        _event: &StringsJumped,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = panel.read(cx).owning_path().map(Path::to_path_buf) else { return };
+        let Some(file) = self.open_file_for_path(&path, cx) else { return };
+        self.focus_existing_tab(file, window, cx);
     }
 
     /// The live `StringsPanel` for `path` if it already has a tab, else
@@ -373,18 +433,36 @@ impl Workspace {
         self.strings_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
     }
 
-    /// Bring an already-open strings tab to the foreground. `StringsPanel`
-    /// tabs aren't tracked in `open_files` (that registry exists for the
-    /// FilePanel resync/reuse machinery -- see `rebuild_center_cache`'s
-    /// doc -- which a secondary per-file tab doesn't participate in), so
-    /// this always re-adds through the dock rather than special-casing
-    /// "already the active tab" the way `focus_existing_tab` does.
+    /// Bring an already-open strings tab to the foreground: same
+    /// "already active, just refocus, else resync-then-remove-then-
+    /// re-add" shape as `focus_existing_tab` (including the same
+    /// stale-cache hazard that guard exists for -- an incremental add
+    /// can route into a detached, orphaned `TabPanel` reference left
+    /// over from an unrelated collapse elsewhere in the tree; see
+    /// `resync_center_if_stale`'s doc), using `active_strings_panel`
+    /// (a live query) rather than a tracked "currently active strings
+    /// tab" field the way `focus_existing_tab` uses `self.active_file`.
+    ///
+    /// One difference from `focus_existing_tab`: a resync here can
+    /// rebuild (not reuse) `panel`'s entity -- `StringsPanel` isn't in
+    /// `resolve_leaf`'s FilePanel-only reuse map, see its doc -- so
+    /// `panel` is re-resolved by owning path afterward rather than
+    /// trusting it to still be the live entity `strings_panels` points
+    /// at.
     fn focus_strings_tab(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = panel.read(cx).focus_handle(cx);
+        if active_strings_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        let path = panel.read(cx).owning_path().map(Path::to_path_buf);
+        self.resync_center_if_stale(window, cx);
+        let panel = self.strings_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
+        let Some(panel) = panel else { return };
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
-        window.focus(&handle);
     }
 
     /// Add a file tab to the center dock, making it active (the dock
@@ -499,13 +577,18 @@ impl Workspace {
         // The rebuilt cache is accurate: refresh both registries from
         // it. `StringsPanel` entities are never carried over by this
         // rebuild (see `resolve_leaf`'s doc), so the old entries in
-        // `strings_panels` are dead and must be replaced, not merged.
+        // `strings_panels` (and their `StringsJumped` subscriptions)
+        // are dead and must be replaced, not merged.
         let mut live_files = Vec::new();
         collect_file_entities(self.dock.read(cx).items(), &mut live_files);
         self.open_files = live_files;
         let mut live_strings = Vec::new();
         collect_strings_entities(self.dock.read(cx).items(), &mut live_strings);
-        self.strings_panels = live_strings;
+        self.strings_panels.clear();
+        self.strings_panel_subs.clear();
+        for panel in live_strings {
+            self.track_strings_panel(panel, window, cx);
+        }
         self.focus_pending = true;
     }
 
@@ -850,18 +933,34 @@ impl Workspace {
     /// only it by identity is safe.
     pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(strings) = active_strings_panel(self.dock.read(cx).items(), cx) {
-            self.strings_panels.retain(|panel| panel.entity_id() != strings.entity_id());
-            let view: Arc<dyn PanelView> = Arc::new(strings);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.close_strings_tab(strings, window, cx);
             return;
         }
         let Some(active) = self.active_file.clone() else { return };
-        let closed = active.entity_id();
-        let closed_path = active.read(cx).path().map(Path::to_path_buf);
-        let view: Arc<dyn PanelView> = Arc::new(active);
+        self.close_file_tab(active, window, cx);
+    }
+
+    /// Close `file`'s tab and drop its entity from the reuse registry,
+    /// cascading to close any `StringsPanel` tab bound to it (see
+    /// `close_strings_tabs_for_path`'s doc). Factored out of
+    /// `close_active_tab` so tests (and, if a future task adds a
+    /// per-tab close button, that button too) can close a specific
+    /// file regardless of which tab is currently front-most --
+    /// `close_active_tab` itself only ever closes the front-most tab.
+    fn close_file_tab(&mut self, file: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        let closed = file.entity_id();
+        let closed_path = file.read(cx).path().map(Path::to_path_buf);
+        let view: Arc<dyn PanelView> = Arc::new(file);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
-        self.open_files.retain(|file| file.entity_id() != closed);
+        self.open_files.retain(|f| f.entity_id() != closed);
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
+    }
+
+    /// Close one `StringsPanel` tab by identity.
+    fn close_strings_tab(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        self.strings_panels.retain(|p| p.entity_id() != panel.entity_id());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
     }
 
     /// Close every `StringsPanel` tab bound to `path`. Called when the
@@ -934,26 +1033,71 @@ impl Workspace {
         cx.set_global(OpenFilePanels(self.open_files.clone()));
     }
 
-    /// Point the status bar / vim toggle at `active`, re-observing its
-    /// pane so editor changes repaint the status bar, and publish the
-    /// pane into [`ActiveHexPane`] so the inspector (which the
-    /// workspace has no direct handle to once restored -- see
-    /// `panels::inspector`'s module doc) stays in sync too. No-op when
-    /// the active file is unchanged.
+    /// Point `cmd-w` / the vim toggle at `active` (the strict, literal
+    /// active-tab value -- see `active_file`'s doc for why this never
+    /// widens), remember it in `last_active_file` when it's a real
+    /// file, and refresh what the inspector / title / status bar
+    /// display via `publish_reference_active_file`.
+    fn set_active_file(&mut self, active: Option<Entity<FilePanel>>, cx: &mut Context<Self>) {
+        if let Some(file) = &active {
+            self.last_active_file = Some(file.clone());
+        }
+        let changed = self.active_file.as_ref().map(Entity::entity_id) != active.as_ref().map(Entity::entity_id);
+        self.active_file = active;
+        self.publish_reference_active_file(cx);
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// The file the inspector / title / status bar should reflect: the
+    /// literal active-tab file if there is one, else the last file tab
+    /// that was active, as long as it's still open (`open_files`
+    /// membership is the drop condition -- once the file closes, this
+    /// naturally stops returning it without `last_active_file` needing
+    /// to be cleared eagerly on every close path).
+    ///
+    /// Kept `None`, not this fallback, when nothing has ever been
+    /// active (e.g. only the welcome screen has ever shown).
+    fn reference_active_file(&self, cx: &App) -> Option<Entity<FilePanel>> {
+        if let Some(active) = &self.active_file {
+            return Some(active.clone());
+        }
+        let last = self.last_active_file.as_ref()?;
+        // Checked against `dump()` (always accurate, unlike `open_files`
+        // -- see its doc) rather than registry membership: a tab closed
+        // by any path other than `close_file_tab` (e.g. the tab bar's
+        // own close button on a background tab, which bypasses the
+        // workspace entirely, same gap `open_file_for_path` works
+        // around the same way) would otherwise leave `open_files` stale
+        // and this fallback pointing at a file that isn't open anymore.
+        let path = last.read(cx).path()?;
+        dump_has_file_path(&self.dock.read(cx).dump(cx).center, path).then(|| last.clone())
+    }
+
+    /// Publish `reference_active_file`'s pane into [`ActiveHexPane`] so
+    /// the inspector (which the workspace has no direct handle to once
+    /// restored -- see `panels::inspector`'s module doc) stays in sync,
+    /// re-observing it so editor changes repaint the status bar. No-op
+    /// when the published pane is unchanged (checked against the
+    /// global itself rather than a tracked field, since this can run
+    /// on every `reconcile` regardless of whether `self.active_file`
+    /// -- a narrower value -- changed: e.g. switching which strings
+    /// tab is focused changes the reference file without changing
+    /// `self.active_file`, which stays `None` throughout).
     ///
     /// `ActiveHexPane` is a single App-level global, so this assumes
     /// one live `Workspace` per process (true today: `main.rs` opens
     /// exactly one window). A second concurrent workspace would have
     /// its inspector hijacked by whichever one last called this.
-    fn set_active_file(&mut self, active: Option<Entity<FilePanel>>, cx: &mut Context<Self>) {
-        if self.active_file.as_ref().map(Entity::entity_id) == active.as_ref().map(Entity::entity_id) {
+    fn publish_reference_active_file(&mut self, cx: &mut Context<Self>) {
+        let pane = self.reference_active_file(cx).map(|file| file.read(cx).pane().clone());
+        let current = cx.try_global::<ActiveHexPane>().and_then(|active| active.0.clone());
+        if pane.as_ref().map(Entity::entity_id) == current.as_ref().map(Entity::entity_id) {
             return;
         }
-        let pane = active.as_ref().map(|file| file.read(cx).pane().clone());
         self.active_pane_observe = pane.as_ref().map(|pane| cx.observe(pane, |_workspace, _pane, cx| cx.notify()));
         cx.set_global(ActiveHexPane(pane));
-        self.active_file = active;
-        cx.notify();
     }
 
     /// Debounced layout save: replaces any pending timer, so only the
@@ -981,14 +1125,18 @@ impl Workspace {
         Some(persist::save(path, &state))
     }
 
+    /// The path shown in the window title / status bar: the reference
+    /// file (see `reference_active_file`'s doc), not the strict
+    /// `active_file` -- so this keeps naming a file while a strings
+    /// tab bound to it is focused.
     fn active_path(&self, cx: &App) -> Option<PathBuf> {
-        self.active_file.as_ref().and_then(|file| file.read(cx).path().map(Path::to_path_buf))
+        self.reference_active_file(cx).and_then(|file| file.read(cx).path().map(Path::to_path_buf))
     }
 
     fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let file_label = Label::new(status_file_name_text(self.active_path(cx).as_deref()));
 
-        let (offset, mode) = match &self.active_file {
+        let (offset, mode) = match self.reference_active_file(cx) {
             Some(file) => {
                 let file = file.read(cx);
                 let editor = file.pane().read(cx).editor();
@@ -1415,6 +1563,7 @@ mod tests {
     use gpui::TestAppContext;
     use gpui::WindowHandle;
     use hxy_core::ByteOffset;
+    use hxy_core::ByteRange;
     use hxy_core::HexSource;
     use hxy_core::MemorySource;
     use hxy_core::Selection;
@@ -2588,6 +2737,261 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(strings_tab_count(window, cx), 0, "the strings tab closed");
         assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+    }
+
+    /// Hovering a strings-panel row paints a hover band on the owning
+    /// pane; closing the tab with the pointer still "resting" there
+    /// must clear it (`StringsPanel::on_removed`) -- otherwise the hex
+    /// view is left with a stale highlight nothing else ever clears.
+    #[gpui::test]
+    fn closing_a_strings_tab_clears_its_hover_band(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let f1_panel = window.read_with(cx, |ws, _| ws.open_files.first().cloned()).unwrap().expect("f1 open");
+        let strings_panel =
+            window.read_with(cx, |ws, _| ws.strings_panels.first().cloned()).unwrap().expect("strings tab for f1");
+
+        let range = ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap();
+        window.update(cx, |_ws, _window, cx| strings_panel.update(cx, |p, cx| p.set_hover(Some(range), cx))).unwrap();
+        assert_eq!(
+            window.read_with(cx, |_ws, cx| f1_panel.read(cx).pane().read(cx).hover_span()).unwrap(),
+            Some(range)
+        );
+
+        // The strings tab is front-most, so `close_active_tab` targets it.
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(strings_tab_count(window, cx), 0, "sanity: the tab actually closed");
+        assert_eq!(
+            window.read_with(cx, |_ws, cx| f1_panel.read(cx).pane().read(cx).hover_span()).unwrap(),
+            None,
+            "hover band must not survive the tab that painted it",
+        );
+    }
+
+    /// A row click on a background file's strings tab must bring that
+    /// file's own tab to the front, not just move its (invisible)
+    /// selection -- mirrors egui's `jump_to_strings_match`, which calls
+    /// `focus_file_tab` before applying the selection. Split A|B, open
+    /// strings for A, focus B (backgrounding A and its strings tab),
+    /// then click a strings row: A's tab must become frontmost with the
+    /// jumped-to range selected.
+    #[gpui::test]
+    fn strings_row_jump_focuses_the_owning_files_background_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let fa = temp_file(&dir, "a.bin", b"\x00hello\x00world\x00");
+        let fb = temp_file(&dir, "b.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &fa, cx);
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let original = window
+            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .unwrap()
+            .expect("a center tab panel");
+        window
+            .update(cx, |ws, window, cx| {
+                let bytes = std::fs::read(&fb).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let b_panel = cx.new(|cx| FilePanel::new(source, Some(fb.clone()), window, cx));
+                ws.open_files.push(b_panel.clone());
+                let view: Arc<dyn PanelView> = Arc::new(b_panel.clone());
+                original
+                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                // A plain split does not itself change `active_file`:
+                // the newly split-off `TabPanel` has no node at all in
+                // the cached `DockItem` tree yet (only a live resync or
+                // the pane picker's explicit override discovers it --
+                // see `resolve_leaf`'s doc), so `active_file_panel`'s
+                // walk can only ever re-find `original` (whose active
+                // tab is now the non-file strings(A)) and comes back
+                // `None`. Set B active directly to background A/its
+                // strings tab, matching what the real pane-picker flow
+                // (`cmd-k`) would leave in place after picking B.
+                ws.set_active_file(Some(b_panel), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(active_path(window, cx), Some(fb.clone()), "sanity: B is active after the split");
+
+        let strings_panel = window
+            .read_with(cx, |ws, cx| {
+                ws.strings_panels.iter().find(|p| p.read(cx).owning_path() == Some(fa.as_path())).cloned()
+            })
+            .unwrap()
+            .expect("strings tab for A");
+
+        window.update(cx, |_ws, _window, cx| strings_panel.update(cx, |p, cx| p.jump_to_row(0, cx))).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_path(window, cx), Some(fa), "A's tab is now frontmost");
+        let selection = window
+            .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor().selection())
+            .unwrap();
+        // "hello" sits at offset 1..6 in the fixture; end is exclusive.
+        assert_eq!(selection, Some(Selection { anchor: ByteOffset::new(1), cursor: ByteOffset::new(5) }));
+    }
+
+    /// Focusing a file's strings tab must not blank the inspector or
+    /// the window title / status bar: `active_file` alone only ever
+    /// names a `FilePanel` (`None` while a strings tab is active), so
+    /// without `reference_active_file`'s fallback to `last_active_file`
+    /// these would all go blank the moment a strings tab opens.
+    #[gpui::test]
+    fn focusing_a_strings_tab_falls_back_to_its_file_for_status_and_inspector(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0xAAu8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        let inspector = window
+            .read_with(cx, |ws, _| ws.inspector_for_test.clone())
+            .unwrap()
+            .expect("inspector stashed on fresh construction");
+
+        window_open(window, &f1, cx);
+        seed_active_caret(window, cx);
+        assert_eq!(active_path(window, cx), Some(f1.clone()));
+
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_path(window, cx), Some(f1), "status/title fall back to the owning file");
+        let (_, bytes) = inspector
+            .read_with(cx, |insp, cx| insp.caret_window(cx))
+            .expect("inspector still decodes via the fallback");
+        assert_eq!(bytes, vec![0xAAu8; 16]);
+    }
+
+    /// Closing the file behind a focused strings tab must blank the
+    /// status bar / title / inspector gracefully (not panic, not keep
+    /// pointing at a dead entity) -- `reference_active_file`'s fallback
+    /// is checked against `dump()` on every read, so a closed file
+    /// simply stops being found rather than needing to be pruned from
+    /// `last_active_file` eagerly.
+    #[gpui::test]
+    fn closing_the_file_behind_a_focused_strings_tab_blanks_status_and_inspector(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0xAAu8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        let inspector = window
+            .read_with(cx, |ws, _| ws.inspector_for_test.clone())
+            .unwrap()
+            .expect("inspector stashed on fresh construction");
+
+        window_open(window, &f1, cx);
+        seed_active_caret(window, cx);
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(active_path(window, cx), Some(f1.clone()), "sanity: the fallback is engaged");
+
+        // Close F1 directly (not via `close_active_tab`, which -- now
+        // that a strings tab is the literal front-most tab -- would
+        // close that tab instead): this is the scenario under test,
+        // the file closing while its strings tab remains focused.
+        let f1_panel = window.read_with(cx, |ws, _| ws.open_files.first().cloned()).unwrap().expect("f1 open");
+        window.update(cx, |ws, window, cx| ws.close_file_tab(f1_panel, window, cx)).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_path(window, cx), None, "status/title blank once the file is gone");
+        assert!(inspector.read_with(cx, |insp, cx| insp.caret_window(cx)).is_none(), "inspector blanks gracefully");
+    }
+
+    /// Reopening an existing strings tab after a collapse elsewhere
+    /// must land it in a live panel, not lose or duplicate it. Mirrors
+    /// `add_after_split_pane_collapse_lands_in_a_live_tab_panel`'s
+    /// shape (build a two-`TabPanel` center directly -- left: F1;
+    /// right: F2 + a strings tab for F2 -- so both are genuinely
+    /// tracked by the `DockItem` cache, then empty the left panel so it
+    /// detaches, leaving a dead cache entry ahead of the live one).
+    ///
+    /// Exercises `focus_strings_tab`'s resync-then-re-resolve-by-path
+    /// guard (added to mirror `focus_existing_tab`'s: an incremental
+    /// add can route into a stale/dead `TabPanel` reference --
+    /// `DockItem::Split::add_panel`'s "first `Tabs` found" walk doesn't
+    /// check liveness), though in this harness `reconcile`'s own
+    /// ambient `resync_center_if_stale` call already heals the cache
+    /// on the layout-changed pass the collapse itself triggers (true
+    /// of the FilePanel sibling test too -- verified by temporarily
+    /// removing each guard and re-running both, which still passed).
+    /// The explicit guard remains defense-in-depth for a collapse and
+    /// reopen landing in the same update with no intervening reconcile
+    /// pass, a window this harness can't isolate; this test still
+    /// pins the observable contract (no loss, no duplicate).
+    #[gpui::test]
+    fn reopening_a_strings_tab_after_a_collapse_lands_in_a_live_tab_panel(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+
+        let f1_panel = window.read_with(cx, |ws, _| ws.active_file.clone()).unwrap().expect("f1 open");
+        let (left, f2_panel) = window
+            .update(cx, |ws, window, cx| {
+                let weak = ws.dock.downgrade();
+                let bytes = std::fs::read(&f2).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let f2_panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
+                let strings_f2 =
+                    cx.new(|cx| StringsPanel::new(f2_panel.read(cx).pane().clone(), Some(f2.clone()), window, cx));
+                ws.open_files = vec![f1_panel.clone(), f2_panel.clone()];
+                ws.track_strings_panel(strings_f2.clone(), window, cx);
+
+                let left_view: Arc<dyn PanelView> = Arc::new(f1_panel.clone());
+                let right_views: Vec<Arc<dyn PanelView>> = vec![Arc::new(f2_panel.clone()), Arc::new(strings_f2)];
+                let left = DockItem::tabs(vec![left_view], &weak, window, cx);
+                let right = DockItem::tabs(right_views, &weak, window, cx);
+                let split = DockItem::split(Axis::Horizontal, vec![left.clone(), right], &weak, window, cx);
+                ws.dock.update(cx, |dock, cx| dock.set_center(split, window, cx));
+                ws.set_active_file(Some(f2_panel.clone()), cx);
+                (left, f2_panel)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2);
+        assert_eq!(strings_tab_count(window, cx), 1);
+
+        // Empty the left (F1) panel so its `TabPanel` detaches, leaving
+        // a dead entry in the cache ahead of the still-live right one.
+        let DockItem::Tabs { view: left_view, .. } = &left else { unreachable!() };
+        window
+            .update(cx, |_ws, window, cx| {
+                left_view.update(cx, |tab, cx| {
+                    while let Some(panel) = tab.active_panel(cx) {
+                        tab.remove_panel(panel, window, cx);
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1, "only f2 survives");
+        assert_eq!(strings_tab_count(window, cx), 1, "f2's strings tab survives the collapse elsewhere");
+
+        // Reopen F2's strings tab: it already exists (found via
+        // `dump()`), so this exercises `focus_strings_tab`'s
+        // resync-then-re-resolve-then-re-add path, not the "create a
+        // fresh one" path.
+        window
+            .update(cx, |ws, window, cx| {
+                ws.set_active_file(Some(f2_panel), cx);
+                ws.open_strings_for_active_file(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(strings_tab_count(window, cx), 1, "the existing strings tab is reused, not lost or duplicated");
+        assert_eq!(file_count(window, cx), 1);
     }
 
     /// Opening a path that fails to read surfaces an error toast
