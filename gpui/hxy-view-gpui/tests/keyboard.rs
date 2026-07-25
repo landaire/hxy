@@ -11,7 +11,6 @@ use gpui::TestAppContext;
 use gpui::VisualTestContext;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
-use hxy_core::ColumnCount;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
@@ -23,10 +22,11 @@ fn source() -> Arc<dyn HexSource> {
     Arc::new(MemorySource::new(vec![0x00u8; 64]))
 }
 
-/// 16 full rows of 16 columns -- enough headroom for the scrolloff
-/// test to move the cursor several rows past a synthesized viewport.
-fn source_16_rows() -> Arc<dyn HexSource> {
-    Arc::new(MemorySource::new(vec![0x00u8; 16 * 16]))
+/// 200 full rows of 16 columns -- taller than the test window's real
+/// viewport, so the scrolloff test can drive the cursor past the bottom
+/// margin and force a real scroll.
+fn source_200_rows() -> Arc<dyn HexSource> {
+    Arc::new(MemorySource::new(vec![0x00u8; 200 * 16]))
 }
 
 fn focus(cx: &mut VisualTestContext, pane: &Entity<HexPane>) {
@@ -129,43 +129,41 @@ fn ascii_pane_typing_inserts_text(cx: &mut TestAppContext) {
 /// hxy-editor/src/input.rs:151) and apply them to its own `scroll_rows`,
 /// or arrow-key navigation could never scroll the gpui view.
 ///
-/// The bare-root test harness mounts `HexPane` with no ancestor that
-/// stretches the canvas to the window (see task-5 report), so a real
-/// paint always reports `rows_visible == 0` and `simulate_keystrokes`'s
-/// automatic redraw would immediately clobber a one-shot synthesized
-/// viewport with that degenerate one. Instead, before each individual
-/// keystroke this re-synthesizes a realistic 10-row `on_frame` window
-/// anchored at the pane's current `scroll_rows` -- standing in for
-/// what a real paint (once its canvas gets a real size) would report.
+/// The source is taller than the test window's real viewport, so a real
+/// paint feeds the editor a viewport shorter than the content. Driving
+/// the cursor down past the bottom scrolloff margin forces the shared
+/// dispatch to schedule a scroll that `HexPane` applies each keystroke;
+/// this exercises the real integrated path, no synthesized frame.
 #[gpui::test]
 fn arrow_down_past_scrolloff_scrolls_the_view(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
-    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source_16_rows(), cx));
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source_200_rows(), cx));
     focus(cx, &pane);
     seed_caret(cx, &pane, 0);
 
-    let columns = ColumnCount::new(16).unwrap();
-    const VISIBLE_ROWS: u64 = 10;
+    // The default scrolloff margin the editor keeps between the cursor
+    // and each viewport edge.
+    const SCROLLOFF: u64 = 3;
 
-    // Row 0 -> row 8 (8 presses). With a 10-row visible window and the
-    // default 3-row scrolloff, the safe zone starts at [3, 7); row 8
-    // ends up past the bottom edge, so the dispatcher's
-    // `ensure_cursor_visible_with_scrolloff` schedules a scroll-to-byte
-    // that `HexPane` must turn into `scroll_rows == 2.0` (hand-traced:
-    // presses 1-2 saturate at row 0, 3-6 sit inside the safe zone,
-    // press 7 pushes the top to row 1, press 8 -- now against a window
-    // re-anchored at row 1 -- pushes it to row 2).
-    for _ in 0..8 {
-        let top = pane.read_with(cx, |p, _| p.scroll_rows()).floor() as u64;
-        let visible = ByteRange::new(ByteOffset::new(top * 16), ByteOffset::new((top + VISIBLE_ROWS) * 16)).unwrap();
-        pane.update(cx, |p, _| p.editor_mut().on_frame(0.0, columns, Some(visible), None));
+    let rows_visible = pane.read_with(cx, |p, _| p.last_frame().unwrap().rows_visible);
+    let visible_rows = rows_visible.ceil() as u64;
+    // Move well past the bottom margin so a scroll is unavoidable.
+    let downs = visible_rows + 20;
+    for _ in 0..downs {
         cx.simulate_keystrokes("down");
     }
 
-    assert_eq!(selection(cx, &pane).1, 8 * 16, "cursor should have moved down 8 rows");
+    let cursor_row = selection(cx, &pane).1 / 16;
+    assert_eq!(cursor_row, downs, "cursor should move down one row per press");
+
     let scroll_rows = pane.read_with(cx, |p, _| p.scroll_rows());
-    assert_eq!(scroll_rows, 2.0);
-    // And the cursor row (8) sits inside the resulting scrolloff-safe
-    // window [scroll_rows + 3, scroll_rows + 10 - 3) = [5, 9).
-    assert!((scroll_rows as u64 + 3..scroll_rows as u64 + 7).contains(&8));
+    assert!(scroll_rows > 0.0, "moving past the viewport must scroll the view, got {scroll_rows}");
+
+    // The cursor stays inside the scrolloff-safe window: below the top
+    // margin and above the bottom edge of the visible viewport.
+    let top = scroll_rows as u64;
+    assert!(
+        (top + SCROLLOFF..top + visible_rows).contains(&cursor_row),
+        "cursor row {cursor_row} should sit inside scrolloff window of viewport top {top} ({visible_rows} rows)"
+    );
 }

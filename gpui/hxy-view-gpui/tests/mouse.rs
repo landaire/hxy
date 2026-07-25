@@ -26,7 +26,6 @@ use hxy_editor::NibbleCursor;
 use hxy_editor::Pane;
 use hxy_view_gpui::FrameInfo;
 use hxy_view_gpui::HexPane;
-use hxy_view_gpui::MinimapBounds;
 
 const COLUMNS: u64 = 16;
 
@@ -239,35 +238,36 @@ fn thousand_rows_source() -> Arc<dyn HexSource> {
 
 /// Clicking the minimap strip at 50% height should scroll the grid so
 /// the byte-row roughly halfway through the file (row 500 of 1000)
-/// ends up centered in the viewport, within one row.
-///
-/// gpui's headless test harness always measures a zero-height canvas
-/// (see `HexPane::set_frame_for_test`'s doc), so a real paint's
-/// `FrameInfo` never has a usable minimap strip height or
-/// `rows_visible`. This test takes the real frame's geometry (correct
-/// x-positions) and layers a synthetic, plausible viewport height on
-/// top via `set_frame_for_test`, the same workaround
-/// `arrow_down_past_scrolloff_scrolls_the_view` (tests/keyboard.rs)
-/// uses for the editor-side equivalent.
+/// ends up centered in the viewport, within one row. The strip's
+/// midpoint centering leaves room below the max-scroll clamp for this
+/// file, so no clamp interferes.
 #[gpui::test]
 fn minimap_click_scrolls_viewport(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(thousand_rows_source(), cx));
     focus(cx, &pane);
-    let real_frame = frame(cx, &pane);
-
-    const ROWS_VISIBLE: f32 = 40.0;
-    let strip = MinimapBounds {
-        origin: real_frame.minimap_bounds.origin,
-        size: gpui::Size { width: real_frame.minimap_bounds.size.width, height: px(800.0) },
-    };
-    let synthetic = FrameInfo { rows_visible: ROWS_VISIBLE, minimap_bounds: strip, ..real_frame };
-    pane.update(cx, |p, _| p.set_frame_for_test(synthetic));
+    let frame = frame(cx, &pane);
+    let strip = frame.minimap_bounds;
 
     let click = point(strip.origin.x + strip.size.width * 0.5, strip.origin.y + strip.size.height * 0.5);
     cx.simulate_click(click, Modifiers::none());
 
     let scroll_rows = pane.read_with(cx, |p, _| p.scroll_rows());
-    let centered_row = scroll_rows + ROWS_VISIBLE / 2.0;
+    let centered_row = scroll_rows + frame.rows_visible / 2.0;
     assert!((centered_row - 500.0).abs() <= 1.0, "expected centered row near 500, got {centered_row}");
+}
+
+
+/// Fix 1 proof: with the canvas sized to fill the pane, a real paint
+/// in the test harness measures a nonzero viewport instead of the
+/// zero-height content mask a childless canvas would produce.
+#[gpui::test]
+fn paint_sizes_the_canvas(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(tall_source(), cx));
+    focus(cx, &pane);
+    let frame = frame(cx, &pane);
+
+    assert!(frame.rows_visible > 0.0, "sized canvas should paint a nonzero viewport, got {}", frame.rows_visible);
+    assert!(frame.minimap_bounds.size.height > px(0.0), "minimap strip should have a real height");
 }

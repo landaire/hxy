@@ -353,20 +353,6 @@ impl HexPane {
     pub fn last_frame(&self) -> Option<FrameInfo> {
         self.last_frame
     }
-
-    /// Test-only hook: latches `frame` directly instead of waiting for
-    /// a real paint pass. gpui's headless test harness never gives the
-    /// canvas element a nonzero content height (the paint pass always
-    /// measures `rows_visible == 0`), so interactions that key off a
-    /// real viewport height -- minimap scrubbing here -- can't be
-    /// exercised from a real paint's `FrameInfo` alone. Callers
-    /// synthesize a plausible viewport on top of a real frame's
-    /// geometry/x-positions, mirroring how `arrow_down_past_scrolloff`
-    /// (tests/keyboard.rs) synthesizes editor-side viewport state via
-    /// `on_frame` for the same reason.
-    pub fn set_frame_for_test(&mut self, frame: FrameInfo) {
-        self.last_frame = Some(frame);
-    }
 }
 
 /// Pure delta-to-rows conversion. `Lines` deltas are rows already;

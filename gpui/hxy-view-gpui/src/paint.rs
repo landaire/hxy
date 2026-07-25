@@ -15,6 +15,7 @@ use gpui::Font;
 use gpui::Hsla;
 use gpui::Pixels;
 use gpui::Point;
+use gpui::Styled;
 use gpui::TextRun;
 use gpui::Window;
 use gpui::bounds;
@@ -85,10 +86,14 @@ pub(crate) struct GridSnapshot {
 /// handlers; capturing a strong handle is safe because the canvas (and
 /// thus the closure) is dropped at the end of the frame.
 pub(crate) fn hex_canvas(snap: GridSnapshot, entity: Entity<HexPane>) -> impl gpui::IntoElement {
+    // A childless canvas lays out at auto height (0) and would paint
+    // into a zero-height content mask; fill the parent so the grid and
+    // minimap get the pane's real bounds.
     canvas(
         move |_bounds, _window, _app| {},
         move |bounds, _prepaint, window, app| paint_grid(&snap, &entity, bounds, window, app),
     )
+    .size_full()
 }
 
 fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixels>, window: &mut Window, app: &mut App) {
