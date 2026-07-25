@@ -86,6 +86,7 @@ similar = { version = "3.1.2", default-features = false, features = ["bytes", "s
 hxy-010-lang = { workspace = true }
 hxy-imhex-lang = { workspace = true }
 hxy-calculator = { workspace = true }
+hxy-panels = { workspace = true }
 suture = { workspace = true, features = ["serde", "blake3"] }
 base64 = { workspace = true }
 rkyv = { version = "0.8.18", default-features = false, features = ["alloc", "bytecheck"] }

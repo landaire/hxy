@@ -3008,6 +3008,7 @@ dependencies = [
  "hxy-core",
  "hxy-i18n",
  "hxy-imhex-lang",
+ "hxy-panels",
  "hxy-plugin-host",
  "hxy-vfs",
  "hxy-view",
@@ -3113,6 +3114,16 @@ dependencies = [
  "rustc-hash 2.1.3",
  "thiserror 2.0.20",
  "winnow 1.0.4",
+]
+
+[[package]]
+name = "hxy-panels"
+version = "0.3.0"
+dependencies = [
+ "hxy-calculator",
+ "hxy-core",
+ "jiff",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

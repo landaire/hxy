@@ -1,0 +1,18 @@
+[package]
+name = "hxy-panels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Framework-agnostic panel logic for hxy: goto/range parsing, search engine, inspector decoders"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+hxy-core = { workspace = true }
+hxy-calculator = { workspace = true }
+jiff = { workspace = true }
+thiserror = { workspace = true }
