@@ -117,17 +117,21 @@ impl GridGeometry {
     /// Hit-test a point (relative to content origin, y already
     /// adjusted for scroll) to a pane/byte/nibble.
     ///
-    /// Matches egui's `RowLayout::hit_test` (hxy-view/src/lib.rs):
-    /// x left of the hex pane (the address gutter) returns `None`.
-    /// Any x in `[hex_pane_start, ascii_pane_start)` -- including the
-    /// section gap trailing the last hex column -- belongs to the
-    /// hex pane, with the column clamped to the last one; the gap
-    /// does not read as a no-hit. x past the ascii pane's last
-    /// column returns `None`. A `y` past the last row clamps to the
-    /// last row (the EOF-cursor row) rather than returning `None`.
-    /// The resulting byte offset is clamped to `source_len`, so the
-    /// EOF row's cursor position can land exactly on `source_len`
-    /// (one past the last byte).
+    /// Follows egui's `RowLayout::hit_test` (hxy-view/src/lib.rs) for
+    /// the x axis: x left of the hex pane (the address gutter) returns
+    /// `None`. Any x in `[hex_pane_start, ascii_pane_start)` -- including
+    /// the section gap trailing the last hex column -- belongs to the
+    /// hex pane, with the column clamped to the last one; the gap does
+    /// not read as a no-hit. x past the ascii pane's last column returns
+    /// `None`. A `y` past the last row clamps to the last row (the
+    /// EOF-cursor row) rather than returning `None`.
+    ///
+    /// One intentional divergence from egui: a click on the EOF row
+    /// lands on the one-past-end insertion slot (offset clamped to
+    /// `source_len`), whereas egui clamps the same click to the last
+    /// byte (`len - 1`). Reaching the EOF insertion caret by mouse is
+    /// strictly more capable and matches how the keyboard handles the
+    /// EOF position.
     pub fn hit_test(&self, pos: Point<Pixels>, source_len: ByteLen) -> Option<GridHit> {
         let max_row = self.row_count(source_len).saturating_sub(1);
         let row_raw = (pos.y / self.metrics.line_h).max(0.0).floor() as u64;

@@ -275,11 +275,10 @@ mod tests {
         Arc::new(MemorySource::new(vec![0u8; 16]))
     }
 
-    /// Regression test for a launch-time bug: focus was given to
-    /// `Workspace` even when a CLI file had already loaded a pane, so
-    /// keystrokes needed a click into the grid before they reached
-    /// `HexPane::on_key_down`. `Workspace::render` now moves focus
-    /// onto the pane itself once one exists (see `focus_pending`).
+    /// `Workspace::render` gives initial focus to the pane when a file
+    /// is open (see `focus_pending`), so CLI-loaded keystrokes reach
+    /// `HexPane::on_key_down` without a click into the grid first. These
+    /// tests pin that focus routing against regressions.
     #[gpui::test]
     fn cli_open_focuses_the_pane_not_the_workspace(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);

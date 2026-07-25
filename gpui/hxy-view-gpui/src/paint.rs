@@ -111,7 +111,15 @@ fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixe
     let rows_visible = f32::from(grid_area_h) / f32::from(metrics.line_h);
 
     let row_count = geometry.row_count(source_len);
+    // Paint one extra row past the clipped viewport so a partially
+    // scrolled row at the bottom edge is never blank.
     let last_visible_row = (first_visible_row + rows_visible.ceil() as u64 + 1).min(row_count.saturating_sub(1));
+    // The editor's scrolloff/visibility bookkeeping wants the range a
+    // clipped egui viewport would report, not the paint overdraw range:
+    // rows fully or partially inside the viewport (`ceil`), excluding
+    // the extra overdraw row above. Exclusive end row, clamped to the
+    // total row count, matching egui's `visible_row_range`.
+    let on_frame_end_row = ((first_visible_row as f32 + rows_visible).ceil() as u64).min(row_count);
 
     // Grid content width shrinks by the strip width + gap: the strip
     // claims the right edge of the content area (below the header,
@@ -133,7 +141,7 @@ fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixe
     // handlers call `set_active_pane` directly rather than routing
     // through this frame-latch.
     let visible_start = first_visible_row.saturating_mul(cols).min(source_len.get());
-    let visible_end = last_visible_row.saturating_add(1).saturating_mul(cols).min(source_len.get());
+    let visible_end = on_frame_end_row.saturating_mul(cols).min(source_len.get());
     let visible_range = ByteRange::new(ByteOffset::new(visible_start), ByteOffset::new(visible_end)).ok();
     let scroll_offset_px = snap.scroll_rows * f32::from(metrics.line_h);
 
