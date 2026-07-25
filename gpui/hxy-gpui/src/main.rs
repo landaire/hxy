@@ -13,6 +13,7 @@ use gpui_component::Root;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 
+mod palette;
 mod panels;
 mod persist;
 mod status;

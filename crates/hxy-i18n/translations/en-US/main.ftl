@@ -29,6 +29,15 @@ gpui-inspector-radix-binary = Bin
 gpui-inspector-no-caret = No caret -- click a byte in the hex view.
 gpui-inspector-decode-empty = --
 gpui-search-prev-tooltip = Previous match (Cmd/Ctrl+Enter)
+gpui-palette-close-tab = Close tab
+gpui-palette-toggle-inspector = Toggle Inspector
+gpui-palette-copy-selection-hex = Copy selection as hex
+gpui-palette-copy-selection-bytes = Copy selection as bytes
+gpui-palette-copy-selection-none = no selection to copy
+gpui-palette-no-matches = No matches.
+gpui-palette-search-placeholder = Search commands...
+gpui-palette-invalid-nonzero = count must be nonzero
+gpui-palette-invalid-at-eof = at end of file
 
 # Menus
 menu-file = File

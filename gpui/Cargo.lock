@@ -2844,11 +2844,13 @@ version = "0.3.0"
 dependencies = [
  "gpui",
  "gpui-component",
+ "hxy-calculator",
  "hxy-core",
  "hxy-editor",
  "hxy-i18n",
  "hxy-panels",
  "hxy-view-gpui",
+ "palette-core",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
@@ -3959,6 +3961,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
+dependencies = [
+ "memchr",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4277,6 +4289,13 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "palette-core"
+version = "0.3.0"
+dependencies = [
+ "nucleo-matcher",
 ]
 
 [[package]]

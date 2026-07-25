@@ -44,7 +44,10 @@ use gpui_component::label::Label;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_editor::InputMode;
+use hxy_view_gpui::HexPane;
 
+use crate::palette::Palette;
+use crate::palette::modes::PaletteContext;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
 use crate::panels::InspectorPanel;
@@ -59,7 +62,7 @@ use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
 
-actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch]);
+actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector, ToggleSearch, CloseSearch, OpenPalette]);
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
 /// into a single layout save.
@@ -77,6 +80,14 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None),
         gpui::KeyBinding::new("cmd-i", ToggleInspector, None),
         gpui::KeyBinding::new("cmd-f", ToggleSearch, None),
+        // Mirror the egui app's `COMMAND_PALETTE` chord (Cmd+Shift+P).
+        gpui::KeyBinding::new("cmd-shift-p", OpenPalette, None),
+        // Palette navigation, scoped to the overlay's own key context so
+        // these keys are inert everywhere else; the palette's text input
+        // is a descendant, so with it focused these still dispatch here.
+        gpui::KeyBinding::new("up", crate::palette::PaletteUp, Some("Palette")),
+        gpui::KeyBinding::new("down", crate::palette::PaletteDown, Some("Palette")),
+        gpui::KeyBinding::new("escape", crate::palette::PaletteDismiss, Some("Palette")),
         // Scoped to the search bar's own key context (set on its
         // render root) so plain Escape elsewhere is left alone; the
         // bar's `InputState`s propagate Escape up to this binding when
@@ -134,6 +145,9 @@ pub struct Workspace {
     /// cancels the pending write.
     save_debounce: Option<Task<()>>,
     _appearance_subscription: Subscription,
+    /// The command-palette overlay. Always childed by `render`; renders
+    /// an inert empty element while closed (see [`Palette`]).
+    palette: Entity<Palette>,
     /// Test-only handle to the inspector panel `ensure_inspector_dock`
     /// creates on fresh construction (never populated on the registry-
     /// restore path -- see that method's doc), so integration tests can
@@ -164,6 +178,11 @@ impl Workspace {
             DockEvent::DragDrop(_) => {}
         });
 
+        let palette = {
+            let weak = cx.entity().downgrade();
+            cx.new(|cx| Palette::new(weak, window, cx))
+        };
+
         let mut workspace = Self {
             dock,
             welcome: None,
@@ -179,6 +198,7 @@ impl Workspace {
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
+            palette,
             #[cfg(test)]
             inspector_for_test: None,
         };
@@ -405,6 +425,13 @@ impl Workspace {
     }
 
     fn on_toggle_vim(&mut self, _: &ToggleVim, _window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_active_vim(cx);
+    }
+
+    /// Toggle the active pane's input mode between Default and Vim.
+    /// Shared by the `cmd-alt-v` action and the palette's Toggle Vim
+    /// entry.
+    pub(crate) fn toggle_active_vim(&mut self, cx: &mut Context<Self>) {
         let Some(file) = self.active_file.clone() else { return };
         let pane = file.read(cx).pane().clone();
         pane.update(cx, |pane, cx| {
@@ -415,6 +442,62 @@ impl Workspace {
             pane.editor_mut().set_input_mode(next);
             cx.notify();
         });
+    }
+
+    /// Open the command palette in Main mode (or toggle it closed if it
+    /// is already open there). Stashes the currently-focused element so
+    /// the palette can restore focus to the grid on close.
+    fn on_open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = window.focused(cx);
+        self.palette.update(cx, |palette, cx| palette.toggle(restore, window, cx));
+    }
+
+    /// Snapshot of the active file for the palette's entry builders.
+    pub(crate) fn palette_context(&self, cx: &App) -> PaletteContext {
+        let Some(file) = &self.active_file else { return PaletteContext::default() };
+        let pane = file.read(cx).pane().read(cx);
+        let editor = pane.editor();
+        let selection = editor.selection();
+        let cursor = selection.map(|s| s.cursor.get()).unwrap_or(0);
+        let source_len = editor.source().len().get();
+        let selection = selection.map(|s| {
+            let range = s.range();
+            (range.start().get(), range.end().get())
+        });
+        PaletteContext {
+            has_active_file: true,
+            cursor,
+            source_len,
+            selection,
+            vim_on: matches!(editor.input_mode(), InputMode::Vim),
+        }
+    }
+
+    /// The active file's [`HexPane`], for palette action dispatch.
+    pub(crate) fn active_pane(&self, cx: &App) -> Option<Entity<HexPane>> {
+        self.active_file.as_ref().map(|file| file.read(cx).pane().clone())
+    }
+
+    /// Palette dispatch entry points, wrapping the action handlers so
+    /// the palette can route into the same code paths as the shortcuts.
+    pub(crate) fn open_file_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_open_file(&OpenFile, window, cx);
+    }
+
+    pub(crate) fn toggle_inspector_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_toggle_inspector(&ToggleInspector, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn palette(&self) -> Entity<Palette> {
+        self.palette.clone()
+    }
+
+    /// Close the active file tab, if one is focused.
+    pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active_file.clone() else { return };
+        let view: Arc<dyn PanelView> = Arc::new(active);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
     }
 
     /// Bring the workspace's own tracking back in sync with the dock's
@@ -719,6 +802,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
+            .on_action(cx.listener(Self::on_open_palette))
             .child(div().flex_1().child(self.dock.clone()));
 
         if let Some(error) = &self.open_error {
@@ -726,6 +810,11 @@ impl Render for Workspace {
         }
 
         root = root.child(self.render_status_bar(cx));
+
+        // The palette overlay is always childed; it renders an inert
+        // empty element while closed and a full top-center overlay while
+        // open (absolutely positioned, so it floats over the dock).
+        root = root.child(self.palette.clone());
 
         // `gpui_component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is

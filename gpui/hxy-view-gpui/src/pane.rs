@@ -99,6 +99,18 @@ impl HexPane {
         &mut self.editor
     }
 
+    /// The hex view's current column count for this pane.
+    pub fn columns(&self) -> ColumnCount {
+        self.columns
+    }
+
+    /// Set the hex view's column count for this pane and repaint. Used
+    /// by the command palette's `Set columns...` mode.
+    pub fn set_columns(&mut self, columns: ColumnCount, cx: &mut Context<Self>) {
+        self.columns = columns;
+        cx.notify();
+    }
+
     pub fn set_source(&mut self, source: Arc<dyn HexSource>, cx: &mut Context<Self>) {
         self.editor = hxy_editor::HexEditor::new(source);
         self.scroll_rows = 0.0;
