@@ -177,8 +177,52 @@ impl Workspace {
     /// Add a file tab to the center dock, making it active (the dock
     /// focuses the new tab's pane itself when the active tab changes).
     fn add_file_panel(&mut self, panel: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        // A center add routes through `DockItem::Split.items`; resync that
+        // cache from the live tree first so the add never lands in a
+        // collapsed-away tab panel (see `resync_center_if_stale`).
+        self.resync_center_if_stale(window, cx);
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Rebuild the center's cached `DockItem` tree from the live panel
+    /// tree when a tab panel has collapsed out from under the cache.
+    ///
+    /// `DockArea` keeps `items: DockItem` as a cache that it only
+    /// rebuilds in `new`/`load`/`set_center`. When a tab panel empties
+    /// (its last tab closed -- reachable via the close button or a
+    /// drag-created split whose pane is then emptied), `TabPanel`'s
+    /// `remove_self_if_empty` detaches it from the live `StackPanel`, but
+    /// the cached `DockItem::Split.items` keeps the orphan. A later
+    /// `DockArea::add_panel(Center)` iterates that cache and can route
+    /// the new panel into the detached tab panel, which never renders --
+    /// bricking the center (verified against gpui-component mod.rs:411).
+    ///
+    /// `DockArea::dump` walks the LIVE tree, so re-materializing its
+    /// `PanelState` via `PanelState::to_item` and installing it with
+    /// `set_center` rebuilds the cache to match the live tree while
+    /// preserving the user's split structure. We only do it when a cached
+    /// tab panel has actually gone empty (rare: after a collapse), so
+    /// healthy layouts pay nothing. Panels are rebuilt from their `dump()`
+    /// (files re-read from disk); acceptable as this path is a recovery,
+    /// not a hot path. (`set_center`, not `load`: only the former
+    /// re-subscribes the rebuilt subtree for `LayoutChanged`.)
+    fn resync_center_if_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !center_has_empty_tab_panel(self.dock.read(cx).items(), cx) {
+            return;
+        }
+        let state = self.dock.read(cx).dump(cx);
+        self.dock.update(cx, |dock, cx| {
+            // Rebuild the center via `set_center` (not `load`): both go
+            // through `PanelState::to_item`, but only `set_center`
+            // re-subscribes the rebuilt subtree for `LayoutChanged` (load
+            // leaves the new StackPanel unsubscribed). The dumped state is
+            // the live structure, so this preserves the user's splits.
+            let weak = cx.entity().downgrade();
+            let center = state.center.to_item(weak, window, cx);
+            dock.set_center(center, window, cx);
+        });
+        self.focus_pending = true;
     }
 
     /// Read `path` and add it as a new file tab. Called by `cmd-o` and
@@ -254,25 +298,27 @@ impl Workspace {
                 let view: Arc<dyn PanelView> = Arc::new(welcome.clone());
                 let weak = self.dock.downgrade();
                 self.dock.update(cx, |dock, cx| {
-                    // Reset the center to a fresh, subscribed Split before
-                    // adding welcome. When the last file tab closes, its
-                    // now-empty TabPanel removes itself from the StackPanel,
-                    // but the center DockItem's cached `items` still points at
-                    // that orphaned TabPanel; routing the welcome add through
-                    // the stale cache would attach it to a detached panel that
-                    // never renders (and every later open would vanish too).
-                    // Rebuilding the center sidesteps the stale cache and keeps
-                    // the Split-wrapping invariant that propagates
-                    // LayoutChanged.
+                    // Rebuild the center as a fresh, subscribed Split before
+                    // adding welcome. Closing the last tab (or emptying every
+                    // split pane) detaches its TabPanel from the live tree
+                    // while the center's `DockItem` cache keeps the orphan;
+                    // adding welcome through that stale cache would attach it
+                    // to a detached panel that never renders. A fresh Split
+                    // resets the cache and re-subscribes for LayoutChanged.
                     let center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
                     dock.set_center(center, window, cx);
                     dock.add_panel(view, DockPlacement::Center, None, window, cx);
                 });
                 self.welcome = Some(welcome);
             }
-        } else if let Some(welcome) = self.welcome.take() {
-            let view: Arc<dyn PanelView> = Arc::new(welcome);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        } else {
+            // At least one file remains. If a split pane collapsed, heal the
+            // cache from the live tree before touching the welcome tab.
+            self.resync_center_if_stale(window, cx);
+            if let Some(welcome) = self.welcome.take() {
+                let view: Arc<dyn PanelView> = Arc::new(welcome);
+                self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            }
         }
 
         let active = active_file_panel(self.dock.read(cx).items(), cx);
@@ -364,6 +410,20 @@ impl Workspace {
 fn count_file_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == FILE_PANEL_NAME);
     here + state.children.iter().map(count_file_panels).sum::<usize>()
+}
+
+/// Whether any tab container in the center cache has no live panels,
+/// i.e. a `TabPanel` that emptied and detached itself from the live tree
+/// while its `DockItem::Tabs` entry lingers in the cache. This is the
+/// signature of the stale-cache hazard `resync_center_if_stale` heals: a
+/// populated tab panel always reports an active panel, and empty ones
+/// self-remove, so an empty one still present in the cache is orphaned.
+fn center_has_empty_tab_panel(item: &DockItem, cx: &App) -> bool {
+    match item {
+        DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
+        DockItem::Split { items, .. } => items.iter().any(|item| center_has_empty_tab_panel(item, cx)),
+        DockItem::Panel { .. } | DockItem::Tiles { .. } => false,
+    }
 }
 
 /// The file panel backing the active tab, if the active tab is a file.
@@ -574,6 +634,123 @@ mod tests {
     fn count_welcome_panels(state: &PanelState) -> usize {
         let here = usize::from(state.panel_name == crate::panels::WELCOME_PANEL_NAME);
         here + state.children.iter().map(count_welcome_panels).sum::<usize>()
+    }
+
+    fn first_live_tab_panel(item: &DockItem) -> Option<Entity<gpui_component::dock::TabPanel>> {
+        match item {
+            DockItem::Tabs { view, .. } => Some(view.clone()),
+            DockItem::Split { items, .. } => items.iter().find_map(first_live_tab_panel),
+            _ => None,
+        }
+    }
+
+    /// Regression for the drag-to-split stale-cache brick: split a pane
+    /// off, empty the original pane so its `TabPanel` detaches from the
+    /// live tree while a file survives in the split, then open another
+    /// file. The center `DockItem` cache still references the detached
+    /// pane; without the live-tree resync the add routes into that
+    /// orphan and vanishes. Assert it lands in a rendered tab panel
+    /// (visible in `dump()`).
+    #[gpui::test]
+    fn add_after_split_pane_collapse_lands_in_a_live_tab_panel(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
+        let f4 = temp_file(&dir, "d.bin", &[4u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+        window_open(window, &f2, cx);
+
+        let original = window
+            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .unwrap()
+            .expect("a center tab panel");
+
+        // Split a new pane (f3) beside the original -- the UI drag-split path.
+        window
+            .update(cx, |_ws, window, cx| {
+                let bytes = std::fs::read(&f3).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let f3_panel = cx.new(|cx| FilePanel::new(source, Some(f3.clone()), cx));
+                let view: Arc<dyn PanelView> = Arc::new(f3_panel);
+                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 3);
+
+        // Empty the original pane so its TabPanel detaches from the live tree.
+        window
+            .update(cx, |_ws, window, cx| {
+                original.update(cx, |tab, cx| {
+                    while let Some(panel) = tab.active_panel(cx) {
+                        tab.remove_panel(panel, window, cx);
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+
+        window_open(window, &f4, cx);
+        assert_eq!(file_count(window, cx), 2);
+        let paths = window.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert!(paths.contains(&f4), "added file must live in a rendered tab panel");
+        assert!(paths.contains(&f3));
+    }
+
+    /// A restored tab whose file has since disappeared is pruned, the
+    /// rest are kept, and restore does not crash.
+    #[gpui::test]
+    fn restore_prunes_missing_file_and_keeps_the_rest(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+
+        let first = open_workspace(cx, None, Some(layout.clone()));
+        window_open(first, &f1, cx);
+        window_open(first, &f2, cx);
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+
+        std::fs::remove_file(&f1).unwrap();
+
+        let second = open_workspace(cx, None, Some(layout));
+        assert_eq!(file_count(second, cx), 1);
+        let paths = second.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert!(!paths.contains(&f1), "missing file must be pruned");
+        assert!(paths.contains(&f2), "readable file must survive");
+    }
+
+    /// A burst of layout changes coalesces into a single debounced write:
+    /// nothing is written until the debounce window elapses, then the
+    /// final state lands.
+    #[gpui::test]
+    fn layout_save_is_debounced_and_coalesced(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
+
+        let window = open_workspace(cx, None, Some(layout.clone()));
+        window_open(window, &f1, cx);
+        window_open(window, &f2, cx);
+        window_open(window, &f3, cx);
+        assert!(!layout.exists(), "a burst of changes must not write eagerly");
+
+        cx.executor().advance_clock(SAVE_DEBOUNCE + Duration::from_millis(50));
+        cx.run_until_parked();
+
+        assert!(layout.exists(), "debounced save must fire once the window elapses");
+        let state: gpui_component::dock::DockAreaState =
+            serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
+        let paths = collect_file_paths(&state.center);
+        assert!(paths.contains(&f1) && paths.contains(&f2) && paths.contains(&f3), "coalesced write must hold the final state");
     }
 
     /// Layout persistence round-trips: a saved session's tab count and

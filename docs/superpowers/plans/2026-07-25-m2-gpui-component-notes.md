@@ -384,6 +384,30 @@ App obligations to restore a layout:
   axis, vec![], &weak, window, cx))` (fresh, re-subscribed StackPanel) then
   `add_panel`. Verified: routing an add through the post-auto-removal cache is
   a dead panel.
+  - NOT only close-to-zero. A user drag-to-split (`TabPanel::add_panel_at`,
+    tab_panel.rs:280) grows the LIVE StackPanel but also never updates
+    `DockArea.items`; emptying one pane then detaches its TabPanel while the
+    cached `Split.items` keeps the orphan, and a later center add with
+    file_count still > 0 can route into it. General fix in hxy-gpui: detect a
+    cached `DockItem::Tabs` whose live `TabPanel::active_panel(cx)` is `None`
+    (emptied-but-not-removed cache entry) and, before any center add, resync the
+    cache to the live tree by re-materializing `dump()`'s `PanelState` via
+    `PanelState::to_item` (state.rs:182, pub) installed with `set_center`. This
+    preserves the split structure (no flatten) and never disables drag-to-split;
+    panels are rebuilt from `dump()` (files re-read), acceptable as a rare
+    recovery. Keep the empty/welcome case on the single-`dock.update`
+    fresh-Split factory (below); use the resync only for the >0-survivor case.
+  - `set_center` vs `load` for a LIVE rebuild: both reduce to
+    `PanelState::to_item`, but `DockArea::load` (mod.rs:898) does NOT
+    `subscribe_item` the rebuilt center, so its new StackPanel never re-emits
+    `LayoutChanged` and the app's dock-event subscription goes deaf. `set_center`
+    (mod.rs:596) does. Also: an EMPTY `set_center(to_item(empty))` done in a
+    separate `dock.update` from the follow-up `add_panel` failed to wire the
+    child subscription (StackPanel insert subscribes via `window.defer`,
+    stack_panel.rs:222); doing fresh-Split `set_center` + `add_panel` in ONE
+    `dock.update` (the factory path) works. Hence: factory-in-one-update for the
+    empty case, `to_item`+`set_center` resync for the collapse-with-survivor
+    case.
 - Delegating a Panel's `Focusable::focus_handle` to an inner child handle is
   safe even though `TabPanel::render` also `track_focus`es the same handle
   (tab_panel.rs:1191, focus_handle = active_panel.focus_handle). gpui's
