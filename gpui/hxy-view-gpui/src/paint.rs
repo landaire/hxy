@@ -104,12 +104,28 @@ fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixe
     let grid_area_h = (bounds.size.height - px(PAD_Y) - metrics.line_h).max(px(0.0));
     let rows_visible = f32::from(grid_area_h) / f32::from(metrics.line_h);
 
-    entity.update(app, |pane, _cx| {
-        pane.last_frame = Some(FrameInfo { geometry, content_origin, rows_visible, first_visible_row });
-    });
-
     let row_count = geometry.row_count(source_len);
     let last_visible_row = (first_visible_row + rows_visible.ceil() as u64 + 1).min(row_count.saturating_sub(1));
+
+    // Feed this frame's viewport back into the editor so its own
+    // scrolloff/visibility bookkeeping (`ensure_cursor_visible_with_scrolloff`,
+    // `is_offset_visible`) has real data; without this, keyboard
+    // navigation can never trigger an auto-scroll. `scroll_offset` is
+    // pixels (`scroll_rows * line_h`), matching egui's unit; it only
+    // needs to round-trip consistently through `on_frame` /
+    // `pending_scroll`, which it does since the pane converts back
+    // through the same `line_h`. `interacted_pane` stays `None`: mouse
+    // handlers call `set_active_pane` directly rather than routing
+    // through this frame-latch.
+    let visible_start = first_visible_row.saturating_mul(cols).min(source_len.get());
+    let visible_end = last_visible_row.saturating_add(1).saturating_mul(cols).min(source_len.get());
+    let visible_range = ByteRange::new(ByteOffset::new(visible_start), ByteOffset::new(visible_end)).ok();
+    let scroll_offset_px = snap.scroll_rows * f32::from(metrics.line_h);
+
+    entity.update(app, |pane, _cx| {
+        pane.last_frame = Some(FrameInfo { geometry, content_origin, rows_visible, first_visible_row });
+        pane.editor_mut().on_frame(scroll_offset_px, snap.columns, visible_range, None);
+    });
 
     paint_header(snap, &geometry, &mono, content_origin, bounds.origin.y + px(PAD_Y), window, app);
 

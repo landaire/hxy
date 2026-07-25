@@ -18,8 +18,11 @@ use gpui::TouchPhase;
 use gpui::VisualTestContext;
 use gpui::point;
 use gpui::px;
+use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::Selection;
+use hxy_editor::NibbleCursor;
 use hxy_editor::Pane;
 use hxy_view_gpui::FrameInfo;
 use hxy_view_gpui::HexPane;
@@ -194,4 +197,35 @@ fn drag_above_true_top_after_fractional_scroll_scrolls_up(cx: &mut TestAppContex
 
     let frame3 = frame(cx, &pane);
     assert_eq!(frame3.first_visible_row, 1, "point above the true (frac-corrected) top edge must auto-scroll up");
+}
+
+/// egui parity: a drag that starts and ends on the SAME byte must not
+/// disturb a pending half-typed nibble. Reference: `hxy-view/src/lib.rs`'s
+/// `apply_interaction` `held` branch mutates `Selection::cursor` directly
+/// through `view_parts`, and `hxy-editor`'s external-cursor-move
+/// reconciliation (input.rs:87-94) only resets the nibble when the
+/// cursor's byte actually changes since the last dispatch -- never
+/// touched by a same-byte drag. This is the case `set_selection` (which
+/// unconditionally resets the nibble) used to fail.
+#[gpui::test]
+fn drag_on_same_byte_preserves_pending_nibble(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
+    focus(cx, &pane);
+    let frame = frame(cx, &pane);
+
+    pane.update(cx, |p, _| p.editor_mut().set_selection(Some(Selection::caret(ByteOffset::new(0)))));
+
+    // One hex digit writes the high nibble and leaves the cursor on
+    // byte 0 with the low nibble pending.
+    cx.simulate_keystrokes("a");
+    assert_eq!(pane.read_with(cx, |p, _| p.editor().nibble()), Some(NibbleCursor::Low));
+
+    let pos = hex_point(&frame, 0);
+    cx.simulate_mouse_down(pos, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(pos, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(pos, MouseButton::Left, Modifiers::none());
+
+    assert_eq!(selection(cx, &pane), (0, 0));
+    assert_eq!(pane.read_with(cx, |p, _| p.editor().nibble()), Some(NibbleCursor::Low));
 }

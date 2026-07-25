@@ -147,6 +147,15 @@ impl HexPane {
                 Effect::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             }
         }
+        // `apply_input` can queue a scroll request (e.g. arrow-key
+        // navigation tripping `ensure_cursor_visible_with_scrolloff`,
+        // or an edit re-pinning the current position). Drain and apply
+        // it the same way the mouse handlers do.
+        let (pending_scroll, pending_scroll_to_byte) = {
+            let parts = self.editor.view_parts();
+            (parts.pending_scroll, parts.pending_scroll_to_byte)
+        };
+        self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
         cx.notify();
         consumed
     }
@@ -164,13 +173,27 @@ impl HexPane {
 
     /// Left-down: place the caret at the hit, switch the active pane,
     /// start a drag, and take keyboard focus. Mirrors egui's
-    /// `apply_interaction` press branch (hxy-view/src/lib.rs), which
-    /// also rebinds `Selection::caret` on press.
+    /// `apply_interaction` press branch (hxy-view/src/lib.rs:1810-1822):
+    /// `*selection = Selection::caret(hit_offset)`, written through the
+    /// same mutable-borrow mechanism egui uses
+    /// (`HexEditor::view_parts().selection`), not `set_selection`. The
+    /// nibble/history-break reset egui gets "for free" isn't a property
+    /// of `set_selection` -- it comes from the input dispatcher's
+    /// edge-triggered external-cursor-move check at the top of `apply`
+    /// (hxy-editor/src/input.rs:87-94), which compares the cursor byte
+    /// against `last_cursor_offset` on the *next* keystroke. Going
+    /// through `view_parts` here reproduces that: the reset (if any)
+    /// happens on the next keystroke, not synchronously on click.
     fn handle_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(hit) = self.hit_at(event.position) else { return };
         self.editor.set_active_pane(hit.pane);
-        self.editor.set_selection(Some(Selection::caret(hit.offset)));
+        let (pending_scroll, pending_scroll_to_byte) = {
+            let parts = self.editor.view_parts();
+            *parts.selection = Some(Selection::caret(hit.offset));
+            (parts.pending_scroll, parts.pending_scroll_to_byte)
+        };
         self.drag_anchor = Some(hit.offset);
+        self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
         window.focus(&self.focus_handle);
         cx.notify();
     }
@@ -178,29 +201,32 @@ impl HexPane {
     /// Move-with-left-held: extend the cursor to the hit under the
     /// pointer while the anchor stays pinned at the press byte, and
     /// auto-scroll one row when the pointer strays above or below the
-    /// grid. Cursor movement mirrors egui's `apply_interaction` held
-    /// branch (anchor pinned, cursor follows the pointer). One
-    /// divergence: egui mutates `Selection::cursor` directly through
-    /// `HexEditor::view_parts`, leaving any pending nibble edit alone;
-    /// `hxy-editor` exposes no equivalent low-level mutator here, so
-    /// this goes through `set_selection`, which resets the nibble to
-    /// High and marks a history break on every drag-move frame, not
-    /// just on press.
+    /// grid. Mirrors egui's `apply_interaction` held branch
+    /// (hxy-view/src/lib.rs:1823-1826): `s.cursor = hit_offset` through
+    /// `view_parts().selection`, leaving the nibble/history-break state
+    /// untouched (see [`Self::handle_mouse_down`]'s doc for why that's
+    /// still parity-correct rather than a bypass).
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(anchor) = self.drag_anchor else { return };
         if event.pressed_button != Some(MouseButton::Left) {
             return;
         }
         let scrolled = self.auto_scroll_for_drag(event.position);
-        let extended = if let Some(hit) = self.hit_at(event.position) {
-            self.editor.set_selection(Some(Selection { anchor, cursor: hit.offset }));
-            true
-        } else {
-            false
+        let Some(hit) = self.hit_at(event.position) else {
+            if scrolled {
+                cx.notify();
+            }
+            return;
         };
-        if scrolled || extended {
-            cx.notify();
-        }
+        let (pending_scroll, pending_scroll_to_byte) = {
+            let parts = self.editor.view_parts();
+            *parts.selection = Some(Selection { anchor, cursor: hit.offset });
+            (parts.pending_scroll, parts.pending_scroll_to_byte)
+        };
+        self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
+        // A hit always extends the selection (above), so this branch
+        // always repaints regardless of whether the scroll also moved.
+        cx.notify();
     }
 
     /// Left-up: end the drag.
@@ -239,8 +265,38 @@ impl HexPane {
         true
     }
 
-    #[cfg(test)]
-    pub(crate) fn scroll_rows(&self) -> f32 {
+    /// Applies a scroll request drained from `HexEditor::view_parts()`
+    /// (`set_scroll_to` / `set_scroll_to_byte`, e.g. from
+    /// `ensure_cursor_visible_with_scrolloff`) onto the pane's
+    /// row-based scroll. A byte target wins over a pixel target when
+    /// both are queued in the same batch, matching how
+    /// `ensure_cursor_visible_with_scrolloff`'s byte-target request can
+    /// coexist with an edit's re-pinned pixel offset in one dispatch.
+    /// A pixel target is dropped if no frame has painted yet (no known
+    /// line height to divide by); a byte target needs no line height,
+    /// so it still works pre-paint. Returns whether the scroll changed.
+    fn apply_pending_scroll(&mut self, pending_scroll: Option<f32>, pending_scroll_to_byte: Option<ByteOffset>) -> bool {
+        let target_rows = if let Some(byte) = pending_scroll_to_byte {
+            Some((byte.get() / self.columns.as_u64()) as f32)
+        } else if let Some(offset_px) = pending_scroll {
+            self.last_frame.map(|frame| offset_px / f32::from(frame.geometry.metrics.line_h))
+        } else {
+            None
+        };
+        let Some(target_rows) = target_rows else { return false };
+        let max = self.row_count().saturating_sub(1) as f32;
+        let clamped = target_rows.clamp(0.0, max);
+        if clamped == self.scroll_rows {
+            return false;
+        }
+        self.scroll_rows = clamped;
+        true
+    }
+
+    /// Current vertical scroll, in fractional rows. Same visibility as
+    /// [`Self::last_frame`]: integration tests need it to assert on
+    /// scrolloff/auto-scroll behavior.
+    pub fn scroll_rows(&self) -> f32 {
         self.scroll_rows
     }
 
