@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use gpui::App;
 use gpui::Bounds;
-use gpui::Focusable;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
 use gpui::prelude::*;
@@ -44,11 +43,11 @@ fn main() -> ExitCode {
                 let appearance_subscription = window.observe_window_appearance(|window, cx| {
                     gpui_component::Theme::sync_system_appearance(Some(window), cx);
                 });
+                // Initial keyboard focus (pane if a CLI file loaded
+                // one, otherwise the workspace itself so cmd-o stays
+                // reachable) is assigned by `Workspace`'s own first
+                // render -- see its `focus_pending` field.
                 let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, cx));
-                // Nothing is focused on a fresh window; without this,
-                // cmd-o/cmd-alt-v (bound on the workspace's root div)
-                // are unreachable until the user clicks into a pane.
-                window.focus(&workspace.read(cx).focus_handle(cx));
                 cx.new(|cx| Root::new(workspace, window, cx))
             },
         )

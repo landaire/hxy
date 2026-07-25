@@ -77,8 +77,21 @@ pub struct Workspace {
     /// to the window root, and falls back to the root alone when
     /// nothing is focused at all. Without an ancestor of the action
     /// listeners holding focus by default, the two shortcuts would be
-    /// dead on a fresh launch with no file open.
+    /// dead on a fresh launch with no file open. Once a pane exists,
+    /// `render` moves keyboard focus onto it instead (see
+    /// `focus_pending`) -- `HexPane`, as a descendant of this div,
+    /// keeps the same action reachability while also letting
+    /// keystrokes reach `HexPane::on_key_down` immediately, with no
+    /// click required first.
     focus_handle: FocusHandle,
+    /// Set on construction and whenever a pane is created or its
+    /// source is replaced. Consumed on the next `render`, which has
+    /// the `&mut Window` needed to move focus (window creation and
+    /// the async open-dialog task that creates or replaces a pane do
+    /// not have one) -- assigns the pane's handle if one exists,
+    /// otherwise falls back to the workspace's own handle so `cmd-o`
+    /// stays reachable with no file open.
+    focus_pending: bool,
     _appearance_subscription: Subscription,
 }
 
@@ -97,6 +110,7 @@ impl Workspace {
             open_error: None,
             last_title: None,
             focus_handle: cx.focus_handle(),
+            focus_pending: true,
             _appearance_subscription: appearance_subscription,
         }
     }
@@ -139,6 +153,7 @@ impl Workspace {
                 }
                 self.file_path = Some(opened.path);
                 self.open_error = None;
+                self.focus_pending = true;
             }
             Err(OpenFileError { path, error }) => {
                 tracing::error!(?path, %error, "failed to open file");
@@ -216,6 +231,15 @@ impl Render for Workspace {
             self.last_title = Some(title);
         }
 
+        if self.focus_pending {
+            let handle = match &self.pane {
+                Some(pane) => pane.read(cx).focus_handle(cx),
+                None => self.focus_handle.clone(),
+            };
+            window.focus(&handle);
+            self.focus_pending = false;
+        }
+
         let body = match &self.pane {
             Some(pane) => div().flex_1().child(pane.clone()),
             None => div().flex_1().flex().items_center().justify_center().child(hxy_i18n::t("gpui-shell-no-file")),
@@ -236,5 +260,81 @@ impl Render for Workspace {
         }
 
         root.child(self.render_status_bar(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use hxy_core::HexSource;
+    use hxy_core::MemorySource;
+
+    use super::*;
+
+    fn source() -> Arc<dyn HexSource> {
+        Arc::new(MemorySource::new(vec![0u8; 16]))
+    }
+
+    /// Regression test for a launch-time bug: focus was given to
+    /// `Workspace` even when a CLI file had already loaded a pane, so
+    /// keystrokes needed a click into the grid before they reached
+    /// `HexPane::on_key_down`. `Workspace::render` now moves focus
+    /// onto the pane itself once one exists (see `focus_pending`).
+    #[gpui::test]
+    fn cli_open_focuses_the_pane_not_the_workspace(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let subscription = window.observe_window_appearance(|_, _| {});
+            Workspace::new(Some((source(), PathBuf::from("test.bin"))), subscription, cx)
+        });
+
+        let pane_handle = workspace.read_with(cx, |ws, cx| ws.pane.as_ref().unwrap().read(cx).focus_handle(cx));
+        let workspace_handle = workspace.read_with(cx, |ws, cx| ws.focus_handle(cx));
+        cx.update(|window, cx| {
+            let focused = window.focused(cx);
+            assert_eq!(focused, Some(pane_handle));
+            assert_ne!(focused, Some(workspace_handle));
+        });
+    }
+
+    /// With no file open there is nothing to focus the pane onto;
+    /// `cmd-o` / `cmd-alt-v` must still be reachable, so focus stays
+    /// on `Workspace`'s own handle.
+    #[gpui::test]
+    fn no_file_focuses_the_workspace(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let subscription = window.observe_window_appearance(|_, _| {});
+            Workspace::new(None, subscription, cx)
+        });
+
+        let workspace_handle = workspace.read_with(cx, |ws, cx| ws.focus_handle(cx));
+        cx.update(|window, cx| {
+            assert_eq!(window.focused(cx), Some(workspace_handle));
+        });
+    }
+
+    /// Regression test for the `cmd-o` half of the same bug: applying
+    /// a successful open result (what the dialog's async callback
+    /// does once the user picks a file) must also move focus onto
+    /// the pane, whether it was freshly created or reused via
+    /// `set_source` on an already-open pane.
+    #[gpui::test]
+    fn open_result_focuses_the_pane(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let subscription = window.observe_window_appearance(|_, _| {});
+            Workspace::new(None, subscription, cx)
+        });
+
+        workspace.update(cx, |ws, cx| {
+            ws.apply_open_result(Ok(OpenedFile { source: source(), path: PathBuf::from("opened.bin") }), cx);
+        });
+        cx.run_until_parked();
+
+        let pane_handle = workspace.read_with(cx, |ws, cx| ws.pane.as_ref().unwrap().read(cx).focus_handle(cx));
+        cx.update(|window, cx| {
+            assert_eq!(window.focused(cx), Some(pane_handle));
+        });
     }
 }
