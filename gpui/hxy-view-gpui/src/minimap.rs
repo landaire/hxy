@@ -121,6 +121,12 @@ pub(crate) fn paint_minimap(
     let bin_h = px(f32::from(strip.size.height) / bin_count as f32);
     let cols = columns.as_u64();
     let len = source_len.get();
+    // A persistently failing source (e.g. deleted mid-session) would
+    // otherwise log once per bin -- hundreds per repaint for a tall
+    // strip, versus the grid's own read path logging once per frame
+    // (a single batched read). Cap logging to the first failure in
+    // this pass; later bins still skip painting silently.
+    let mut warned = false;
 
     for bin in 0..bin_count {
         let row_start = bin.saturating_mul(rows_per_bin);
@@ -137,7 +143,10 @@ pub(crate) fn paint_minimap(
         let bytes = match source.read(range) {
             Ok(bytes) => bytes,
             Err(err) => {
-                tracing::warn!(?range, %err, "minimap row read failed; painting nothing for this row");
+                if !warned {
+                    tracing::warn!(?range, %err, bin, bin_count, "minimap row read failed; painting nothing for this and any further failed rows this pass");
+                    warned = true;
+                }
                 continue;
             }
         };
