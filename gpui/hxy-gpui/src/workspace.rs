@@ -29,6 +29,7 @@ use gpui::Window;
 use gpui::actions;
 use gpui::div;
 use gpui::prelude::*;
+use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
@@ -46,8 +47,10 @@ use hxy_editor::InputMode;
 
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
+use crate::panels::InspectorPanel;
 use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WelcomePanel;
+use crate::panels::inspector::ActiveHexPane;
 use crate::persist;
 use crate::status::dirty_marker;
 use crate::status::status_file_name_text;
@@ -56,16 +59,24 @@ use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
 
-actions!(hxy_gpui, [OpenFile, ToggleVim]);
+actions!(hxy_gpui, [OpenFile, ToggleVim, ToggleInspector]);
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
 /// into a single layout save.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Default width of the inspector dock when no persisted layout has
+/// sized it yet.
+const INSPECTOR_DOCK_WIDTH: gpui::Pixels = px(280.0);
+
 /// Register the shell's keybindings. Called once at startup before any
 /// window opens.
 pub fn init_keybindings(cx: &mut App) {
-    cx.bind_keys([gpui::KeyBinding::new("cmd-o", OpenFile, None), gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None)]);
+    cx.bind_keys([
+        gpui::KeyBinding::new("cmd-o", OpenFile, None),
+        gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None),
+        gpui::KeyBinding::new("cmd-i", ToggleInspector, None),
+    ]);
 }
 
 pub struct Workspace {
@@ -187,7 +198,33 @@ impl Workspace {
                 }
             }
         }
+        // Must run before `reconcile` (which calls `set_active_file`,
+        // publishing the boot-time active pane into `ActiveHexPane`):
+        // the inspector's global subscription has to be live before that
+        // first publish, or a CLI-opened file would show an empty
+        // inspector until the user switched tabs.
+        self.ensure_inspector_dock(window, cx);
         self.reconcile(window, cx);
+    }
+
+    /// Make sure the right dock has an inspector panel. A restored
+    /// layout that already had one (from a prior session that opened
+    /// it) wins -- `DockArea::load` rebuilt it via the panel registry,
+    /// preserving its persisted endian/radix. Otherwise (first launch,
+    /// or a layout saved before the inspector existed) install a fresh
+    /// one, closed by default.
+    fn ensure_inspector_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dock.read(cx).has_dock(DockPlacement::Right) {
+            return;
+        }
+        let inspector: Arc<dyn PanelView> = Arc::new(cx.new(InspectorPanel::new));
+        let weak = self.dock.downgrade();
+        let item = DockItem::tabs(vec![inspector], &weak, window, cx);
+        self.dock.update(cx, |dock, cx| dock.set_right_dock(item, Some(INSPECTOR_DOCK_WIDTH), false, window, cx));
+    }
+
+    fn on_toggle_inspector(&mut self, _: &ToggleInspector, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Right, window, cx));
     }
 
     /// Add a file tab to the center dock, making it active (the dock
@@ -404,16 +441,23 @@ impl Workspace {
     }
 
     /// Point the status bar / vim toggle at `active`, re-observing its
-    /// pane so editor changes repaint the status bar. No-op when the
-    /// active file is unchanged.
+    /// pane so editor changes repaint the status bar, and publish the
+    /// pane into [`ActiveHexPane`] so the inspector (which the
+    /// workspace has no direct handle to once restored -- see
+    /// `panels::inspector`'s module doc) stays in sync too. No-op when
+    /// the active file is unchanged.
+    ///
+    /// `ActiveHexPane` is a single App-level global, so this assumes
+    /// one live `Workspace` per process (true today: `main.rs` opens
+    /// exactly one window). A second concurrent workspace would have
+    /// its inspector hijacked by whichever one last called this.
     fn set_active_file(&mut self, active: Option<Entity<FilePanel>>, cx: &mut Context<Self>) {
         if self.active_file.as_ref().map(Entity::entity_id) == active.as_ref().map(Entity::entity_id) {
             return;
         }
-        self.active_pane_observe = active.as_ref().map(|file| {
-            let pane = file.read(cx).pane().clone();
-            cx.observe(&pane, |_workspace, _pane, cx| cx.notify())
-        });
+        let pane = active.as_ref().map(|file| file.read(cx).pane().clone());
+        self.active_pane_observe = pane.as_ref().map(|pane| cx.observe(pane, |_workspace, _pane, cx| cx.notify()));
+        cx.set_global(ActiveHexPane(pane));
         self.active_file = active;
         cx.notify();
     }
@@ -654,6 +698,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_toggle_vim))
+            .on_action(cx.listener(Self::on_toggle_inspector))
             .child(div().flex_1().child(self.dock.clone()));
 
         if let Some(error) = &self.open_error {
@@ -677,6 +722,7 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::panels::register(cx);
+            init_keybindings(cx);
         });
     }
 
@@ -1108,6 +1154,51 @@ mod tests {
             .unwrap();
         assert!(restored.contains(&f1));
         assert!(restored.contains(&f2));
+    }
+
+    /// `cmd-i` opens and closes the inspector dock, exercising the
+    /// action and keybinding end to end.
+    #[gpui::test]
+    fn cmd_i_toggles_the_inspector_dock(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, None, None);
+
+        let is_open = |cx: &mut TestAppContext| {
+            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap()
+        };
+        assert!(!is_open(cx), "inspector starts closed");
+
+        cx.simulate_keystrokes(window.into(), "cmd-i");
+        assert!(is_open(cx), "cmd-i opens the inspector dock");
+
+        cx.simulate_keystrokes(window.into(), "cmd-i");
+        assert!(!is_open(cx), "cmd-i closes it again");
+    }
+
+    /// The inspector dock's open/closed state (and the panel itself)
+    /// survive a layout save + reload, same as any other dock content
+    /// -- this is what lets the endian/radix `InspectorPanel::dump`
+    /// persists actually come back on relaunch.
+    #[gpui::test]
+    fn inspector_dock_open_state_round_trips(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+
+        let first = open_workspace(cx, None, Some(layout.clone()));
+        cx.simulate_keystrokes(first.into(), "cmd-i");
+        assert!(first.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap());
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
+        assert_eq!(value["right_dock"]["open"], serde_json::json!(true));
+        assert_eq!(value["right_dock"]["panel"]["children"][0]["panel_name"], serde_json::json!("InspectorPanel"));
+
+        let second = open_workspace(cx, None, Some(layout));
+        assert!(
+            second.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            "inspector open state must restore",
+        );
     }
 
     fn window_open(window: WindowHandle<Workspace>, path: &Path, cx: &mut TestAppContext) {

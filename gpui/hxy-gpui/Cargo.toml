@@ -15,6 +15,7 @@ gpui-component = { workspace = true }
 hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
+hxy-panels = { workspace = true }
 hxy-view-gpui = { workspace = true }
 serde_json = "1"
 thiserror = "2"

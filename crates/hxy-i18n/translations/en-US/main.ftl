@@ -19,6 +19,15 @@ gpui-status-vim-mode-replace = REPLACE
 gpui-file-untitled = Untitled
 gpui-welcome-title = Welcome
 gpui-welcome-body = Open a file with Cmd-O to get started.
+gpui-inspector-endian-label = Endianness:
+gpui-inspector-endian-little = Little
+gpui-inspector-endian-big = Big
+gpui-inspector-radix-label = Int radix:
+gpui-inspector-radix-decimal = Dec
+gpui-inspector-radix-hex = Hex
+gpui-inspector-radix-binary = Bin
+gpui-inspector-no-caret = No caret -- click a byte in the hex view.
+gpui-inspector-decode-empty = --
 
 # Menus
 menu-file = File

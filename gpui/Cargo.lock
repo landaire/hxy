@@ -2805,6 +2805,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "hxy-calculator"
+version = "0.3.0"
+dependencies = [
+ "thiserror 2.0.19",
+ "winnow 0.7.15",
+]
+
+[[package]]
 name = "hxy-core"
 version = "0.3.0"
 dependencies = [
@@ -2839,6 +2847,7 @@ dependencies = [
  "hxy-core",
  "hxy-editor",
  "hxy-i18n",
+ "hxy-panels",
  "hxy-view-gpui",
  "serde_json",
  "tempfile",
@@ -2853,6 +2862,16 @@ dependencies = [
  "fluent-templates",
  "sys-locale",
  "unic-langid",
+]
+
+[[package]]
+name = "hxy-panels"
+version = "0.3.0"
+dependencies = [
+ "hxy-calculator",
+ "hxy-core",
+ "jiff",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
