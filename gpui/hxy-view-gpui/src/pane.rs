@@ -36,6 +36,7 @@ use hxy_core::Selection;
 
 use crate::GridGeometry;
 use crate::GridHit;
+use crate::MinimapBounds;
 use crate::paint::GridSnapshot;
 use crate::paint::PaintColors;
 use crate::paint::hex_canvas;
@@ -52,6 +53,7 @@ pub struct FrameInfo {
     pub content_origin: gpui::Point<Pixels>,
     pub rows_visible: f32,
     pub first_visible_row: u64,
+    pub minimap_bounds: MinimapBounds,
 }
 
 /// A hex-editor viewport entity. Holds the editor model, keyboard focus,
@@ -68,6 +70,10 @@ pub struct HexPane {
     /// drag, pinning the selection anchor while the cursor follows the
     /// pointer. `None` when no drag is in progress.
     drag_anchor: Option<ByteOffset>,
+    /// `true` for the duration of a press-and-drag that started on the
+    /// minimap strip. Scrubs `scroll_rows` continuously while held and
+    /// never touches `drag_anchor` or the selection.
+    minimap_scrubbing: bool,
 }
 
 impl HexPane {
@@ -79,6 +85,7 @@ impl HexPane {
             scroll_rows: 0.0,
             last_frame: None,
             drag_anchor: None,
+            minimap_scrubbing: false,
         }
     }
 
@@ -171,6 +178,31 @@ impl HexPane {
         frame.geometry.hit_test(point(x, y), self.editor.source().len())
     }
 
+    /// `true` when `x` falls inside this frame's minimap strip.
+    /// Checked before grid hit-testing so a click on the strip never
+    /// reaches [`Self::hit_at`].
+    fn in_minimap_strip(&self, x: Pixels) -> bool {
+        let Some(frame) = self.last_frame else { return false };
+        let b = frame.minimap_bounds;
+        x >= b.origin.x && x < b.origin.x + b.size.width
+    }
+
+    /// Maps a y position inside the minimap strip to a scroll target
+    /// that centers the corresponding file location in the viewport.
+    /// No-op before the first paint or if the strip has no height.
+    fn scrub_minimap(&mut self, y: Pixels) {
+        let Some(frame) = self.last_frame else { return };
+        let b = frame.minimap_bounds;
+        if b.size.height <= px(0.0) {
+            return;
+        }
+        let frac = ((y - b.origin.y) / b.size.height).clamp(0.0, 1.0);
+        let row_count = self.row_count();
+        let target_row = frac * row_count as f32;
+        let max = row_count.saturating_sub(1) as f32;
+        self.scroll_rows = (target_row - frame.rows_visible / 2.0).clamp(0.0, max);
+    }
+
     /// Left-down: place the caret at the hit, switch the active pane,
     /// start a drag, and take keyboard focus. Mirrors egui's
     /// `apply_interaction` press branch (hxy-view/src/lib.rs:1810-1822):
@@ -185,6 +217,13 @@ impl HexPane {
     /// through `view_parts` here reproduces that: the reset (if any)
     /// happens on the next keystroke, not synchronously on click.
     fn handle_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.in_minimap_strip(event.position.x) {
+            self.minimap_scrubbing = true;
+            self.scrub_minimap(event.position.y);
+            window.focus(&self.focus_handle);
+            cx.notify();
+            return;
+        }
         let Some(hit) = self.hit_at(event.position) else { return };
         self.editor.set_active_pane(hit.pane);
         let (pending_scroll, pending_scroll_to_byte) = {
@@ -207,6 +246,13 @@ impl HexPane {
     /// untouched (see [`Self::handle_mouse_down`]'s doc for why that's
     /// still parity-correct rather than a bypass).
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.minimap_scrubbing {
+            if event.pressed_button == Some(MouseButton::Left) {
+                self.scrub_minimap(event.position.y);
+                cx.notify();
+            }
+            return;
+        }
         let Some(anchor) = self.drag_anchor else { return };
         if event.pressed_button != Some(MouseButton::Left) {
             return;
@@ -229,9 +275,10 @@ impl HexPane {
         cx.notify();
     }
 
-    /// Left-up: end the drag.
+    /// Left-up: end the drag or the minimap scrub.
     fn handle_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.drag_anchor = None;
+        self.minimap_scrubbing = false;
     }
 
     /// Scrolls one row toward the pointer when it is above or below the
@@ -305,6 +352,20 @@ impl HexPane {
     /// metrics; same visibility as [`Self::editor`].
     pub fn last_frame(&self) -> Option<FrameInfo> {
         self.last_frame
+    }
+
+    /// Test-only hook: latches `frame` directly instead of waiting for
+    /// a real paint pass. gpui's headless test harness never gives the
+    /// canvas element a nonzero content height (the paint pass always
+    /// measures `rows_visible == 0`), so interactions that key off a
+    /// real viewport height -- minimap scrubbing here -- can't be
+    /// exercised from a real paint's `FrameInfo` alone. Callers
+    /// synthesize a plausible viewport on top of a real frame's
+    /// geometry/x-positions, mirroring how `arrow_down_past_scrolloff`
+    /// (tests/keyboard.rs) synthesizes editor-side viewport state via
+    /// `on_frame` for the same reason.
+    pub fn set_frame_for_test(&mut self, frame: FrameInfo) {
+        self.last_frame = Some(frame);
     }
 }
 

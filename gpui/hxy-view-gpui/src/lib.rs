@@ -4,9 +4,11 @@
 
 mod geometry;
 mod input;
+mod minimap;
 mod paint;
 mod pane;
 
 pub use geometry::*;
+pub use minimap::MinimapBounds;
 pub use pane::FrameInfo;
 pub use pane::HexPane;

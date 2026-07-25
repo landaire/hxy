@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use gpui::App;
 use gpui::Bounds;
+use gpui::ContentMask;
 use gpui::Entity;
 use gpui::Font;
 use gpui::Hsla;
@@ -107,6 +108,15 @@ fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixe
     let row_count = geometry.row_count(source_len);
     let last_visible_row = (first_visible_row + rows_visible.ceil() as u64 + 1).min(row_count.saturating_sub(1));
 
+    // Grid content width shrinks by the strip width + gap: the strip
+    // claims the right edge of the content area (below the header,
+    // same height as the scrollable rows) and nothing else paints
+    // there.
+    let minimap_bounds = crate::minimap::strip_bounds(
+        gpui::bounds(point(bounds.origin.x, grid_top), size(bounds.size.width, grid_area_h)),
+        metrics.char_w,
+    );
+
     // Feed this frame's viewport back into the editor so its own
     // scrolloff/visibility bookkeeping (`ensure_cursor_visible_with_scrolloff`,
     // `is_offset_visible`) has real data; without this, keyboard
@@ -123,33 +133,50 @@ fn paint_grid(snap: &GridSnapshot, entity: &Entity<HexPane>, bounds: Bounds<Pixe
     let scroll_offset_px = snap.scroll_rows * f32::from(metrics.line_h);
 
     entity.update(app, |pane, _cx| {
-        pane.last_frame = Some(FrameInfo { geometry, content_origin, rows_visible, first_visible_row });
+        pane.last_frame = Some(FrameInfo { geometry, content_origin, rows_visible, first_visible_row, minimap_bounds });
         pane.editor_mut().on_frame(scroll_offset_px, snap.columns, visible_range, None);
     });
 
-    paint_header(snap, &geometry, &mono, content_origin, bounds.origin.y + px(PAD_Y), window, app);
+    crate::minimap::paint_minimap(
+        snap.source.as_ref(),
+        source_len,
+        snap.columns,
+        &snap.colors,
+        minimap_bounds,
+        row_count,
+        first_visible_row,
+        rows_visible,
+        window,
+    );
 
     let bytes = read_visible(snap.source.as_ref(), first_visible_row, last_visible_row, cols, source_len);
-
     let selected = snap.selection.map(|s| s.range());
     let cursor = snap.selection.map(|s| s.cursor.get());
-
     let block_start = first_visible_row.saturating_mul(cols);
-    for row in first_visible_row..=last_visible_row {
-        let ctx = RowCtx {
-            geometry: &geometry,
-            origin_x: content_origin.x,
-            row_y: content_origin.y + metrics.line_h * (row - first_visible_row) as f32,
-            row_start: row.saturating_mul(cols),
-            cols,
-            block_start,
-            source_len,
-        };
-        paint_selection_bands(&ctx, selected, snap.colors.selection, window);
-        paint_cursor_cell(&ctx, snap, cursor, window);
-        paint_row_text(&ctx, snap, &mono, &bytes, window, app);
-        paint_nibble_caret(&ctx, snap, cursor, window);
-    }
+
+    // Clip the header and rows to the width left after the strip and
+    // its gap, so the grid can never paint over the minimap.
+    let grid_w = (bounds.size.width - minimap_bounds.size.width - px(crate::minimap::STRIP_GAP)).max(px(0.0));
+    let grid_clip = gpui::bounds(bounds.origin, size(grid_w, bounds.size.height));
+    window.with_content_mask(Some(ContentMask { bounds: grid_clip }), |window| {
+        paint_header(snap, &geometry, &mono, content_origin, bounds.origin.y + px(PAD_Y), window, app);
+
+        for row in first_visible_row..=last_visible_row {
+            let ctx = RowCtx {
+                geometry: &geometry,
+                origin_x: content_origin.x,
+                row_y: content_origin.y + metrics.line_h * (row - first_visible_row) as f32,
+                row_start: row.saturating_mul(cols),
+                cols,
+                block_start,
+                source_len,
+            };
+            paint_selection_bands(&ctx, selected, snap.colors.selection, window);
+            paint_cursor_cell(&ctx, snap, cursor, window);
+            paint_row_text(&ctx, snap, &mono, &bytes, window, app);
+            paint_nibble_caret(&ctx, snap, cursor, window);
+        }
+    });
 }
 
 /// Per-row invariants shared by the paint helpers: the row's screen
@@ -352,7 +379,9 @@ fn byte_color(byte: u8, colors: &PaintColors) -> Hsla {
     }
 }
 
-fn is_printable(byte: u8) -> bool {
+/// Shared with [`crate::minimap`]'s byte-class averaging so the strip
+/// and the grid draw the same printable-ascii boundary.
+pub(crate) fn is_printable(byte: u8) -> bool {
     (0x20..=0x7e).contains(&byte)
 }
 
