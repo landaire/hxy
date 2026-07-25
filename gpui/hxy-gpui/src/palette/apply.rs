@@ -69,8 +69,14 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
             let Some(text) = selection_text(&pane, format, cx) else { return };
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
-        // Consumed by the overlay before reaching dispatch.
-        PaletteAction::SwitchMode(_) | PaletteAction::NoOp => {}
+        // Consumed by the overlay before reaching dispatch: mode
+        // switches, the no-op rows, and the compare cascade (which the
+        // overlay routes through `Workspace::open_compare` /
+        // `compare_browse` directly).
+        PaletteAction::SwitchMode(_)
+        | PaletteAction::NoOp
+        | PaletteAction::CompareSelectSource { .. }
+        | PaletteAction::CompareBrowse(_) => {}
     }
 }
 

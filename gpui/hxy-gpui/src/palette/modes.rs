@@ -36,6 +36,13 @@ pub enum PaletteMode {
     SelectFromOffset,
     SelectRange,
     SetColumns,
+    /// First step of the palette-driven compare: pick the A side from
+    /// the open files or a disk browse. Entries are built by the overlay
+    /// (they depend on the live open-file list), not [`build_entries`].
+    CompareSideA,
+    /// Pick the B side; the chosen A rides on the overlay's cascade
+    /// state until this pick spawns the compare tab.
+    CompareSideB,
 }
 
 impl PaletteMode {
@@ -49,7 +56,9 @@ impl PaletteMode {
             | PaletteMode::GoToAddress
             | PaletteMode::SelectFromOffset
             | PaletteMode::SelectRange
-            | PaletteMode::SetColumns => Some(PaletteMode::Main),
+            | PaletteMode::SetColumns
+            | PaletteMode::CompareSideA
+            | PaletteMode::CompareSideB => Some(PaletteMode::Main),
         }
     }
 
@@ -63,6 +72,9 @@ impl PaletteMode {
                 let q = query.trim_start();
                 q.starts_with('@') || q.starts_with('=')
             }
+            // Compare picks are a fuzzy-filtered file list, not a single
+            // dynamic argument row.
+            PaletteMode::CompareSideA | PaletteMode::CompareSideB => false,
             _ => true,
         }
     }
@@ -76,8 +88,17 @@ impl PaletteMode {
             PaletteMode::SelectFromOffset => "palette-hint-select-from-offset",
             PaletteMode::SelectRange => "palette-hint-select-range",
             PaletteMode::SetColumns => "palette-hint-set-columns-local",
+            PaletteMode::CompareSideA => "palette-hint-compare-side-a",
+            PaletteMode::CompareSideB => "palette-hint-compare-side-b",
         }
     }
+}
+
+/// Which side of a compare pick an entry resolves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareSide {
+    A,
+    B,
 }
 
 /// Which byte-format a [`PaletteAction::CopySelection`] writes.
@@ -121,6 +142,17 @@ pub enum PaletteAction {
     CopyText(String),
     /// Copy the active file's current selection in the given format.
     CopySelection(CopyFormat),
+    /// Pick one side of a compare from an already-open file (A advances
+    /// the cascade to B; B spawns the compare tab). `from_open_file`
+    /// distinguishes an open-file pick (dropped on restore) from a disk
+    /// browse pick (disk-restorable); both carry a path.
+    CompareSelectSource {
+        side: CompareSide,
+        path: std::path::PathBuf,
+        from_open_file: bool,
+    },
+    /// Open a file dialog to pick this side from disk.
+    CompareBrowse(CompareSide),
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -168,6 +200,9 @@ pub fn build_entries(
         | PaletteMode::SelectFromOffset
         | PaletteMode::SelectRange
         | PaletteMode::SetColumns => build_arg_entries(&mut out, mode, query.trim(), ctx),
+        // Compare picks depend on the live open-file list, which the
+        // pure builders don't have; the overlay builds those rows.
+        PaletteMode::CompareSideA | PaletteMode::CompareSideB => {}
     }
     out
 }
@@ -247,6 +282,13 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     out.push(
         Entry::new(hxy_i18n::t("palette-set-columns-local-entry"), PaletteAction::SwitchMode(PaletteMode::SetColumns))
             .with_disabled(!ctx.has_active_file),
+    );
+
+    // Compare is workspace-scoped (its own two editors), so it needs no
+    // active file: even with nothing open the user can browse two files.
+    out.push(
+        Entry::new(hxy_i18n::t("palette-compare-files"), PaletteAction::SwitchMode(PaletteMode::CompareSideA))
+            .with_subtitle(hxy_i18n::t("palette-compare-files-subtitle")),
     );
 
     let has_selection = ctx.selection.is_some();
@@ -405,7 +447,8 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
             ),
             Err(e) => push_invalid(out, query, &e.to_string()),
         },
-        PaletteMode::Main => {}
+        // Not arg modes: `build_entries` never routes them here.
+        PaletteMode::Main | PaletteMode::CompareSideA | PaletteMode::CompareSideB => {}
     }
 }
 

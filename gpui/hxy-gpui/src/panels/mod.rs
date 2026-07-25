@@ -13,6 +13,7 @@ use gpui_component::dock::PanelView;
 use gpui_component::dock::register_panel;
 
 pub mod checksums;
+pub mod compare;
 pub mod entropy;
 mod file;
 pub mod inspector;
@@ -24,6 +25,8 @@ pub mod workspace_spike;
 
 pub use checksums::CHECKSUMS_PANEL_NAME;
 pub use checksums::ChecksumsPanel;
+pub use compare::COMPARE_PANEL_NAME;
+pub use compare::ComparePanel;
 pub use entropy::ENTROPY_PANEL_NAME;
 pub use entropy::EntropyPanel;
 pub use file::FILE_PANEL_NAME;
@@ -55,6 +58,9 @@ pub fn register(cx: &mut App) {
     });
     register_panel(cx, CHECKSUMS_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| ChecksumsPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    });
+    register_panel(cx, COMPARE_PANEL_NAME, |_dock, _state, info, window, cx| {
+        Box::new(cx.new(|cx| ComparePanel::restore(info, window, cx))) as Box<dyn PanelView>
     });
 }
 
@@ -92,6 +98,7 @@ mod tests {
                     STRINGS_PANEL_NAME,
                     ENTROPY_PANEL_NAME,
                     CHECKSUMS_PANEL_NAME,
+                    COMPARE_PANEL_NAME,
                 ] {
                     let state = PanelState {
                         panel_name: name.to_string(),

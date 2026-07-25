@@ -14,6 +14,7 @@ use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 
 use crate::panels::CHECKSUMS_PANEL_NAME;
+use crate::panels::COMPARE_PANEL_NAME;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
@@ -168,6 +169,12 @@ enum PanelKind {
     OwningPathLeaf {
         log_label: &'static str,
     },
+    /// A compare tab, kept only when both sides are disk-restorable
+    /// (both recorded a path) and both paths still read. A side sourced
+    /// from an open file's in-memory buffer records no path, so any such
+    /// compare is dropped -- mirrors the egui app dropping open-file-side
+    /// compares on restore.
+    Compare,
 }
 
 /// Look up the pruning rule for a panel name, or `None` for a generic
@@ -179,6 +186,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         STRINGS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "strings panel" }),
         ENTROPY_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "entropy panel" }),
         CHECKSUMS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "checksums panel" }),
+        COMPARE_PANEL_NAME => Some(PanelKind::Compare),
         _ => None,
     }
 }
@@ -209,6 +217,15 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
                 false
             }
         },
+        Some(PanelKind::Compare) => {
+            match (compare_side_path(&panel.info, "a_path"), compare_side_path(&panel.info, "b_path")) {
+                (Some(a), Some(b)) if path_is_readable(&a) && path_is_readable(&b) => true,
+                _ => {
+                    tracing::warn!("restore: compare tab is not disk-restorable; dropping tab");
+                    false
+                }
+            }
+        }
         None => {
             panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
             let surviving = panel.children.len();
@@ -238,6 +255,21 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
 fn file_path(info: &PanelInfo) -> Option<PathBuf> {
     let PanelInfo::Panel(value) = info else { return None };
     value.get("path").and_then(|p| p.as_str()).map(PathBuf::from)
+}
+
+/// One compare side's recorded path (`a_path` / `b_path`), if present.
+/// A `null` value (open-file-side, non-restorable) reads as `None`.
+fn compare_side_path(info: &PanelInfo, key: &str) -> Option<PathBuf> {
+    let PanelInfo::Panel(value) = info else { return None };
+    value.get(key).and_then(|p| p.as_str()).map(PathBuf::from)
+}
+
+/// Whether a path resolves to a regular file that opens for reading --
+/// the same criterion `file_readable` applies, phrased over a path so
+/// both compare sides can be checked.
+fn path_is_readable(path: &Path) -> bool {
+    let is_regular_file = std::fs::metadata(path).map(|meta| meta.is_file()).unwrap_or(false);
+    is_regular_file && std::fs::File::open(path).is_ok()
 }
 
 fn file_readable(info: &PanelInfo) -> bool {
@@ -292,6 +324,47 @@ mod tests {
 
     fn tabs(children: Vec<PanelState>) -> PanelState {
         PanelState { panel_name: "TabPanel".to_string(), children, info: PanelInfo::Tabs { active_index: 0 } }
+    }
+
+    fn compare_panel(a: Option<&Path>, b: Option<&Path>) -> PanelState {
+        PanelState {
+            panel_name: COMPARE_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({
+                "a_path": a.map(|p| p.to_string_lossy()),
+                "b_path": b.map(|p| p.to_string_lossy()),
+            })),
+        }
+    }
+
+    /// A compare tab survives restore only when both sides are disk-
+    /// restorable and both paths still read: a null side (open-file
+    /// source) or a missing path drops the tab.
+    #[test]
+    fn compare_tab_kept_only_when_both_sides_are_readable_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        let b = dir.path().join("b.bin");
+        std::fs::write(&a, b"aaa").unwrap();
+        std::fs::write(&b, b"bbb").unwrap();
+        let missing = dir.path().join("gone.bin");
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![
+                compare_panel(Some(&a), Some(&b)),       // both readable -> kept
+                compare_panel(Some(&a), None),           // open-file B side -> dropped
+                compare_panel(Some(&a), Some(&missing)), // unreadable B path -> dropped
+            ]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![COMPARE_PANEL_NAME], "only the disk-vs-disk compare survives");
     }
 
     /// A strings tab whose owning file survives pruning is kept; one

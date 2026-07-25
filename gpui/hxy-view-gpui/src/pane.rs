@@ -179,6 +179,13 @@ impl HexPane {
         self.hover_span
     }
 
+    /// The installed non-linear row stream, if any. Lets the compare
+    /// tab's tests assert both panes received equal-length, gap-aligned
+    /// maps.
+    pub fn row_map(&self) -> Option<&[RowSlot]> {
+        self.row_map.as_deref()
+    }
+
     /// Install (or clear) the per-byte color override consulted in the
     /// paint loop. The boxed closure is wrapped in an [`Arc`] so each
     /// frame can snapshot a cheap handle. Mirrors egui hxy-view's
@@ -480,6 +487,21 @@ impl HexPane {
     /// scrolloff/auto-scroll behavior.
     pub fn scroll_rows(&self) -> f32 {
         self.scroll_rows
+    }
+
+    /// Drive the vertical scroll directly, in fractional rows, clamped
+    /// to the pane's scroll range and repainting on change. Used by the
+    /// compare tab's synchronized-scroll mirroring, where both panes
+    /// share an aligned row map so one pane's row index maps 1:1 to the
+    /// other's. No-op when the clamped target equals the current scroll
+    /// (keeps the sync loop from repainting or ping-ponging forever).
+    pub fn set_scroll_rows(&mut self, rows: f32, cx: &mut Context<Self>) {
+        let clamped = rows.clamp(0.0, self.max_scroll_rows());
+        if clamped == self.scroll_rows {
+            return;
+        }
+        self.scroll_rows = clamped;
+        cx.notify();
     }
 
     /// The last frame's latched geometry. Lets integration tests (and

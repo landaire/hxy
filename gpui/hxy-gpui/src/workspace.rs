@@ -62,11 +62,13 @@ use crate::menu::ToggleEditMode;
 use crate::menu::Undo;
 use crate::palette::Palette;
 use crate::palette::apply;
+use crate::palette::modes::CompareSide;
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::ChecksumsPanel;
+use crate::panels::ComparePanel;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
@@ -76,6 +78,8 @@ use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
 use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WelcomePanel;
+use crate::panels::compare::CompareSideInit;
+use crate::panels::compare::leaf_name;
 use crate::panels::inspector::ActiveHexPane;
 use crate::panels::strings::OpenFilePanels;
 use crate::panels::strings::StringsJumped;
@@ -633,6 +637,104 @@ impl Workspace {
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// The open files that can seed a compare pick: every live center
+    /// `FilePanel` that has a path, as `(leaf name, path)`. Read straight
+    /// off the live dock tree so a closed file never lingers in the list.
+    pub(crate) fn open_compare_choices(&self, cx: &App) -> Vec<(String, PathBuf)> {
+        let mut files = Vec::new();
+        collect_file_entities(self.dock.read(cx).items(), &mut files);
+        let mut out = Vec::new();
+        for file in files {
+            if let Some(path) = file.read(cx).path().map(Path::to_path_buf) {
+                out.push((leaf_name(&path), path));
+            }
+        }
+        out
+    }
+
+    /// Spawn a compare tab over two resolved sides. `*_open` marks a side
+    /// as sourced from an already-open file (read from its live in-memory
+    /// buffer, dropped on restore) versus a disk pick (re-read on
+    /// restore). Mirrors the egui picker's `spawn_compare_from_picker`.
+    pub(crate) fn open_compare(
+        &mut self,
+        a_path: PathBuf,
+        a_open: bool,
+        b_path: PathBuf,
+        b_open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let a = self.resolve_compare_side(a_path, a_open, cx);
+        let b = self.resolve_compare_side(b_path, b_open, cx);
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| ComparePanel::from_sources(a, b, window, cx));
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Read one compare side's bytes. An open-file pick reads the live
+    /// (possibly edited) buffer and is marked non-restorable; a disk pick
+    /// (or an open-file pick whose tab has since closed) reads from disk
+    /// and is disk-restorable.
+    fn resolve_compare_side(&self, path: PathBuf, from_open_file: bool, cx: &App) -> CompareSideInit {
+        let name = leaf_name(&path);
+        if from_open_file && let Some(file) = self.open_file_for_path(&path, cx) {
+            let bytes = read_pane_bytes(&file.read(cx).pane().clone(), cx);
+            return CompareSideInit { name, bytes, restore_path: None };
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(?path, %err, "compare: read side from disk failed; empty buffer");
+                Vec::new()
+            }
+        };
+        // A pick that came from an open file stays non-restorable even
+        // when its tab has closed (matches the brief's drop-on-restore
+        // rule); a disk browse pick is restorable.
+        let restore_path = if from_open_file { None } else { Some(path) };
+        CompareSideInit { name, bytes, restore_path }
+    }
+
+    /// Open a disk file dialog for one compare side. For side A the
+    /// result reopens the palette at the B pick with A pre-set; for side
+    /// B it completes the pair (using the A the caller passed in).
+    pub(crate) fn compare_browse(
+        &mut self,
+        side: CompareSide,
+        prior_a: Option<(PathBuf, bool)>,
+        restore: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let receiver =
+            cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = receiver.await;
+            let _ = this.update_in(cx, |workspace, window, cx| {
+                let path = match result {
+                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                    _ => None,
+                };
+                let Some(path) = path else { return };
+                match side {
+                    CompareSide::A => {
+                        let palette = workspace.palette.clone();
+                        palette.update(cx, |palette, cx| {
+                            palette.open_compare_b_with_a((path, false), restore.clone(), window, cx);
+                        });
+                    }
+                    CompareSide::B => {
+                        let Some((a_path, a_open)) = prior_a.clone() else { return };
+                        workspace.open_compare(a_path, a_open, path, false, window, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Add a file tab to the center dock, making it active (the dock
@@ -1408,6 +1510,23 @@ impl Workspace {
         Some(persist::save(path, &state))
     }
 
+    /// Every panel name in the center dock, for tests asserting a tab
+    /// (e.g. a compare tab) was actually spawned.
+    #[cfg(test)]
+    pub(crate) fn center_panel_names(&self, cx: &App) -> Vec<String> {
+        fn walk(state: &PanelState, out: &mut Vec<String>) {
+            if state.children.is_empty() {
+                out.push(state.panel_name.clone());
+            }
+            for child in &state.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.dock.read(cx).dump(cx).center, &mut out);
+        out
+    }
+
     /// The path shown in the window title / status bar: the reference
     /// file (see `reference_active_file`'s doc), not the strict
     /// `active_file` -- so this keeps naming a file while a strings
@@ -1660,6 +1779,30 @@ fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
         _ => None,
+    }
+}
+
+/// Read a hex pane's whole in-memory source into an owned buffer for a
+/// compare snapshot; empty on read failure (logged).
+fn read_pane_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
+    let source = pane.read(cx).editor().source().clone();
+    let len = source.len().get();
+    if len == 0 {
+        return Vec::new();
+    }
+    let range = match hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(len)) {
+        Ok(range) => range,
+        Err(err) => {
+            tracing::warn!(%err, "compare: open-file byte range");
+            return Vec::new();
+        }
+    };
+    match source.read(range) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(%err, "compare: read open-file bytes");
+            Vec::new()
+        }
     }
 }
 

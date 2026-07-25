@@ -50,6 +50,7 @@ use palette_core::Normalization;
 use palette_core::State;
 use palette_core::filter_and_sort;
 
+use crate::palette::modes::CompareSide;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::palette::modes::PaletteMode;
@@ -80,6 +81,11 @@ pub struct Palette {
     /// Focused element to restore when the palette closes (the grid, or
     /// the workspace handle when no file is open). Stashed on open.
     restore_focus: Option<FocusHandle>,
+    /// The A side chosen during the compare cascade (`path`, whether it
+    /// came from an open file), carried from the `CompareSideA` pick to
+    /// the `CompareSideB` pick that spawns the tab. Cleared on close and
+    /// whenever the cascade leaves the B step.
+    compare_a: Option<(std::path::PathBuf, bool)>,
 }
 
 impl Palette {
@@ -94,7 +100,25 @@ impl Palette {
             input,
             _input_sub: input_sub,
             restore_focus: None,
+            compare_a: None,
         }
+    }
+
+    /// Reopen the palette straight into the compare B pick with A already
+    /// chosen. Used by the workspace after a "browse" file dialog resolves
+    /// the A side outside the overlay.
+    pub(crate) fn open_compare_b_with_a(
+        &mut self,
+        a: (std::path::PathBuf, bool),
+        restore: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.open {
+            self.restore_focus = restore;
+        }
+        self.compare_a = Some(a);
+        self.enter_mode(PaletteMode::CompareSideB, window, cx);
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -142,6 +166,12 @@ impl Palette {
     /// palette open and the stashed restore-focus intact. Drives both
     /// the `SwitchMode` pick and the Escape cascade pop.
     fn enter_mode(&mut self, mode: PaletteMode, window: &mut Window, cx: &mut Context<Self>) {
+        // The A pick only lives across the CompareSideA -> CompareSideB
+        // hop; any other transition (back to Main, restarting at A)
+        // drops it so a later compare never reuses a stale A.
+        if mode != PaletteMode::CompareSideB {
+            self.compare_a = None;
+        }
         self.mode = mode;
         self.state.open();
         let placeholder = hxy_i18n::t(mode.hint_key());
@@ -155,6 +185,7 @@ impl Palette {
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.close();
+        self.compare_a = None;
         if let Some(handle) = self.restore_focus.take() {
             window.focus(&handle);
         }
@@ -219,7 +250,11 @@ impl Palette {
     /// filters by title against the query.
     fn build(&self, window: &Window, cx: &App) -> (Vec<Entry<PaletteAction>>, Vec<MatchResult>) {
         let ctx = self.context(cx);
-        let entries = build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window));
+        let entries = match self.mode {
+            PaletteMode::CompareSideA => self.build_compare_entries(CompareSide::A, cx),
+            PaletteMode::CompareSideB => self.build_compare_entries(CompareSide::B, cx),
+            _ => build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window)),
+        };
         let filtered = if self.mode.bypasses_filter(&self.state.query) {
             (0..entries.len()).map(|index| MatchResult { index, match_indices: Vec::new() }).collect()
         } else {
@@ -237,6 +272,25 @@ impl Palette {
 
     fn context(&self, cx: &App) -> PaletteContext {
         self.workspace.upgrade().map(|ws| ws.read(cx).palette_context(cx)).unwrap_or_default()
+    }
+
+    /// The compare-pick rows for `side`: one per open file (picked from
+    /// its live in-memory buffer) plus a disk "browse" row. Same file on
+    /// both sides is allowed -- the B list is not filtered against the
+    /// chosen A (mirrors the egui picker modal, `compare/picker.rs`).
+    fn build_compare_entries(&self, side: CompareSide, cx: &App) -> Vec<Entry<PaletteAction>> {
+        let mut out = Vec::new();
+        let choices = self.workspace.upgrade().map(|ws| ws.read(cx).open_compare_choices(cx)).unwrap_or_default();
+        for (name, path) in choices {
+            let mut entry =
+                Entry::new(name, PaletteAction::CompareSelectSource { side, path: path.clone(), from_open_file: true });
+            if let Some(parent) = path.parent() {
+                entry = entry.with_subtitle(parent.display().to_string());
+            }
+            out.push(entry);
+        }
+        out.push(Entry::new(hxy_i18n::t("compare-picker-browse"), PaletteAction::CompareBrowse(side)));
+        out
     }
 
     fn pick_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -259,6 +313,31 @@ impl Palette {
         match action {
             PaletteAction::SwitchMode(mode) => self.enter_mode(mode, window, cx),
             PaletteAction::NoOp => self.close(window, cx),
+            // Picking the A side advances the cascade to the B pick
+            // without leaving the overlay.
+            PaletteAction::CompareSelectSource { side: CompareSide::A, path, from_open_file } => {
+                self.compare_a = Some((path, from_open_file));
+                self.enter_mode(PaletteMode::CompareSideB, window, cx);
+            }
+            // Picking the B side completes the pair: close, then spawn.
+            PaletteAction::CompareSelectSource { side: CompareSide::B, path, from_open_file } => {
+                let a = self.compare_a.take();
+                self.close(window, cx);
+                if let (Some((a_path, a_open)), Some(ws)) = (a, self.workspace.upgrade()) {
+                    ws.update(cx, |ws, cx| ws.open_compare(a_path, a_open, path, from_open_file, window, cx));
+                }
+            }
+            // Browse opens a disk file dialog; the workspace resolves the
+            // async result and either advances to B (side A) or spawns
+            // the compare (side B).
+            PaletteAction::CompareBrowse(side) => {
+                let prior_a = self.compare_a.take();
+                let restore = self.restore_focus.clone();
+                self.close(window, cx);
+                if let Some(ws) = self.workspace.upgrade() {
+                    ws.update(cx, |ws, cx| ws.compare_browse(side, prior_a, restore, window, cx));
+                }
+            }
             // Close first (restoring focus to the grid), then act, so
             // the caret / clipboard change lands on what the user sees.
             other => {
@@ -674,5 +753,37 @@ mod tests {
         let clip = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(clip.as_deref(), Some("4"), "the decimal row copies the evaluated value");
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "copying closes the palette");
+    }
+
+    /// End-to-end compare cascade: pick "Compare files...", choose the
+    /// open file for A, then the same open file for B (same-file-both-
+    /// sides is allowed), and a `ComparePanel` tab is spawned.
+    #[gpui::test]
+    fn compare_cascade_spawns_a_compare_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "compare files", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::CompareSideA, "cascaded into the A pick");
+
+        // Pick the one open file (t.bin) for A, advancing to the B pick.
+        type_query(&pal, "t.bin", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::CompareSideB, "A picked, now on B");
+
+        // Pick the same file for B: spawns the compare and closes.
+        type_query(&pal, "t.bin", cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking B closes the palette");
+        let names = ws.read_with(cx, |ws, cx| ws.center_panel_names(cx));
+        assert!(
+            names.iter().any(|n| n == crate::panels::COMPARE_PANEL_NAME),
+            "a compare tab was spawned, got {names:?}"
+        );
     }
 }
