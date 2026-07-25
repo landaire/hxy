@@ -1106,13 +1106,14 @@ impl Render for Workspace {
 
         if self.focus_pending {
             self.focus_pending = false;
-            // Skip the actual focus move while the pane picker holds
-            // keyboard focus: any center-cache rebuild that lands mid-pick
-            // (e.g. `cmd-w` closing a tab down to an empty leaf while the
-            // picker overlay is up) would otherwise steal focus back to
-            // the active pane, leaving the overlay visibly open but deaf
-            // to further letter/Escape presses.
-            if !self.pane_picker.read(cx).is_active() {
+            // Skip the actual focus move while an overlay (the pane picker
+            // or the command palette) holds keyboard focus: any center-
+            // cache rebuild that lands mid-overlay (e.g. `cmd-w` closing a
+            // tab down to an empty leaf while the overlay is up) would
+            // otherwise steal focus back to the active pane, leaving the
+            // overlay visibly open but deaf to further letter/Escape
+            // presses.
+            if !self.pane_picker.read(cx).is_active() && !self.palette.read(cx).is_open() {
                 let handle = match &self.active_file {
                     Some(file) => file.read(cx).pane().read(cx).focus_handle(cx),
                     None => self.focus_handle.clone(),
@@ -1984,6 +1985,73 @@ mod tests {
         let paths = registered(cx);
         assert!(!paths.contains(&f2), "the closed file's entity must be pruned from the registry");
         assert!(paths.contains(&f1), "the still-open file's entity must survive");
+    }
+
+    /// `cmd-w` while the command palette is open must not steal keyboard
+    /// focus back from the palette: closing the active tab down to an
+    /// orphaned leaf triggers a focus-stealing center-cache rebuild, and
+    /// the render guard has to skip that refocus while the palette holds
+    /// focus (mirrors the pane-picker guard). The palette stays open,
+    /// keeps focus, and still answers Escape. Uses
+    /// [`open_workspace_with_root`] because the palette overlay reads the
+    /// window's `gpui_component::Root`.
+    #[gpui::test]
+    fn cmd_w_while_palette_open_keeps_its_focus(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let (window, ws) = open_workspace_with_root(cx, None, None);
+
+        cx.update_window(window.into(), |_, window, cx| ws.update(cx, |ws, cx| ws.open_path(f1.clone(), window, cx))).unwrap();
+        cx.run_until_parked();
+
+        // Split f2 into a new pane beside the original so closing f1 (the
+        // left/active leaf) collapses its leaf into a cache orphan -- the
+        // hazard that fires the focus-stealing rebuild.
+        let original =
+            ws.read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items())).expect("a center tab panel");
+        cx.update_window(window.into(), |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let bytes = std::fs::read(&f2).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
+                ws.open_files.push(panel.clone());
+                let view: Arc<dyn PanelView> = Arc::new(panel);
+                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(ws.read_with(cx, |ws, cx| ws.active_path(cx)), Some(f1.clone()), "A (left leaf) is active");
+
+        // Focus the active grid, then open the palette (it takes focus).
+        cx.update_window(window.into(), |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let handle = ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx);
+                window.focus(&handle);
+            });
+        })
+        .unwrap();
+        cx.simulate_keystrokes(window.into(), "cmd-shift-p");
+        assert!(ws.read_with(cx, |ws, cx| ws.palette.read(cx).is_open()), "palette opened");
+        let palette_focus = cx.update_window(window.into(), |_, window, cx| window.focused(cx)).unwrap();
+
+        // Close A's tab underneath the palette (collapses A's leaf).
+        cx.simulate_keystrokes(window.into(), "cmd-w");
+        cx.run_until_parked();
+        assert_eq!(ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)), 1, "A's tab actually closed");
+
+        assert!(ws.read_with(cx, |ws, cx| ws.palette.read(cx).is_open()), "the palette survives the collapse");
+        assert_eq!(
+            cx.update_window(window.into(), |_, window, cx| window.focused(cx)).unwrap(),
+            palette_focus,
+            "the collapse's cache rebuild must not steal focus back from the palette"
+        );
+
+        // Still responsive: Escape closes it.
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(!ws.read_with(cx, |ws, cx| ws.palette.read(cx).is_open()), "escape still closes the palette");
     }
 
     /// An unparseable layout file must not crash startup; the workspace

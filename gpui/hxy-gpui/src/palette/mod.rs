@@ -91,7 +91,6 @@ impl Palette {
         Self { workspace, state: State::default(), mode: PaletteMode::Main, input, _input_sub: input_sub, restore_focus: None }
     }
 
-    #[cfg(test)]
     pub(crate) fn is_open(&self) -> bool {
         self.state.open
     }
