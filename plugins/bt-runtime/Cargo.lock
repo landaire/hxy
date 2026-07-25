@@ -43,8 +43,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hxy-010-lang"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
+ "rustc-hash",
  "thiserror",
  "winnow",
 ]
@@ -59,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-plugin-api"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "wit-bindgen",
 ]
@@ -144,6 +145,12 @@ checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "semver"

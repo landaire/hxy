@@ -5,9 +5,8 @@ filter ([nucleo-matcher]), keyboard + mouse navigation.
 
 ## Install
 
-```toml
-[dependencies]
-egui-palette = "0.1"
+```sh
+cargo add egui-palette
 ```
 
 ## Use

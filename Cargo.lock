@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "egui-palette"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "egui",
  "nucleo-matcher",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "egui_dock_picker"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "egui",
  "egui_dock",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "egui_minimap"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "egui",
 ]
@@ -3053,7 +3053,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hxy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "adler2",
  "arboard",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-010-lang"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "hxy-imhex-lang",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-calculator"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "insta",
  "thiserror 2.0.18",
@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fskit",
  "jiff",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-i18n"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fluent-templates",
  "sys-locale",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-imhex-lang"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "insta",
  "rustc-hash 2.1.2",
@@ -3179,14 +3179,14 @@ dependencies = [
 
 [[package]]
 name = "hxy-plugin-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "wit-bindgen 0.57.1",
 ]
 
 [[package]]
 name = "hxy-plugin-host"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-vfs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "file_type",
  "fskit",
@@ -3219,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-view"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dhat",
  "egui",
