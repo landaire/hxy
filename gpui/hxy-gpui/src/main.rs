@@ -14,6 +14,7 @@ use hxy_core::HexSource;
 use hxy_core::MemorySource;
 
 mod panels;
+mod persist;
 mod status;
 mod workspace;
 
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         gpui_component::init(cx);
         panels::register(cx);
         workspace::init_keybindings(cx);
+        let layout_path = persist::layout_path();
         let bounds = Bounds::centered(None, size(px(1024.0), px(768.0)), cx);
         cx.open_window(
             WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
@@ -55,7 +57,7 @@ fn main() -> ExitCode {
                 // layers); its render shows only this child, which is
                 // all Task 2 needs -- no modal surfaces yet (toasts are
                 // Task 6).
-                let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, window, cx));
+                let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, layout_path, window, cx));
                 cx.new(|cx| Root::new(workspace, window, cx))
             },
         )

@@ -2,11 +2,13 @@
 //! hold one [`FilePanel`] per open file (or a [`WelcomePanel`] when
 //! empty), plus the bottom status bar reflecting the active tab. Drives
 //! file-open (CLI + `cmd-o`), the `cmd-alt-v` vim toggle, live
-//! system-theme sync, and the window title.
+//! system-theme sync, the window title, and debounced layout
+//! persistence.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::App;
 use gpui::Axis;
@@ -21,6 +23,7 @@ use gpui::PathPromptOptions;
 use gpui::Render;
 use gpui::Styled;
 use gpui::Subscription;
+use gpui::Task;
 use gpui::Window;
 use gpui::actions;
 use gpui::div;
@@ -41,6 +44,7 @@ use hxy_editor::InputMode;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
 use crate::panels::WelcomePanel;
+use crate::persist;
 use crate::status::dirty_marker;
 use crate::status::status_file_name_text;
 use crate::status::status_offset_text;
@@ -50,8 +54,9 @@ use crate::status::window_title_text;
 
 actions!(hxy_gpui, [OpenFile, ToggleVim]);
 
-/// Default-layout version stamped on the `DockArea`.
-const WORKBENCH_VERSION: usize = 1;
+/// Debounce window for coalescing the frequent `LayoutChanged` events
+/// into a single layout save.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Register the shell's keybindings. Called once at startup before any
 /// window opens.
@@ -95,21 +100,29 @@ pub struct Workspace {
     /// which defers reconciliation (welcome presence + active tracking)
     /// to just after the frame, where a `&mut Window` is available.
     needs_reconcile: bool,
+    layout_path: Option<PathBuf>,
+    /// The in-flight debounced save; dropping it (on the next event)
+    /// cancels the pending write.
+    save_debounce: Option<Task<()>>,
     _appearance_subscription: Subscription,
 }
 
 impl Workspace {
-    /// `initial` is the CLI path argument's already-read bytes, if any.
+    /// `initial` is the CLI path argument's already-read bytes, if any;
+    /// `layout_path` is where the dock layout persists (injectable for
+    /// tests; production passes [`persist::layout_path`]).
     pub fn new(
         initial: Option<(Arc<dyn HexSource>, PathBuf)>,
         appearance_subscription: Subscription,
+        layout_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let dock = cx.new(|cx| DockArea::new("workspace", Some(WORKBENCH_VERSION), window, cx));
+        let dock = cx.new(|cx| DockArea::new("workspace", Some(persist::LAYOUT_VERSION), window, cx));
         let dock_subscription = cx.subscribe(&dock, |workspace, _dock, event: &DockEvent, cx| match event {
             DockEvent::LayoutChanged => {
                 workspace.needs_reconcile = true;
+                workspace.schedule_save(cx);
                 cx.notify();
             }
             DockEvent::DragDrop(_) => {}
@@ -126,19 +139,37 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             focus_pending: true,
             needs_reconcile: false,
+            layout_path,
+            save_debounce: None,
             _appearance_subscription: appearance_subscription,
         };
         workspace.build_initial(initial, window, cx);
         workspace
     }
 
-    /// Populate the dock at construction: a CLI file becomes the first
-    /// tab, or nothing (leaving reconciliation to add the welcome
-    /// placeholder).
+    /// Populate the dock at construction: a restored layout wins;
+    /// otherwise a CLI file becomes the first tab, or nothing (leaving
+    /// reconciliation to add the welcome placeholder).
     fn build_initial(&mut self, initial: Option<(Arc<dyn HexSource>, PathBuf)>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((source, path)) = initial {
-            let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
-            self.add_file_panel(panel, window, cx);
+        let restored = self
+            .layout_path
+            .as_ref()
+            .and_then(|path| persist::load(path))
+            .filter(|state| state.version == Some(persist::LAYOUT_VERSION));
+
+        match restored {
+            Some(mut state) => {
+                persist::prune_for_restore(&mut state);
+                if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
+                    tracing::warn!(%err, "load dock layout failed; using default");
+                }
+            }
+            None => {
+                if let Some((source, path)) = initial {
+                    let panel = cx.new(|cx| FilePanel::new(source, Some(path), cx));
+                    self.add_file_panel(panel, window, cx);
+                }
+            }
         }
         self.reconcile(window, cx);
     }
@@ -261,6 +292,31 @@ impl Workspace {
         });
         self.active_file = active;
         cx.notify();
+    }
+
+    /// Debounced layout save: replaces any pending timer, so only the
+    /// last change in a burst is written.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.layout_path.clone() else { return };
+        let dock = self.dock.clone();
+        self.save_debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_DEBOUNCE).await;
+            let _ = this.update(cx, |_workspace, cx| {
+                let state = dock.read(cx).dump(cx);
+                if let Err(err) = persist::save(&path, &state) {
+                    tracing::warn!(?path, %err, "save dock layout failed");
+                }
+            });
+        }));
+    }
+
+    /// Write the current layout to disk immediately, bypassing the
+    /// debounce. Used by tests for deterministic round-trips.
+    #[cfg(test)]
+    fn save_now(&self, cx: &App) -> Option<Result<(), persist::SaveError>> {
+        let path = self.layout_path.as_ref()?;
+        let state = self.dock.read(cx).dump(cx);
+        Some(persist::save(path, &state))
     }
 
     fn active_path(&self, cx: &App) -> Option<PathBuf> {
@@ -403,10 +459,11 @@ mod tests {
     fn open_workspace(
         cx: &mut TestAppContext,
         initial: Option<(Arc<dyn HexSource>, PathBuf)>,
+        layout_path: Option<PathBuf>,
     ) -> WindowHandle<Workspace> {
         let window = cx.add_window(move |window, cx| {
             let subscription = window.observe_window_appearance(|_, _| {});
-            Workspace::new(initial, subscription, window, cx)
+            Workspace::new(initial, subscription, layout_path, window, cx)
         });
         cx.run_until_parked();
         window
@@ -426,7 +483,7 @@ mod tests {
     #[gpui::test]
     fn cli_open_focuses_the_active_pane(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, Some((source(), PathBuf::from("test.bin"))));
+        let window = open_workspace(cx, Some((source(), PathBuf::from("test.bin"))), None);
 
         let pane_handle = window
             .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
@@ -440,7 +497,7 @@ mod tests {
     #[gpui::test]
     fn no_file_shows_welcome_and_focuses_workspace(cx: &mut TestAppContext) {
         setup(cx);
-        let window = open_workspace(cx, None);
+        let window = open_workspace(cx, None, None);
 
         assert_eq!(file_count(window, cx), 0);
         let (welcome_present, workspace_handle) =
@@ -458,7 +515,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
         let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
-        let window = open_workspace(cx, None);
+        let window = open_workspace(cx, None, None);
 
         window.update(cx, |ws, window, cx| ws.open_path(f1.clone(), window, cx)).unwrap();
         cx.run_until_parked();
@@ -479,7 +536,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
-        let window = open_workspace(cx, None);
+        let window = open_workspace(cx, None, None);
 
         window.update(cx, |ws, window, cx| ws.open_path(f1, window, cx)).unwrap();
         cx.run_until_parked();
@@ -519,9 +576,70 @@ mod tests {
         here + state.children.iter().map(count_welcome_panels).sum::<usize>()
     }
 
+    /// Layout persistence round-trips: a saved session's tab count and
+    /// file paths are restored in a fresh workspace pointed at the same
+    /// (temp) layout file.
+    #[gpui::test]
+    fn layout_round_trips_tab_count_and_paths(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+
+        let first = open_workspace(cx, None, Some(layout.clone()));
+        window_open(first, &f1, cx);
+        window_open(first, &f2, cx);
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+
+        let second = open_workspace(cx, None, Some(layout.clone()));
+        assert_eq!(file_count(second, cx), 2);
+        let restored: Vec<PathBuf> = second
+            .read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center))
+            .unwrap();
+        assert!(restored.contains(&f1));
+        assert!(restored.contains(&f2));
+    }
+
     fn window_open(window: WindowHandle<Workspace>, path: &Path, cx: &mut TestAppContext) {
         window.update(cx, |ws, window, cx| ws.open_path(path.to_path_buf(), window, cx)).unwrap();
         cx.run_until_parked();
+    }
+
+    /// An unparseable layout file must not crash startup; the workspace
+    /// falls back to the empty (welcome) default.
+    #[gpui::test]
+    fn corrupt_layout_falls_back_to_welcome(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        std::fs::write(&layout, b"{ not valid json").unwrap();
+
+        let window = open_workspace(cx, None, Some(layout));
+        assert_eq!(file_count(window, cx), 0);
+        assert!(window.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
+    }
+
+    /// A layout saved under a different schema version is discarded
+    /// wholesale rather than partially restored.
+    #[gpui::test]
+    fn version_mismatch_discards_layout(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+
+        let first = open_workspace(cx, None, Some(layout.clone()));
+        window_open(first, &f1, cx);
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+
+        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
+        value["version"] = serde_json::json!(persist::LAYOUT_VERSION + 1);
+        std::fs::write(&layout, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let second = open_workspace(cx, None, Some(layout));
+        assert_eq!(file_count(second, cx), 0);
+        assert!(second.read_with(cx, |ws, _| ws.welcome.is_some()).unwrap());
     }
 
     /// Typing reaches the active pane's editor: an arrow key moves the
@@ -533,7 +651,7 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
-        let window = open_workspace(cx, None);
+        let window = open_workspace(cx, None, None);
         window_open(window, &f1, cx);
 
         let editor_state = |cx: &mut TestAppContext| {
@@ -554,5 +672,23 @@ mod tests {
         // A hex digit at the cursor edits the buffer.
         cx.simulate_keystrokes(window.into(), "a");
         assert!(editor_state(cx).1, "hex digit typed into the active pane must edit its buffer");
+    }
+
+    fn collect_file_paths(state: &PanelState) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        collect_file_paths_into(state, &mut out);
+        out
+    }
+
+    fn collect_file_paths_into(state: &PanelState, out: &mut Vec<PathBuf>) {
+        if state.panel_name == FILE_PANEL_NAME
+            && let gpui_component::dock::PanelInfo::Panel(value) = &state.info
+            && let Some(path) = value.get("path").and_then(|p| p.as_str())
+        {
+            out.push(PathBuf::from(path));
+        }
+        for child in &state.children {
+            collect_file_paths_into(child, out);
+        }
     }
 }

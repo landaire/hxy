@@ -17,6 +17,7 @@ hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
 hxy-view-gpui = { workspace = true }
 serde_json = "1"
+thiserror = "2"
 tracing = { workspace = true }
 
 [dev-dependencies]
