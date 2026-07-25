@@ -12,9 +12,9 @@
 
 - Spec: `docs/superpowers/specs/2026-07-24-gpui-port-design.md`. M1 scope: "hxy-view-gpui plus a minimal shell (open file, hex/ASCII grid, keyboard nav including vim, selection, drag-select, editing, minimap)". No save-to-disk, no docking, no panels (M2+). No features beyond this list.
 - Dependency pins (crates.io route; the git route is unusable -- gpui-component's manifest pulls gpui from zed tip unpinned, unpatchable, and zed tip needs Rust > 1.92):
-  - `gpui = "=0.2.2"` and `gpui-component = "=0.5.2"` from crates.io. No gpui_platform crate on this route.
+  - `gpui = "=0.2.2"` and `gpui-component = "=0.5.1"` from crates.io. No gpui_platform crate on this route.
   - Bootstrap is `gpui::Application::new()` (see api-notes "Alternative crates.io route"; rusthex is the reference consumer).
-  - API-notes caveat: sections researched at git HEAD may differ at 0.2.2/0.5.2. Where a name differs, the published source/docs.rs win; append corrections to the api-notes file under a "crates.io corrections" heading as they are discovered.
+  - API-notes caveat: sections researched at git HEAD may differ at 0.2.2/0.5.1. Where a name differs, the published source/docs.rs win; append corrections to the api-notes file under a "crates.io corrections" heading as they are discovered.
 - NESTED WORKSPACE (user decision after a Task 1 blocker): the GPUI crates live in `gpui/` -- a separate Cargo workspace with its own `Cargo.toml` and `Cargo.lock` -- because the zed git tree cannot co-resolve with the egui stack in one lockfile (wgpu minor pins, `core-foundation =0.10.0` exact pin, accesskit conflicts). Members: `gpui/hxy-gpui`, `gpui/hxy-view-gpui`. Shared crates are path deps (`hxy-editor = { path = "../crates/hxy-editor" }` etc.). The ROOT workspace Cargo.toml gets NO gpui entries and no new members. Every "workspace" verification command in this plan means: run it in BOTH workspaces (`cargo test --workspace` at the root, and `cd gpui && cargo test --workspace`). The nested workspace needs its own `[profile.dev.package."*"] opt-level = 2`.
 - jj only, never git; non-interactive `-m` messages; conventional commits; NO Co-Authored-By or AI attribution; ASCII only in code/comments/commit messages; no separator comments; no historical framing.
 - Typed thiserror errors; newtypes/enums over bools and loose primitives; scrutinize new `unwrap_or*` on fallible data.
@@ -56,7 +56,7 @@ repository = "https://github.com/landaire/hxy"
 
 [workspace.dependencies]
 gpui = "=0.2.2"
-gpui-component = "=0.5.2"
+gpui-component = "=0.5.1"
 hxy-core = { path = "../crates/hxy-core", version = "0.3.0" }
 hxy-editor = { path = "../crates/hxy-editor", version = "0.3.0" }
 hxy-i18n = { path = "../crates/hxy-i18n", version = "0.3.0" }

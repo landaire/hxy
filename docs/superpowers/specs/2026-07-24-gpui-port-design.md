@@ -47,11 +47,20 @@ fuzzy Picker to build on).
 
 ## Dependencies and platform
 
-- gpui and gpui_platform pinned to the zed-industries/zed rev that
-  gpui-component pins; gpui-component pinned to a specific rev. All pins in
-  the workspace Cargo.toml. Both are pre-1.0; pinning insulates against API
-  churn. crates.io releases exist but lag; the git route is what upstream
-  docs recommend.
+- gpui and gpui-component from crates.io (gpui 0.2.x, gpui-component
+  0.5.x), version-pinned in the gpui workspace Cargo.toml. The git route
+  upstream docs recommend is unusable without forking: gpui-component's
+  manifest pulls gpui from zed's default branch with no rev, Cargo cannot
+  patch two revs of the same git source, and zed tip requires a newer
+  Rust toolchain than the repo pins. Both crates are pre-1.0; version
+  pins insulate against API churn.
+- The GPUI crates live in a nested Cargo workspace (gpui/ directory with
+  its own Cargo.toml and lockfile), path-depending on the shared crates in
+  crates/. Forced by hard dependency conflicts between the zed git tree
+  and the egui stack (wgpu minor pins, core-foundation exact pins,
+  accesskit) that make a single shared lockfile unresolvable. The egui
+  and GPUI apps therefore build independently; shared crates compile in
+  both lockfiles.
 - Desktop only. macOS is the tested target; Linux/Windows should compile
   (GPUI supports both) but do not gate milestones.
 
