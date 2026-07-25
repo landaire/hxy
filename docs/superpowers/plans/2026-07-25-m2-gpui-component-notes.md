@@ -391,11 +391,20 @@ App obligations to restore a layout:
     file_count still > 0 can route into it. General fix in hxy-gpui: detect a
     cached `DockItem::Tabs` whose live `TabPanel::active_panel(cx)` is `None`
     (emptied-but-not-removed cache entry) and, before any center add, resync the
-    cache to the live tree by re-materializing `dump()`'s `PanelState` via
-    `PanelState::to_item` (state.rs:182, pub) installed with `set_center`. This
-    preserves the split structure (no flatten) and never disables drag-to-split;
-    panels are rebuilt from `dump()` (files re-read), acceptable as a rare
-    recovery. Keep the empty/welcome case on the single-`dock.update`
+    cache to the live tree by mirroring `dump()`'s `PanelState` structure into a
+    fresh `DockItem` tree installed with `set_center`. CRITICAL: do NOT let
+    `PanelState::to_item` call `PanelRegistry::build_panel` for the file leaves --
+    that constructs FRESH `FilePanel`s (re-reads from disk) and DISCARDS live
+    editor state (dirty edits, vim mode, scroll). Instead keep your own registry
+    of open `FilePanel` entities (keyed by path) and reinstall the EXISTING
+    entities via `DockItem::tabs`/`split_with_sizes`, only falling back to
+    `build_panel` when no live entity exists (genuine boot restore). This
+    preserves the split structure (no flatten), never disables drag-to-split, and
+    keeps editor state intact. Registry caveat: prune it lazily (dedup per path on
+    open, reset from the rebuilt cache after a resync) -- a per-reconcile prune by
+    "path present in dump()" WRONGLY drops a file that is transiently absent from
+    the tree while an async `add_panel_at`/`split_panel` is mid-flight, losing the
+    reuse handle. Keep the empty/welcome case on the single-`dock.update`
     fresh-Split factory (below); use the resync only for the >0-survivor case.
   - `set_center` vs `load` for a LIVE rebuild: both reduce to
     `PanelState::to_item`, but `DockArea::load` (mod.rs:898) does NOT
@@ -406,8 +415,8 @@ App obligations to restore a layout:
     child subscription (StackPanel insert subscribes via `window.defer`,
     stack_panel.rs:222); doing fresh-Split `set_center` + `add_panel` in ONE
     `dock.update` (the factory path) works. Hence: factory-in-one-update for the
-    empty case, `to_item`+`set_center` resync for the collapse-with-survivor
-    case.
+    empty case, entity-reusing rebuild + `set_center` for the
+    collapse-with-survivor case.
 - Delegating a Panel's `Focusable::focus_handle` to an inner child handle is
   safe even though `TabPanel::render` also `track_focus`es the same handle
   (tab_panel.rs:1191, focus_handle = active_panel.focus_handle). gpui's

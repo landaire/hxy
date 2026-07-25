@@ -5,6 +5,7 @@
 //! system-theme sync, the window title, and debounced layout
 //! persistence.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +34,8 @@ use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
 use gpui_component::dock::DockItem;
 use gpui_component::dock::DockPlacement;
+use gpui_component::dock::PanelInfo;
+use gpui_component::dock::PanelRegistry;
 use gpui_component::dock::PanelState;
 use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
@@ -43,6 +46,7 @@ use hxy_editor::InputMode;
 
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
+use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WelcomePanel;
 use crate::persist;
 use crate::status::dirty_marker;
@@ -100,6 +104,14 @@ pub struct Workspace {
     /// which defers reconciliation (welcome presence + active tracking)
     /// to just after the frame, where a `&mut Window` is available.
     needs_reconcile: bool,
+    /// `FilePanel` entities the workspace has opened, looked up by path
+    /// so a center-cache resync can reinstall the SAME panels (preserving
+    /// editor state) instead of rebuilding them from disk. Deduped per
+    /// path on open and reset to the live set after each resync rebuild;
+    /// closed entities may linger between resyncs (a bounded, distinct-
+    /// files-per-session cost, not a correctness issue -- a dead path is
+    /// never looked up).
+    open_files: Vec<Entity<FilePanel>>,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -139,6 +151,7 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             focus_pending: true,
             needs_reconcile: false,
+            open_files: Vec::new(),
             layout_path,
             save_debounce: None,
             _appearance_subscription: appearance_subscription,
@@ -163,6 +176,9 @@ impl Workspace {
                 if let Err(err) = self.dock.update(cx, |dock, cx| dock.load(state, window, cx)) {
                     tracing::warn!(%err, "load dock layout failed; using default");
                 }
+                // The load-built cache is accurate; register the restored
+                // panels so a later resync can reuse them.
+                collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
             }
             None => {
                 if let Some((source, path)) = initial {
@@ -181,8 +197,19 @@ impl Workspace {
         // cache from the live tree first so the add never lands in a
         // collapsed-away tab panel (see `resync_center_if_stale`).
         self.resync_center_if_stale(window, cx);
+        self.register_open_file(&panel, cx);
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Track a newly opened file for later resync reuse, replacing any
+    /// prior entry for the same path (a reopen supersedes) so the
+    /// registry does not accumulate duplicate paths.
+    fn register_open_file(&mut self, panel: &Entity<FilePanel>, cx: &Context<Self>) {
+        if let Some(path) = panel.read(cx).path().map(Path::to_path_buf) {
+            self.open_files.retain(|file| file.read(cx).path() != Some(path.as_path()));
+        }
+        self.open_files.push(panel.clone());
     }
 
     /// Rebuild the center's cached `DockItem` tree from the live panel
@@ -198,30 +225,40 @@ impl Workspace {
     /// the new panel into the detached tab panel, which never renders --
     /// bricking the center (verified against gpui-component mod.rs:411).
     ///
-    /// `DockArea::dump` walks the LIVE tree, so re-materializing its
-    /// `PanelState` via `PanelState::to_item` and installing it with
-    /// `set_center` rebuilds the cache to match the live tree while
-    /// preserving the user's split structure. We only do it when a cached
-    /// tab panel has actually gone empty (rare: after a collapse), so
-    /// healthy layouts pay nothing. Panels are rebuilt from their `dump()`
-    /// (files re-read from disk); acceptable as this path is a recovery,
-    /// not a hot path. (`set_center`, not `load`: only the former
-    /// re-subscribes the rebuilt subtree for `LayoutChanged`.)
+    /// `DockArea::dump` walks the LIVE tree, giving the exact structure
+    /// (splits, tab order, active index) to rebuild. We mirror that
+    /// `PanelState` into a fresh `DockItem` tree but install the EXISTING
+    /// panel entities (looked up by path in `open_files`) rather than
+    /// letting `PanelState::to_item` call `PanelRegistry::build_panel`,
+    /// which would re-read every file from disk and throw away in-memory
+    /// editor state (dirty edits, vim mode, scroll). Only genuine restore
+    /// (boot `load`) constructs fresh panels. We install via `set_center`
+    /// (not `load`): only `set_center` re-subscribes the rebuilt subtree
+    /// for `LayoutChanged`. Runs only when a cached tab panel has actually
+    /// gone empty (rare: after a collapse), so healthy layouts pay
+    /// nothing.
     fn resync_center_if_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !center_has_empty_tab_panel(self.dock.read(cx).items(), cx) {
             return;
         }
         let state = self.dock.read(cx).dump(cx);
+        let mut reusable: HashMap<PathBuf, Arc<dyn PanelView>> = HashMap::new();
+        for file in &self.open_files {
+            if let Some(path) = file.read(cx).path().map(Path::to_path_buf) {
+                // Last write wins: a reopened path maps to its live entity.
+                reusable.insert(path, Arc::new(file.clone()));
+            }
+        }
+        let welcome = self.welcome.clone();
+        let weak = self.dock.downgrade();
         self.dock.update(cx, |dock, cx| {
-            // Rebuild the center via `set_center` (not `load`): both go
-            // through `PanelState::to_item`, but only `set_center`
-            // re-subscribes the rebuilt subtree for `LayoutChanged` (load
-            // leaves the new StackPanel unsubscribed). The dumped state is
-            // the live structure, so this preserves the user's splits.
-            let weak = cx.entity().downgrade();
-            let center = state.center.to_item(weak, window, cx);
+            let center = rebuild_item(&state.center, &mut reusable, welcome.as_ref(), &weak, window, cx);
             dock.set_center(center, window, cx);
         });
+        // The rebuilt cache is accurate: refresh the registry from it.
+        let mut live = Vec::new();
+        collect_file_entities(self.dock.read(cx).items(), &mut live);
+        self.open_files = live;
         self.focus_pending = true;
     }
 
@@ -423,6 +460,95 @@ fn center_has_empty_tab_panel(item: &DockItem, cx: &App) -> bool {
         DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
         DockItem::Split { items, .. } => items.iter().any(|item| center_has_empty_tab_panel(item, cx)),
         DockItem::Panel { .. } | DockItem::Tiles { .. } => false,
+    }
+}
+
+/// Mirror a dumped `PanelState` subtree into a fresh `DockItem`,
+/// reusing existing panel entities (via `resolve_leaf`) so their editor
+/// state survives. Structure (splits, tab order, active index) matches
+/// the dump.
+fn rebuild_item(
+    state: &PanelState,
+    reusable: &mut HashMap<PathBuf, Arc<dyn PanelView>>,
+    welcome: Option<&Entity<WelcomePanel>>,
+    dock_area: &gpui::WeakEntity<DockArea>,
+    window: &mut Window,
+    cx: &mut App,
+) -> DockItem {
+    match &state.info {
+        PanelInfo::Stack { sizes, axis } => {
+            let items: Vec<DockItem> =
+                state.children.iter().map(|child| rebuild_item(child, reusable, welcome, dock_area, window, cx)).collect();
+            let axis = if *axis == 0 { Axis::Horizontal } else { Axis::Vertical };
+            let sizes: Vec<Option<gpui::Pixels>> = sizes.iter().map(|size| Some(*size)).collect();
+            DockItem::split_with_sizes(axis, items, sizes, dock_area, window, cx)
+        }
+        PanelInfo::Tabs { active_index } => {
+            let panels: Vec<Arc<dyn PanelView>> =
+                state.children.iter().map(|leaf| resolve_leaf(leaf, reusable, welcome, dock_area, window, cx)).collect();
+            let count = panels.len();
+            let item = DockItem::tabs(panels, dock_area, window, cx);
+            if count > 0 { item.active_index((*active_index).min(count - 1)) } else { item }
+        }
+        PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => {
+            let panel = resolve_leaf(state, reusable, welcome, dock_area, window, cx);
+            DockItem::tabs(vec![panel], dock_area, window, cx)
+        }
+    }
+}
+
+/// Resolve one panel leaf to a live entity where possible: an existing
+/// `FilePanel` by path, or the live `WelcomePanel`. Only when no live
+/// entity exists (the genuine restore case) fall back to
+/// `PanelRegistry::build_panel`, which constructs a fresh one.
+fn resolve_leaf(
+    leaf: &PanelState,
+    reusable: &mut HashMap<PathBuf, Arc<dyn PanelView>>,
+    welcome: Option<&Entity<WelcomePanel>>,
+    dock_area: &gpui::WeakEntity<DockArea>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Arc<dyn PanelView> {
+    if leaf.panel_name == FILE_PANEL_NAME
+        && let Some(path) = file_path_from_info(&leaf.info)
+        && let Some(panel) = reusable.remove(&path)
+    {
+        return panel;
+    }
+    if leaf.panel_name == WELCOME_PANEL_NAME
+        && let Some(welcome) = welcome
+    {
+        return Arc::new(welcome.clone());
+    }
+    Arc::from(PanelRegistry::build_panel(&leaf.panel_name, dock_area.clone(), leaf, &leaf.info, window, cx))
+}
+
+fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
+    match info {
+        PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
+        _ => None,
+    }
+}
+
+/// Collect the live `FilePanel` entities from a `DockItem` tree. Only
+/// accurate right after the cache is rebuilt (`load` / `set_center`);
+/// `DockItem::Tabs.items` is stale after incremental add/remove.
+fn collect_file_entities(item: &DockItem, out: &mut Vec<Entity<FilePanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_file_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(file) = panel.view().downcast::<FilePanel>() {
+                    out.push(file);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(file) = view.view().downcast::<FilePanel>() {
+                out.push(file);
+            }
+        }
+        DockItem::Tiles { .. } => {}
     }
 }
 
@@ -699,6 +825,101 @@ mod tests {
         let paths = window.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
         assert!(paths.contains(&f4), "added file must live in a rendered tab panel");
         assert!(paths.contains(&f3));
+    }
+
+    fn file_panel_by_path(item: &DockItem, cx: &App, target: &Path) -> Option<Entity<FilePanel>> {
+        match item {
+            DockItem::Split { items, .. } => items.iter().find_map(|item| file_panel_by_path(item, cx, target)),
+            DockItem::Tabs { items, .. } => items.iter().find_map(|panel| {
+                let file = panel.view().downcast::<FilePanel>().ok()?;
+                (file.read(cx).path() == Some(target)).then_some(file)
+            }),
+            DockItem::Panel { view, .. } => {
+                let file = view.view().downcast::<FilePanel>().ok()?;
+                (file.read(cx).path() == Some(target)).then_some(file)
+            }
+            DockItem::Tiles { .. } => None,
+        }
+    }
+
+    /// A center-cache resync (triggered by an unrelated pane collapsing)
+    /// must reuse the surviving file's live panel entity, not rebuild it
+    /// from disk -- otherwise in-memory dirty edits are silently lost.
+    #[gpui::test]
+    fn resync_preserves_live_panel_editor_state(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let fx = temp_file(&dir, "x.bin", &[0u8; 16]);
+        let fa = temp_file(&dir, "a.bin", &[0u8; 32]);
+        let fc = temp_file(&dir, "c.bin", &[0u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &fx, cx);
+
+        // Split file A into a new pane and register it as an open file --
+        // mirrors dragging an already-open file into a split.
+        let original = window
+            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .unwrap()
+            .expect("a center tab panel");
+        let fa_entity = window
+            .update(cx, |ws, window, cx| {
+                let bytes = std::fs::read(&fa).unwrap();
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(fa.clone()), cx));
+                ws.open_files.push(panel.clone());
+                let view: Arc<dyn PanelView> = Arc::new(panel.clone());
+                original.update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                panel
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2);
+
+        // Focus file A's grid, then dirty it.
+        window
+            .update(cx, |_ws, window, cx| {
+                let handle = fa_entity.read(cx).pane().read(cx).focus_handle(cx);
+                window.focus(&handle);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "down");
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(
+            window.read_with(cx, |_ws, cx| fa_entity.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "file A should be dirty after typing",
+        );
+
+        // Collapse the original pane so its cached tab panel goes empty and
+        // the reconcile resync fires while file A survives in the split.
+        window
+            .update(cx, |_ws, window, cx| {
+                original.update(cx, |tab, cx| {
+                    while let Some(panel) = tab.active_panel(cx) {
+                        tab.remove_panel(panel, window, cx);
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+
+        // The surviving file must keep its dirty edits AND be the same entity.
+        assert!(
+            window.read_with(cx, |_ws, cx| fa_entity.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "resync must preserve the surviving file's dirty edits",
+        );
+        let live_a = window
+            .read_with(cx, |ws, cx| file_panel_by_path(ws.dock.read(cx).items(), cx, &fa))
+            .unwrap()
+            .expect("file A still live");
+        assert_eq!(live_a.entity_id(), fa_entity.entity_id(), "resync must reuse the same panel entity");
+
+        // A later open still lands in a rendered tab panel.
+        window_open(window, &fc, cx);
+        assert_eq!(file_count(window, cx), 2);
+        let paths = window.read_with(cx, |ws, cx| collect_file_paths(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert!(paths.contains(&fc) && paths.contains(&fa));
     }
 
     /// A restored tab whose file has since disappeared is pruned, the
