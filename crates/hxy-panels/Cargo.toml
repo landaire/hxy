@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Framework-agnostic panel logic for hxy: goto/range parsing, search engine, inspector decoders"
+description = "Framework-agnostic panel logic for hxy: goto/range parsing, search engine, inspector decoders, strings/entropy/checksums, and compare-view diffing"
 
 [lints.rust]
 unsafe_code = "forbid"
