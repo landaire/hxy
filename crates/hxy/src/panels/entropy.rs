@@ -275,8 +275,12 @@ pub fn show(
     };
     let x_axis_fmt =
         move |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String { format_hex_offset(mark.value) };
-    let label_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
-        format!("offset {}\nH = {:.2} bits/byte", format_hex_offset(point.x), point.y)
+    let label_fmt = move |pos: &egui_plot::HoverPosition<'_>| -> Option<String> {
+        let point = match pos {
+            egui_plot::HoverPosition::NearDataPoint { position, .. }
+            | egui_plot::HoverPosition::Elsewhere { position } => position,
+        };
+        Some(format!("offset {}\nH = {:.2} bits/byte", format_hex_offset(point.x), point.y))
     };
 
     Plot::new("hxy-entropy-plot")

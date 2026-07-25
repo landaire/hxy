@@ -47,7 +47,7 @@ pub fn show(
     // Footer first so its height is reserved before the scroll area claims
     // the remaining vertical space.
     let footer_text = id_scope.with("hxy_vfs_footer");
-    egui::Panel::bottom(id_scope.with("hxy_vfs_footer_panel")).resizable(false).show_inside(ui, |ui| {
+    egui::Panel::bottom(id_scope.with("hxy_vfs_footer_panel")).resizable(false).show(ui, |ui| {
         let text: String = ui.ctx().data(|d| d.get_temp(footer_text)).unwrap_or_default();
         ui.horizontal(|ui| {
             ui.weak(text);

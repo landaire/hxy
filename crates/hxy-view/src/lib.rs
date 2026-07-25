@@ -855,7 +855,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     /// egui_dock's tab shuffling and triggers "Widget rect changed id
     /// between passes" warnings. Callers should pass something tied
     /// to the tab (e.g. `FileId`).
-    pub fn id_salt(mut self, salt: impl std::hash::Hash) -> Self {
+    pub fn id_salt(mut self, salt: impl egui::AsId) -> Self {
         self.id_salt = Some(egui::Id::new(salt));
         self
     }

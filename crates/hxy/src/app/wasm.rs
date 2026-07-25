@@ -477,7 +477,7 @@ impl eframe::App for HxyApp {
         {
             file.editor.handle_input(&ctx);
         }
-        egui::Panel::top("hxy_top_bar").show_inside(ui, |ui| {
+        egui::Panel::top("hxy_top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("New").clicked() {
                     self.open_bytes_wasm("Untitled".to_owned(), Vec::new());
@@ -551,7 +551,7 @@ impl eframe::App for HxyApp {
         let mut pending_checksums_copy: Vec<String> = Vec::new();
         let mut pending_entropy_recompute: Vec<FileId> = Vec::new();
         let mut pending_vfs_opens: Vec<(crate::files::WorkspaceId, String)> = Vec::new();
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let style = crate::style::hxy_dock_style(ui.style());
             let mut state_guard = self.state.write();
             egui_dock::DockArea::new(&mut self.dock).style(style).show_inside(

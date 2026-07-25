@@ -2233,14 +2233,14 @@ fn render_file_tab(
         .resizable(false)
         .exact_size(status_h)
         .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 status_bar_ui(ui, file, settings_base, &mut new_base, tab_focus, watch_chip.as_ref());
             });
         });
 
     if file.search.open {
-        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get()))).resizable(false).show_inside(ui, |ui| {
+        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get()))).resizable(false).show(ui, |ui| {
             let events = crate::search::bar::show(ui, &mut file.search);
             apply_search_events(file, events);
         });
@@ -2258,7 +2258,7 @@ fn render_file_tab(
 
     let copy_request = egui::CentralPanel::default()
         .frame(egui::Frame::new())
-        .show_inside(ui, |ui| crate::view::hex_body::render_hex_body(ui, file, state))
+        .show(ui, |ui| crate::view::hex_body::render_hex_body(ui, file, state))
         .inner;
 
     if let Some(kind) = copy_request {
@@ -2294,7 +2294,7 @@ fn render_template_panel(
         .resizable(true)
         .default_size(300.0)
         .min_size(160.0)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             let events =
                 crate::panels::template::show(ui, file, whole_file_len, numeric_format, template_value_formats);
             for e in events {
@@ -3055,7 +3055,7 @@ fn top_menu_bar(ui: &mut egui::Ui, app: &mut HxyApp) {
     use crate::commands::shortcuts::TOGGLE_EDIT_MODE;
     use crate::commands::shortcuts::UNDO;
 
-    egui::Panel::top("hxy_menu_bar").show_inside(ui, |ui| {
+    egui::Panel::top("hxy_menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(hxy_i18n::t("menu-file"), |ui| {
                 let new_text = ui.ctx().format_shortcut(&NEW_FILE);

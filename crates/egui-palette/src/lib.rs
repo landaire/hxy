@@ -794,8 +794,10 @@ fn show_with_style_inner<'a, A: Clone>(
                     if let Some(r) = post_state.as_ref().and_then(|st| st.cursor.char_range()) {
                         let lo = r.primary.index.min(r.secondary.index);
                         let hi = r.primary.index.max(r.secondary.index);
-                        let still_selected = lo == start && hi == end;
-                        let committed = r.is_empty() && r.primary.index == display_chars;
+                        let still_selected = lo == egui::text::CharIndex(start)
+                            && hi == egui::text::CharIndex(end);
+                        let committed = r.is_empty()
+                            && r.primary.index == egui::text::CharIndex(display_chars);
                         if still_selected {
                             state.query.clone()
                         } else if committed {

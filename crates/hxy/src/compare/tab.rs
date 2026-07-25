@@ -29,7 +29,7 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
         }
     }
 
-    egui::Panel::top(tab_id.with("toolbar")).resizable(false).show_inside(ui, |ui| {
+    egui::Panel::top(tab_id.with("toolbar")).resizable(false).show(ui, |ui| {
         ui.horizontal(|ui| {
             let recomputing = session.is_recomputing();
             if ui.add_enabled(!recomputing, egui::Button::new(hxy_i18n::t("compare-recompute"))).clicked() {
@@ -56,7 +56,7 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
         });
     });
 
-    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show_inside(
+    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show(
         ui,
         |ui| {
             render_compare_diff_table(ui, session);
@@ -87,7 +87,7 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
         _ => (None, None),
     };
 
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         let avail = ui.available_width();
         let half = (avail * 0.5).max(160.0);
         ui.horizontal_top(|ui| {

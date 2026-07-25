@@ -53,10 +53,10 @@ hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
 hxy-view = { workspace = true, features = ["serde"] }
 egui = { workspace = true }
-egui-phosphor = "0.12.0"
-egui_dock = { version = "0.19.1", features = ["serde"] }
-egui_inbox = "0.11.0"
-egui_taffy = "0.12.0"
+egui-phosphor = "0.13.0"
+egui_dock = { version = "0.20.1", features = ["serde"] }
+egui_inbox = "0.12.0"
+egui_taffy = "0.13.0"
 
 # Platform-neutral utilities
 jiff = { workspace = true }
@@ -68,8 +68,8 @@ sys-locale = "0.3.2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 hxy-vfs.workspace = true
-egui_ltreeview = "0.7.0"
-egui_table = "0.8.0"
+egui_ltreeview = "0.8.0"
+egui_table = "0.9.0"
 egui-palette = { workspace = true }
 egui_dock_picker = { workspace = true }
 similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
@@ -84,9 +84,9 @@ hxy-calculator = { workspace = true }
 suture = { workspace = true, features = ["serde", "blake3"] }
 base64 = { workspace = true }
 rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
-egui-toast = "0.20.0"
+egui-toast = "0.21.0"
 fskit = { workspace = true }
-egui_plot = "0.35"
+egui_plot = "0.36"
 dhat = { version = "0.3.3", optional = true }
 # Visualizer renderers: `image` decodes PNG/JPEG/GIF/BMP/TIFF/WebP
 # bytes for the `image` ImHex visualizer; `iced-x86` is the
@@ -112,7 +112,7 @@ adler2 = "2"
 # standalone crate so we don't depend on suture re-exporting a
 # `compute()` convenience.
 blake3 = "1.8"
-eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts"] }
+eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts"] }
 sha2 = "0.11.0"
 web-time = "1.1.0"
 
