@@ -6,3 +6,4 @@
 pub mod goto;
 pub mod inspector;
 pub mod search;
+pub mod strings;

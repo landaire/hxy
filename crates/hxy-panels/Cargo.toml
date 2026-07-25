@@ -15,4 +15,5 @@ unsafe_code = "forbid"
 hxy-core = { workspace = true }
 hxy-calculator = { workspace = true }
 jiff = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
