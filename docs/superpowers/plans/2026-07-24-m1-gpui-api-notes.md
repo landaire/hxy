@@ -455,3 +455,51 @@ keyboard dispatch through the shared hxy-editor filter.
   ...)` (returns the value directly). Rendering touches `cx.theme()`, so
   call `cx.update(gpui_component::init)` before `add_window` or the theme
   global is missing and render panics.
+
+### Task 7 additions (file open, status bar, live theme at 0.2.2)
+
+Verified against `gpui-0.2.2` and `gpui-component-0.5.1` while wiring the
+shell's `cmd-o` open dialog, `cmd-alt-v` vim toggle, status bar, and
+live system-theme sync.
+
+- **`App::prompt_for_paths(&self, options: PathPromptOptions) ->
+  oneshot::Receiver<Result<Option<Vec<PathBuf>>>>`** (`gpui-0.2.2/src/app.rs:1116`).
+  Awaiting the receiver yields `Result<Result<Option<Vec<PathBuf>>>,
+  oneshot::Canceled>` -- double-nested: outer `Err` is only a dropped
+  channel (window closing mid-dialog), inner `Err` is a real platform
+  error (e.g. Linux picker failing to open), and `Ok(None)` is a normal
+  user cancel. `PathPromptOptions { files, directories, multiple, prompt:
+  Option<SharedString> }` (`gpui-0.2.2/src/platform.rs:1330`).
+- **`Context<T>::spawn`** (`gpui-0.2.2/src/app/context.rs:237`) differs
+  from `App::spawn`: its closure is `AsyncFnOnce(WeakEntity<T>, &mut
+  AsyncApp) -> R`, not just `AsyncFnOnce(&mut AsyncApp) -> R`. Use the
+  `WeakEntity<T>` to get back onto the entity after an `.await`:
+  `WeakEntity<T>::update(&self, cx: &mut C, f: impl FnOnce(&mut T, &mut
+  Context<T>) -> R) -> Result<R> where C: AppContext`
+  (`gpui-0.2.2/src/app/entity_map.rs:691`); `AsyncApp: AppContext`
+  (`gpui-0.2.2/src/app/async_context.rs:23`) so `this.update(cx, |state,
+  cx| ...)` works directly inside the spawned future.
+- **`window.observe_window_appearance(FnMut(&mut Window, &mut App)) ->
+  Subscription`** (`gpui-0.2.2/src/window.rs:1321` in this doc's original
+  numbering, confirmed unchanged at 0.2.2). The returned `Subscription`
+  must be held (e.g. as an entity field) or the observer is dropped
+  immediately -- it has no `.detach()`-forever semantics like `Task`.
+  `gpui_component::Theme::sync_system_appearance(Some(window), cx)`
+  calls `window.refresh()` internally when given `Some(window)`
+  (`gpui-component-0.5.1/src/theme/mod.rs:142-168`), so the observer
+  callback needs no extra `cx.notify()` / `cx.refresh()` -- passing the
+  window through is what forces the repaint.
+- **`Window::set_window_title(&mut self, title: &str)`**
+  (`gpui-0.2.2/src/window.rs:1779`) is a platform call with no
+  batching; safe to call every `Render::render` (title changes are
+  rare) but cheap to guard with a cached "last title" field to avoid a
+  redundant syscall on every frame.
+- **Box-style method suffixes are numeric-scale idents, not raw
+  pixels**: `gpui_macros::padding_style_methods!()` /
+  `border_style_methods!()` (invoked in `gpui-0.2.2/src/styled.rs`)
+  generate `px_1`, `px_3`, `gap_3`, `border_t_1`, `border_color`, `w_full`,
+  etc. from a fixed Tailwind-like scale (`gpui-macros-0.2.2/src/styles.rs`
+  `box_style_suffixes`/`*_box_style_prefixes`); `_1` = `0.25rem` (4px),
+  `_3` = `0.75rem` (12px), confirmed against real usage in
+  `gpui-component-0.5.1/src/title_bar.rs` (`.pl_3()`, `.border_b_1()`,
+  `.border_color(...)`).

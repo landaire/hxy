@@ -4,6 +4,18 @@ app-tagline = A hex editor
 
 # GPUI shell
 gpui-shell-no-file = No file open. Pass a path on the command line.
+gpui-window-title = { $file } - { $app }
+gpui-status-no-file = No file
+gpui-status-open-error = Could not open { $path }: { $error }
+gpui-status-open-error-dialog = File picker failed: { $error }
+gpui-status-no-selection = --
+gpui-status-offset = { $offset }
+gpui-status-selection = { $offset } (+{ $len } bytes)
+gpui-status-vim-mode-normal = NORMAL
+gpui-status-vim-mode-visual = VISUAL
+gpui-status-vim-mode-visual-line = V-LINE
+gpui-status-vim-mode-insert = INSERT
+gpui-status-vim-mode-replace = REPLACE
 
 # Menus
 menu-file = File
