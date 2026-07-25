@@ -205,9 +205,11 @@ impl HexPane {
 
     /// Left-down: place the caret at the hit, switch the active pane,
     /// start a drag, and take keyboard focus. Mirrors egui's
-    /// `apply_interaction` press branch (hxy-view/src/lib.rs:1810-1822):
-    /// `*selection = Selection::caret(hit_offset)`, written through the
-    /// same mutable-borrow mechanism egui uses
+    /// `apply_interaction` press branch (hxy-view/src/lib.rs:2349-2358):
+    /// a plain press writes `Selection::caret(hit_offset)`; a
+    /// shift-press over an existing selection keeps its anchor and
+    /// moves the cursor to the hit. Written through the same
+    /// mutable-borrow mechanism egui uses
     /// (`HexEditor::view_parts().selection`), not `set_selection`. The
     /// nibble/history-break reset egui gets "for free" isn't a property
     /// of `set_selection` -- it comes from the input dispatcher's
@@ -226,12 +228,20 @@ impl HexPane {
         }
         let Some(hit) = self.hit_at(event.position) else { return };
         self.editor.set_active_pane(hit.pane);
+        let anchor;
         let (pending_scroll, pending_scroll_to_byte) = {
             let parts = self.editor.view_parts();
-            *parts.selection = Some(Selection::caret(hit.offset));
+            let selection = match (event.modifiers.shift, *parts.selection) {
+                (true, Some(existing)) => Selection { anchor: existing.anchor, cursor: hit.offset },
+                _ => Selection::caret(hit.offset),
+            };
+            anchor = selection.anchor;
+            *parts.selection = Some(selection);
             (parts.pending_scroll, parts.pending_scroll_to_byte)
         };
-        self.drag_anchor = Some(hit.offset);
+        // A shift-extended selection keeps its original anchor, so a
+        // drag that follows continues from there rather than the click.
+        self.drag_anchor = Some(anchor);
         self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
         window.focus(&self.focus_handle);
         cx.notify();

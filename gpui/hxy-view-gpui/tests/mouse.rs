@@ -271,3 +271,21 @@ fn paint_sizes_the_canvas(cx: &mut TestAppContext) {
     assert!(frame.rows_visible > 0.0, "sized canvas should paint a nonzero viewport, got {}", frame.rows_visible);
     assert!(frame.minimap_bounds.size.height > px(0.0), "minimap strip should have a real height");
 }
+
+/// egui parity: a plain click sets a caret, then a shift-click keeps
+/// the original anchor and moves the cursor to the new hit, extending
+/// the selection. Reference: `apply_interaction`'s press branch
+/// (hxy-view/src/lib.rs:2349-2358).
+#[gpui::test]
+fn shift_click_extends_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
+    focus(cx, &pane);
+    let frame = frame(cx, &pane);
+
+    cx.simulate_click(hex_point(&frame, 2), Modifiers::none());
+    assert_eq!(selection(cx, &pane), (2, 2));
+
+    cx.simulate_click(hex_point(&frame, 10), Modifiers { shift: true, ..Modifiers::none() });
+    assert_eq!(selection(cx, &pane), (2, 10));
+}
