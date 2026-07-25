@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["hxy-gpui"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+authors = ["Lander Brandt"]
+repository = "https://github.com/landaire/hxy"
+
+# gpui-component 0.5.2 is not published to crates.io (crates.io index tops
+# out at 0.5.1; 0.5.2 is only the git workspace's in-progress version
+# string). Pinning 0.5.1, the latest actually-published release and what
+# rusthex (the reference consumer) uses.
+# `runtime_shaders`: gpui's default macOS build ahead-of-time-compiles its
+# Metal shaders via `xcrun metal`, which ships with full Xcode.app, not
+# Xcode Command Line Tools (all that's installed here). This feature makes
+# gpui stitch/compile shaders at runtime instead, so the build doesn't need
+# the `metal` binary at all.
+[workspace.dependencies]
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+gpui-component = "=0.5.1"
+hxy-core = { path = "../crates/hxy-core", version = "0.3.0" }
+hxy-editor = { path = "../crates/hxy-editor", version = "0.3.0" }
+hxy-i18n = { path = "../crates/hxy-i18n", version = "0.3.0" }
+tracing = "0.1.44"
+
+[profile.dev.package."*"]
+opt-level = 2

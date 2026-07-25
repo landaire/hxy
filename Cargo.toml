@@ -18,8 +18,10 @@ members = [
     "crates/egui_dock_picker",
 ]
 # Vendored [patch.crates-io] sources are standalone packages, not
-# workspace members.
-exclude = ["vendor"]
+# workspace members. hxy-gpui lives in its own nested Cargo workspace
+# (gpui/) so its pinned gpui/gpui-component dependency graph doesn't
+# have to unify with this workspace's eframe/egui-wgpu stack.
+exclude = ["vendor", "gpui"]
 
 [workspace.package]
 version = "0.5.0"
