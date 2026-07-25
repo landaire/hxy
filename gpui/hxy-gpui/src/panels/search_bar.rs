@@ -15,12 +15,13 @@
 //! Replace-All's ">1 match" confirm and the length-mismatch splice
 //! warning are real [`WindowExt::open_dialog`] dialogs (unlike egui's
 //! next-frame modal queue, gpui-component's dialog layer renders
-//! immediately). Wrap-around and replace-count both still push onto
-//! `SearchState::pending_effects` (kept for observability / parity with
-//! the egui bar's queue), and are additionally surfaced immediately as
-//! a [`WindowExt::push_notification`] toast at the same call site --
-//! see [`Self::next_match`] / [`Self::prev_match`] /
+//! immediately). Wrap-around and replace-count surface immediately as a
+//! [`WindowExt::push_notification`] toast at the call site -- see
+//! [`Self::next_match`] / [`Self::prev_match`] /
 //! [`Self::perform_replace_current`] / [`Self::perform_replace_all`].
+//! The shared `SearchState::pending_effects` queue is egui-only (its app
+//! drains it after the dock pass); the gpui bar toasts directly and
+//! never enqueues, so the queue would only grow unbounded here.
 
 use gpui::App;
 use gpui::AppContext;
@@ -59,7 +60,7 @@ use hxy_editor::HexEditor;
 use hxy_panels::search::Endian;
 use hxy_panels::search::NumberWidth;
 use hxy_panels::search::SearchKind;
-use hxy_panels::search::SearchSideEffect;
+use hxy_panels::search::SearchScope;
 use hxy_panels::search::SearchState;
 use hxy_view_gpui::HexPane;
 
@@ -112,9 +113,38 @@ impl SearchBar {
     /// the query field.
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.open = true;
+        self.state.scope = self.seed_scope(cx);
         self.state.refresh_pattern();
         self.state.refresh_replace_pattern();
         self.query_input.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Derive the initial scope from the pane's current selection,
+    /// mirroring egui's `toggle_local_search`: a non-caret selection
+    /// restricts every scan to its byte range; anything else (caret or
+    /// no selection) searches the whole file.
+    fn seed_scope(&self, cx: &App) -> SearchScope {
+        match self.pane.read(cx).editor().selection() {
+            Some(sel) if !sel.is_caret() => {
+                let range = sel.range();
+                SearchScope::Selection { start: range.start().get(), end_exclusive: range.end().get() }
+            }
+            _ => SearchScope::File,
+        }
+    }
+
+    /// Flip the scope back to whole-file, mirroring egui's
+    /// `SearchEvent::SetScope(File)`: drop the cached matches so the next
+    /// scan re-runs over the full file, re-running immediately when the
+    /// all-results list is showing.
+    fn clear_scope(&mut self, cx: &mut Context<Self>) {
+        self.state.scope = SearchScope::File;
+        self.state.matches.clear();
+        self.state.active_idx = None;
+        if self.state.all_results {
+            self.recompute_all_results(cx);
+        }
         cx.notify();
     }
 
@@ -247,7 +277,7 @@ impl SearchBar {
         let Some(hit) = hit else { return };
         self.apply_match_jump(hit.offset, &pattern, cx);
         if hit.wrapped {
-            self.state.pending_effects.push(SearchSideEffect::WrappedForward);
+            // Toast is the gpui surface for the wrap; pending_effects is egui-only.
             window.push_notification(Notification::info(hxy_i18n::t("search-wrapped-forward")), cx);
         }
         cx.notify();
@@ -267,7 +297,7 @@ impl SearchBar {
         let Some(hit) = hit else { return };
         self.apply_match_jump(hit.offset, &pattern, cx);
         if hit.wrapped {
-            self.state.pending_effects.push(SearchSideEffect::WrappedBackward);
+            // Toast is the gpui surface for the wrap; pending_effects is egui-only.
             window.push_notification(Notification::info(hxy_i18n::t("search-wrapped-backward")), cx);
         }
         cx.notify();
@@ -333,7 +363,7 @@ impl SearchBar {
         });
         match result {
             Ok(()) => {
-                self.state.pending_effects.push(SearchSideEffect::Replaced { count: 1 });
+                // Replace count reaches the user via the toast below; pending_effects is egui-only.
                 self.state.refresh_pattern();
                 self.state.splice_prompt_acked = true;
                 if self.state.all_results {
@@ -407,7 +437,7 @@ impl SearchBar {
         match result {
             Ok(()) => {
                 let count = matches.len();
-                self.state.pending_effects.push(SearchSideEffect::Replaced { count });
+                // Replace count reaches the user via the toast below; pending_effects is egui-only.
                 self.state.refresh_pattern();
                 self.state.splice_prompt_acked = true;
                 if self.state.all_results {
@@ -581,6 +611,19 @@ impl SearchBar {
                     .checked(self.state.all_results)
                     .on_click(cx.listener(|this, checked: &bool, _window, cx| this.set_all_results(*checked, cx))),
             )
+            // The "in selection" chip shows only while the scan is scoped
+            // to the selection the bar opened over; clicking it clears
+            // back to whole-file (egui parity, `SearchScope::Selection`).
+            .when(matches!(self.state.scope, SearchScope::Selection { .. }), |row| {
+                row.child(
+                    Button::new("search-scope-in-selection")
+                        .label(hxy_i18n::t("search-scope-in-selection"))
+                        .tooltip(hxy_i18n::t("search-scope-in-selection-tooltip"))
+                        .compact()
+                        .selected(true)
+                        .on_click(cx.listener(|this, _, _window, cx| this.clear_scope(cx))),
+                )
+            })
             .child(
                 Button::new("search-replace-toggle")
                     .label(replace_toggle_label)
@@ -790,8 +833,6 @@ mod tests {
         // Second Next has nowhere to go but wrap back to the same match.
         cx.update(|window, cx| bar.update(cx, |bar, cx| bar.next_match(window, cx)));
         assert_eq!(selection(&bar, cx), Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
-        let effects = bar.read_with(cx, |bar, _| bar.state.pending_effects.clone());
-        assert!(effects.contains(&SearchSideEffect::WrappedForward), "wrap must be queued");
         assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 2, "each wrap surfaces its own toast");
     }
 
@@ -896,5 +937,47 @@ mod tests {
             });
         });
         assert_eq!(read_bytes(&bar, whole, cx), vec![0xDE, 0xAD, 0u8, 0xDE, 0xAD, 0u8], "one undo must revert the whole batch");
+    }
+
+    /// Opening the bar over a non-caret selection seeds a selection scope
+    /// (egui parity): only the match inside the selection counts, while a
+    /// second match outside is ignored. Clicking the chip -- here driven
+    /// through `clear_scope` -- flips back to whole-file, exposing both.
+    #[gpui::test]
+    fn open_over_selection_scopes_the_search_and_chip_clears_it(cx: &mut TestAppContext) {
+        setup(cx);
+        // Two "DE AD" matches: one at offset 0, one at offset 4.
+        let bytes = vec![0xDEu8, 0xAD, 0u8, 0u8, 0xDE, 0xAD, 0u8];
+        let (bar, cx) = build(cx, bytes);
+
+        // Select bytes 0..=1 (a non-caret range spanning only the first
+        // match) before opening the bar.
+        cx.update(|_window, cx| {
+            bar.update(cx, |bar, cx| {
+                bar.pane.update(cx, |pane, _| {
+                    pane.editor_mut().set_selection(Some(Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) }));
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            bar.update(cx, |bar, cx| {
+                bar.state.kind = SearchKind::HexBytes;
+                bar.open(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        set_query(&bar, "DE AD", cx);
+        bar.update(cx, |bar, cx| bar.set_all_results(true, cx));
+
+        let (scope, matches) = bar.read_with(cx, |bar, _| (bar.state().scope, bar.state().matches.clone()));
+        assert_eq!(scope, SearchScope::Selection { start: 0, end_exclusive: 2 }, "opening over a selection seeds a selection scope");
+        assert_eq!(matches, vec![0], "only the match inside the selection is found");
+
+        bar.update(cx, |bar, cx| bar.clear_scope(cx));
+        let (scope, matches) = bar.read_with(cx, |bar, _| (bar.state().scope, bar.state().matches.clone()));
+        assert_eq!(scope, SearchScope::File, "clearing the chip returns to whole-file scope");
+        assert_eq!(matches, vec![0, 4], "both matches are found once the scope is cleared");
     }
 }
