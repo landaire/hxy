@@ -367,12 +367,14 @@ impl Workspace {
         self.open_strings_for_active_file(window, cx);
     }
 
-    /// Open (or focus an existing) `StringsPanel` tab for the active
-    /// file. No-op with no active file (callers gate on
-    /// `has_active_file`, same as the other file-scoped palette
-    /// entries).
+    /// Open (or focus an existing) `StringsPanel` tab for the
+    /// reference file (see `reference_active_file`'s doc -- FILE-
+    /// SCOPED: "find strings" while already looking at that file's own
+    /// strings tab, or any other non-file tab, still targets it). No-op
+    /// with no reference file (callers gate on `has_active_file`, same
+    /// as the other file-scoped palette entries).
     pub(crate) fn open_strings_for_active_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(file) = self.active_file.clone() else { return };
+        let Some(file) = self.reference_active_file(cx) else { return };
         let path = file.read(cx).path().map(Path::to_path_buf);
 
         if let Some(panel) = self.open_strings_panel_for_path(path.as_deref(), cx) {
@@ -698,11 +700,13 @@ impl Workspace {
         self.toggle_active_vim(cx);
     }
 
-    /// Toggle the active pane's input mode between Default and Vim.
+    /// Toggle the reference file's input mode between Default and Vim
+    /// (see `reference_active_file`'s doc -- FILE-SCOPED, so this
+    /// still acts on the right file with a strings tab focused).
     /// Shared by the `cmd-alt-v` action and the palette's Toggle Vim
     /// entry.
     pub(crate) fn toggle_active_vim(&mut self, cx: &mut Context<Self>) {
-        let Some(file) = self.active_file.clone() else { return };
+        let Some(file) = self.reference_active_file(cx) else { return };
         let pane = file.read(cx).pane().clone();
         pane.update(cx, |pane, cx| {
             let next = match pane.editor().input_mode() {
@@ -714,10 +718,11 @@ impl Workspace {
         });
     }
 
-    /// `cmd-e` / Edit > Toggle Edit Mode: flip the active file between
-    /// read-only and mutable. No-op with no active file.
+    /// `cmd-e` / Edit > Toggle Edit Mode: flip the reference file (see
+    /// `reference_active_file`'s doc) between read-only and mutable.
+    /// No-op with no reference file.
     fn on_toggle_edit_mode(&mut self, _: &ToggleEditMode, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(file) = self.active_file.clone() else { return };
+        let Some(file) = self.reference_active_file(cx) else { return };
         let pane = file.read(cx).pane().clone();
         pane.update(cx, |pane, cx| {
             let next = match pane.editor().edit_mode() {
@@ -872,9 +877,13 @@ impl Workspace {
         self.set_active_file(Some(file), cx);
     }
 
-    /// Snapshot of the active file for the palette's entry builders.
+    /// Snapshot of the reference file (see `reference_active_file`'s
+    /// doc) for the palette's entry builders: FILE-SCOPED entries
+    /// (Go To Offset, Select, Set Columns, Copy Selection) gate on
+    /// `has_active_file` and act on the same file this describes, so a
+    /// strings tab being focused must not disable them.
     pub(crate) fn palette_context(&self, cx: &App) -> PaletteContext {
-        let Some(file) = &self.active_file else { return PaletteContext::default() };
+        let Some(file) = self.reference_active_file(cx) else { return PaletteContext::default() };
         let pane = file.read(cx).pane().read(cx);
         let editor = pane.editor();
         let selection = editor.selection();
@@ -893,9 +902,12 @@ impl Workspace {
         }
     }
 
-    /// The active file's [`HexPane`], for palette action dispatch.
+    /// The reference file's [`HexPane`] (see `reference_active_file`'s
+    /// doc), for FILE-SCOPED palette action dispatch and undo/redo --
+    /// every current caller acts on file content/state, so this always
+    /// routes through the fallback, never the strict `active_file`.
     pub(crate) fn active_pane(&self, cx: &App) -> Option<Entity<HexPane>> {
-        self.active_file.as_ref().map(|file| file.read(cx).pane().clone())
+        self.reference_active_file(cx).map(|file| file.read(cx).pane().clone())
     }
 
     /// Palette dispatch entry points, wrapping the action handlers so
@@ -911,6 +923,15 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn palette(&self) -> Entity<Palette> {
         self.palette.clone()
+    }
+
+    /// Whether the strict `active_file` is set (i.e. the front-most
+    /// center tab is literally a `FilePanel`), for tests outside this
+    /// module asserting a fallback path (`reference_active_file`) is
+    /// genuinely being exercised rather than trivially matching.
+    #[cfg(test)]
+    pub(crate) fn has_strict_active_file(&self) -> bool {
+        self.active_file.is_some()
     }
 
     /// Close the active center tab. A strings tab takes priority when
@@ -1050,20 +1071,27 @@ impl Workspace {
         }
     }
 
-    /// The file the inspector / title / status bar should reflect: the
-    /// literal active-tab file if there is one, else the last file tab
-    /// that was active, as long as it's still open (`open_files`
-    /// membership is the drop condition -- once the file closes, this
-    /// naturally stops returning it without `last_active_file` needing
-    /// to be cleared eagerly on every close path).
+    /// The file every FILE-SCOPED command (undo/redo, copy, goto/
+    /// select/columns, vim/edit-mode toggle, "open strings panel for
+    /// active file", palette gating) should act on: the literal
+    /// active-tab file if there is one, else the last file tab that
+    /// was active, as long as it's still open, else (mirroring egui's
+    /// third `active_file_id` tier, `crates/hxy/src/app/mod.rs:3506-
+    /// 3529`) any open file at all. Returning `None` means genuinely no
+    /// file is open.
     ///
-    /// Kept `None`, not this fallback, when nothing has ever been
-    /// active (e.g. only the welcome screen has ever shown).
+    /// TAB-SCOPED operations (`close_active_tab`, `focus_existing_tab`'s
+    /// "already active" fast path, `focus_pending`'s keyboard-focus
+    /// routing, dock/picker mechanics) must NOT use this -- they read
+    /// `self.active_file` directly, which stays the strict, never-
+    /// widened value (see its doc). Mixing the two up is exactly the
+    /// regression the round-1 fix avoided by keeping them separate
+    /// fields in the first place.
     fn reference_active_file(&self, cx: &App) -> Option<Entity<FilePanel>> {
         if let Some(active) = &self.active_file {
             return Some(active.clone());
         }
-        let last = self.last_active_file.as_ref()?;
+        let dump = self.dock.read(cx).dump(cx);
         // Checked against `dump()` (always accurate, unlike `open_files`
         // -- see its doc) rather than registry membership: a tab closed
         // by any path other than `close_file_tab` (e.g. the tab bar's
@@ -1071,8 +1099,18 @@ impl Workspace {
         // workspace entirely, same gap `open_file_for_path` works
         // around the same way) would otherwise leave `open_files` stale
         // and this fallback pointing at a file that isn't open anymore.
-        let path = last.read(cx).path()?;
-        dump_has_file_path(&self.dock.read(cx).dump(cx).center, path).then(|| last.clone())
+        // Untitled files have no recorded path to check against
+        // `dump()` at all; trusted on registry membership alone
+        // (best-effort -- untitled buffers aren't robustly tracked
+        // anywhere else in this codebase either).
+        let is_live = |file: &Entity<FilePanel>| match file.read(cx).path() {
+            Some(path) => dump_has_file_path(&dump.center, path),
+            None => true,
+        };
+        if let Some(last) = self.last_active_file.as_ref().filter(|f| is_live(f)) {
+            return Some(last.clone());
+        }
+        self.open_files.iter().find(|f| is_live(f)).cloned()
     }
 
     /// Publish `reference_active_file`'s pane into [`ActiveHexPane`] so
@@ -2904,6 +2942,71 @@ mod tests {
 
         assert_eq!(active_path(window, cx), None, "status/title blank once the file is gone");
         assert!(inspector.read_with(cx, |insp, cx| insp.caret_window(cx)).is_none(), "inspector blanks gracefully");
+    }
+
+    /// `cmd-z` while a strings tab is focused undoes the *reference*
+    /// file's most recent edit, not nothing: `active_pane` (which
+    /// `on_undo` reads) must route through `reference_active_file`'s
+    /// fallback, mirroring egui's `active_file_id` (used by undo/redo
+    /// among "dozens of dispatch sites" per its own doc).
+    #[gpui::test]
+    fn cmd_z_undoes_the_reference_files_edit_while_a_strings_tab_is_focused(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+
+        cx.simulate_keystrokes(window.into(), "down");
+        cx.simulate_keystrokes(window.into(), "a");
+        let dirty = |cx: &mut TestAppContext| {
+            window
+                .read_with(cx, |ws, cx| ws.open_files.first().unwrap().read(cx).pane().read(cx).editor().is_dirty())
+                .unwrap()
+        };
+        assert!(dirty(cx), "typing a hex digit must dirty the buffer");
+
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert!(
+            !window.read_with(cx, |ws, _| ws.has_strict_active_file()).unwrap(),
+            "sanity: strings tab is front-most"
+        );
+
+        cx.simulate_keystrokes(window.into(), "cmd-z");
+        assert!(!dirty(cx), "cmd-z must undo via the reference-file fallback while a strings tab is focused");
+    }
+
+    /// `cmd-shift-c` while a strings tab is focused copies the
+    /// *reference* file's selection as hex, not nothing.
+    #[gpui::test]
+    fn cmd_shift_c_copies_the_reference_files_selection_while_a_strings_tab_is_focused(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+
+        window
+            .update(cx, |ws, _window, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, _| {
+                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
+                    pane.editor_mut().set_selection(Some(selection));
+                });
+            })
+            .unwrap();
+
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert!(
+            !window.read_with(cx, |ws, _| ws.has_strict_active_file()).unwrap(),
+            "sanity: strings tab is front-most"
+        );
+
+        cx.simulate_keystrokes(window.into(), "cmd-shift-c");
+        let clip = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(clip.as_deref(), Some("DE AD"));
     }
 
     /// Reopening an existing strings tab after a collapse elsewhere

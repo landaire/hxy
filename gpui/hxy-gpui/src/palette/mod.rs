@@ -542,6 +542,37 @@ mod tests {
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking closes the palette");
     }
 
+    /// Same flow as `go_to_offset_relative_jumps_the_caret`, but with
+    /// the file's own strings tab focused instead of its own tab:
+    /// `self.active_file` is `None` throughout (a strings tab has no
+    /// `FilePanel` representation), so the palette entry staying
+    /// enabled and the jump landing on the right file both depend on
+    /// `palette_context` / `active_pane` routing through
+    /// `Workspace::reference_active_file`'s fallback.
+    #[gpui::test]
+    fn go_to_offset_jumps_the_reference_file_while_its_strings_tab_is_focused(cx: &mut TestAppContext) {
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        seed_caret(&ws, 5, cx);
+
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_strings_for_active_file(window, cx)));
+        cx.run_until_parked();
+        assert!(!ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "sanity: strings tab is front-most");
+
+        let pal = palette(&ws, cx);
+        cx.simulate_keystrokes("cmd-shift-p");
+        assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-shift-p opens the palette");
+
+        type_query(&pal, "go to offset", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset, "entry stayed enabled");
+
+        type_query(&pal, "+10", cx);
+        cx.simulate_keystrokes("enter");
+
+        assert_eq!(caret(&ws, cx), Some(15), "jump landed on the reference file, not nowhere");
+    }
+
     /// Escape pops one cascade level at a time: Go-to-offset -> Main,
     /// then Main -> closed.
     #[gpui::test]
