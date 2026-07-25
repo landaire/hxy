@@ -15,6 +15,7 @@ use gpui_component::dock::register_panel;
 mod file;
 pub mod inspector;
 mod search_bar;
+pub mod strings;
 mod welcome;
 #[cfg(feature = "dock-spike")]
 pub mod workspace_spike;
@@ -23,10 +24,12 @@ pub use file::FILE_PANEL_NAME;
 pub use file::FilePanel;
 pub use inspector::INSPECTOR_PANEL_NAME;
 pub use inspector::InspectorPanel;
+pub use strings::STRINGS_PANEL_NAME;
+pub use strings::StringsPanel;
 pub use welcome::WELCOME_PANEL_NAME;
 pub use welcome::WelcomePanel;
 
-/// Register both panel names so `DockArea::load` can rebuild a saved
+/// Register every panel name so `DockArea::load` can rebuild a saved
 /// layout. Must run once at startup, before any layout is loaded.
 pub fn register(cx: &mut App) {
     register_panel(cx, FILE_PANEL_NAME, |_dock, _state, info, window, cx| {
@@ -37,6 +40,9 @@ pub fn register(cx: &mut App) {
     });
     register_panel(cx, INSPECTOR_PANEL_NAME, |_dock, _state, info, _window, cx| {
         Box::new(cx.new(|cx| InspectorPanel::restore(info, cx))) as Box<dyn PanelView>
+    });
+    register_panel(cx, STRINGS_PANEL_NAME, |_dock, _state, info, window, cx| {
+        Box::new(cx.new(|cx| StringsPanel::restore(info, window, cx))) as Box<dyn PanelView>
     });
 }
 
@@ -67,7 +73,7 @@ mod tests {
         window
             .update(cx, |_dock, window, cx| {
                 let weak = cx.entity().downgrade();
-                for name in [FILE_PANEL_NAME, WELCOME_PANEL_NAME, INSPECTOR_PANEL_NAME] {
+                for name in [FILE_PANEL_NAME, WELCOME_PANEL_NAME, INSPECTOR_PANEL_NAME, STRINGS_PANEL_NAME] {
                     let state = PanelState {
                         panel_name: name.to_string(),
                         children: Vec::new(),

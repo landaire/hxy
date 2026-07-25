@@ -174,6 +174,11 @@ impl HexPane {
         cx.notify();
     }
 
+    /// The current secondary hover-highlight band, if any.
+    pub fn hover_span(&self) -> Option<ByteRange> {
+        self.hover_span
+    }
+
     /// Install (or clear) the per-byte color override consulted in the
     /// paint loop. The boxed closure is wrapped in an [`Arc`] so each
     /// frame can snapshot a cheap handle. Mirrors egui hxy-view's

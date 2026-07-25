@@ -33,6 +33,7 @@ use gpui::MenuItem;
 use gpui::actions;
 
 use crate::workspace::OpenFile;
+use crate::workspace::OpenStrings;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 
@@ -103,6 +104,8 @@ pub fn build_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action(hxy_i18n::t("gpui-palette-toggle-inspector"), ToggleInspector),
                 MenuItem::action(hxy_i18n::t("palette-toggle-vim"), ToggleVim),
+                MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("palette-strings-whole-file"), OpenStrings),
             ],
         },
     ]
@@ -130,6 +133,6 @@ mod tests {
         assert_eq!(item_count(0), 3, "App menu: About, separator, Quit");
         assert_eq!(item_count(1), 3, "File menu: Open, separator, Close Tab");
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
-        assert_eq!(item_count(3), 2, "View menu: Toggle Inspector, Toggle Vim");
+        assert_eq!(item_count(3), 4, "View menu: Toggle Inspector, Toggle Vim, sep, Strings");
     }
 }

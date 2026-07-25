@@ -503,6 +503,12 @@ palette-strings-selection-subtitle = Scan { $start } to { $end } only.
 palette-strings-with-options = Find strings...
 palette-strings-with-options-subtitle = Open the panel without scanning so you can adjust encoding or minimum length first.
 
+# gpui strings panel (range/min-length input row not present in the egui panel)
+gpui-strings-range-label = Range:
+gpui-strings-range-placeholder = whole file
+gpui-strings-invalid-min-length = Minimum length must be a positive number.
+gpui-strings-invalid-range = Invalid range: { $reason }
+
 # Checksums tool
 tab-checksums = Checksums: { $name }
 checksums-heading = Checksums
