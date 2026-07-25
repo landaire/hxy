@@ -4,4 +4,5 @@
 //! a UI toolkit or the app's file/tab types.
 
 pub mod goto;
+pub mod inspector;
 pub mod search;
