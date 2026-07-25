@@ -3,6 +3,7 @@
 //! engine, and the data inspector's decoders. Nothing here depends on
 //! a UI toolkit or the app's file/tab types.
 
+pub mod checksums;
 pub mod entropy;
 pub mod goto;
 pub mod inspector;

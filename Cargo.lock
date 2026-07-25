@@ -3120,10 +3120,16 @@ dependencies = [
 name = "hxy-panels"
 version = "0.3.0"
 dependencies = [
+ "adler2",
+ "blake3",
+ "crc32fast",
  "hxy-calculator",
  "hxy-core",
  "jiff",
+ "md-5",
  "serde",
+ "sha1",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
 ]
 

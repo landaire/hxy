@@ -17,3 +17,15 @@ hxy-calculator = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+# Checksum tool: each crate exposes the same RustCrypto `Digest` API
+# so the streaming-pass implementation can fan out to every selected
+# algorithm uniformly. CRC32 sits outside the RustCrypto trait family
+# but `crc32fast::Hasher` follows the same `update` + `finalize`
+# shape so the dispatcher pays no overhead.
+adler2 = "2"
+blake3 = "1.8"
+crc32fast = "1"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.11.0"
