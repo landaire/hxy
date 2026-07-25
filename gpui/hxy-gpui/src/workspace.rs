@@ -714,11 +714,24 @@ impl Workspace {
         self.palette.clone()
     }
 
-    /// Close the active file tab, if one is focused.
+    /// Close the active file tab, if one is focused, and drop its entity
+    /// from the reuse registry so the closed file's buffer is released
+    /// promptly rather than lingering until a rare cache rebuild.
+    ///
+    /// Pruning here (on the close path) rather than in `reconcile` is
+    /// deliberate: a file is transiently absent from `dump()` mid-split
+    /// (`remove_panel` then `add_file_panel`), so a dump-diff prune in
+    /// reconcile would drop a still-live file's reuse handle and the next
+    /// resync would rebuild it fresh -- the exact data loss the
+    /// entity-preserving resync exists to prevent (see the Task 2 round-2
+    /// rationale). The closed entity here is genuinely gone, so removing
+    /// only it by identity is safe.
     pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active) = self.active_file.clone() else { return };
+        let closed = active.entity_id();
         let view: Arc<dyn PanelView> = Arc::new(active);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.open_files.retain(|file| file.entity_id() != closed);
     }
 
     /// Bring the workspace's own tracking back in sync with the dock's
@@ -1903,6 +1916,38 @@ mod tests {
             !window.read_with(cx, |ws, cx| ws.pane_picker.read(cx).is_active()).unwrap(),
             "escape still cancels it"
         );
+    }
+
+    /// Closing a tab prunes its `FilePanel` from the reuse registry so
+    /// the closed file's buffer is released promptly, not held until a
+    /// rare cache rebuild. The still-open file's entry survives.
+    #[gpui::test]
+    fn closing_a_tab_prunes_its_entity_from_the_registry(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let window = open_workspace(cx, None, None);
+        window_open(window, &f1, cx);
+        window_open(window, &f2, cx);
+
+        let registered = |cx: &mut TestAppContext| {
+            window
+                .read_with(cx, |ws, cx| {
+                    ws.open_files.iter().filter_map(|file| file.read(cx).path().map(Path::to_path_buf)).collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        assert_eq!(registered(cx).len(), 2, "both open files are registered");
+
+        // Close the active tab (f2); f1 remains open.
+        cx.simulate_keystrokes(window.into(), "cmd-w");
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1);
+
+        let paths = registered(cx);
+        assert!(!paths.contains(&f2), "the closed file's entity must be pruned from the registry");
+        assert!(paths.contains(&f1), "the still-open file's entity must survive");
     }
 
     /// An unparseable layout file must not crash startup; the workspace
