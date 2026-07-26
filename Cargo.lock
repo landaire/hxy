@@ -3127,11 +3127,15 @@ dependencies = [
  "hxy-core",
  "jiff",
  "md-5",
+ "notify",
+ "notify-debouncer-full",
  "serde",
  "sha1",
  "sha2 0.11.0",
  "similar 3.1.0",
+ "tempfile",
  "thiserror 2.0.18",
+ "tracing",
  "web-time",
 ]
 

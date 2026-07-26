@@ -17,6 +17,7 @@ hxy-calculator = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 # Checksum tool: each crate exposes the same RustCrypto `Digest` API
 # so the streaming-pass implementation can fan out to every selected
@@ -34,3 +35,13 @@ sha2 = "0.11.0"
 # the debounce clock so it also builds on wasm32-unknown-unknown.
 similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
 web-time = "1.1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# File watcher (watch.rs): kernel-level fs events + a polling
+# fallback. Not available on wasm32, mirroring crates/hxy's own
+# target-gated dependency block for the same crates.
+notify = "8"
+notify-debouncer-full = "0.5"
+
+[dev-dependencies]
+tempfile = "3"

@@ -158,7 +158,7 @@ impl HxyApp {
             pending_template_runs: Vec::new(),
             pending_byte_change_cascade: Vec::new(),
             pending_template_restore: false,
-            file_watcher: match crate::files::watch::FileWatcher::with_prefs(&cc.egui_ctx, initial_polling) {
+            file_watcher: match crate::files::watch::new_watcher_with_prefs(&cc.egui_ctx, initial_polling) {
                 Ok(w) => Some(w),
                 Err(e) => {
                     tracing::warn!(error = %e, "filesystem watcher unavailable; external changes will go undetected");

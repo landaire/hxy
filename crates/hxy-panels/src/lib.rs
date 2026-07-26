@@ -11,3 +11,5 @@ pub mod goto;
 pub mod inspector;
 pub mod search;
 pub mod strings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod watch;
