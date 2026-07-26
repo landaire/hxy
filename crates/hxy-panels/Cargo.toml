@@ -19,6 +19,13 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# Unsaved-patch sidecars (files::patch_persist) round-trip the
+# editor's undo/redo history and lean on suture's Patch + metadata
+# schema; the same JSON serializer backs both the patch and snapshot
+# sidecar indexes.
+hxy-editor = { workspace = true, features = ["serde"] }
+serde_json = "1.0"
+
 # Checksum tool: each crate exposes the same RustCrypto `Digest` API
 # so the streaming-pass implementation can fan out to every selected
 # algorithm uniformly. CRC32 sits outside the RustCrypto trait family
@@ -42,6 +49,12 @@ web-time = "1.1.0"
 # target-gated dependency block for the same crates.
 notify = "8"
 notify-debouncer-full = "0.5"
+
+# File persistence (files module): atomic save staging (tempfile),
+# and the unsaved-patch sidecar's Patch + metadata schema (suture).
+# All under the same non-wasm gate as the module itself.
+suture = { workspace = true, features = ["serde", "blake3"] }
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -280,18 +280,7 @@ pub fn save_vfs_entry_in_place(app: &mut HxyApp, id: FileId) -> bool {
     true
 }
 
-/// Write `bytes` to `path` atomically: stage in a sibling tempfile,
-/// fsync, then rename. Avoids leaving a half-written file if the
-/// process crashes mid-write.
-pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.as_file_mut().write_all(bytes)?;
-    tmp.as_file_mut().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
+pub use hxy_panels::files::write_atomic;
 
 /// Per-install storage for in-progress patches. Mirrors the file's
 /// disk path under here so a reopen on the next launch can offer

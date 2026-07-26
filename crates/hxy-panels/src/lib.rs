@@ -7,6 +7,8 @@
 pub mod checksums;
 pub mod diff;
 pub mod entropy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod files;
 pub mod goto;
 pub mod inspector;
 pub mod search;

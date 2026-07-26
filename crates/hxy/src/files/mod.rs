@@ -632,7 +632,7 @@ impl OpenFile {
                 Some(p) => p.clone(),
                 None => std::path::PathBuf::from(format!("{src:?}")),
             };
-            crate::files::snapshot::SnapshotStore::restore(&key)
+            crate::files::snapshot::SnapshotStore::restore(crate::files::snapshot::snapshots_base().as_deref(), &key)
         });
         Self {
             id,
