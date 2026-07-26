@@ -70,6 +70,10 @@ pub(crate) struct PaintColors {
     /// overlap; mirrors egui hxy-view, which gamma-multiplies the
     /// selection background for its hover fill (lib.rs:1358).
     pub hover: Hsla,
+    /// Opaque panel fill for the column-header band. The band occludes
+    /// rows scrolled up under the header, so it must be fully opaque
+    /// (egui renders the header outside the scroll area entirely).
+    pub background: Hsla,
 }
 
 /// Snapshot of the editor state a single paint pass needs. Captured in
@@ -220,9 +224,10 @@ fn paint_grid(
     // its gap, so the grid can never paint over the minimap.
     let grid_w = (bounds.size.width - minimap_bounds.size.width - px(crate::minimap::STRIP_GAP)).max(px(0.0));
     let grid_clip = gpui::bounds(bounds.origin, size(grid_w, bounds.size.height));
+    // Full-width opaque strip the header sits on, from the pane's top
+    // edge down to the first content row.
+    let header_band = header_band_bounds(bounds.origin.y, grid_top, bounds.origin.x, grid_w);
     window.with_content_mask(Some(ContentMask { bounds: grid_clip }), |window| {
-        paint_header(snap, &geometry, &mono, content_origin, bounds.origin.y + px(PAD_Y), window, app);
-
         for row in first_visible_row..=last_visible_row {
             let row_y = content_origin.y + metrics.line_h * (row - first_visible_row) as f32;
             let (row_start, row_len, row_bytes) = match snap.row_map.as_deref() {
@@ -263,7 +268,18 @@ fn paint_grid(
             paint_row_text(&ctx, snap, &mono, window, app);
             paint_nibble_caret(&ctx, snap, cursor, window);
         }
+
+        // Painted last, over an opaque band, so rows scrolled up into
+        // the header strip are occluded rather than showing through.
+        paint_header(snap, &geometry, &mono, content_origin, header_band, window, app);
     });
+}
+
+/// Full-width band occupying the column-header strip: from the pane's
+/// top edge (`top`) down to the first content row (`grid_top`). Painted
+/// opaque and last so scrolled rows never show through the header.
+fn header_band_bounds(top: Pixels, grid_top: Pixels, x: Pixels, width: Pixels) -> Bounds<Pixels> {
+    bounds(point(x, top), size(width, grid_top - top))
 }
 
 /// Bytes + metadata for one rendered row when a row map is active.
@@ -388,10 +404,14 @@ fn paint_header(
     geometry: &GridGeometry,
     mono: &Font,
     content_origin: Point<Pixels>,
-    header_y: Pixels,
+    band: Bounds<Pixels>,
     window: &mut Window,
     app: &mut App,
 ) {
+    window.paint_quad(fill(band, snap.colors.background));
+
+    // Glyph baseline sits a top pad below the band's top edge.
+    let header_y = band.origin.y + px(PAD_Y);
     for col in 0..snap.columns.get() {
         let hex = format!("{:02X}", col & 0xFF);
         let x = content_origin.x + geometry.hex_x(col);
@@ -628,6 +648,24 @@ impl PaintColors {
             accent: theme.accent_foreground,
             selection: theme.selection,
             hover: theme.selection.opacity(HOVER_TINT_ALPHA),
+            background: theme.background,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header band spans the pane's top edge down to the first
+    /// content row, full grid width.
+    #[test]
+    fn header_band_covers_top_strip() {
+        let top = px(10.0);
+        let grid_top = px(30.0);
+        let band = header_band_bounds(top, grid_top, px(4.0), px(200.0));
+        assert_eq!(band.origin, point(px(4.0), top));
+        assert_eq!(band.size.width, px(200.0));
+        assert_eq!(band.origin.y + band.size.height, grid_top);
     }
 }
