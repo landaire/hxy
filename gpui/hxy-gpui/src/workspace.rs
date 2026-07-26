@@ -1772,43 +1772,51 @@ impl Workspace {
 
     /// Apply the restore decision. `Restore` re-applies the sidecar's
     /// patch and undo/redo stacks onto the tab's editor and forces it
-    /// mutable; a `Clean` sidecar is verified against the live bytes
-    /// first and skipped if it no longer matches. Both `Restore` and
-    /// `Discard` drop the sidecar from disk. Mirrors egui's
-    /// `RestoreAction` handling (`crates/hxy/src/app/dialogs.rs:649-711`).
-    fn resolve_restore(&mut self, decision: RestoreDecision, cx: &mut Context<Self>) {
+    /// mutable; `Discard` drops the sidecar without applying.
+    ///
+    /// The sidecar is dropped from disk only along a path that actually
+    /// reapplied (or explicitly discarded) the edits -- never on a
+    /// verification failure, which keeps the sidecar and warns instead,
+    /// so a mismatch can't silently lose the user's work.
+    ///
+    /// A `Clean` sidecar is verified against the reloaded bytes first:
+    /// `persist_unsaved_on_quit` digests the BASE source, so this checks
+    /// the on-disk file is unchanged since the patch was cut. Mirrors
+    /// egui's `RestoreAction` handling (`crates/hxy/src/app/dialogs.rs`).
+    fn resolve_restore(&mut self, decision: RestoreDecision, window: &mut Window, cx: &mut Context<Self>) {
         use hxy_panels::files::patch_persist::RestoreIntegrity;
         let Some(pending) = self.pending_restore.take() else { return };
         let path = pending.sidecar.source_path.clone();
-        if let RestoreDecision::Restore = decision {
-            let clean = matches!(pending.integrity, RestoreIntegrity::Clean);
-            let pane = pending.file.read(cx).pane().clone();
-            // A clean sidecar promised the on-disk bytes still match what
-            // the patch was cut against; verify before trusting it, and
-            // bail (keeping the file untouched) if the digest disagrees.
-            let verified = if clean {
-                let bytes = read_pane_bytes(&pane, cx);
-                match pending.sidecar.metadata.verify(&bytes) {
-                    Ok(()) => true,
-                    Err(err) => {
-                        tracing::warn!(%err, path = %path.display(), "restore: source verification failed; not restoring");
-                        false
-                    }
-                }
-            } else {
-                true
-            };
-            if verified {
-                pane.update(cx, |pane, cx| {
-                    *pane.editor_mut().patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
-                    pane.editor_mut().set_undo_stack(pending.sidecar.undo_stack);
-                    pane.editor_mut().set_redo_stack(pending.sidecar.redo_stack);
-                    pane.editor_mut().push_history_boundary();
-                    pane.editor_mut().set_edit_mode(EditMode::Mutable);
-                    cx.notify();
-                });
+        if let RestoreDecision::Discard = decision {
+            crate::patches::discard(&path);
+            cx.notify();
+            return;
+        }
+        let clean = matches!(pending.integrity, RestoreIntegrity::Clean);
+        let pane = pending.file.read(cx).pane().clone();
+        if clean {
+            let bytes = read_pane_bytes(&pane, cx);
+            if let Err(err) = pending.sidecar.metadata.verify(&bytes) {
+                // The on-disk bytes no longer match the base the patch was
+                // cut against. Do NOT reapply onto mismatched bytes, and --
+                // critically -- do NOT drop the sidecar: keep it so the
+                // edits stay recoverable, and tell the user why.
+                tracing::warn!(%err, path = %path.display(), "restore: source verification failed; keeping sidecar");
+                window.push_notification(Notification::warning(hxy_i18n::t("gpui-restore-verify-failed")), cx);
+                cx.notify();
+                return;
             }
         }
+        pane.update(cx, |pane, cx| {
+            *pane.editor_mut().patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
+            pane.editor_mut().set_undo_stack(pending.sidecar.undo_stack);
+            pane.editor_mut().set_redo_stack(pending.sidecar.redo_stack);
+            pane.editor_mut().push_history_boundary();
+            pane.editor_mut().set_edit_mode(EditMode::Mutable);
+            cx.notify();
+        });
+        // Only now that the edits are safely reapplied is it safe to drop
+        // the sidecar.
         crate::patches::discard(&path);
         cx.notify();
     }
@@ -1844,9 +1852,16 @@ impl Workspace {
                 continue;
             }
             let patch = editor.patch().read().expect("patch lock poisoned").clone();
+            // Digest the BASE (unpatched) source, not the patched view:
+            // the sidecar's content digest must record the on-disk
+            // baseline the patch was cut against so a later Clean restore
+            // can verify the disk is unchanged and reapply. Digesting the
+            // dirty view (as `editor.source()` would) stores the digest of
+            // the very bytes we are trying to restore, which never matches
+            // the reloaded base and rejects every legitimate restore.
             let Some(sidecar) = patch_persist::snapshot(
                 path.clone(),
-                editor.source().as_ref(),
+                editor.base_source().as_ref(),
                 patch,
                 editor.undo_stack().to_vec(),
                 editor.redo_stack().to_vec(),
@@ -2975,7 +2990,7 @@ fn register_quit_persistence(cx: &mut Context<Workspace>) -> Subscription {
 fn restore_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, decision: RestoreDecision) -> Button {
     Button::new(id).label(label).on_click(move |_, window, cx| {
         if let Some(workspace) = weak.upgrade() {
-            workspace.update(cx, |workspace, cx| workspace.resolve_restore(decision, cx));
+            workspace.update(cx, |workspace, cx| workspace.resolve_restore(decision, window, cx));
         }
         window.close_dialog(cx);
         // Offer the next queued session-restore prompt after this dialog
@@ -3676,13 +3691,13 @@ mod tests {
         .expect("non-empty patch");
 
         window
-            .update(cx, |ws, _window, cx| {
+            .update(cx, |ws, window, cx| {
                 ws.pending_restore = Some(PendingRestore {
                     file: file.clone(),
                     sidecar,
                     integrity: hxy_panels::files::patch_persist::RestoreIntegrity::Modified { reason: "test".into() },
                 });
-                ws.resolve_restore(RestoreDecision::Restore, cx);
+                ws.resolve_restore(RestoreDecision::Restore, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -3700,17 +3715,16 @@ mod tests {
             .unwrap();
     }
 
-    /// Session restore stages a patch-restore prompt for a rebuilt file
-    /// tab whose sidecar was persisted on quit -- the path
-    /// `build_initial` -> `dock.load` -> `FilePanel::restore` takes, which
-    /// never routes through `open_or_focus` and so, before this fix, never
-    /// consulted the sidecar (quit-dirty + relaunch silently showed clean
-    /// bytes). Resolving the staged prompt clears it and drops the sidecar.
-    /// The apply-onto-bytes half is covered by
-    /// `restore_reapplies_the_sidecar_patch`; the Clean-path byte re-verify
-    /// is a separately-parked concern.
+    /// Full quit-dirty -> relaunch -> accept round-trip: a dirty file's
+    /// on-quit sidecar is offered as a restore prompt on session restore
+    /// (the `build_initial` -> `dock.load` -> `FilePanel::restore` path,
+    /// which never routes through `open_or_focus`), and ACCEPTING it on an
+    /// untouched-on-disk file reapplies the edit AND the undo history, then
+    /// drops the sidecar only after the successful apply. Exercises the
+    /// base-digest fix: the Clean-path verify now passes for an unchanged
+    /// disk instead of rejecting every restore.
     #[gpui::test]
-    fn session_restore_stages_patch_restore_prompt(cx: &mut TestAppContext) {
+    fn session_restore_accept_reapplies_edits_and_undo(cx: &mut TestAppContext) {
         use hxy_panels::files::patch_persist;
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
@@ -3732,18 +3746,109 @@ mod tests {
         );
 
         // Second session: rebuild from the layout. The restored tab, which
-        // never routes through `open_or_focus`, must still stage a restore
-        // prompt for its sidecar.
-        let (_window, second) = open_workspace_with_root(cx, Vec::new(), Some(layout));
+        // never routes through `open_or_focus`, stages a restore prompt.
+        let (window, second) = open_workspace_with_root(cx, Vec::new(), Some(layout));
         let staged = second
             .read_with(cx, |ws, cx| ws.pending_restore.as_ref().map(|p| p.file.read(cx).path().map(Path::to_path_buf)));
         assert_eq!(staged, Some(Some(path.clone())), "the restored tab staged its restore prompt");
+        let file = second.read_with(cx, |ws, _| ws.pending_restore.as_ref().unwrap().file.clone());
 
-        // Resolving the prompt clears it and drops the sidecar from disk.
-        second.update(cx, |ws, cx| ws.resolve_restore(RestoreDecision::Restore, cx));
+        // Accept: the on-disk file is untouched, so the Clean verify passes
+        // and the patch + undo history reapply.
+        cx.update_window(window.into(), |_, window, cx| {
+            second.update(cx, |ws, cx| ws.resolve_restore(RestoreDecision::Restore, window, cx));
+        })
+        .unwrap();
         cx.run_until_parked();
-        assert!(second.read_with(cx, |ws, _| ws.pending_restore.is_none()), "resolving cleared the prompt");
-        assert!(patch_persist::load(&edits, &path).unwrap().is_none(), "resolving dropped the sidecar");
+        second.read_with(cx, |ws, cx| {
+            assert!(ws.pending_restore.is_none(), "resolving cleared the prompt");
+            let editor = file.read(cx).pane().read(cx).editor();
+            assert!(editor.is_dirty(), "accept reapplied the patch");
+            assert!(editor.can_undo(), "accept reinstated the undo history");
+            let byte0 = editor
+                .source()
+                .read(hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap())
+                .unwrap();
+            assert_eq!(byte0[0], 0xA0, "the persisted edit landed");
+        });
+        assert!(
+            patch_persist::load(&edits, &path).unwrap().is_none(),
+            "the sidecar is dropped only after a successful apply",
+        );
+
+        // Undo walks back to the on-disk baseline.
+        cx.update_window(window.into(), |_, window, cx| {
+            second.update(cx, |_ws, cx| {
+                file.read(cx).pane().clone().update(cx, |pane, cx| {
+                    pane.editor_mut().undo();
+                    cx.notify();
+                });
+            });
+            let _ = window;
+        })
+        .unwrap();
+        second.read_with(cx, |_ws, cx| {
+            let byte0 = file
+                .read(cx)
+                .pane()
+                .read(cx)
+                .editor()
+                .source()
+                .read(hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap())
+                .unwrap();
+            assert_eq!(byte0[0], 0x00, "undo reverted to the on-disk byte");
+        });
+    }
+
+    /// A Clean restore whose on-disk bytes no longer match the sidecar's
+    /// base digest is NOT applied and, critically, the sidecar is KEPT
+    /// (not silently discarded) with a warning toast -- so a stale verify
+    /// can never lose the user's edits.
+    #[gpui::test]
+    fn failed_verify_keeps_the_sidecar_and_warns(cx: &mut TestAppContext) {
+        use hxy_panels::files::patch_persist;
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let edits = dir.path().join("edits");
+        crate::patches::set_edits_dir_for_test(edits.clone());
+        let path = temp_file(&dir, "verify.bin", &[0u8; 16]);
+
+        let (window, ws) = open_workspace_with_root(cx, vec![path.clone()], None);
+        let file = ws.read_with(cx, |ws, _| ws.active_file.clone()).expect("file open");
+
+        // Build a Clean-classified sidecar whose digest is of DIFFERENT
+        // base bytes than what is on disk, so the verify must fail.
+        let other: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x55u8; 16]));
+        let mut editor = hxy_editor::HexEditor::new(other);
+        editor.splice(0, 1, vec![0xCD]).unwrap();
+        let patch = editor.patch().read().unwrap().clone();
+        let sidecar = patch_persist::snapshot(
+            path.clone(),
+            editor.base_source().as_ref(),
+            patch,
+            editor.undo_stack().to_vec(),
+            editor.redo_stack().to_vec(),
+        )
+        .expect("non-empty patch");
+        patch_persist::store(&edits, &sidecar).unwrap();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.pending_restore = Some(PendingRestore {
+                    file: file.clone(),
+                    sidecar,
+                    integrity: hxy_panels::files::patch_persist::RestoreIntegrity::Clean,
+                });
+                ws.resolve_restore(RestoreDecision::Restore, window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert!(!ws.read_with(cx, |_ws, cx| file.read(cx).is_dirty(cx)), "a failed verify does not apply the patch");
+        assert!(patch_persist::load(&edits, &path).unwrap().is_some(), "a failed verify keeps the sidecar");
+        let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(toasts, 1, "a failed verify warns the user");
     }
 
     /// Save As re-anchors the file's analysis panels onto the new path.

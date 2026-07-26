@@ -354,6 +354,7 @@ restore-patch-restore-anyway = Restore anyway
 restore-patch-discard = Discard
 restore-patch-warn-modified = The file has changed on disk since these edits were saved. Restoring may land them at the wrong offsets.
 restore-patch-warn-unknown = Unable to confirm the file matches what the edits were saved against.
+gpui-restore-verify-failed = The file changed on disk since these edits were saved; they were kept for later, not applied.
 
 # ImHex-Patterns download flow
 patterns-prompt-title = Download ImHex pattern library?
