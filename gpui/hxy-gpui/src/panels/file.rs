@@ -85,20 +85,27 @@ impl FilePanel {
     /// Rebuild a panel from persisted [`PanelInfo`]. The path is
     /// re-read from disk; callers prune unreadable paths before restore
     /// (see `persist::prune_for_restore`), so a read failure here is
-    /// only a defensive fallback to an empty buffer.
+    /// only a defensive fallback to an empty buffer. VFS-handler
+    /// detection is re-run on the re-read bytes exactly as a fresh open
+    /// does, so "Browse VFS" stays enabled for a restored zip tab
+    /// (mirrors the egui app re-detecting on session restore).
     pub fn restore(info: &PanelInfo, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let path = path_from_info(info);
-        let source: Arc<dyn HexSource> = match &path {
+        let bytes: Vec<u8> = match &path {
             Some(path) => match std::fs::read(path) {
-                Ok(bytes) => Arc::new(MemorySource::new(bytes)),
+                Ok(bytes) => bytes,
                 Err(err) => {
                     tracing::warn!(?path, %err, "restore: re-read failed; empty buffer");
-                    Arc::new(MemorySource::new(Vec::new()))
+                    Vec::new()
                 }
             },
-            None => Arc::new(MemorySource::new(Vec::new())),
+            None => Vec::new(),
         };
-        Self::new(source, path, window, cx)
+        let handler = crate::panels::workspace_host::detect_handler(cx, &bytes[..bytes.len().min(4096)]);
+        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+        let mut panel = Self::new(source, path, window, cx);
+        panel.detected_handler = handler;
+        panel
     }
 
     pub fn pane(&self) -> &Entity<HexPane> {
@@ -258,5 +265,34 @@ mod tests {
         let is_open_after = panel.read_with(cx, |panel, cx| panel.search.read(cx).is_open());
         assert!(!is_open_after, "escape closes the search bar");
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle), "escape refocuses the grid");
+    }
+
+    /// A restored zip-backed tab re-runs VFS-handler detection on the
+    /// re-read bytes, so "Browse VFS" stays enabled across a relaunch
+    /// (regression: `restore` previously left `detected_handler` `None`).
+    #[gpui::test]
+    fn restore_re_detects_the_vfs_handler(cx: &mut TestAppContext) {
+        // `crate::panels::register` installs the VFS registry global that
+        // detection reads; the plain `setup` above does not.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::panels::register(cx);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("fixture.zip");
+        std::fs::write(&archive, super::super::vfs_tree::test_support::fixture_zip_bytes()).unwrap();
+
+        let info = PanelInfo::panel(serde_json::json!({ "path": archive.to_string_lossy() }));
+        let window = cx.add_window(|window, cx| {
+            let panel = cx.new(|cx| FilePanel::restore(&info, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+
+        panel.read_with(vcx, |panel, _| {
+            assert!(panel.detected_handler().is_some(), "restored zip tab re-detects its handler");
+        });
     }
 }

@@ -207,6 +207,14 @@ impl WorkspaceHostPanel {
         });
         let tree_subscription = cx.subscribe_in(&tree, window, Self::on_tree_event);
 
+        // The tree is owned too: it is not registered with the global
+        // PanelRegistry (it needs the live mount), so ejecting it into the
+        // outer dock would persist an unrebuildable leaf (InvalidPanel on
+        // restore). Marking it owned makes the guard leave it alone if a
+        // user ever drags it out of the left dock into the inner center.
+        let mut owned = HashSet::new();
+        owned.insert(tree.entity_id());
+
         Self {
             focus_handle: cx.focus_handle(),
             dock,
@@ -215,7 +223,7 @@ impl WorkspaceHostPanel {
             mount,
             parent_path,
             entries: Vec::new(),
-            owned: HashSet::new(),
+            owned,
             needs_guard: false,
             _dock_subscription: dock_subscription,
             _tree_subscription: tree_subscription,
