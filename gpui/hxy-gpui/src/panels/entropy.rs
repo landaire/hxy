@@ -108,6 +108,12 @@ fn open_file_panels(cx: &App) -> Vec<Entity<FilePanel>> {
     }
 }
 
+/// Reload-cascade size cap. Entropy auto-runs ungated on initial open
+/// (`bind_pane`), but egui's `cascade_byte_change` gates the reload
+/// recompute -- entropy included -- by `len == 0 || len > this`, so a
+/// reload of a giant dump doesn't pin a background worker.
+const AUTO_RUN_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
 pub struct EntropyPanel {
     focus_handle: FocusHandle,
     owning_path: Option<PathBuf>,
@@ -115,6 +121,9 @@ pub struct EntropyPanel {
     _rebind_observe: Subscription,
     state: Option<EntropyState>,
     running: bool,
+    /// A run requested while another was in flight; replayed on
+    /// completion so a reload-triggered recompute is never swallowed.
+    pending_rerun: bool,
     _compute: Option<Task<()>>,
 }
 
@@ -145,6 +154,7 @@ impl EntropyPanel {
             _rebind_observe: rebind_observe,
             state: None,
             running: false,
+            pending_rerun: false,
             _compute: None,
         }
     }
@@ -153,6 +163,12 @@ impl EntropyPanel {
     /// dedup and dock persistence.
     pub(crate) fn owning_path(&self) -> Option<&Path> {
         self.owning_path.as_deref()
+    }
+
+    /// Re-anchor this panel onto a new owning path (Save As renamed its
+    /// file). Same live pane, new lookup/persist key.
+    pub(crate) fn set_owning_path(&mut self, path: PathBuf) {
+        self.owning_path = Some(path);
     }
 
     /// Look up `owning_path` in the currently published
@@ -198,6 +214,10 @@ impl EntropyPanel {
     fn run(&mut self, cx: &mut Context<Self>) {
         let Some(pane) = self.owning_pane.clone() else { return };
         if self.running {
+            // Queue a re-run rather than dropping it; the completion
+            // handler replays it against the then-current bytes.
+            self.pending_rerun = true;
+            cx.notify();
             return;
         }
         let source = pane.read(cx).editor().source().clone();
@@ -225,19 +245,30 @@ impl EntropyPanel {
                         cx.notify();
                     }
                 }
+                if std::mem::take(&mut this.pending_rerun) {
+                    this.run(cx);
+                }
             });
         });
         self._compute = Some(task);
     }
 
-    /// Re-run against the owning file's current bytes after an
-    /// external reload swapped its pane's source. No-op for a panel
-    /// nobody has used yet -- mirrors egui's `cascade_byte_change`
-    /// `has_entropy` gate (`state.is_some() || running`).
+    /// Re-run against the owning file's current bytes after an external
+    /// reload swapped its pane's source. No-op for a panel nobody has used
+    /// yet, and -- mirroring egui's `cascade_byte_change`, which gates the
+    /// reload recompute (entropy included) even though the initial
+    /// `compute_entropy_for` is ungated -- skipped for an empty or
+    /// over-[`AUTO_RUN_MAX_BYTES`] file.
     pub(crate) fn recompute_after_reload(&mut self, cx: &mut Context<Self>) {
-        if self.state.is_some() || self.running {
-            self.run(cx);
+        if !(self.state.is_some() || self.running) {
+            return;
         }
+        let Some(pane) = self.owning_pane.clone() else { return };
+        let len = pane.read(cx).editor().source().len().get();
+        if len == 0 || len > AUTO_RUN_MAX_BYTES {
+            return;
+        }
+        self.run(cx);
     }
 
     fn compute_button(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -507,6 +538,39 @@ mod tests {
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
         vcx.run_until_parked();
         (panel, vcx)
+    }
+
+    /// A run requested while another is in flight is queued and replayed
+    /// on completion, so a reload-triggered recompute is never swallowed.
+    #[gpui::test]
+    fn in_flight_run_queues_a_rerun(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, vec![0xAAu8; 4096]);
+        cx.run_until_parked();
+        panel.update(cx, |p, cx| {
+            p.run(cx);
+            assert!(p.running, "the first run is in flight");
+            p.run(cx);
+            assert!(p.pending_rerun, "a second run mid-flight is queued");
+        });
+        cx.run_until_parked();
+        assert!(!panel.read_with(cx, |p, _| p.pending_rerun), "the queued rerun was consumed");
+    }
+
+    /// Entropy auto-runs ungated on the initial bind, but its reload
+    /// recompute mirrors egui's `cascade_byte_change` size gate: an empty
+    /// source is skipped before `run`.
+    #[gpui::test]
+    fn recompute_after_reload_skips_empty_source(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, Vec::new());
+        cx.run_until_parked();
+        panel.update(cx, |p, cx| {
+            p.running = true;
+            p.recompute_after_reload(cx);
+            assert!(!p.pending_rerun, "an empty source is gated out before run()");
+            p.running = false;
+        });
     }
 
     /// Opening the panel on a small fixture auto-runs unconditionally

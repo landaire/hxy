@@ -122,6 +122,11 @@ pub struct StringsPanel {
     config: StringsConfig,
     last_result: Option<StringsResult>,
     running: bool,
+    /// A run requested while another was in flight. Set by `run` when it
+    /// finds itself already `running`; on completion the panel re-runs
+    /// once against the current bytes so a reload-triggered recompute is
+    /// never swallowed by an in-flight scan.
+    pending_rerun: bool,
     _compute: Option<Task<()>>,
     sort: SortOrder,
     /// Indices into `last_result.entries` after the active sort and
@@ -187,6 +192,7 @@ impl StringsPanel {
             config,
             last_result: None,
             running: false,
+            pending_rerun: false,
             _compute: None,
             sort: SortOrder::default(),
             visible: Vec::new(),
@@ -204,6 +210,13 @@ impl StringsPanel {
     /// dedup and dock persistence.
     pub(crate) fn owning_path(&self) -> Option<&Path> {
         self.owning_path.as_deref()
+    }
+
+    /// Re-anchor this panel onto a new owning path (Save As renamed its
+    /// file). The pane binding is unchanged -- it is the same live entity
+    /// under a new path -- so only the persisted/lookup key moves.
+    pub(crate) fn set_owning_path(&mut self, path: PathBuf) {
+        self.owning_path = Some(path);
     }
 
     /// Look up `owning_path` in the currently published
@@ -356,6 +369,10 @@ impl StringsPanel {
     fn run(&mut self, cx: &mut Context<Self>) {
         let Some(pane) = self.owning_pane.clone() else { return };
         if self.running {
+            // Queue a re-run rather than dropping it; the completion
+            // handler picks it up against the then-current bytes.
+            self.pending_rerun = true;
+            cx.notify();
             return;
         }
         let source = pane.read(cx).editor().source().clone();
@@ -374,6 +391,9 @@ impl StringsPanel {
                         cx.notify();
                     }
                 }
+                if std::mem::take(&mut this.pending_rerun) {
+                    this.run(cx);
+                }
             });
         });
         self._compute = Some(task);
@@ -386,14 +406,21 @@ impl StringsPanel {
         cx.notify();
     }
 
-    /// Re-run against the owning file's current bytes after an
-    /// external reload swapped its pane's source. No-op for a panel
-    /// nobody has used yet -- mirrors egui's `cascade_byte_change`
-    /// `has_strings` gate (`last_result.is_some() || running`).
+    /// Re-run against the owning file's current bytes after an external
+    /// reload swapped its pane's source. No-op for a panel nobody has used
+    /// yet, and -- mirroring egui's `cascade_byte_change` -- skipped for an
+    /// empty or over-[`AUTO_RUN_MAX_BYTES`] file so a reload of a giant
+    /// dump doesn't pin a background worker.
     pub(crate) fn recompute_after_reload(&mut self, cx: &mut Context<Self>) {
-        if self.last_result.is_some() || self.running {
-            self.run(cx);
+        if !(self.last_result.is_some() || self.running) {
+            return;
         }
+        let Some(pane) = self.owning_pane.clone() else { return };
+        let len = pane.read(cx).editor().source().len().get();
+        if len == 0 || len > AUTO_RUN_MAX_BYTES {
+            return;
+        }
+        self.run(cx);
     }
 
     /// Parse the min-length / range text inputs (blank = keep the
@@ -838,6 +865,43 @@ mod tests {
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
         vcx.run_until_parked();
         (panel, vcx)
+    }
+
+    /// A run requested while another is in flight is queued (not dropped)
+    /// and replayed on completion, so a reload-triggered recompute can't be
+    /// swallowed by an in-flight scan.
+    #[gpui::test]
+    fn in_flight_run_queues_a_rerun(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, b"\x00hello\x00".to_vec());
+        cx.run_until_parked();
+        panel.update(cx, |p, cx| {
+            p.run(cx);
+            assert!(p.running, "the first run is in flight");
+            p.run(cx);
+            assert!(p.pending_rerun, "a second run mid-flight is queued, not dropped");
+        });
+        cx.run_until_parked();
+        assert!(!panel.read_with(cx, |p, _| p.pending_rerun), "the queued rerun was consumed");
+        assert!(!panel.read_with(cx, |p, _| p.running), "and the panel settled");
+    }
+
+    /// `recompute_after_reload` is gated on file size like egui's
+    /// `cascade_byte_change`: an empty source is skipped before `run`, so
+    /// no rerun is queued even when a prior result exists.
+    #[gpui::test]
+    fn recompute_after_reload_skips_empty_source(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, Vec::new());
+        cx.run_until_parked();
+        panel.update(cx, |p, cx| {
+            // `running = true` satisfies the has-result-or-running gate;
+            // the len == 0 gate must still short-circuit before `run`.
+            p.running = true;
+            p.recompute_after_reload(cx);
+            assert!(!p.pending_rerun, "an empty source is gated out, so run() never queued a rerun");
+            p.running = false;
+        });
     }
 
     /// Opening the panel on a small fixture auto-runs (under
