@@ -68,9 +68,11 @@ use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::Selection;
+use hxy_panels::search::EncodeError;
 use hxy_panels::search::Endian;
 use hxy_panels::search::NumberWidth;
 use hxy_panels::search::SearchKind;
+use hxy_panels::search::encode_query;
 use hxy_panels::search::find_all;
 
 use super::FilePanel;
@@ -354,8 +356,16 @@ impl GlobalSearchPanel {
     }
 
     fn render_status(&self, cx: &Context<Self>) -> gpui::AnyElement {
-        if let Some(err) = &self.state.query_state.error {
-            return Label::new(err.clone()).text_color(cx.theme().danger).into_any_element();
+        // The shared `SearchState` stores the encode error as a Display
+        // string; re-derive the typed variant here (matching on it, never
+        // parsing the text) so the message can be localized.
+        if self.state.query_state.error.is_some() {
+            let qs = &self.state.query_state;
+            let message = match encode_query(qs.kind, &qs.query, qs.width, qs.signed, qs.endian) {
+                Err(err) => hxy_i18n::t(search_error_key(&err)),
+                Ok(_) => hxy_i18n::t("gpui-global-search-error-generic"),
+            };
+            return Label::new(message).text_color(cx.theme().danger).into_any_element();
         }
         if self.running {
             return Label::new(hxy_i18n::t("gpui-global-search-running"))
@@ -526,6 +536,16 @@ impl TableDelegate for GlobalSearchTableDelegate {
     }
 }
 
+/// The i18n key for a query-encode error, matched on the typed variant.
+fn search_error_key(err: &EncodeError) -> &'static str {
+    match err {
+        EncodeError::Empty => "gpui-global-search-error-empty",
+        EncodeError::BadHex(_) => "gpui-global-search-error-bad-hex",
+        EncodeError::BadNumber { .. } => "gpui-global-search-error-bad-number",
+        EncodeError::NumberOverflow { .. } => "gpui-global-search-error-overflow",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
@@ -535,6 +555,25 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
+    }
+
+    /// Every `EncodeError` variant maps to a distinct, resolvable i18n key
+    /// -- matched on the typed variant, never parsed from Display text.
+    #[test]
+    fn search_error_key_maps_each_variant() {
+        let cases = [
+            (EncodeError::Empty, "gpui-global-search-error-empty"),
+            (EncodeError::BadHex("zz".into()), "gpui-global-search-error-bad-hex"),
+            (EncodeError::BadNumber { input: "zz".into(), radix: 16 }, "gpui-global-search-error-bad-number"),
+            (
+                EncodeError::NumberOverflow { value: "999".into(), bytes: 1, sign: "unsigned integer" },
+                "gpui-global-search-error-overflow",
+            ),
+        ];
+        for (err, key) in cases {
+            assert_eq!(search_error_key(&err), key);
+            assert!(!hxy_i18n::t(key).is_empty(), "{key} resolves to a localized string");
+        }
     }
 
     fn source(bytes: Vec<u8>) -> Arc<dyn HexSource> {

@@ -47,6 +47,7 @@ use gpui::Window;
 use gpui::div;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::Disableable;
 use gpui_component::Selectable;
 use gpui_component::button::Button;
 use gpui_component::dock::Panel;
@@ -213,6 +214,11 @@ impl ComparePanel {
     }
 
     #[cfg(test)]
+    pub(crate) fn is_recomputing(&self) -> bool {
+        self.recomputing
+    }
+
+    #[cfg(test)]
     pub(crate) fn sync_scroll_enabled(&self) -> bool {
         self.sync_scroll
     }
@@ -316,6 +322,15 @@ impl ComparePanel {
     /// Snapshot both sides' bytes and diff them off the UI thread.
     /// Mirrors the egui session's `request_recompute`: the worker owns
     /// `Vec<u8>` snapshots so it never aliases live editor state.
+    /// Force a fresh diff regardless of the fingerprint gate -- the
+    /// toolbar Recompute button, egui parity
+    /// (`crates/hxy/src/compare/tab.rs`). Lets the user re-run a diff the
+    /// [`RECOMPUTE_DEADLINE`] truncated on a prior pass. Disabled in the
+    /// UI while a run is in flight, matching egui's `add_enabled`.
+    pub(crate) fn recompute_now(&mut self, cx: &mut Context<Self>) {
+        self.recompute(cx);
+    }
+
     fn recompute(&mut self, cx: &mut Context<Self>) {
         if self.recomputing {
             return;
@@ -443,6 +458,13 @@ impl ComparePanel {
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
+            .child(
+                Button::new("compare-recompute")
+                    .label(hxy_i18n::t("compare-recompute"))
+                    .compact()
+                    .disabled(self.recomputing)
+                    .on_click(cx.listener(|this, _, _, cx| this.recompute_now(cx))),
+            )
             .child(
                 Button::new("compare-sync-scroll")
                     .label(hxy_i18n::t("compare-sync-scroll"))
@@ -767,7 +789,7 @@ impl TableDelegate for CompareTableDelegate {
 }
 
 fn format_range(offset: u64, len: u64) -> String {
-    if len == 0 { format!("0x{offset:08X} (gap)") } else { format!("0x{offset:08X} +{len}") }
+    if len == 0 { format!("0x{offset:08X} {}", hxy_i18n::t("compare-gap")) } else { format!("0x{offset:08X} +{len}") }
 }
 
 #[cfg(test)]
@@ -785,6 +807,15 @@ mod tests {
 
     fn side(name: &str, bytes: Vec<u8>) -> CompareSideInit {
         CompareSideInit { name: name.to_string(), bytes, restore_path: None }
+    }
+
+    /// A gap row's range label is localized rather than the hard-coded
+    /// "(gap)"; a sized range keeps its offset + length form.
+    #[test]
+    fn gap_range_label_is_localized() {
+        let gap = format_range(0x10, 0);
+        assert!(gap.contains(&hxy_i18n::t("compare-gap")), "gap label localized: {gap}");
+        assert_eq!(format_range(0x10, 4), "0x00000010 +4");
     }
 
     /// Build a `ComparePanel` inside a real `gpui_component::Root` window
@@ -824,6 +855,23 @@ mod tests {
             let a_gaps = panel.pane_a().read(cx).row_map().unwrap().iter().filter(|s| s.is_gap()).count();
             assert!(a_gaps >= 1, "A pads the inserted region with a gap row");
         });
+    }
+
+    /// The toolbar Recompute button forces a fresh diff even when no
+    /// fingerprint moved: `recompute_now` re-enters the background worker
+    /// (observable via the recomputing flag) regardless of the debounce
+    /// gate, letting the user re-run a diff a deadline truncated.
+    #[gpui::test]
+    fn recompute_button_forces_a_fresh_diff(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, vec![0u8; 32], vec![0u8; 32]);
+        assert!(!panel.read_with(cx, |p, _| p.is_recomputing()), "the initial diff settled");
+
+        // No edit, so no fingerprint moved; the button must still re-run.
+        panel.update(cx, |p, cx| p.recompute_now(cx));
+        assert!(panel.read_with(cx, |p, _| p.is_recomputing()), "the button re-entered the worker");
+        cx.run_until_parked();
+        assert!(!panel.read_with(cx, |p, _| p.is_recomputing()), "the forced recompute finished");
     }
 
     /// Editing a side moves its fingerprint; after the debounce elapses a
