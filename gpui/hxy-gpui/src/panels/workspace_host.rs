@@ -19,6 +19,18 @@
 //! to the outer dock with a warning toast. This is the verdict's
 //! detect-and-eject correction; it is app-level and forks no upstream
 //! code.
+//!
+//! Sweep boundary: the eject sweep covers the inner CENTER dock only.
+//! gpui-component 0.5.1 exposes no accessor for a `DockArea`'s side-dock
+//! (`left`/`right`/`bottom`) panel entities -- those fields are private
+//! with no `items()`-equivalent -- so cheaply enumerating a foreign tab
+//! dropped into an inner side dock is not possible without forking
+//! upstream. The inner layout ships only a left tree dock (owned), and a
+//! foreign drop lands in a center `TabPanel` in the common case, so this
+//! is an acceptable M3 floor. The symmetric OUTWARD escape (an owned
+//! entry dragged out to the outer dock) is likewise left to a future
+//! pass: detecting it needs outer-dock walking that the same missing
+//! accessors make non-cheap.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -162,10 +174,25 @@ impl WorkspaceHostPanel {
     /// `InvalidPanel`.
     pub fn restore(outer: WeakEntity<DockArea>, info: &PanelInfo, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let parent_path = parent_path_from_info(info);
-        let mount = parent_path.as_ref().and_then(|path| remount(path, cx)).unwrap_or_else(|| {
-            tracing::warn!(?parent_path, "workspace restore: re-mount failed; empty mount");
-            Arc::new(empty_mount())
-        });
+        let mount = match parent_path.as_ref().and_then(|path| remount(path, cx)) {
+            Some(mount) => mount,
+            None => {
+                tracing::warn!(?parent_path, "workspace restore: re-mount failed; empty mount");
+                // Warn only when a real archive path was recorded but no
+                // longer mounts (corrupt/unparseable) -- a host with no
+                // recorded path has nothing to warn about. Deferred because
+                // `Root` is not installed during the restoring `dock.load`
+                // (same reason as the workspace's own restore toasts).
+                if let Some(path) = parent_path.as_ref() {
+                    let name = display_name(path);
+                    window.defer(cx, move |window, cx| {
+                        let text = hxy_i18n::t_args("gpui-status-workspace-mount-failed", &[("name", &name)]);
+                        window.push_notification(Notification::warning(text), cx);
+                    });
+                }
+                Arc::new(empty_mount())
+            }
+        };
         let expanded = expanded_from_info(info);
         let mut host = Self::build(outer, mount, parent_path, expanded, window, cx);
         let virtual_bases = virtual_bases_from_info(info);
@@ -258,8 +285,15 @@ impl WorkspaceHostPanel {
         // stops being persisted and can be reopened from the tree.
         self.entries.retain(|e| e.panel.upgrade().is_some());
         if let Some(panel) = self.entries.iter().find(|e| e.vfs_path == vfs_path).and_then(|e| e.panel.upgrade()) {
-            let handle = panel.read(cx).focus_handle(cx);
-            window.focus(&handle);
+            // gpui-component 0.5.1 has no "activate tab", so `window.focus`
+            // alone leaves a background entry behind its front tab. Re-add
+            // it through the inner dock -- the same remove+re-add
+            // workaround `Workspace::focus_existing_tab` uses -- so it
+            // becomes the visible tab. The entity (and its `owned` id) is
+            // unchanged, so the drag guard still leaves it alone.
+            let view: Arc<dyn PanelView> = Arc::new(panel);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
             return;
         }
         let bytes = match read_entry(&self.mount, &vfs_path) {
@@ -655,6 +689,41 @@ mod tests {
         host.read_with(vcx, |host, _| assert_eq!(host.entry_paths().len(), 1, "re-activation does not duplicate"));
     }
 
+    /// Re-activating a background entry brings it to the front. gpui-
+    /// component 0.5.1 has no "activate tab", so `open_entry` re-adds the
+    /// panel through the inner dock (the same remove+re-add workaround the
+    /// outer workspace uses); a bare `window.focus` would leave it behind
+    /// its front sibling.
+    #[gpui::test]
+    fn reactivating_a_background_entry_makes_it_the_front_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let (_outer, host, vcx) = build(cx, mount_fixture(), None);
+        let tree = host.read_with(vcx, |host, _| host.tree().clone());
+        tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
+        vcx.run_until_parked();
+        tree.update(vcx, |tree, cx| tree.activate_file("/dir/nested.bin".to_string(), cx));
+        vcx.run_until_parked();
+
+        let top = host.read_with(vcx, |host, _| host.entry_panel("/top.txt")).expect("top open");
+        let nested = host.read_with(vcx, |host, _| host.entry_panel("/dir/nested.bin")).expect("nested open");
+
+        let active_ids = |vcx: &mut VisualTestContext| {
+            host.read_with(vcx, |host, cx| {
+                let mut active = Vec::new();
+                collect_active_panels(host.inner_dock().read(cx).items(), cx, &mut active);
+                active.iter().map(|p| p.view().entity_id()).collect::<Vec<_>>()
+            })
+        };
+        assert!(active_ids(vcx).contains(&nested.entity_id()), "the just-opened entry is the front tab");
+
+        // Re-activate the background entry: it must become the front tab.
+        tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
+        vcx.run_until_parked();
+        let ids = active_ids(vcx);
+        assert!(ids.contains(&top.entity_id()), "re-activating the background entry brings it front: {ids:?}");
+        host.read_with(vcx, |host, _| assert_eq!(host.entry_paths().len(), 2, "no duplicate tab was created"));
+    }
+
     /// A VFS entry from a writerless mount (the zip handler mounts
     /// READ_ONLY with no writer) opens read-only, so it can't be dirtied
     /// and silently lost -- there is nowhere to persist an edit to.
@@ -750,6 +819,31 @@ mod tests {
             let expanded: BTreeSet<String> = host.tree().read(cx).expanded().clone();
             assert!(expanded.contains("/dir"), "expansion set restored");
         });
+    }
+
+    /// A restore whose recorded archive path still reads but no longer
+    /// mounts (corrupt/unparseable) falls back to an empty read-only mount
+    /// and warns the user, rather than coming back silently empty.
+    #[gpui::test]
+    fn restore_with_unmountable_archive_warns_and_falls_back(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("not-really.zip");
+        std::fs::write(&bogus, b"this is not a zip archive").unwrap();
+        let info = PanelInfo::panel(serde_json::json!({ "parent_path": bogus.to_string_lossy() }));
+
+        let window = cx.add_window(move |window, cx| {
+            let outer = cx.new(|cx| DockArea::new("outer", None, window, cx));
+            let host = cx.new(|cx| WorkspaceHostPanel::restore(outer.downgrade(), &info, window, cx));
+            let view: Arc<dyn PanelView> = Arc::new(host);
+            outer.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+            Root::new(outer, window, cx)
+        });
+        let vcx = VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+
+        let toasts = vcx.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(toasts, 1, "an unmountable archive surfaces a warning toast");
     }
 
     /// Cross-area drag guard (verdict's detect-and-eject): a foreign

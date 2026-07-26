@@ -273,8 +273,15 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
         }
         Some(PanelKind::WorkspaceHost) => match workspace_parent_path(&panel.info) {
             Some(path) if path_is_readable(&path) => true,
-            _ => {
-                tracing::warn!("restore: workspace archive missing/unreadable; dropping tab");
+            Some(path) => {
+                tracing::warn!(?path, "restore: workspace archive missing/unreadable; dropping tab");
+                // Surface the drop the same way a pruned file tab does
+                // (`restore_pruned_texts` names the dropped path).
+                pruned.push(path);
+                false
+            }
+            None => {
+                tracing::warn!("restore: workspace archive path missing; dropping tab");
                 false
             }
         },
@@ -387,6 +394,39 @@ mod tests {
             children: Vec::new(),
             info: PanelInfo::Panel(serde_json::json!({})),
         }
+    }
+
+    fn workspace_host_panel(archive: &Path) -> PanelState {
+        PanelState {
+            panel_name: WORKSPACE_HOST_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({ "parent_path": archive.to_string_lossy() })),
+        }
+    }
+
+    /// A workspace host whose archive still reads survives; one whose
+    /// archive is gone is pruned and its path is reported (so the caller
+    /// can toast it like a dropped file tab).
+    #[test]
+    fn workspace_host_pruned_when_its_archive_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let present = dir.path().join("present.zip");
+        std::fs::write(&present, b"anything").unwrap();
+        let missing = dir.path().join("gone.zip");
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![workspace_host_panel(&present), workspace_host_panel(&missing)]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![WORKSPACE_HOST_PANEL_NAME], "only the host with a readable archive survives");
+        assert_eq!(pruned, vec![missing], "the missing archive is reported for a warning toast");
     }
 
     fn tabs(children: Vec<PanelState>) -> PanelState {
