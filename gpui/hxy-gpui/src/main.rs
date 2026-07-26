@@ -15,6 +15,7 @@ mod palette;
 mod panels;
 mod persist;
 mod status;
+mod watch;
 mod workspace;
 
 use workspace::Workspace;

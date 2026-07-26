@@ -386,6 +386,16 @@ impl StringsPanel {
         cx.notify();
     }
 
+    /// Re-run against the owning file's current bytes after an
+    /// external reload swapped its pane's source. No-op for a panel
+    /// nobody has used yet -- mirrors egui's `cascade_byte_change`
+    /// `has_strings` gate (`last_result.is_some() || running`).
+    pub(crate) fn recompute_after_reload(&mut self, cx: &mut Context<Self>) {
+        if self.last_result.is_some() || self.running {
+            self.run(cx);
+        }
+    }
+
     /// Parse the min-length / range text inputs (blank = keep the
     /// current config value) and kick off a run. Invalid input toasts
     /// an error and leaves the config untouched.
@@ -971,5 +981,52 @@ mod tests {
         cx.run_until_parked();
 
         assert!(panel.read_with(cx, |p, _| p.owning_pane.is_some()));
+    }
+
+    /// `recompute_after_reload` is a no-op for a panel with no result
+    /// (mirrors egui's `has_strings` cascade gate). `build` auto-runs
+    /// on bind, so the "never computed" precondition is forced by
+    /// clearing the result afterward rather than by construction.
+    #[gpui::test]
+    fn recompute_after_reload_noop_when_never_computed(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, b"\x00hello\x00".to_vec());
+        cx.run_until_parked();
+        panel.update(cx, |p, _cx| p.last_result = None);
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.last_result.is_none()), "no prior result means no auto-recompute");
+    }
+
+    /// `recompute_after_reload` re-runs against the pane's current
+    /// bytes once a result already exists -- the reload cascade's
+    /// entry point after `Workspace::resolve_reload` swaps the
+    /// owning file's source.
+    #[gpui::test]
+    fn recompute_after_reload_reruns_when_a_result_exists(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, b"\x00hello\x00".to_vec());
+        cx.run_until_parked();
+        let before: Vec<String> = panel
+            .read_with(cx, |p, _| p.last_result.as_ref().unwrap().entries.iter().map(|e| e.text.clone()).collect());
+        assert_eq!(before, vec!["hello".to_string()]);
+
+        // Same total length as the fixture above: `config.range` is
+        // set once from the file's length at bind time (`bind_pane`)
+        // and reload doesn't widen it, so a same-length replacement
+        // isolates what this test cares about (recompute picks up
+        // the new bytes) from that separate, pre-existing behavior.
+        let pane = panel.read_with(cx, |p, _| p.owning_pane.clone().unwrap());
+        pane.update(cx, |pane, cx| {
+            pane.editor_mut().swap_source(Arc::new(MemorySource::new(b"\x00world\x00".to_vec())));
+            cx.notify();
+        });
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+        let after: Vec<String> = panel
+            .read_with(cx, |p, _| p.last_result.as_ref().unwrap().entries.iter().map(|e| e.text.clone()).collect());
+        assert_eq!(after, vec!["world".to_string()], "recompute picked up the new bytes");
     }
 }

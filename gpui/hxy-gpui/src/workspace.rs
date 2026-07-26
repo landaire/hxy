@@ -25,6 +25,7 @@ use gpui::Render;
 use gpui::Styled;
 use gpui::Subscription;
 use gpui::Task;
+use gpui::WeakEntity;
 use gpui::Window;
 use gpui::actions;
 use gpui::div;
@@ -32,6 +33,7 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::WindowExt;
+use gpui_component::button::Button;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
 use gpui_component::dock::DockItem;
@@ -43,6 +45,7 @@ use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
+use gpui_component::v_flex;
 use gpui_dock_picker::DockPicker;
 use gpui_dock_picker::PickTarget;
 use hxy_core::ByteOffset;
@@ -92,6 +95,7 @@ use crate::status::status_offset_text;
 use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
+use crate::watch::ReloadDecision;
 
 actions!(
     hxy_gpui,
@@ -226,6 +230,16 @@ pub struct Workspace {
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
     save_debounce: Option<Task<()>>,
+    /// `None` when the platform watcher failed to start (rare --
+    /// notify setup can fail on some sandboxes); external changes
+    /// simply go undetected in that case, same as egui's fallback.
+    file_watch: Option<crate::watch::FileWatch>,
+    /// The reload prompt currently shown, if any. Only one at a time
+    /// -- see [`crate::watch::PendingReloadPrompt`]'s doc.
+    pending_reload: Option<crate::watch::PendingReloadPrompt>,
+    /// The file-watch reconcile-and-drain loop. Held so dropping the
+    /// workspace cancels it; never read otherwise.
+    _watch_poll_task: Option<Task<()>>,
     _appearance_subscription: Subscription,
     /// The command-palette overlay. Always childed by `render`; renders
     /// an inert empty element while closed (see [`Palette`]).
@@ -288,12 +302,23 @@ impl Workspace {
             checksums_panels: Vec::new(),
             layout_path,
             save_debounce: None,
+            file_watch: None,
+            pending_reload: None,
+            _watch_poll_task: None,
             _appearance_subscription: appearance_subscription,
             palette,
             pane_picker,
             #[cfg(test)]
             inspector_for_test: None,
         };
+        workspace.file_watch = match crate::watch::FileWatch::new() {
+            Ok(w) => Some(w),
+            Err(e) => {
+                tracing::warn!(error = %e, "filesystem watcher unavailable; external changes will go undetected");
+                None
+            }
+        };
+        workspace._watch_poll_task = Some(spawn_watch_poll(window, cx));
         workspace.build_initial(initial, window, cx);
         workspace
     }
@@ -957,6 +982,173 @@ impl Workspace {
         let view: Arc<dyn PanelView> = Arc::new(existing.clone());
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
         self.add_file_panel(existing, window, cx);
+    }
+
+    /// Reconcile the file watcher's registered paths against the
+    /// currently open files, then handle whatever it drained. No-op
+    /// with no watcher (`file_watch` is `None` -- see its doc).
+    fn poll_file_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let live_paths: Vec<PathBuf> =
+            self.open_files.iter().filter_map(|f| f.read(cx).path().map(Path::to_path_buf)).collect();
+        let Some(file_watch) = self.file_watch.as_mut() else { return };
+        let events = file_watch.poll(live_paths.into_iter());
+        for event in events {
+            self.handle_watch_event(event, window, cx);
+        }
+    }
+
+    fn handle_watch_event(&mut self, event: crate::watch::WatchEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::watch::ExternalChangeKind;
+        use crate::watch::WatchTarget;
+        match event {
+            crate::watch::WatchEvent::Modified(WatchTarget::Filesystem(path)) => {
+                self.handle_external_change(path, ExternalChangeKind::Modified, window, cx);
+            }
+            crate::watch::WatchEvent::Removed(WatchTarget::Filesystem(path)) => {
+                self.handle_external_change(path, ExternalChangeKind::Removed, window, cx);
+            }
+            // A rename surfaces as a removal of the old name, same as
+            // egui's `drain_file_watch_events` -- the new name isn't
+            // one of our open paths, so there's nothing to reload it
+            // into.
+            crate::watch::WatchEvent::Renamed { from, .. } => {
+                self.handle_external_change(from, ExternalChangeKind::Removed, window, cx);
+            }
+            // M3 never registers a VFS-entry watch (see `crate::watch`'s
+            // module doc), so these can't fire; kept exhaustive rather
+            // than wildcarded so a future VFS-watch wire-up can't
+            // silently forget this arm.
+            crate::watch::WatchEvent::Modified(WatchTarget::Vfs(_))
+            | crate::watch::WatchEvent::Removed(WatchTarget::Vfs(_)) => {}
+        }
+    }
+
+    /// Route one filesystem change to every open tab backed by `path`.
+    /// A removal always just toasts (mirrors egui's
+    /// `handle_external_change`: there's nothing to reload); a
+    /// modification stages a reload prompt, dropped if one is already
+    /// pending (the file stays watched, so a later change re-fires).
+    fn handle_external_change(
+        &mut self,
+        path: PathBuf,
+        kind: crate::watch::ExternalChangeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let matches: Vec<Entity<FilePanel>> = self
+            .open_files
+            .iter()
+            .filter(|f| {
+                f.read(cx).path().is_some_and(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()) == canonical)
+            })
+            .cloned()
+            .collect();
+        for file in matches {
+            let display_name = leaf_name(&path);
+            if matches!(kind, crate::watch::ExternalChangeKind::Removed) {
+                let text = hxy_i18n::t_args("reload-prompt-body-removed", &[("name", &display_name)]);
+                window.push_notification(Notification::warning(text), cx);
+                continue;
+            }
+            if self.pending_reload.is_some() {
+                continue;
+            }
+            let has_unsaved = file.read(cx).pane().read(cx).editor().is_dirty();
+            self.pending_reload =
+                Some(crate::watch::PendingReloadPrompt { file, display_name, path: path.clone(), has_unsaved });
+            self.open_reload_dialog(window, cx);
+        }
+    }
+
+    /// Show the Reload / Keep My Edits / Ignore dialog for
+    /// `self.pending_reload`. No-op if it's unset (shouldn't happen --
+    /// only called right after setting it).
+    fn open_reload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = &self.pending_reload else { return };
+        let display_name = pending.display_name.clone();
+        let path_display = pending.path.display().to_string();
+        let has_unsaved = pending.has_unsaved;
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let body_key =
+                if has_unsaved { "reload-prompt-body-modified-dirty" } else { "reload-prompt-body-modified-clean" };
+            let mut body = v_flex()
+                .gap_2()
+                .child(Label::new(hxy_i18n::t_args(body_key, &[("name", &display_name)])))
+                .child(Label::new(path_display.clone()).text_color(cx.theme().muted_foreground));
+            if has_unsaved {
+                body = body.child(Label::new(hxy_i18n::t("reload-prompt-warn-unsaved")).text_color(cx.theme().warning));
+            }
+            let weak_for_footer = weak.clone();
+            dialog.title(hxy_i18n::t("reload-prompt-title")).child(body).footer(move |_ok, _cancel, _window, _cx| {
+                // "Reload (discard edits)" reads oddly on a clean
+                // buffer (nothing to discard), so the label swaps --
+                // mirrors egui's `reload-prompt-discard` /
+                // `reload-prompt-reload` split. "Keep my edits" is
+                // hidden on a clean buffer for the same reason egui
+                // hides it: the choice collapses into Ignore.
+                let reload_key = if has_unsaved { "reload-prompt-discard" } else { "reload-prompt-reload" };
+                let mut buttons = vec![reload_button(
+                    "reload-discard",
+                    hxy_i18n::t(reload_key),
+                    weak_for_footer.clone(),
+                    ReloadDecision::DiscardEdits,
+                )];
+                if has_unsaved {
+                    buttons.push(reload_button(
+                        "reload-keep",
+                        hxy_i18n::t("reload-prompt-keep"),
+                        weak_for_footer.clone(),
+                        ReloadDecision::KeepEdits,
+                    ));
+                }
+                buttons.push(reload_button(
+                    "reload-ignore",
+                    hxy_i18n::t("reload-prompt-ignore"),
+                    weak_for_footer.clone(),
+                    ReloadDecision::Ignore,
+                ));
+                buttons
+            })
+        });
+    }
+
+    /// Apply the user's reload choice: re-read disk bytes into the
+    /// pane (Discard/Keep) or leave them alone (Ignore), bump the
+    /// watcher's snapshot so it doesn't immediately re-fire, and
+    /// recompute any analysis panels already open for the file.
+    fn resolve_reload(&mut self, decision: ReloadDecision, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_reload.take() else { return };
+        if !matches!(decision, ReloadDecision::Ignore) {
+            let ok = crate::watch::apply_reload(&pending.file, &pending.path, decision, cx);
+            if !ok {
+                let text = hxy_i18n::t_args("reload-prompt-failed", &[("name", &pending.display_name)]);
+                window.push_notification(Notification::error(text), cx);
+                return;
+            }
+            self.recompute_panels_for_path(&pending.path, cx);
+        }
+        if let Some(file_watch) = self.file_watch.as_mut() {
+            file_watch.mark_synced(&pending.path);
+        }
+        cx.notify();
+    }
+
+    /// Re-run any already-open strings/entropy/checksums panel for
+    /// `path` against its owning file's freshly reloaded bytes.
+    /// Mirrors egui's `cascade_byte_change` (minus the template rerun,
+    /// which the GPUI port doesn't have yet).
+    fn recompute_panels_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(panel) = self.open_entropy_panel_for_path(Some(path), cx) {
+            panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        }
+        if let Some(panel) = self.open_strings_panel_for_path(Some(path), cx) {
+            panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        }
+        if let Some(panel) = self.open_checksums_panel_for_path(Some(path), cx) {
+            panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        }
     }
 
     fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -1803,6 +1995,37 @@ fn resolve_leaf(
         return Arc::new(welcome.clone());
     }
     Arc::from(PanelRegistry::build_panel(&leaf.panel_name, dock_area.clone(), leaf, &leaf.info, window, cx))
+}
+
+/// Spawn the file-watch reconcile-and-drain loop: a fixed-cadence
+/// timer, not the watcher's own wake (which only signals liveness --
+/// see `crate::watch::FileWatch`'s doc), because GPUI has no per-frame
+/// idle-vs-active distinction for a background poll to piggyback on
+/// the way egui's repaint-on-wake does. Exits once the workspace
+/// entity is gone.
+fn spawn_watch_poll(window: &mut Window, cx: &mut Context<Workspace>) -> Task<()> {
+    cx.spawn_in(window, async move |this, cx| {
+        loop {
+            gpui::Timer::after(crate::watch::POLL_INTERVAL).await;
+            if this.update_in(cx, |workspace, window, cx| workspace.poll_file_watch(window, cx)).is_err() {
+                return;
+            }
+        }
+    })
+}
+
+/// One button in the reload dialog's footer: clicking it resolves the
+/// pending prompt with `decision` on the workspace, then closes the
+/// dialog. A plain closure (not `cx.listener`) because the dialog's
+/// footer builder runs outside any entity's `Context` -- see
+/// `Workspace::open_reload_dialog`.
+fn reload_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, decision: ReloadDecision) -> Button {
+    Button::new(id).label(label).on_click(move |_, window, cx| {
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.resolve_reload(decision, window, cx));
+        }
+        window.close_dialog(cx);
+    })
 }
 
 /// Whether any file panel in a dumped `PanelState` tree has `target` as
@@ -3805,6 +4028,195 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap(), 1);
+    }
+
+    /// An external modification of an open file's backing path stages
+    /// a reload prompt and opens the dialog; a second modification
+    /// before the user responds is dropped (still watched, so it
+    /// isn't lost -- a later change would re-fire).
+    #[gpui::test]
+    fn external_modify_stages_a_reload_prompt(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx)
+            });
+        })
+        .unwrap();
+
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_some()), "modify stages a prompt");
+        assert!(
+            cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap(),
+            "modify opens the reload dialog"
+        );
+
+        // A second change lands while the first prompt is still
+        // pending; it's dropped rather than replacing/queuing.
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx)
+            });
+        })
+        .unwrap();
+        assert_eq!(workspace.read_with(cx, |ws, _| ws.pending_reload.as_ref().map(|p| p.path.clone())), Some(f1));
+    }
+
+    /// A removal always just toasts -- there's nothing to reload --
+    /// and never stages a prompt, matching egui's
+    /// `handle_external_change`.
+    #[gpui::test]
+    fn external_removal_only_toasts(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1, crate::watch::ExternalChangeKind::Removed, window, cx)
+            });
+        })
+        .unwrap();
+
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_none()));
+        assert_eq!(cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap(), 1);
+    }
+
+    /// `resolve_reload(DiscardEdits)` re-reads disk bytes into the
+    /// pane and drops the dirty patch; an entropy panel already open
+    /// for the file re-runs against the new bytes (the cascade).
+    #[gpui::test]
+    fn resolve_reload_discard_updates_pane_and_cascades(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.open_entropy_for_active_file(window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(workspace.read_with(cx, |ws, cx| count_entropy_panels(&ws.dock.read(cx).dump(cx).center)), 1);
+
+        // `open_entropy_for_active_file` focuses the new entropy tab,
+        // so `active_file` (which tracks a `FilePanel` specifically)
+        // is `None` now -- `reference_active_file` is the fallback-
+        // aware read that still resolves to the owning file.
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                let pane = ws.reference_active_file(cx).unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().splice(0, 1, vec![b'b']).unwrap();
+                    cx.notify();
+                });
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx);
+            });
+        })
+        .unwrap();
+        assert!(workspace.read_with(cx, |ws, cx| {
+            ws.reference_active_file(cx).unwrap().read(cx).pane().read(cx).editor().is_dirty()
+        }));
+
+        std::fs::write(&f1, b"cccc").unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.resolve_reload(ReloadDecision::DiscardEdits, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |ws, cx| {
+            let file = ws.reference_active_file(cx).unwrap();
+            let editor = file.read(cx).pane().read(cx).editor();
+            assert!(!editor.is_dirty(), "discard drops the patch");
+            let bytes = editor.source().read(ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap()).unwrap();
+            assert_eq!(&*bytes, b"cccc");
+        });
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_none()));
+    }
+
+    /// `resolve_reload(KeepEdits)` re-reads disk bytes but replays the
+    /// dirty patch on top of the new base.
+    #[gpui::test]
+    fn resolve_reload_keep_edits_preserves_the_patch(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().splice(0, 1, vec![b'b']).unwrap();
+                    cx.notify();
+                });
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx);
+            });
+        })
+        .unwrap();
+
+        std::fs::write(&f1, b"cccc").unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.resolve_reload(ReloadDecision::KeepEdits, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |ws, cx| {
+            let editor = ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor();
+            assert!(editor.is_dirty(), "keep-edits preserves the patch");
+            let bytes = editor.source().read(ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap()).unwrap();
+            assert_eq!(&*bytes, b"bccc");
+        });
+    }
+
+    /// `resolve_reload(Ignore)` leaves the pane untouched and clears
+    /// the pending prompt.
+    #[gpui::test]
+    fn resolve_reload_ignore_leaves_pane_untouched(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx)
+            });
+        })
+        .unwrap();
+
+        std::fs::write(&f1, b"cccc").unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.resolve_reload(ReloadDecision::Ignore, window, cx));
+        })
+        .unwrap();
+
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_none()));
+        workspace.read_with(cx, |ws, cx| {
+            let bytes = ws
+                .active_file
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .pane()
+                .read(cx)
+                .editor()
+                .source()
+                .read(ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap())
+                .unwrap();
+            assert_eq!(&*bytes, b"aaaa");
+        });
     }
 
     fn collect_file_paths(state: &PanelState) -> Vec<PathBuf> {

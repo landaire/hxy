@@ -229,6 +229,16 @@ impl ChecksumsPanel {
         self._compute = Some(task);
     }
 
+    /// Re-run against the owning file's current bytes after an
+    /// external reload swapped its pane's source. No-op for a panel
+    /// nobody has used yet -- mirrors egui's `cascade_byte_change`
+    /// `has_checksums` gate (`last_result.is_some() || running`).
+    pub(crate) fn recompute_after_reload(&mut self, cx: &mut Context<Self>) {
+        if self.last_result.is_some() || self.running {
+            self.run(cx);
+        }
+    }
+
     /// Parse the range text input (blank = keep the current config
     /// value) and kick off a run. Invalid input toasts an error and
     /// leaves the config untouched. Mirrors
@@ -681,5 +691,49 @@ mod tests {
         let cx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
         cx.run_until_parked();
         assert!(panel.read_with(cx, |p, _| p.last_result.is_none()), "empty buffer must not auto-run");
+    }
+
+    /// `recompute_after_reload` is a no-op for a panel with no result
+    /// (mirrors egui's `has_checksums` cascade gate).
+    #[gpui::test]
+    fn recompute_after_reload_noop_when_never_computed(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = cx.add_window(|window, cx| {
+            let pane = cx.new(|cx| HexPane::new(source(Vec::new()), cx));
+            let panel = cx.new(|cx| ChecksumsPanel::new(pane, None, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());
+        let cx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.last_result.is_none()));
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.last_result.is_none()), "no prior result means no auto-recompute");
+    }
+
+    /// `recompute_after_reload` re-runs against the pane's current
+    /// bytes once a result already exists -- the reload cascade's
+    /// entry point after `Workspace::resolve_reload` swaps the
+    /// owning file's source.
+    #[gpui::test]
+    fn recompute_after_reload_reruns_when_a_result_exists(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, vec![0u8; 32]);
+        cx.run_until_parked();
+        let before = panel.read_with(cx, |p, _| p.last_result.clone().expect("auto-ran").values);
+
+        let pane = panel.read_with(cx, |p, _| p.owning_pane.clone().unwrap());
+        pane.update(cx, |pane, cx| {
+            pane.editor_mut().swap_source(Arc::new(MemorySource::new(vec![0xFFu8; 32])));
+            cx.notify();
+        });
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+        let after = panel.read_with(cx, |p, _| p.last_result.clone().expect("recomputed").values);
+        assert_ne!(before, after, "recompute picked up the new bytes");
     }
 }

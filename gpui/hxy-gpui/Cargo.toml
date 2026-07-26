@@ -26,6 +26,10 @@ serde_json = "1"
 thiserror = "2"
 tracing = { workspace = true }
 
+# Referenced for its `notify::Result` alias (`hxy_panels::watch::FileWatcher`'s
+# constructors return it); pinned to the same version hxy-panels uses.
+notify = "8"
+
 [dev-dependencies]
 gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
 tempfile = "3"

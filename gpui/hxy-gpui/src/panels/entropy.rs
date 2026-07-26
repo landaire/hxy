@@ -230,6 +230,16 @@ impl EntropyPanel {
         self._compute = Some(task);
     }
 
+    /// Re-run against the owning file's current bytes after an
+    /// external reload swapped its pane's source. No-op for a panel
+    /// nobody has used yet -- mirrors egui's `cascade_byte_change`
+    /// `has_entropy` gate (`state.is_some() || running`).
+    pub(crate) fn recompute_after_reload(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_some() || self.running {
+            self.run(cx);
+        }
+    }
+
     fn compute_button(&self, cx: &Context<Self>) -> impl IntoElement {
         let label = if self.running {
             hxy_i18n::t("entropy-computing")
@@ -618,5 +628,59 @@ mod tests {
         cx.run_until_parked();
         let points_empty = panel.read_with(cx, |p, _| p.state.as_ref().map(|s| s.points.is_empty()));
         assert_eq!(points_empty, Some(true));
+    }
+
+    /// `recompute_after_reload` is a no-op for a panel nobody has
+    /// looked at yet (mirrors egui's `has_entropy` cascade gate).
+    #[gpui::test]
+    fn recompute_after_reload_noop_when_never_computed(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = cx.add_window(|window, cx| {
+            let pane = cx.new(|cx| HexPane::new(source(Vec::new()), cx));
+            let panel = cx.new(|cx| EntropyPanel::new(pane, None, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let root = window.root(cx).unwrap();
+        let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<EntropyPanel>().unwrap());
+        let cx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.state.is_none()));
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.state.is_none()), "no prior result means no auto-recompute");
+    }
+
+    /// `recompute_after_reload` re-runs against the pane's current
+    /// bytes once a result already exists -- the reload cascade's
+    /// entry point after `Workspace::resolve_reload` swaps the
+    /// owning file's source.
+    #[gpui::test]
+    fn recompute_after_reload_reruns_when_a_result_exists(cx: &mut TestAppContext) {
+        setup(cx);
+        let len: u64 = 4096;
+        let (panel, cx) = build(cx, vec![0xAAu8; len as usize]);
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.state.is_some()), "auto-ran on open");
+
+        // Swap the owning pane's source directly (what
+        // `apply_reload`/`swap_source` does under the hood) to a
+        // buffer whose entropy differs, then confirm the recompute
+        // picks up the new bytes rather than leaving the stale
+        // result in place.
+        let new_bytes: Vec<u8> = (0..len as usize).map(|i| i as u8).collect();
+        let pane = panel.read_with(cx, |p, _| p.owning_pane.clone().unwrap());
+        pane.update(cx, |pane, cx| {
+            pane.editor_mut().swap_source(Arc::new(MemorySource::new(new_bytes)));
+            cx.notify();
+        });
+
+        panel.update(cx, |p, cx| p.recompute_after_reload(cx));
+        cx.run_until_parked();
+
+        let mean = panel.read_with(cx, |p, _| p.state.as_ref().unwrap().mean());
+        // Uniform 0xAA bytes have zero entropy per window; the
+        // ramped replacement does not.
+        assert!(mean > 0.0, "recompute picked up the new (non-uniform) bytes, mean={mean}");
     }
 }

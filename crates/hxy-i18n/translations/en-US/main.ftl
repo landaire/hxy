@@ -396,6 +396,7 @@ reload-prompt-keep = Keep my edits
 reload-prompt-keep-tooltip = Refresh the base bytes from disk while keeping your splices applied on top. Undo history is cleared.
 reload-prompt-ignore = Ignore this change
 reload-prompt-ignore-tooltip = Leave the in-memory bytes as they are; the on-disk drift is acknowledged but not applied.
+reload-prompt-failed = Could not reload { $name }.
 palette-reload-file = Reload file from disk...
 palette-reload-file-subtitle = Re-read the active tab's bytes from disk; choose whether to keep your edits.
 palette-reload-no-active-file = no active file
