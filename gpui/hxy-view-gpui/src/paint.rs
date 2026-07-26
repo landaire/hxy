@@ -475,14 +475,22 @@ fn paint_range_band(ctx: &RowCtx, range: ByteRange, color: Hsla, window: &mut Wi
     }
     let first = (lo - ctx.row_start) as u16;
     let last = (hi - 1 - ctx.row_start) as u16;
-    let g = ctx.geometry;
+    paint_col_run(ctx, first, last, color, window);
+}
 
-    let hx0 = ctx.origin_x + g.hex_x(first);
-    let hx1 = ctx.origin_x + g.hex_x(last) + g.hex_cell_w();
+/// Fill an inclusive `from..=to` column run with `color`: one quad in
+/// the hex pane and one in the ascii pane. The hex quad spans from the
+/// first cell's left edge to the last cell's right edge, bridging the
+/// inter-cell gaps but stopping at the run's outer edges (no bleed into
+/// the section gap after the last hex column).
+fn paint_col_run(ctx: &RowCtx, from: u16, to: u16, color: Hsla, window: &mut Window) {
+    let g = ctx.geometry;
+    let hx0 = ctx.origin_x + g.hex_x(from);
+    let hx1 = ctx.origin_x + g.hex_x(to) + g.hex_cell_w();
     window.paint_quad(fill(band_bounds(hx0, hx1, ctx.row_y, ctx.line_h()), color));
 
-    let ax0 = ctx.origin_x + g.ascii_x(first);
-    let ax1 = ctx.origin_x + g.ascii_x(last + 1);
+    let ax0 = ctx.origin_x + g.ascii_x(from);
+    let ax1 = ctx.origin_x + g.ascii_x(to + 1);
     window.paint_quad(fill(band_bounds(ax0, ax1, ctx.row_y, ctx.line_h()), color));
 }
 
@@ -557,26 +565,36 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
 fn paint_styler_tints(ctx: &RowCtx, snap: &GridSnapshot, window: &mut Window) {
     let Some(styler) = snap.byte_styler.as_ref() else { return };
     let selected = snap.selection.map(|s| s.range());
+    let mut cells: Vec<(u16, Hsla)> = Vec::with_capacity(ctx.bytes.len().min(ctx.cols as usize));
     for (c, &byte) in ctx.bytes.iter().enumerate().take(ctx.cols as usize) {
         let offset = ByteOffset::new(ctx.row_start + c as u64);
         let is_sel = selected.is_some_and(|r| r.contains(offset));
         let is_hovered = snap.hover_span.is_some_and(|r| r.contains(offset));
         if let Some(bg) = styler(byte, offset).bg.filter(|_| !is_sel && !is_hovered) {
-            paint_cell_tint(ctx, c as u16, bg, window);
+            cells.push((c as u16, bg));
         }
+    }
+    for (from, to, color) in merge_tint_runs(&cells) {
+        paint_col_run(ctx, from, to, color, window);
     }
 }
 
-/// Fill one cell's background in both the hex and ascii panes with the
-/// byte styler's `bg` override.
-fn paint_cell_tint(ctx: &RowCtx, col: u16, color: Hsla, window: &mut Window) {
-    let g = ctx.geometry;
-    let line_h = ctx.line_h();
-    let hex_b =
-        band_bounds(ctx.origin_x + g.hex_x(col), ctx.origin_x + g.hex_x(col) + g.hex_cell_w(), ctx.row_y, line_h);
-    let ascii_b = band_bounds(ctx.origin_x + g.ascii_x(col), ctx.origin_x + g.ascii_x(col + 1), ctx.row_y, line_h);
-    window.paint_quad(fill(hex_b, color));
-    window.paint_quad(fill(ascii_b, color));
+/// Collapse a row's tinted cells into maximal same-color runs, the
+/// quad-count optimization egui applies (lib.rs:2004): adjacent cells
+/// sharing a `bg` become one span instead of one quad each. Input is
+/// `(column, color)` in ascending column order; output is inclusive
+/// `(first_col, last_col, color)` spans. A run breaks when the color
+/// changes or the columns are non-adjacent, so a skipped cell (already
+/// covered by a selection / hover band) never bridges a run across it.
+fn merge_tint_runs(cells: &[(u16, Hsla)]) -> Vec<(u16, u16, Hsla)> {
+    let mut runs: Vec<(u16, u16, Hsla)> = Vec::new();
+    for &(col, color) in cells {
+        match runs.last_mut() {
+            Some((_, last, c)) if *c == color && *last + 1 == col => *last = col,
+            _ => runs.push((col, col, color)),
+        }
+    }
+    runs
 }
 
 /// Two-pixel underline under the active nibble's glyph, only in the hex
@@ -656,6 +674,63 @@ impl PaintColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hxy_core::ColumnCount;
+
+    fn color(h: f32) -> Hsla {
+        Hsla { h, s: 0.5, l: 0.5, a: 1.0 }
+    }
+
+    fn geo() -> GridGeometry {
+        let metrics = CellMetrics { char_w: px(8.0), line_h: px(16.0) };
+        GridGeometry::new(metrics, ColumnCount::new(16).unwrap(), ByteLen::new(256))
+    }
+
+    #[test]
+    fn contiguous_same_color_merges_to_one_span() {
+        let a = color(0.1);
+        let runs = merge_tint_runs(&[(2, a), (3, a), (4, a)]);
+        assert_eq!(runs, vec![(2, 4, a)]);
+    }
+
+    #[test]
+    fn color_change_splits_runs() {
+        let a = color(0.1);
+        let b = color(0.7);
+        let runs = merge_tint_runs(&[(0, a), (1, a), (2, b), (3, b)]);
+        assert_eq!(runs, vec![(0, 1, a), (2, 3, b)]);
+    }
+
+    #[test]
+    fn isolated_cell_is_a_single_column_span() {
+        let a = color(0.1);
+        let runs = merge_tint_runs(&[(5, a)]);
+        assert_eq!(runs, vec![(5, 5, a)]);
+    }
+
+    #[test]
+    fn non_adjacent_same_color_does_not_bridge_skipped_cell() {
+        // Column 3 skipped (e.g. covered by a selection band): the run
+        // must break rather than paint tint over the gap cell.
+        let a = color(0.1);
+        let runs = merge_tint_runs(&[(2, a), (4, a)]);
+        assert_eq!(runs, vec![(2, 2, a), (4, 4, a)]);
+    }
+
+    #[test]
+    fn empty_input_yields_no_runs() {
+        assert!(merge_tint_runs(&[]).is_empty());
+    }
+
+    /// A run ending on the last hex column stops at the last cell's
+    /// right edge and does not bleed into the section gap before the
+    /// ascii pane.
+    #[test]
+    fn last_column_span_stops_before_section_gap() {
+        let g = geo();
+        let last = 15u16;
+        let hex_right = g.hex_x(last) + g.hex_cell_w();
+        assert!(hex_right < g.ascii_x(0), "hex run right edge must stop before the ascii pane");
+    }
 
     /// The header band spans the pane's top edge down to the first
     /// content row, full grid width.
