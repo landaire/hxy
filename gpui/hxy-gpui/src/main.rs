@@ -13,6 +13,7 @@ use gpui_component::Root;
 mod menu;
 mod palette;
 mod panels;
+mod patches;
 mod persist;
 mod status;
 mod watch;

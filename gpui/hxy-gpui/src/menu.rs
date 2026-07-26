@@ -23,9 +23,9 @@
 //! (no active file, empty undo stack, no selection, ...).
 //!
 //! Parity source: `crates/hxy/src/menu.rs:28-58` (egui's `MenuAction`).
-//! M2 ships a subset -- no New/Save/Save As/Reopen Closed Tab/Paste
-//! (not implemented anywhere in the gpui port yet) and no
-//! Console/Plugins/Settings (egui-only features).
+//! Ships a subset -- no New/Paste (not implemented in the gpui port yet)
+//! and no Console/Plugins/Settings (egui-only features). Save / Save As /
+//! Reopen Closed Tab landed with the M3 save + dirty-close work.
 
 use gpui::App;
 use gpui::Menu;
@@ -36,6 +36,9 @@ use crate::workspace::OpenChecksums;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenStrings;
+use crate::workspace::ReopenClosedTab;
+use crate::workspace::Save;
+use crate::workspace::SaveAs;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 
@@ -86,6 +89,10 @@ pub fn build_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action(hxy_i18n::t("menu-file-open"), OpenFile),
                 MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("menu-file-save"), Save),
+                MenuItem::action(hxy_i18n::t("menu-file-save-as"), SaveAs),
+                MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("menu-file-reopen-closed"), ReopenClosedTab),
                 MenuItem::action(hxy_i18n::t("gpui-palette-close-tab"), CloseTab),
             ],
         },
@@ -135,7 +142,7 @@ mod tests {
 
         let item_count = |ix: usize| menus[ix].items.len();
         assert_eq!(item_count(0), 3, "App menu: About, separator, Quit");
-        assert_eq!(item_count(1), 3, "File menu: Open, separator, Close Tab");
+        assert_eq!(item_count(1), 7, "File menu: Open, sep, Save, Save As, sep, Reopen Closed Tab, Close Tab");
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
         assert_eq!(item_count(3), 6, "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy, Checksums");
     }

@@ -27,7 +27,7 @@ pub const LAYOUT_VERSION: usize = 1;
 
 /// Platform data directory, matching the desktop app's scheme so both
 /// front-ends live under the same `hxy` folder.
-fn storage_dir() -> Option<PathBuf> {
+pub(crate) fn storage_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME")?;

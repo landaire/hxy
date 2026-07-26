@@ -42,6 +42,7 @@ gpui-palette-invalid-at-eof = at end of file
 gpui-status-layout-restore-failed = Could not restore the saved window layout; using the default layout.
 gpui-status-restore-dropped-file = Dropped restored tab: { $file } no longer exists.
 gpui-status-restore-dropped-summary = Dropped { $count } restored tabs whose files no longer exist.
+gpui-save-failed = Could not save { $name }: { $error }
 gpui-menu-toggle-edit-mode = Toggle Edit Mode
 gpui-menu-about-body = { $name } { $version }
 gpui-palette-browse-vfs = Browse VFS

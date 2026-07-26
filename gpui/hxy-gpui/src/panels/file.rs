@@ -116,6 +116,22 @@ impl FilePanel {
         self.path.as_deref()
     }
 
+    /// Re-anchor this panel onto a new on-disk path after a Save As. The
+    /// leaf name drives the tab label, so clearing `title_override` lets
+    /// the new file name show through (a Save As always lands a real
+    /// filesystem file, superseding any VFS-entry title the tab carried).
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = Some(path);
+        self.title_override = None;
+    }
+
+    /// Whether the buffer has an unsaved patch. Read by the close-tab
+    /// guard and by [`Panel::closable`] so a dirty tab can't be closed
+    /// without the save prompt.
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        self.pane.read(cx).editor().is_dirty()
+    }
+
     /// The tab label: the VFS entry title if set, else the file leaf name,
     /// else the untitled placeholder.
     fn tab_label(&self) -> String {
@@ -173,6 +189,20 @@ impl Panel for FilePanel {
     /// otherwise leave every file leaf's pane-picker row unlabeled.
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
         Some(SharedString::from(self.tab_label()))
+    }
+
+    /// Hide the tab bar's "Close" affordance while the buffer is dirty.
+    ///
+    /// gpui-component 0.5.1 has no pre-close veto hook (`on_removed` fires
+    /// after detach and returns `()`; there is no `can_close`), and the
+    /// tab bar's own Close routes straight through `TabPanel`'s
+    /// `ClosePanel` action, which the workspace cannot intercept. Gating
+    /// `closable` on dirtiness is the only way to stop that path from
+    /// discarding unsaved edits with no prompt: a dirty tab can then only
+    /// be closed via `cmd-w`, which runs the workspace's save prompt
+    /// (`Workspace::close_active_tab`). Clean tabs stay freely closable.
+    fn closable(&self, cx: &App) -> bool {
+        !self.is_dirty(cx)
     }
 
     /// Persist the backing path so the tab can be re-opened next launch.
@@ -265,6 +295,23 @@ mod tests {
         let is_open_after = panel.read_with(cx, |panel, cx| panel.search.read(cx).is_open());
         assert!(!is_open_after, "escape closes the search bar");
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle), "escape refocuses the grid");
+    }
+
+    /// A dirty file panel reports `closable() == false` so the tab bar's
+    /// own Close (which the workspace cannot veto in gpui-component 0.5.1)
+    /// can't silently discard unsaved edits; a clean one stays closable.
+    #[gpui::test]
+    fn dirty_panel_is_not_closable(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx);
+        assert!(panel.read_with(cx, |p, cx| Panel::closable(p, cx)), "a clean buffer is closable");
+        panel.update(cx, |panel, cx| {
+            panel.pane().update(cx, |pane, cx| {
+                pane.editor_mut().splice(0, 1, vec![0xAA]).unwrap();
+                cx.notify();
+            });
+        });
+        assert!(!panel.read_with(cx, |p, cx| Panel::closable(p, cx)), "a dirty buffer is not closable");
     }
 
     /// A restored zip-backed tab re-runs VFS-handler detection on the

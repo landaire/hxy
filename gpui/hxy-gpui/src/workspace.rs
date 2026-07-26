@@ -101,6 +101,9 @@ actions!(
     hxy_gpui,
     [
         OpenFile,
+        Save,
+        SaveAs,
+        ReopenClosedTab,
         ToggleVim,
         ToggleInspector,
         ToggleSearch,
@@ -112,6 +115,65 @@ actions!(
         OpenChecksums
     ]
 );
+
+/// LIFO ring capacity for closed-tab reopen (`cmd-shift-t`). Mirrors the
+/// egui app's `CLOSED_TABS_CAPACITY` (`crates/hxy/src/tabs/close.rs:21`).
+const CLOSED_TABS_CAPACITY: usize = 32;
+
+/// One reopenable closed file tab: its on-disk path plus the view state
+/// worth restoring. In-memory only (dropped on quit), mirroring egui's
+/// `closed_tabs` ring -- distinct from the on-quit unsaved-patch sidecars
+/// (a separate mechanism). Untitled buffers (no path) never enter the
+/// ring: there is nothing to reopen them from.
+struct ClosedTab {
+    path: PathBuf,
+    /// Caret offset at close time, re-parked on reopen.
+    selection: Option<u64>,
+    /// Hex column count at close time.
+    columns: hxy_core::ColumnCount,
+}
+
+/// The user's answer to the save-before-closing prompt. Dialog dismissal
+/// (Escape, overlay click, close icon) resolves as `Cancel` -- the tab
+/// stays open (mirrors egui's close dialog treating window-chrome close
+/// as Cancel, `crates/hxy/src/tabs/close.rs:439-441`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseDecision {
+    Save,
+    DontSave,
+    Cancel,
+}
+
+/// Whether a save targets the tab's existing path when it has one
+/// (`Save`) or always prompts for a destination (`SaveAs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveKind {
+    Save,
+    SaveAs,
+}
+
+/// A staged unsaved-edits restore prompt: the freshly opened file, the
+/// sidecar recovered for its path, and how confident we are the on-disk
+/// bytes still match what the patch was generated against (drives the
+/// prompt's wording). Mirrors egui's `PendingPatchRestore`.
+struct PendingRestore {
+    file: Entity<FilePanel>,
+    sidecar: hxy_panels::files::patch_persist::PatchSidecar,
+    integrity: hxy_panels::files::patch_persist::RestoreIntegrity,
+}
+
+/// The user's answer to the restore-unsaved-edits prompt. A footer
+/// button resolves `Restore` (apply the patch, then drop the sidecar) or
+/// `Discard` (drop the sidecar without applying). Dismissing the dialog
+/// (Escape / overlay / close icon) resolves neither: the prompt clears
+/// but the sidecar stays on disk, so the next open re-offers it --
+/// mirroring egui's dialog dropping the pending restore without
+/// discarding the sidecar (`crates/hxy/src/app/dialogs.rs:640-643`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestoreDecision {
+    Restore,
+    Discard,
+}
 
 /// Debounce window for coalescing the frequent `LayoutChanged` events
 /// into a single layout save.
@@ -126,6 +188,9 @@ const INSPECTOR_DOCK_WIDTH: gpui::Pixels = px(280.0);
 pub fn init_keybindings(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("cmd-o", OpenFile, None),
+        gpui::KeyBinding::new("cmd-s", Save, None),
+        gpui::KeyBinding::new("cmd-shift-s", SaveAs, None),
+        gpui::KeyBinding::new("cmd-shift-t", ReopenClosedTab, None),
         gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None),
         gpui::KeyBinding::new("cmd-i", ToggleInspector, None),
         gpui::KeyBinding::new("cmd-f", ToggleSearch, None),
@@ -237,6 +302,21 @@ pub struct Workspace {
     /// The reload prompt currently shown, if any. Only one at a time
     /// -- see [`crate::watch::PendingReloadPrompt`]'s doc.
     pending_reload: Option<crate::watch::PendingReloadPrompt>,
+    /// The file whose save-before-closing prompt is currently shown, if
+    /// any. The dialog's buttons resolve it via [`Self::resolve_close`];
+    /// dismissal resolves as `Cancel`. Only one at a time (a second
+    /// `cmd-w` while it's up is dropped by [`Self::close_active_tab`]).
+    pending_close: Option<Entity<FilePanel>>,
+    /// LIFO ring of recently closed file tabs, capped at
+    /// [`CLOSED_TABS_CAPACITY`]. `cmd-shift-t` pops the most recent.
+    closed_tabs: std::collections::VecDeque<ClosedTab>,
+    /// The unsaved-edits restore prompt currently shown, if any, staged
+    /// when a freshly opened file has a sidecar from a previous session.
+    /// One at a time.
+    pending_restore: Option<PendingRestore>,
+    /// Kept alive so the on-quit unsaved-patch persistence hook stays
+    /// registered for the workspace's lifetime.
+    _quit_subscription: Subscription,
     /// The file-watch reconcile-and-drain loop. Held so dropping the
     /// workspace cancels it; never read otherwise.
     _watch_poll_task: Option<Task<()>>,
@@ -304,6 +384,10 @@ impl Workspace {
             save_debounce: None,
             file_watch: None,
             pending_reload: None,
+            pending_close: None,
+            closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY),
+            pending_restore: None,
+            _quit_subscription: register_quit_persistence(cx),
             _watch_poll_task: None,
             _appearance_subscription: appearance_subscription,
             palette,
@@ -943,9 +1027,10 @@ impl Workspace {
                 // (mirrors the egui app's per-open `registry.detect`).
                 let handler = crate::panels::workspace_host::detect_handler(cx, &bytes[..bytes.len().min(4096)]);
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-                let panel = cx.new(|cx| FilePanel::new(source, Some(path), window, cx));
+                let panel = cx.new(|cx| FilePanel::new(source, Some(path.clone()), window, cx));
                 panel.update(cx, |panel, _cx| panel.set_detected_handler(handler));
-                self.add_file_panel(panel, window, cx);
+                self.add_file_panel(panel.clone(), window, cx);
+                self.maybe_stage_restore(panel, &path, window, cx);
                 Ok(())
             }
             Err(error) => {
@@ -1186,6 +1271,282 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// `cmd-s` / File > Save: write the reference file to its existing
+    /// path (or prompt for one if it has none). FILE-SCOPED via
+    /// `reference_active_file` (Task 3), so it still saves the right
+    /// file with a strings/entropy tab focused.
+    fn on_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_reference_file(SaveKind::Save, window, cx);
+    }
+
+    /// `cmd-shift-s` / File > Save As: always prompt for a destination.
+    fn on_save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_reference_file(SaveKind::SaveAs, window, cx);
+    }
+
+    /// Save the reference file. `Save` writes straight to the tab's path
+    /// when it has one and only prompts for a path otherwise; `SaveAs`
+    /// always prompts. No-op with no reference file. Mirrors egui's
+    /// `save_active_file` / `save_file_by_id` (`crates/hxy/src/files/save.rs`).
+    fn save_reference_file(&mut self, kind: SaveKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let path = file.read(cx).path().map(Path::to_path_buf);
+        match (kind, path) {
+            (SaveKind::Save, Some(path)) => {
+                self.write_file(&file, path, window, cx);
+            }
+            // Save As, or a Save on an untitled buffer: ask for a path.
+            _ => self.prompt_save_path(file, None, window, cx),
+        }
+    }
+
+    /// Read the file's patched bytes, write them atomically, then
+    /// re-anchor the editor onto the freshly written bytes so the buffer
+    /// goes clean (the patch is now on disk) and drop the watcher's
+    /// pending change so the post-save mtime bump doesn't boomerang back
+    /// as a phantom reload prompt. Returns whether the bytes hit disk;
+    /// the close-on-success path (`resolve_close`) conditions on it.
+    /// Mirrors egui's `save_file_by_id` filesystem branch.
+    fn write_file(
+        &mut self,
+        file: &Entity<FilePanel>,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pane = file.read(cx).pane().clone();
+        let bytes = read_pane_bytes(&pane, cx);
+        if let Err(err) = hxy_panels::files::write_atomic(&path, &bytes) {
+            let text =
+                hxy_i18n::t_args("gpui-save-failed", &[("name", &leaf_name(&path)), ("error", &err.to_string())]);
+            window.push_notification(Notification::error(text), cx);
+            return false;
+        }
+        // Re-anchor onto the just-written bytes: swap_source drops the
+        // patch overlay, so the editor reports clean and dependent panels
+        // recompute against what is now on disk. Mirrors egui swapping to
+        // a fresh source over the saved file.
+        let previous_path = file.read(cx).path().map(Path::to_path_buf);
+        let fresh: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
+        pane.update(cx, |pane, cx| {
+            pane.editor_mut().swap_source(fresh);
+            cx.notify();
+        });
+        // Save As lands the tab on a new path: retitle it and refresh the
+        // path-keyed reuse registry so a resync keeps this live entity.
+        if previous_path.as_deref() != Some(path.as_path()) {
+            file.update(cx, |file, _cx| file.set_path(path.clone()));
+            self.register_open_file(file, cx);
+        }
+        if let Some(file_watch) = self.file_watch.as_mut() {
+            file_watch.mark_synced(&path);
+        }
+        // The patch is now on disk, so any unsaved-edits sidecar for this
+        // path is stale (mirrors egui's save discarding the sidecar).
+        crate::patches::discard(&path);
+        self.recompute_panels_for_path(&path, cx);
+        cx.notify();
+        true
+    }
+
+    /// Open the native save dialog for `file`, then write it to whatever
+    /// path the user picks. `and_close` closes the tab after a successful
+    /// write (the save-before-closing "Save" path on an untitled buffer).
+    /// A cancelled dialog is a normal no-op.
+    fn prompt_save_path(
+        &mut self,
+        file: Entity<FilePanel>,
+        and_close: Option<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = file.read(cx).path().map(Path::to_path_buf);
+        let directory = current
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let suggested = current
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| hxy_i18n::t("gpui-file-untitled"));
+        let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = receiver.await;
+            let _ = this.update_in(cx, |workspace, window, cx| {
+                let path = match result {
+                    Ok(Ok(Some(path))) => path,
+                    _ => return,
+                };
+                if workspace.write_file(&file, path, window, cx) && and_close.is_some() {
+                    workspace.close_file_tab(file, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// If a freshly opened `file` at `path` has an unsaved-edits sidecar
+    /// from a previous session, stage a restore prompt for it. No-op when
+    /// there is no sidecar (the common case) or a restore prompt is
+    /// already up. Mirrors egui's open path checking for a sidecar and
+    /// staging `pending_patch_restore`.
+    fn maybe_stage_restore(
+        &mut self,
+        file: Entity<FilePanel>,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_restore.is_some() {
+            return;
+        }
+        let Some((sidecar, integrity)) = crate::patches::load_restore(path) else { return };
+        self.pending_restore = Some(PendingRestore { file, sidecar, integrity });
+        self.open_restore_dialog(window, cx);
+    }
+
+    /// Show the restore-unsaved-edits dialog for `self.pending_restore`. A
+    /// clean sidecar gets a plain "Restore"; a modified / unknown one gets
+    /// a warning banner and a worded "Restore anyway" so the risk isn't
+    /// accidental. Dismissal keeps the sidecar (see [`RestoreDecision`]).
+    fn open_restore_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use hxy_panels::files::patch_persist::RestoreIntegrity;
+        let Some(pending) = &self.pending_restore else { return };
+        let op_count = pending.sidecar.patch.len();
+        let path_display = pending.sidecar.source_path.display().to_string();
+        let integrity = pending.integrity.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let mut body = v_flex()
+                .gap_2()
+                .child(Label::new(hxy_i18n::t_args("restore-patch-body", &[("ops", &op_count.to_string())])))
+                .child(Label::new(path_display.clone()).text_color(cx.theme().muted_foreground));
+            let (clean, warn) = match &integrity {
+                RestoreIntegrity::Clean => (true, None),
+                RestoreIntegrity::Modified { reason } => (false, Some(("restore-patch-warn-modified", reason.clone()))),
+                RestoreIntegrity::Unknown { reason } => (false, Some(("restore-patch-warn-unknown", reason.clone()))),
+            };
+            if let Some((key, reason)) = warn {
+                body = body
+                    .child(Label::new(hxy_i18n::t(key)).text_color(cx.theme().warning))
+                    .child(Label::new(reason).text_color(cx.theme().muted_foreground));
+            }
+            let restore_key = if clean { "restore-patch-restore" } else { "restore-patch-restore-anyway" };
+            let weak_for_footer = weak.clone();
+            let weak_for_cancel = weak.clone();
+            let weak_for_close = weak.clone();
+            dialog
+                .title(hxy_i18n::t("restore-patch-title"))
+                .child(body)
+                .on_cancel(move |_, _window, cx| {
+                    dismiss_restore(&weak_for_cancel, cx);
+                    true
+                })
+                .on_close(move |_, _window, cx| dismiss_restore(&weak_for_close, cx))
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    vec![
+                        restore_button(
+                            "restore-apply",
+                            hxy_i18n::t(restore_key),
+                            weak_for_footer.clone(),
+                            RestoreDecision::Restore,
+                        ),
+                        restore_button(
+                            "restore-discard",
+                            hxy_i18n::t("restore-patch-discard"),
+                            weak_for_footer.clone(),
+                            RestoreDecision::Discard,
+                        ),
+                    ]
+                })
+        });
+    }
+
+    /// Apply the restore decision. `Restore` re-applies the sidecar's
+    /// patch and undo/redo stacks onto the tab's editor and forces it
+    /// mutable; a `Clean` sidecar is verified against the live bytes
+    /// first and skipped if it no longer matches. Both `Restore` and
+    /// `Discard` drop the sidecar from disk. Mirrors egui's
+    /// `RestoreAction` handling (`crates/hxy/src/app/dialogs.rs:649-711`).
+    fn resolve_restore(&mut self, decision: RestoreDecision, cx: &mut Context<Self>) {
+        use hxy_panels::files::patch_persist::RestoreIntegrity;
+        let Some(pending) = self.pending_restore.take() else { return };
+        let path = pending.sidecar.source_path.clone();
+        if let RestoreDecision::Restore = decision {
+            let clean = matches!(pending.integrity, RestoreIntegrity::Clean);
+            let pane = pending.file.read(cx).pane().clone();
+            // A clean sidecar promised the on-disk bytes still match what
+            // the patch was cut against; verify before trusting it, and
+            // bail (keeping the file untouched) if the digest disagrees.
+            let verified = if clean {
+                let bytes = read_pane_bytes(&pane, cx);
+                match pending.sidecar.metadata.verify(&bytes) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        tracing::warn!(%err, path = %path.display(), "restore: source verification failed; not restoring");
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            if verified {
+                pane.update(cx, |pane, cx| {
+                    *pane.editor_mut().patch().write().expect("patch lock poisoned") = pending.sidecar.patch;
+                    pane.editor_mut().set_undo_stack(pending.sidecar.undo_stack);
+                    pane.editor_mut().set_redo_stack(pending.sidecar.redo_stack);
+                    pane.editor_mut().push_history_boundary();
+                    pane.editor_mut().set_edit_mode(EditMode::Mutable);
+                    cx.notify();
+                });
+            }
+        }
+        crate::patches::discard(&path);
+        cx.notify();
+    }
+
+    /// Write an unsaved-edits sidecar for every still-open dirty file tab,
+    /// and drop stale sidecars for the clean ones. Runs from the on-quit
+    /// hook (see [`register_quit_persistence`]). Best-effort: a store
+    /// failure only logs. Mirrors egui's `on_exit`
+    /// (`crates/hxy/src/app/desktop.rs:2026-2054`).
+    fn persist_unsaved_on_quit(&self, cx: &App) {
+        use hxy_panels::files::patch_persist;
+        let Some(dir) = crate::patches::edits_dir() else { return };
+        let dump = self.dock.read(cx).dump(cx);
+        let mut seen = std::collections::HashSet::new();
+        for file in self.open_files.iter().rev() {
+            let Some(path) = file.read(cx).path().map(Path::to_path_buf) else { continue };
+            // `open_files` can hold stale closed entities and duplicate
+            // paths; keep only paths still live in the dock, once each.
+            if !dump_has_file_path(&dump.center, &path) || !seen.insert(path.clone()) {
+                continue;
+            }
+            let pane = file.read(cx).pane().clone();
+            let pane = pane.read(cx);
+            let editor = pane.editor();
+            if !editor.is_dirty() {
+                let _ = patch_persist::discard(&dir, &path);
+                continue;
+            }
+            let patch = editor.patch().read().expect("patch lock poisoned").clone();
+            let Some(sidecar) = patch_persist::snapshot(
+                path.clone(),
+                editor.source().as_ref(),
+                patch,
+                editor.undo_stack().to_vec(),
+                editor.redo_stack().to_vec(),
+            ) else {
+                continue;
+            };
+            if let Err(err) = patch_persist::store(&dir, &sidecar) {
+                tracing::warn!(%err, path = %path.display(), "store patch sidecar");
+            }
+        }
     }
 
     fn on_toggle_vim(&mut self, _: &ToggleVim, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1497,7 +1858,104 @@ impl Workspace {
             return;
         }
         let Some(active) = self.active_file.clone() else { return };
-        self.close_file_tab(active, window, cx);
+        self.request_close_file(active, window, cx);
+    }
+
+    /// Close `file`'s tab, first running the save-before-closing prompt
+    /// when it has unsaved edits. A clean tab closes immediately; a dirty
+    /// one stages [`Self::pending_close`] and opens the Save / Don't Save
+    /// / Cancel dialog, whose buttons drive [`Self::resolve_close`]. A
+    /// second request while a prompt is already up is dropped (the first
+    /// prompt stays put). Mirrors egui's `request_close`
+    /// (`crates/hxy/src/tabs/close.rs:198`).
+    fn request_close_file(&mut self, file: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if !file.read(cx).is_dirty(cx) {
+            self.close_file_tab(file, window, cx);
+            return;
+        }
+        if self.pending_close.is_some() {
+            return;
+        }
+        self.pending_close = Some(file);
+        self.open_close_dialog(window, cx);
+    }
+
+    /// Show the save-before-closing dialog for `self.pending_close`. The
+    /// three footer buttons resolve `Save` / `DontSave`; any dismissal
+    /// (Escape, overlay click, close icon) resolves `Cancel` and leaves
+    /// the tab open. No-op if nothing is pending.
+    fn open_close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = &self.pending_close else { return };
+        let name = file
+            .read(cx)
+            .path()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| hxy_i18n::t("gpui-file-untitled"));
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let body = Label::new(hxy_i18n::t_args("close-prompt-body", &[("name", &name)]))
+                .text_color(cx.theme().muted_foreground);
+            let weak_for_footer = weak.clone();
+            let weak_for_cancel = weak.clone();
+            let weak_for_close = weak.clone();
+            dialog
+                .title(hxy_i18n::t("close-prompt-title"))
+                .child(body)
+                .on_cancel(move |_, window, cx| {
+                    resolve_close_on(&weak_for_cancel, CloseDecision::Cancel, window, cx);
+                    true
+                })
+                .on_close(move |_, window, cx| {
+                    resolve_close_on(&weak_for_close, CloseDecision::Cancel, window, cx);
+                })
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    vec![
+                        close_button(
+                            "close-save",
+                            hxy_i18n::t("close-prompt-save"),
+                            weak_for_footer.clone(),
+                            CloseDecision::Save,
+                        ),
+                        close_button(
+                            "close-discard",
+                            hxy_i18n::t("close-prompt-discard"),
+                            weak_for_footer.clone(),
+                            CloseDecision::DontSave,
+                        ),
+                        close_button(
+                            "close-cancel",
+                            hxy_i18n::t("close-prompt-cancel"),
+                            weak_for_footer.clone(),
+                            CloseDecision::Cancel,
+                        ),
+                    ]
+                })
+        });
+    }
+
+    /// Apply the user's save-before-closing choice to the pending tab.
+    /// `Save` writes first and closes only on success (a failed or
+    /// cancelled Save As leaves the tab open, mirroring egui's
+    /// close.rs:446-450); `DontSave` closes discarding the patch;
+    /// `Cancel` leaves the tab untouched. Takes the pending file so a
+    /// re-entrant call can't double-close.
+    fn resolve_close(&mut self, decision: CloseDecision, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.pending_close.take() else { return };
+        match decision {
+            CloseDecision::Cancel => {}
+            CloseDecision::DontSave => self.close_file_tab(file, window, cx),
+            CloseDecision::Save => match file.read(cx).path().map(Path::to_path_buf) {
+                Some(path) => {
+                    if self.write_file(&file, path, window, cx) {
+                        self.close_file_tab(file, window, cx);
+                    }
+                }
+                // Untitled: the save needs a destination, so the write
+                // (and the close-on-success) happen in the dialog's
+                // async continuation.
+                None => self.prompt_save_path(file, Some(()), window, cx),
+            },
+        }
     }
 
     /// Close `file`'s tab and drop its entity from the reuse registry,
@@ -1511,12 +1969,55 @@ impl Workspace {
     fn close_file_tab(&mut self, file: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
         let closed = file.entity_id();
         let closed_path = file.read(cx).path().map(Path::to_path_buf);
+        self.remember_closed(&file, cx);
         let view: Arc<dyn PanelView> = Arc::new(file);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
         self.open_files.retain(|f| f.entity_id() != closed);
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_entropy_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_checksums_tabs_for_path(closed_path.as_deref(), window, cx);
+    }
+
+    /// Push a just-closed file tab onto the reopen ring, capturing the
+    /// path plus a little view state (caret offset, column count) to
+    /// re-park on reopen. Only disk-backed tabs enter the ring -- an
+    /// untitled buffer has no path to reopen from. Drops the oldest entry
+    /// past [`CLOSED_TABS_CAPACITY`]. Mirrors egui's `remember_closed`
+    /// (`crates/hxy/src/tabs/close.rs`).
+    fn remember_closed(&mut self, file: &Entity<FilePanel>, cx: &App) {
+        let Some(path) = file.read(cx).path().map(Path::to_path_buf) else { return };
+        let pane = file.read(cx).pane().read(cx);
+        let selection = pane.editor().selection().map(|s| s.cursor.get());
+        let columns = pane.columns();
+        if self.closed_tabs.len() == CLOSED_TABS_CAPACITY {
+            self.closed_tabs.pop_front();
+        }
+        self.closed_tabs.push_back(ClosedTab { path, selection, columns });
+    }
+
+    /// `cmd-shift-t` / File > Reopen Closed Tab: pop the most recently
+    /// closed tab and reopen it (focusing an existing tab if the path was
+    /// reopened by hand in the meantime), re-parking its caret and column
+    /// count. No-op with an empty ring. Mirrors egui's
+    /// `reopen_last_closed_tab`.
+    fn on_reopen_closed(&mut self, _: &ReopenClosedTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(closed) = self.closed_tabs.pop_back() else { return };
+        self.open_path(closed.path.clone(), window, cx);
+        let Some(file) = self.open_file_for_path(&closed.path, cx) else { return };
+        let pane = file.read(cx).pane().clone();
+        pane.update(cx, |pane, cx| {
+            if let Some(offset) = closed.selection {
+                let len = pane.editor().source().len().get();
+                let clamped = ByteOffset::new(offset.min(len.saturating_sub(1)));
+                pane.editor_mut().set_selection(Some(Selection::caret(clamped)));
+                if !pane.editor().is_offset_visible(clamped) {
+                    pane.editor_mut().set_scroll_to_byte(clamped);
+                }
+                pane.sync_pending_scroll(cx);
+            }
+            pane.set_columns(closed.columns, cx);
+            cx.notify();
+        });
     }
 
     /// Close one `EntropyPanel` tab by identity. Mirrors `close_strings_tab`.
@@ -2038,6 +2539,64 @@ fn reload_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, d
     })
 }
 
+/// One button in the save-before-closing dialog's footer: clicking it
+/// resolves the pending prompt with `decision` on the workspace, then
+/// closes the dialog. A plain closure (not `cx.listener`) because the
+/// footer builder runs outside any entity's `Context` -- see
+/// `Workspace::open_close_dialog`.
+fn close_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, decision: CloseDecision) -> Button {
+    Button::new(id).label(label).on_click(move |_, window, cx| {
+        resolve_close_on(&weak, decision, window, cx);
+        window.close_dialog(cx);
+    })
+}
+
+/// Resolve the pending save-before-closing prompt with `decision` on the
+/// workspace behind `weak`. Used both by the footer buttons and by the
+/// dialog's dismissal hooks (Escape / overlay / close icon all resolve
+/// `Cancel`), so a dismissal can never leave `pending_close` stuck.
+fn resolve_close_on(weak: &WeakEntity<Workspace>, decision: CloseDecision, window: &mut Window, cx: &mut App) {
+    if let Some(workspace) = weak.upgrade() {
+        workspace.update(cx, |workspace, cx| workspace.resolve_close(decision, window, cx));
+    }
+}
+
+/// Register the on-quit unsaved-patch persistence hook. gpui runs
+/// `on_app_quit` callbacks during shutdown with a short budget and no way
+/// to cancel; the work here (a few small JSON writes, content-hashing
+/// capped at 32 MiB per file) stays synchronous and returns immediately.
+/// The returned `Subscription` is held on the workspace so the hook lives
+/// as long as the window does.
+fn register_quit_persistence(cx: &mut Context<Workspace>) -> Subscription {
+    cx.on_app_quit(|workspace: &mut Workspace, cx: &mut Context<Workspace>| {
+        workspace.persist_unsaved_on_quit(cx);
+        // Nothing to await -- the persistence pass is synchronous.
+        async {}
+    })
+}
+
+/// One button in the restore-unsaved-edits dialog's footer: resolves the
+/// pending restore with `decision`, then closes the dialog.
+fn restore_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, decision: RestoreDecision) -> Button {
+    Button::new(id).label(label).on_click(move |_, window, cx| {
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.resolve_restore(decision, cx));
+        }
+        window.close_dialog(cx);
+    })
+}
+
+/// Dismissing the restore dialog (Escape / overlay / close icon) clears
+/// the pending prompt but leaves the sidecar on disk, so the next open
+/// re-offers it. Distinct from the Discard button, which drops it.
+fn dismiss_restore(weak: &WeakEntity<Workspace>, cx: &mut App) {
+    if let Some(workspace) = weak.upgrade() {
+        workspace.update(cx, |workspace, _cx| {
+            workspace.pending_restore = None;
+        });
+    }
+}
+
 /// Dismissing the dialog any way other than a footer button -- Escape,
 /// a click on the overlay, or the close icon -- must still resolve the
 /// pending prompt (`Ignore`), not just close the dialog and leave
@@ -2343,6 +2902,9 @@ impl Render for Workspace {
             .flex_col()
             .bg(cx.theme().background)
             .on_action(cx.listener(Self::on_open_file))
+            .on_action(cx.listener(Self::on_save))
+            .on_action(cx.listener(Self::on_save_as))
+            .on_action(cx.listener(Self::on_reopen_closed))
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_open_strings))
@@ -2467,6 +3029,240 @@ mod tests {
 
     fn active_path(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> Option<PathBuf> {
         window.read_with(cx, |ws, cx| ws.active_path(cx)).unwrap()
+    }
+
+    /// Focus the active file's grid and type one hex digit so its buffer
+    /// goes dirty (byte 0's high nibble becomes 0xA0). Returns the active
+    /// `FilePanel`.
+    fn dirty_active_file(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> Entity<FilePanel> {
+        let file = window.read_with(cx, |ws, _| ws.active_file.clone()).unwrap().expect("a file is active");
+        window
+            .update(cx, |_ws, window, cx| {
+                let pane = file.read(cx).pane().clone();
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().set_selection(Some(Selection::caret(ByteOffset::new(0))));
+                    cx.notify();
+                });
+                let handle = file.read(cx).pane().read(cx).focus_handle(cx);
+                window.focus(&handle);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        // Type one hex digit at byte 0: high nibble becomes 0xA -> 0xA0.
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(
+            window.read_with(cx, |_ws, cx| file.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "typing should dirty the buffer",
+        );
+        file
+    }
+
+    /// `Save` writes the patched bytes to the tab's existing path and
+    /// re-anchors the editor so the buffer goes clean -- the round-trip
+    /// egui's `save_file_by_id` performs.
+    #[gpui::test]
+    fn save_writes_patched_bytes_and_reanchors(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "save.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = dirty_active_file(window, cx);
+
+        window.update(cx, |ws, window, cx| ws.save_reference_file(SaveKind::Save, window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk[0], 0xA0, "the patched first byte reached disk");
+        assert!(
+            !window.read_with(cx, |_ws, cx| file.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "the editor re-anchors onto the saved bytes and goes clean",
+        );
+    }
+
+    /// The save-before-closing prompt's Save answer writes then closes the
+    /// tab (close-on-success, egui close.rs:446-450).
+    #[gpui::test]
+    fn dirty_close_save_writes_and_closes(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "close-save.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = dirty_active_file(window, cx);
+
+        // Drive the resolution directly (the dialog's Save button calls
+        // exactly this), bypassing the modal UI.
+        window
+            .update(cx, |ws, window, cx| {
+                ws.pending_close = Some(file.clone());
+                ws.resolve_close(CloseDecision::Save, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(std::fs::read(&path).unwrap()[0], 0xA0, "Save wrote the patch to disk");
+        assert_eq!(file_count(window, cx), 0, "Save closed the tab after a successful write");
+    }
+
+    /// Cancelling the save-before-closing prompt leaves the tab open and
+    /// still dirty (nothing written, nothing closed).
+    #[gpui::test]
+    fn dirty_close_cancel_keeps_the_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "close-cancel.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = dirty_active_file(window, cx);
+
+        window
+            .update(cx, |ws, window, cx| {
+                ws.pending_close = Some(file.clone());
+                ws.resolve_close(CloseDecision::Cancel, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(file_count(window, cx), 1, "Cancel keeps the tab open");
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 16], "Cancel wrote nothing to disk");
+        assert!(
+            window.read_with(cx, |_ws, cx| file.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
+            "Cancel keeps the buffer dirty",
+        );
+    }
+
+    /// Don't Save closes the tab discarding the patch (nothing written).
+    #[gpui::test]
+    fn dirty_close_dont_save_discards_and_closes(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "close-discard.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = dirty_active_file(window, cx);
+
+        window
+            .update(cx, |ws, window, cx| {
+                ws.pending_close = Some(file.clone());
+                ws.resolve_close(CloseDecision::DontSave, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(file_count(window, cx), 0, "Don't Save closed the tab");
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 16], "Don't Save wrote nothing");
+    }
+
+    /// Closing a clean file tab remembers it, and Reopen Closed Tab
+    /// (`cmd-shift-t`) brings it back, re-parking the caret.
+    #[gpui::test]
+    fn reopen_closed_tab_restores_the_last_closed_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "reopen.bin", &[1u8; 32]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        assert_eq!(file_count(window, cx), 1);
+
+        // Park the caret so the reopen has view state to restore.
+        window
+            .update(cx, |ws, _window, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().set_selection(Some(Selection::caret(ByteOffset::new(7))));
+                    cx.notify();
+                });
+            })
+            .unwrap();
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 0, "the tab closed");
+
+        window.update(cx, |ws, window, cx| ws.on_reopen_closed(&ReopenClosedTab, window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 1, "reopen brought the tab back");
+        assert_eq!(active_path(window, cx), Some(path));
+        let cursor = window
+            .read_with(cx, |ws, cx| {
+                ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor().selection().map(|s| s.cursor.get())
+            })
+            .unwrap();
+        assert_eq!(cursor, Some(7), "reopen re-parks the caret");
+    }
+
+    /// Restoring an unsaved-edits sidecar reapplies its patch onto the
+    /// freshly opened (clean) buffer and forces the editor mutable -- the
+    /// reopen-time restore round-trip. Uses a `Modified` sidecar so the
+    /// apply is unconditional (the `Clean` path additionally digest-
+    /// verifies; that is exercised by the store/load test in
+    /// `crate::patches`).
+    #[gpui::test]
+    fn restore_reapplies_the_sidecar_patch(cx: &mut TestAppContext) {
+        use hxy_panels::files::patch_persist;
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_file(&dir, "restore.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = window.read_with(cx, |ws, _| ws.active_file.clone()).unwrap().expect("file open");
+
+        // Build a sidecar carrying a one-byte patch, as a previous
+        // session's dirty buffer would have persisted on quit.
+        let base: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0u8; 16]));
+        let mut editor = hxy_editor::HexEditor::new(base);
+        editor.splice(0, 1, vec![0xCD]).unwrap();
+        let patch = editor.patch().read().unwrap().clone();
+        let sidecar = patch_persist::snapshot(
+            path.clone(),
+            editor.source().as_ref(),
+            patch,
+            editor.undo_stack().to_vec(),
+            editor.redo_stack().to_vec(),
+        )
+        .expect("non-empty patch");
+
+        window
+            .update(cx, |ws, _window, cx| {
+                ws.pending_restore = Some(PendingRestore {
+                    file: file.clone(),
+                    sidecar,
+                    integrity: hxy_panels::files::patch_persist::RestoreIntegrity::Modified { reason: "test".into() },
+                });
+                ws.resolve_restore(RestoreDecision::Restore, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .read_with(cx, |_ws, cx| {
+                let editor = file.read(cx).pane().read(cx).editor();
+                assert!(editor.is_dirty(), "restore reapplies the patch (buffer goes dirty)");
+                let byte0 = editor
+                    .source()
+                    .read(hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap())
+                    .unwrap();
+                assert_eq!(byte0[0], 0xCD, "the sidecar patch's byte landed");
+            })
+            .unwrap();
+    }
+
+    /// The reopen ring is bounded at [`CLOSED_TABS_CAPACITY`]: closing
+    /// more than that many tabs drops the oldest, so a reopen can never
+    /// resurrect a tab past the cap.
+    #[gpui::test]
+    fn reopen_ring_is_capped(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let window = open_workspace(cx, Vec::new(), None);
+        for i in 0..(CLOSED_TABS_CAPACITY + 3) {
+            let path = temp_file(&dir, &format!("ring-{i}.bin"), &[0u8; 4]);
+            window_open(window, &path, cx);
+            window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+            cx.run_until_parked();
+        }
+        let len = window.read_with(cx, |ws, _| ws.closed_tabs.len()).unwrap();
+        assert_eq!(len, CLOSED_TABS_CAPACITY, "the ring never exceeds its cap");
     }
 
     /// A CLI-loaded file lands in a focused pane so keystrokes reach the
