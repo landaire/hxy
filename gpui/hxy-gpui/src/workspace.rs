@@ -1081,36 +1081,46 @@ impl Workspace {
                 body = body.child(Label::new(hxy_i18n::t("reload-prompt-warn-unsaved")).text_color(cx.theme().warning));
             }
             let weak_for_footer = weak.clone();
-            dialog.title(hxy_i18n::t("reload-prompt-title")).child(body).footer(move |_ok, _cancel, _window, _cx| {
-                // "Reload (discard edits)" reads oddly on a clean
-                // buffer (nothing to discard), so the label swaps --
-                // mirrors egui's `reload-prompt-discard` /
-                // `reload-prompt-reload` split. "Keep my edits" is
-                // hidden on a clean buffer for the same reason egui
-                // hides it: the choice collapses into Ignore.
-                let reload_key = if has_unsaved { "reload-prompt-discard" } else { "reload-prompt-reload" };
-                let mut buttons = vec![reload_button(
-                    "reload-discard",
-                    hxy_i18n::t(reload_key),
-                    weak_for_footer.clone(),
-                    ReloadDecision::DiscardEdits,
-                )];
-                if has_unsaved {
-                    buttons.push(reload_button(
-                        "reload-keep",
-                        hxy_i18n::t("reload-prompt-keep"),
+            let weak_for_cancel = weak.clone();
+            let weak_for_close = weak.clone();
+            dialog
+                .title(hxy_i18n::t("reload-prompt-title"))
+                .child(body)
+                .on_cancel(move |_, window, cx| {
+                    dismiss_reload_as_ignore(&weak_for_cancel, window, cx);
+                    true
+                })
+                .on_close(move |_, window, cx| dismiss_reload_as_ignore(&weak_for_close, window, cx))
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    // "Reload (discard edits)" reads oddly on a clean
+                    // buffer (nothing to discard), so the label swaps --
+                    // mirrors egui's `reload-prompt-discard` /
+                    // `reload-prompt-reload` split. "Keep my edits" is
+                    // hidden on a clean buffer for the same reason egui
+                    // hides it: the choice collapses into Ignore.
+                    let reload_key = if has_unsaved { "reload-prompt-discard" } else { "reload-prompt-reload" };
+                    let mut buttons = vec![reload_button(
+                        "reload-discard",
+                        hxy_i18n::t(reload_key),
                         weak_for_footer.clone(),
-                        ReloadDecision::KeepEdits,
+                        ReloadDecision::DiscardEdits,
+                    )];
+                    if has_unsaved {
+                        buttons.push(reload_button(
+                            "reload-keep",
+                            hxy_i18n::t("reload-prompt-keep"),
+                            weak_for_footer.clone(),
+                            ReloadDecision::KeepEdits,
+                        ));
+                    }
+                    buttons.push(reload_button(
+                        "reload-ignore",
+                        hxy_i18n::t("reload-prompt-ignore"),
+                        weak_for_footer.clone(),
+                        ReloadDecision::Ignore,
                     ));
-                }
-                buttons.push(reload_button(
-                    "reload-ignore",
-                    hxy_i18n::t("reload-prompt-ignore"),
-                    weak_for_footer.clone(),
-                    ReloadDecision::Ignore,
-                ));
-                buttons
-            })
+                    buttons
+                })
         });
     }
 
@@ -2026,6 +2036,20 @@ fn reload_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, d
         }
         window.close_dialog(cx);
     })
+}
+
+/// Dismissing the dialog any way other than a footer button -- Escape,
+/// a click on the overlay, or the close icon -- must still resolve the
+/// pending prompt (`Ignore`), not just close the dialog and leave
+/// `pending_reload` set forever: gpui-component's `Dialog` fires
+/// `on_cancel`/`on_close` for all three of those paths but never calls
+/// back into `resolve_reload` on its own, unlike the footer buttons,
+/// which call it directly. Matches egui's dialog, whose window-chrome
+/// close routes to the same "ignore" branch as the Ignore button.
+fn dismiss_reload_as_ignore(weak: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+    if let Some(workspace) = weak.upgrade() {
+        workspace.update(cx, |workspace, cx| workspace.resolve_reload(ReloadDecision::Ignore, window, cx));
+    }
 }
 
 /// Whether any file panel in a dumped `PanelState` tree has `target` as
@@ -4064,6 +4088,71 @@ mod tests {
         })
         .unwrap();
         assert_eq!(workspace.read_with(cx, |ws, _| ws.pending_reload.as_ref().map(|p| p.path.clone())), Some(f1));
+    }
+
+    /// Dismissing the reload dialog via Escape must resolve the
+    /// pending prompt as `Ignore` (dirty state untouched, prompt
+    /// cleared), not just close the dialog and leave `pending_reload`
+    /// set forever -- that would silently swallow every later
+    /// external-change event for any file (`handle_external_change`
+    /// drops a new Modified while one is already pending). Mirrors
+    /// egui's window-chrome close, which routes to the same Ignore
+    /// branch as its Ignore button.
+    #[gpui::test]
+    fn escape_dismisses_the_reload_dialog_as_ignore(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+        cx.run_until_parked();
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().splice(0, 1, vec![b'b']).unwrap();
+                    cx.notify();
+                });
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx);
+            });
+        })
+        .unwrap();
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_some()));
+        assert!(cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap());
+
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_none()), "escape clears the pending prompt");
+        assert!(
+            !cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap(),
+            "escape closes the dialog"
+        );
+        assert!(
+            workspace.read_with(cx, |ws, cx| ws
+                .active_file
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .pane()
+                .read(cx)
+                .editor()
+                .is_dirty()),
+            "ignore (via escape) leaves the pane -- and its dirty patch -- untouched"
+        );
+
+        // A later change for the same file must still raise a new
+        // prompt -- the earlier dismissal didn't leave the "one
+        // pending at a time" guard permanently stuck.
+        std::fs::write(&f1, b"bbbb").unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx)
+            });
+        })
+        .unwrap();
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_some()), "a subsequent modify re-raises a prompt");
+        assert!(cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap());
     }
 
     /// A removal always just toasts -- there's nothing to reload --
