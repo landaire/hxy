@@ -57,6 +57,7 @@ use crate::palette::modes::PaletteMode;
 use crate::palette::modes::Shortcuts;
 use crate::palette::modes::build_entries;
 use crate::workspace::OpenFile;
+use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 use crate::workspace::Workspace;
@@ -242,6 +243,7 @@ impl Palette {
             open_file: shortcut_for(window, &OpenFile),
             toggle_vim: shortcut_for(window, &ToggleVim),
             toggle_inspector: shortcut_for(window, &ToggleInspector),
+            toggle_global_search: shortcut_for(window, &ToggleGlobalSearch),
         }
     }
 

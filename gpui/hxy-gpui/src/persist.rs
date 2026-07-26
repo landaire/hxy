@@ -17,6 +17,7 @@ use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::COMPARE_PANEL_NAME;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
+use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WORKSPACE_HOST_PANEL_NAME;
@@ -209,6 +210,14 @@ enum PanelKind {
     /// handled at restore instead: it falls back to an empty read-only
     /// mount with a warning (see `WorkspaceHostPanel::restore`).
     WorkspaceHost,
+    /// A workspace-scoped singleton with no owning-file reference to
+    /// validate (the global search tab) -- always restorable verbatim.
+    /// Without an explicit arm here, a leaf falls into the generic
+    /// container-recursion branch below, which always reports zero
+    /// surviving children for a childless leaf and drops it
+    /// unconditionally -- the exact bug the entropy panel hit before it
+    /// got its own `OwningPathLeaf` arm (see that regression test).
+    AlwaysKeep,
 }
 
 /// Look up the pruning rule for a panel name, or `None` for a generic
@@ -222,6 +231,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         CHECKSUMS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "checksums panel" }),
         COMPARE_PANEL_NAME => Some(PanelKind::Compare),
         WORKSPACE_HOST_PANEL_NAME => Some(PanelKind::WorkspaceHost),
+        GLOBAL_SEARCH_PANEL_NAME => Some(PanelKind::AlwaysKeep),
         _ => None,
     }
 }
@@ -268,6 +278,7 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
                 false
             }
         },
+        Some(PanelKind::AlwaysKeep) => true,
         None => {
             panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
             let surviving = panel.children.len();
@@ -367,6 +378,14 @@ mod tests {
             panel_name: CHECKSUMS_PANEL_NAME.to_string(),
             children: Vec::new(),
             info: PanelInfo::panel(serde_json::json!({ "path": path.map(|p| p.to_string_lossy()) })),
+        }
+    }
+
+    fn global_search_panel() -> PanelState {
+        PanelState {
+            panel_name: GLOBAL_SEARCH_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::Panel(serde_json::json!({})),
         }
     }
 
@@ -511,5 +530,27 @@ mod tests {
             "only the file and its own checksums tab survive"
         );
         assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
+    }
+
+    /// A childless global-search leaf survives pruning unconditionally --
+    /// it has no owning-file path to validate. Regression test: without
+    /// its own `PanelKind::AlwaysKeep` arm, this leaf falls into the
+    /// generic container-recursion branch, which reports zero surviving
+    /// children for any childless leaf and drops it (the same bug class
+    /// `entropy_panel_kept_only_when_its_owning_file_survives` guards).
+    #[test]
+    fn global_search_panel_always_survives_pruning() {
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![global_search_panel()]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![GLOBAL_SEARCH_PANEL_NAME]);
     }
 }

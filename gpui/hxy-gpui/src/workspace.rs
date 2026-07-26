@@ -77,6 +77,8 @@ use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
+use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
+use crate::panels::GlobalSearchPanel;
 use crate::panels::InspectorPanel;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
@@ -86,6 +88,7 @@ use crate::panels::WelcomePanel;
 use crate::panels::WorkspaceHostPanel;
 use crate::panels::compare::CompareSideInit;
 use crate::panels::compare::leaf_name;
+use crate::panels::global_search::GlobalSearchJumped;
 use crate::panels::inspector::ActiveHexPane;
 use crate::panels::strings::OpenFilePanels;
 use crate::panels::strings::StringsJumped;
@@ -109,6 +112,7 @@ actions!(
         ToggleInspector,
         ToggleSearch,
         CloseSearch,
+        ToggleGlobalSearch,
         OpenPalette,
         PickPane,
         OpenStrings,
@@ -204,6 +208,8 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-alt-v", ToggleVim, None),
         gpui::KeyBinding::new("cmd-i", ToggleInspector, None),
         gpui::KeyBinding::new("cmd-f", ToggleSearch, None),
+        // Mirror the egui app's `FIND_GLOBAL` chord (Cmd+Shift+F).
+        gpui::KeyBinding::new("cmd-shift-f", ToggleGlobalSearch, None),
         // Mirror the egui app's `COMMAND_PALETTE` chord (Cmd+Shift+P).
         gpui::KeyBinding::new("cmd-shift-p", OpenPalette, None),
         // Mirror the egui app's `FOCUS_PANE` chord (Cmd+K).
@@ -301,6 +307,16 @@ pub struct Workspace {
     /// registry shape and staleness caveat as `entropy_panels` (no
     /// jump event either).
     checksums_panels: Vec<Entity<ChecksumsPanel>>,
+    /// The live `GlobalSearchPanel`, if the user has opened one this
+    /// session. A true singleton (unlike the per-file registries above):
+    /// there is at most one at a time. May point at a closed/stale
+    /// entity between opens -- liveness is confirmed against the dock
+    /// dump before reuse, see `open_global_search_panel`.
+    global_search_panel: Option<Entity<GlobalSearchPanel>>,
+    /// Kept alive so `GlobalSearchJumped` events from the current
+    /// `global_search_panel` keep reaching `on_global_search_jumped`.
+    /// Replaced (dropping the old one) each time a fresh panel is built.
+    _global_search_sub: Option<Subscription>,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -390,6 +406,8 @@ impl Workspace {
             strings_panel_subs: Vec::new(),
             entropy_panels: Vec::new(),
             checksums_panels: Vec::new(),
+            global_search_panel: None,
+            _global_search_sub: None,
             layout_path,
             save_debounce: None,
             file_watch: None,
@@ -461,6 +479,18 @@ impl Workspace {
             for panel in restored_checksums {
                 self.track_checksums_panel(panel);
             }
+            // Singleton: a restored layout has at most one. Without
+            // this, `self.global_search_panel` stays `None` even
+            // though the tab is live, so `open_global_search_panel`'s
+            // dump-presence check and its `None` registry disagree --
+            // `toggle_global_search` would then build a SECOND panel
+            // on top of the restored one instead of finding it.
+            let mut restored_global_search = Vec::new();
+            collect_global_search_entities(self.dock.read(cx).items(), &mut restored_global_search);
+            if let Some(panel) = restored_global_search.into_iter().next() {
+                self._global_search_sub = Some(cx.subscribe_in(&panel, window, Self::on_global_search_jumped));
+                self.global_search_panel = Some(panel);
+            }
             if !pruned.is_empty() {
                 // Deferred like the load-failure toast above: `Root`
                 // is not installed yet, so `push_notification` would
@@ -524,6 +554,10 @@ impl Workspace {
 
     fn on_toggle_inspector(&mut self, _: &ToggleInspector, window: &mut Window, cx: &mut Context<Self>) {
         self.dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Right, window, cx));
+    }
+
+    fn on_toggle_global_search(&mut self, _: &ToggleGlobalSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_global_search(window, cx);
     }
 
     fn on_open_strings(&mut self, _: &OpenStrings, window: &mut Window, cx: &mut Context<Self>) {
@@ -861,6 +895,83 @@ impl Workspace {
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
+    /// `cmd-shift-f` / the palette entry: close the global search tab if
+    /// one is open, else open (or focus) one. Mirrors egui's
+    /// `toggle_global_search` exactly (open-or-close, not just focus).
+    pub(crate) fn toggle_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.open_global_search_panel(cx) {
+            let view: Arc<dyn PanelView> = Arc::new(panel);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            return;
+        }
+        self.open_global_search(window, cx);
+    }
+
+    /// Open (or focus an existing) `GlobalSearchPanel` tab. Workspace-
+    /// scoped like Compare, not file-scoped: it needs no active file
+    /// (searches every open one), so callers never gate on
+    /// `has_active_file`.
+    pub(crate) fn open_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.open_global_search_panel(cx) {
+            self.focus_global_search_tab(panel, window, cx);
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| GlobalSearchPanel::new(window, cx));
+        self._global_search_sub = Some(cx.subscribe_in(&panel, window, Self::on_global_search_jumped));
+        self.global_search_panel = Some(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// The live `GlobalSearchPanel` if its tab is still open, else
+    /// `None`. Mirrors `open_checksums_panel_for_path` minus the path
+    /// filter (there is only ever one).
+    fn open_global_search_panel(&self, cx: &App) -> Option<Entity<GlobalSearchPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_global_search(&dump.center) {
+            return None;
+        }
+        self.global_search_panel.clone()
+    }
+
+    /// Bring an already-open global search tab to the foreground.
+    /// Mirrors `focus_checksums_tab`.
+    fn focus_global_search_tab(
+        &mut self,
+        panel: Entity<GlobalSearchPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if active_global_search_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let Some(panel) = self.global_search_panel.clone() else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// A global search result row was clicked: bring the matched file's
+    /// tab to the front. The selection/scroll were already applied by
+    /// `GlobalSearchPanel::jump_to_row` (it owns a direct handle to the
+    /// target pane); only the tab focus needs the workspace's dock
+    /// handle, which the panel doesn't have. Mirrors
+    /// `on_strings_panel_jumped`.
+    fn on_global_search_jumped(
+        &mut self,
+        _panel: &Entity<GlobalSearchPanel>,
+        event: &GlobalSearchJumped,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_existing_tab(event.file.clone(), window, cx);
+    }
+
     /// The open files that can seed a compare pick: every live center
     /// `FilePanel` that has a path, as `(leaf name, path)`. Read straight
     /// off the live dock tree so a closed file never lingers in the list.
@@ -1096,6 +1207,17 @@ impl Workspace {
         for panel in live_checksums {
             self.track_checksums_panel(panel);
         }
+        // Singleton, so a direct overwrite (rather than a clear-then-
+        // track loop) is correct: at most one survives the rebuild,
+        // and there is no dedup concern. The old subscription (if any)
+        // is dropped here, since it targets a now-detached entity.
+        let mut live_global_search = Vec::new();
+        collect_global_search_entities(self.dock.read(cx).items(), &mut live_global_search);
+        self.global_search_panel = live_global_search.into_iter().next();
+        self._global_search_sub = self
+            .global_search_panel
+            .as_ref()
+            .map(|panel| cx.subscribe_in(panel, window, Self::on_global_search_jumped));
         self.focus_pending = true;
     }
 
@@ -2228,8 +2350,16 @@ impl Workspace {
             // A workspace host tab is content too (its own file tabs live
             // inside its nested dock, invisible to `count_file_panels`),
             // so it must suppress the welcome placeholder just like a
-            // plain file tab does.
-            count_file_panels(&state.center) > 0 || count_workspace_host_panels(&state.center) > 0
+            // plain file tab does. Same for the global search tab: it is
+            // workspace-scoped (needs no open file, like Compare), so a
+            // user who opens it on an empty workspace must not have it
+            // silently wiped out from under them the next time this
+            // "no content -> show welcome" branch rebuilds the center
+            // from scratch (`DockItem::split` below replaces the WHOLE
+            // center, not just adds welcome alongside).
+            count_file_panels(&state.center) > 0
+                || count_workspace_host_panels(&state.center) > 0
+                || count_global_search_panels(&state.center) > 0
         };
 
         if !has_content {
@@ -2510,6 +2640,13 @@ fn count_entropy_panels(state: &PanelState) -> usize {
 fn count_checksums_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == CHECKSUMS_PANEL_NAME);
     here + state.children.iter().map(count_checksums_panels).sum::<usize>()
+}
+
+/// Total global search panels anywhere under `state` (0 or 1 -- it's a
+/// singleton, but tests want to assert that invariant directly).
+fn count_global_search_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == GLOBAL_SEARCH_PANEL_NAME);
+    here + state.children.iter().map(count_global_search_panels).sum::<usize>()
 }
 
 /// Whether any tab container in the center cache has no live panels,
@@ -2814,6 +2951,13 @@ fn dump_has_checksums_path(state: &PanelState, target: Option<&Path>) -> bool {
         || state.children.iter().any(|child| dump_has_checksums_path(child, target))
 }
 
+/// Whether the dumped tree has a `GlobalSearchPanel` anywhere -- a
+/// singleton with no owning path, so unlike its `dump_has_*_path`
+/// siblings this only needs to check presence.
+fn dump_has_global_search(state: &PanelState) -> bool {
+    state.panel_name == GLOBAL_SEARCH_PANEL_NAME || state.children.iter().any(dump_has_global_search)
+}
+
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
@@ -2931,6 +3075,28 @@ fn collect_checksums_entities(item: &DockItem, out: &mut Vec<Entity<ChecksumsPan
     }
 }
 
+/// Collect the live `GlobalSearchPanel` entities from a `DockItem` tree
+/// (at most one -- it's a singleton -- but shaped like its siblings for
+/// reuse in `rebuild_center_cache`). Mirrors `collect_checksums_entities`.
+fn collect_global_search_entities(item: &DockItem, out: &mut Vec<Entity<GlobalSearchPanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_global_search_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(search) = panel.view().downcast::<GlobalSearchPanel>() {
+                    out.push(search);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(search) = view.view().downcast::<GlobalSearchPanel>() {
+                out.push(search);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
 /// The file panel backing the active tab, if the active tab is a file.
 /// With splits, the first tab container that has an active file wins.
 ///
@@ -3004,6 +3170,19 @@ fn active_checksums_panel(item: &DockItem, cx: &App) -> Option<Entity<ChecksumsP
         }
         DockItem::Split { items, .. } => items.iter().find_map(|item| active_checksums_panel(item, cx)),
         DockItem::Panel { view, .. } => view.view().downcast::<ChecksumsPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
+/// The `GlobalSearchPanel` backing the active tab, if the active tab is
+/// the global search tab. Mirrors `active_checksums_panel`.
+fn active_global_search_panel(item: &DockItem, cx: &App) -> Option<Entity<GlobalSearchPanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<GlobalSearchPanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_global_search_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<GlobalSearchPanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
 }
@@ -3082,6 +3261,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_reopen_closed))
             .on_action(cx.listener(Self::on_toggle_vim))
             .on_action(cx.listener(Self::on_toggle_inspector))
+            .on_action(cx.listener(Self::on_toggle_global_search))
             .on_action(cx.listener(Self::on_open_strings))
             .on_action(cx.listener(Self::on_open_entropy))
             .on_action(cx.listener(Self::on_open_checksums))
@@ -4843,6 +5023,104 @@ mod tests {
             .unwrap();
         // "hello" sits at offset 1..6 in the fixture; end is exclusive.
         assert_eq!(selection, Some(Selection { anchor: ByteOffset::new(1), cursor: ByteOffset::new(5) }));
+    }
+
+    /// A global search result click must bring the MATCHED file's tab
+    /// to the front, not just move its (invisible, backgrounded)
+    /// selection -- the cross-file counterpart of
+    /// `strings_row_jump_focuses_the_owning_files_background_tab`.
+    /// `GlobalSearchPanel::jump_to_row` applies the selection directly
+    /// (it holds a handle to the matched file's pane via `GlobalMatch`);
+    /// `Workspace::on_global_search_jumped` does the tab focus.
+    #[gpui::test]
+    fn global_search_row_jump_focuses_the_matched_files_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let fa = temp_file(&dir, "a.bin", b"\x00hello\x00");
+        let fb = temp_file(&dir, "b.bin", b"\x00hello\x00");
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &fa, cx);
+        window_open(window, &fb, cx);
+        assert_eq!(active_path(window, cx), Some(fb.clone()), "sanity: B opened last, so it's active");
+
+        window.update(cx, |ws, window, cx| ws.open_global_search(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let panel = window.read_with(cx, |ws, _| ws.global_search_panel.clone()).unwrap().expect("global search panel");
+        panel.update(cx, |p, _| p.set_query_for_test(hxy_panels::search::SearchKind::Text, "hello".to_string()));
+        window.update(cx, |_ws, _window, cx| panel.update(cx, |p, cx| p.run(cx))).unwrap();
+        cx.run_until_parked();
+
+        let matches = panel.read_with(cx, |p, _| p.state().matches.clone());
+        assert_eq!(matches.len(), 2, "one match per file");
+
+        // A's match is index 0 (open order) -- it is currently
+        // backgrounded (B is active, and the search tab is frontmost).
+        window.update(cx, |_ws, _window, cx| panel.update(cx, |p, cx| p.jump_to_row(0, cx))).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(active_path(window, cx), Some(fa), "A's tab is now frontmost");
+        let selection = window
+            .read_with(cx, |ws, cx| ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).editor().selection())
+            .unwrap();
+        // "hello" sits at the half-open range [1, 6) in the fixture;
+        // cursor holds the inclusive last byte, 5.
+        assert_eq!(selection, Some(Selection { anchor: ByteOffset::new(1), cursor: ByteOffset::new(5) }));
+    }
+
+    /// Opening global search on a workspace with zero file tabs must not
+    /// have `reconcile`'s "no content -> show welcome" branch wipe it
+    /// out from under the user: that branch REBUILDS the whole center
+    /// (not an additive welcome-alongside), so without counting the
+    /// search tab as content, the very next reconcile pass -- triggered
+    /// by the tab's own `LayoutChanged` -- discards it and shows
+    /// Welcome instead. Global search is workspace-scoped like Compare
+    /// (needs no open file), so this is reachable in ordinary use, not
+    /// just restore.
+    #[gpui::test]
+    fn opening_global_search_on_an_empty_workspace_survives_reconcile(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Vec::new(), None);
+        window.update(cx, |ws, window, cx| ws.open_global_search(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let count =
+            window.read_with(cx, |ws, cx| count_global_search_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(count, 1, "the tab must survive the reconcile pass its own open triggers");
+    }
+
+    /// A layout saved with the global search tab open must restore it
+    /// AND register it in `global_search_panel` -- without that
+    /// registration, `open_global_search_panel`'s dump-presence check
+    /// would see the tab but the registry would be empty, so
+    /// `toggle_global_search` would build a second panel instead of
+    /// closing the restored one.
+    #[gpui::test]
+    fn restored_global_search_tab_is_registered_not_duplicated(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
+        first.update(cx, |ws, window, cx| ws.open_global_search(window, cx)).unwrap();
+        cx.run_until_parked();
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+
+        let second = open_workspace(cx, Vec::new(), Some(layout));
+        let restored_count =
+            second.read_with(cx, |ws, cx| count_global_search_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(restored_count, 1, "restore must bring back the search tab");
+        assert!(
+            second.read_with(cx, |ws, _| ws.global_search_panel.is_some()).unwrap(),
+            "registry must be populated on restore, not left empty"
+        );
+
+        // Toggling must CLOSE the restored tab, not open a second one.
+        second.update(cx, |ws, window, cx| ws.toggle_global_search(window, cx)).unwrap();
+        cx.run_until_parked();
+        let after_toggle =
+            second.read_with(cx, |ws, cx| count_global_search_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(after_toggle, 0, "toggle on a restored tab must close it, not duplicate it");
     }
 
     /// Focusing a file's strings tab must not blank the inspector or

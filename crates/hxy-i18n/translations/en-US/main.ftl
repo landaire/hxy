@@ -52,6 +52,13 @@ gpui-palette-browse-vfs-unavailable = no VFS handler for this file
 gpui-workspace-tab-untitled = Workspace
 gpui-workspace-ejected-foreign-tab = Moved { $tab } back out of the workspace.
 gpui-vfs-tree-title = Files
+gpui-palette-toggle-global-search = Find in All Files
+gpui-global-search-run-tooltip = Search every open file
+gpui-global-search-running = Searching...
+gpui-global-search-empty = No matches yet -- type a query and press Enter or click search.
+gpui-global-search-match-count = { $count } matches across files
+gpui-global-search-col-file = File
+gpui-global-search-col-offset = Offset
 
 # Menus
 menu-file = File

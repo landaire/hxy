@@ -119,6 +119,10 @@ pub enum PaletteAction {
     CloseTab,
     ToggleVim,
     ToggleInspector,
+    /// Open-or-close the cross-file search results tab. Workspace-
+    /// scoped (searches every open file), so unlike the file-scoped
+    /// entries below it is never gated on `has_active_file`.
+    ToggleGlobalSearch,
     /// Open (or focus) the strings panel for the active file, scanning
     /// the whole file under the panel's own auto-run rule.
     OpenStrings,
@@ -184,6 +188,7 @@ pub struct Shortcuts {
     pub open_file: Option<String>,
     pub toggle_vim: Option<String>,
     pub toggle_inspector: Option<String>,
+    pub toggle_global_search: Option<String>,
 }
 
 /// Ceiling for the palette's column-count input, matching the egui
@@ -252,6 +257,13 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
         toggle_inspector = toggle_inspector.with_shortcut(hint.clone());
     }
     out.push(toggle_inspector);
+
+    let mut toggle_global_search =
+        Entry::new(hxy_i18n::t("gpui-palette-toggle-global-search"), PaletteAction::ToggleGlobalSearch);
+    if let Some(hint) = &shortcuts.toggle_global_search {
+        toggle_global_search = toggle_global_search.with_shortcut(hint.clone());
+    }
+    out.push(toggle_global_search);
 
     out.push(
         Entry::new(hxy_i18n::t("palette-strings-whole-file"), PaletteAction::OpenStrings)

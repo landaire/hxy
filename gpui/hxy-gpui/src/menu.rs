@@ -41,6 +41,7 @@ use crate::workspace::ReopenClosedTab;
 use crate::workspace::Save;
 use crate::workspace::SaveAs;
 use crate::workspace::TakeSnapshot;
+use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 
@@ -114,6 +115,7 @@ pub fn build_menus() -> Vec<Menu> {
             name: hxy_i18n::t("menu-view").into(),
             items: vec![
                 MenuItem::action(hxy_i18n::t("gpui-palette-toggle-inspector"), ToggleInspector),
+                MenuItem::action(hxy_i18n::t("gpui-palette-toggle-global-search"), ToggleGlobalSearch),
                 MenuItem::action(hxy_i18n::t("palette-toggle-vim"), ToggleVim),
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("palette-strings-whole-file"), OpenStrings),
@@ -151,8 +153,8 @@ mod tests {
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
         assert_eq!(
             item_count(3),
-            9,
-            "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots"
+            10,
+            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots"
         );
     }
 }

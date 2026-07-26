@@ -25,6 +25,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::OpenFile => ws.open_file_dialog(window, cx),
         PaletteAction::CloseTab => ws.close_active_tab(window, cx),
         PaletteAction::ToggleVim => ws.toggle_active_vim(cx),
+        PaletteAction::ToggleGlobalSearch => ws.toggle_global_search(window, cx),
         PaletteAction::ToggleInspector => ws.toggle_inspector_dock(window, cx),
         PaletteAction::OpenStrings => ws.open_strings_for_active_file(window, cx),
         PaletteAction::OpenEntropy => ws.open_entropy_for_active_file(window, cx),
