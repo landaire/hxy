@@ -54,6 +54,31 @@ pub fn layout_path() -> Option<PathBuf> {
     storage_dir().map(|dir| dir.join("gpui-dock-layout.json"))
 }
 
+/// Gpui-suffixed snapshot root (`$DATA_DIR/hxy/gpui/snapshots`). Kept
+/// separate from the egui app's `$DATA_DIR/hxy/snapshots` so the two
+/// front ends never race on the same per-file `index.json`. `None` when
+/// no platform data dir resolves. Tests redirect it to a temp dir via
+/// [`set_snapshots_base_for_test`] so a capture never touches real data.
+pub(crate) fn snapshots_base() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(base) = SNAPSHOTS_BASE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Some(base);
+    }
+    storage_dir().map(|dir| dir.join("gpui").join("snapshots"))
+}
+
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOTS_BASE_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Redirect [`snapshots_base`] to `path` for the current test thread, so
+/// snapshot captures write under a temp dir instead of the real data dir.
+#[cfg(test)]
+pub(crate) fn set_snapshots_base_for_test(path: PathBuf) {
+    SNAPSHOTS_BASE_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(path));
+}
+
 /// Read and parse a saved layout. A missing file is a normal cold start
 /// (`None`, no warning); a present-but-unparseable file logs and is
 /// treated as absent so a schema change never bricks startup.

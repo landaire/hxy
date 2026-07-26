@@ -35,10 +35,12 @@ use gpui::actions;
 use crate::workspace::OpenChecksums;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
+use crate::workspace::OpenSnapshots;
 use crate::workspace::OpenStrings;
 use crate::workspace::ReopenClosedTab;
 use crate::workspace::Save;
 use crate::workspace::SaveAs;
+use crate::workspace::TakeSnapshot;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 
@@ -117,6 +119,9 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("palette-strings-whole-file"), OpenStrings),
                 MenuItem::action(hxy_i18n::t("palette-compute-entropy"), OpenEntropy),
                 MenuItem::action(hxy_i18n::t("palette-checksums-whole-file"), OpenChecksums),
+                MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("gpui-menu-take-snapshot"), TakeSnapshot),
+                MenuItem::action(hxy_i18n::t("gpui-menu-snapshots"), OpenSnapshots),
             ],
         },
     ]
@@ -144,6 +149,10 @@ mod tests {
         assert_eq!(item_count(0), 3, "App menu: About, separator, Quit");
         assert_eq!(item_count(1), 7, "File menu: Open, sep, Save, Save As, sep, Reopen Closed Tab, Close Tab");
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
-        assert_eq!(item_count(3), 6, "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy, Checksums");
+        assert_eq!(
+            item_count(3),
+            9,
+            "View menu: Toggle Inspector, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots"
+        );
     }
 }

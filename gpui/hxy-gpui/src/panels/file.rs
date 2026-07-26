@@ -49,13 +49,18 @@ pub struct FilePanel {
     /// "Browse VFS" command. `None` for a plain file or a VFS entry.
     detected_handler: Option<Arc<dyn VfsHandler>>,
     search: Entity<SearchBar>,
+    /// Per-file snapshot store, created lazily on first snapshot access
+    /// (only for disk-backed tabs -- a pathless buffer has no stable key
+    /// to store sidecars under). Restored from disk so snapshots survive
+    /// an app restart. `None` until first touched.
+    snapshots: Option<hxy_panels::files::snapshot::SnapshotStore>,
 }
 
 impl FilePanel {
     pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
-        Self { pane, path, title_override: None, detected_handler: None, search }
+        Self { pane, path, title_override: None, detected_handler: None, search, snapshots: None }
     }
 
     /// A file panel over a VFS entry: no on-disk path, but a stable tab
@@ -132,6 +137,65 @@ impl FilePanel {
         self.pane.read(cx).editor().is_dirty()
     }
 
+    /// Whether this tab can store snapshots (only disk-backed tabs have a
+    /// stable key). Drives the dialog's "no store" message.
+    pub fn has_snapshot_store(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Lazily build (or return) this tab's snapshot store, restoring any
+    /// on-disk history under the gpui-suffixed snapshot root. `None` for a
+    /// pathless buffer -- there is no stable key to store snapshots under.
+    fn snapshot_store_mut(&mut self) -> Option<&mut hxy_panels::files::snapshot::SnapshotStore> {
+        let path = self.path.clone()?;
+        if self.snapshots.is_none() {
+            let base = crate::persist::snapshots_base();
+            self.snapshots = Some(hxy_panels::files::snapshot::SnapshotStore::restore(base.as_deref(), &path));
+        }
+        self.snapshots.as_mut()
+    }
+
+    /// Capture the current patched bytes as a named snapshot (an empty
+    /// name defaults to `Snapshot N`). `None` when the buffer has no
+    /// stable key (pathless) or the sidecar write fails (logged).
+    pub fn capture_snapshot(&mut self, name: String, cx: &App) -> Option<hxy_panels::files::snapshot::SnapshotId> {
+        let bytes = read_all_bytes(&self.pane, cx);
+        let store = self.snapshot_store_mut()?;
+        match store.capture(name, bytes) {
+            Ok(id) => Some(id),
+            Err(err) => {
+                tracing::warn!(%err, "capture snapshot");
+                None
+            }
+        }
+    }
+
+    /// This tab's snapshots, oldest first. Empty when the store has never
+    /// been touched or the tab is pathless.
+    pub fn snapshots(&self) -> &[hxy_panels::files::snapshot::Snapshot] {
+        self.snapshots.as_ref().map(|store| store.snapshots.as_slice()).unwrap_or(&[])
+    }
+
+    /// Delete a snapshot and its sidecar bytes (persisted).
+    pub fn delete_snapshot(&mut self, id: hxy_panels::files::snapshot::SnapshotId) {
+        if let Some(store) = self.snapshot_store_mut() {
+            store.delete(id);
+        }
+    }
+
+    /// Resolve a snapshot's frozen bytes (cache hit or disk read). `None`
+    /// on a missing id or a read failure (logged).
+    pub fn snapshot_bytes(&self, id: hxy_panels::files::snapshot::SnapshotId) -> Option<Arc<Vec<u8>>> {
+        let snap = self.snapshots.as_ref()?.get(id)?;
+        match snap.load_bytes() {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                tracing::warn!(%err, "load snapshot bytes");
+                None
+            }
+        }
+    }
+
     /// The tab label: the VFS entry title if set, else the file leaf name,
     /// else the untitled placeholder.
     fn tab_label(&self) -> String {
@@ -153,6 +217,31 @@ impl FilePanel {
     /// when it doesn't consume the key itself (not `clean_on_escape`).
     fn on_close_search(&mut self, _: &CloseSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |bar, cx| bar.close(window, cx));
+    }
+}
+
+/// Read a pane's whole patched byte view into an owned buffer (empty on
+/// a zero-length source or a read failure, logged). Used to freeze the
+/// current bytes for a snapshot capture.
+fn read_all_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
+    let source = pane.read(cx).editor().source().clone();
+    let len = source.len().get();
+    if len == 0 {
+        return Vec::new();
+    }
+    let range = match hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)) {
+        Ok(range) => range,
+        Err(err) => {
+            tracing::warn!(%err, "snapshot: byte range");
+            return Vec::new();
+        }
+    };
+    match source.read(range) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(%err, "snapshot: read bytes");
+            Vec::new()
+        }
     }
 }
 
@@ -304,14 +393,14 @@ mod tests {
     fn dirty_panel_is_not_closable(cx: &mut TestAppContext) {
         setup(cx);
         let (panel, cx) = build(cx);
-        assert!(panel.read_with(cx, |p, cx| Panel::closable(p, cx)), "a clean buffer is closable");
+        assert!(panel.read_with(cx, Panel::closable), "a clean buffer is closable");
         panel.update(cx, |panel, cx| {
             panel.pane().update(cx, |pane, cx| {
                 pane.editor_mut().splice(0, 1, vec![0xAA]).unwrap();
                 cx.notify();
             });
         });
-        assert!(!panel.read_with(cx, |p, cx| Panel::closable(p, cx)), "a dirty buffer is not closable");
+        assert!(!panel.read_with(cx, Panel::closable), "a dirty buffer is not closable");
     }
 
     /// A restored zip-backed tab re-runs VFS-handler detection on the

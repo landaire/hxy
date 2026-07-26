@@ -22,6 +22,7 @@ use gpui::IntoElement;
 use gpui::ParentElement;
 use gpui::PathPromptOptions;
 use gpui::Render;
+use gpui::SharedString;
 use gpui::Styled;
 use gpui::Subscription;
 use gpui::Task;
@@ -112,7 +113,9 @@ actions!(
         PickPane,
         OpenStrings,
         OpenEntropy,
-        OpenChecksums
+        OpenChecksums,
+        TakeSnapshot,
+        OpenSnapshots
     ]
 );
 
@@ -150,6 +153,13 @@ enum CloseDecision {
 enum SaveKind {
     Save,
     SaveAs,
+}
+
+/// One row rendered in the snapshots dialog: the snapshot id and a
+/// pre-formatted "name (N B)" label.
+struct SnapshotRow {
+    id: hxy_panels::files::snapshot::SnapshotId,
+    label: String,
 }
 
 /// A staged unsaved-edits restore prompt: the freshly opened file, the
@@ -526,6 +536,107 @@ impl Workspace {
 
     fn on_open_checksums(&mut self, _: &OpenChecksums, window: &mut Window, cx: &mut Context<Self>) {
         self.open_checksums_for_active_file(window, cx);
+    }
+
+    /// Capture the reference file's current patched bytes as a snapshot,
+    /// toasting the new id. FILE-SCOPED. No-op with no reference file.
+    fn on_take_snapshot(&mut self, _: &TakeSnapshot, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_active_snapshot(String::new(), window, cx);
+    }
+
+    /// Open the per-file snapshots dialog for the reference file.
+    fn on_open_snapshots(&mut self, _: &OpenSnapshots, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_snapshots_dialog(window, cx);
+    }
+
+    /// Capture the reference file's patched bytes as a named snapshot
+    /// (empty name -> `Snapshot N`). Toasts the new id, or the "no store"
+    /// message for a pathless buffer. Mirrors egui's `capture_snapshot`.
+    pub(crate) fn capture_active_snapshot(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        if !file.read(cx).has_snapshot_store() {
+            window.push_notification(Notification::warning(hxy_i18n::t("snapshot-no-store")), cx);
+            return;
+        }
+        let id = file.update(cx, |file, cx| file.capture_snapshot(name, cx));
+        if let Some(id) = id {
+            let text = hxy_i18n::t_args("snapshot-capture-toast", &[("id", &id.get().to_string())]);
+            window.push_notification(Notification::info(text), cx);
+        }
+    }
+
+    /// Spawn a Compare tab between one snapshot's frozen bytes (side A,
+    /// the older capture) and the file's live patched bytes (side B).
+    /// Both sides are non-restorable (frozen in-memory buffers, dropped on
+    /// layout restore). Mirrors egui's snapshot "Compare with current".
+    pub(crate) fn compare_snapshot_with_current(
+        &mut self,
+        file: Entity<FilePanel>,
+        id: hxy_panels::files::snapshot::SnapshotId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(snap_bytes) = file.read(cx).snapshot_bytes(id) else { return };
+        let snap_name = file.read(cx).snapshots().iter().find(|s| s.id == id).map(|s| s.name.clone());
+        let current = read_pane_bytes(&file.read(cx).pane().clone(), cx);
+        let a = CompareSideInit {
+            name: snap_name.unwrap_or_else(|| hxy_i18n::t("snapshot-pick-empty")),
+            bytes: snap_bytes.as_ref().clone(),
+            restore_path: None,
+        };
+        let b = CompareSideInit { name: hxy_i18n::t("snapshot-pick-current"), bytes: current, restore_path: None };
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| ComparePanel::from_sources(a, b, window, cx));
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Open the per-file snapshots dialog: a list of captures (name, size,
+    /// cache state) each with Compare-with-current and Delete, plus a Take
+    /// button. Rebuilt on each mutating action (close + reopen) so the
+    /// list stays current. No-op with no reference file; a pathless buffer
+    /// gets the "no store" message instead of a list.
+    pub(crate) fn open_snapshots_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let has_store = file.read(cx).has_snapshot_store();
+        let name = file
+            .read(cx)
+            .path()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| hxy_i18n::t("gpui-file-untitled"));
+        let rows: Vec<SnapshotRow> = file
+            .read(cx)
+            .snapshots()
+            .iter()
+            .map(|s| SnapshotRow { id: s.id, label: format!("{} ({} B)", s.name, s.byte_len) })
+            .collect();
+        let weak = cx.entity().downgrade();
+        let file_weak = file.downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let mut body = v_flex().gap_2().min_w(px(360.0));
+            if !has_store {
+                body = body.child(Label::new(hxy_i18n::t("snapshot-no-store")).text_color(cx.theme().muted_foreground));
+            } else if rows.is_empty() {
+                body = body.child(Label::new(hxy_i18n::t("snapshot-empty")).text_color(cx.theme().muted_foreground));
+            } else {
+                for row in &rows {
+                    body = body.child(
+                        h_flex().gap_2().items_center().justify_between().child(Label::new(row.label.clone())).child(
+                            h_flex()
+                                .gap_1()
+                                .child(snapshot_compare_button(&weak, &file_weak, row.id))
+                                .child(snapshot_delete_button(&weak, &file_weak, row.id)),
+                        ),
+                    );
+                }
+            }
+            let weak_for_footer = weak.clone();
+            dialog.title(hxy_i18n::t_args("snapshot-dialog-title", &[("name", &name)])).child(body).footer(
+                move |_ok, _cancel, _window, _cx| {
+                    if has_store { vec![snapshot_take_button(&weak_for_footer)] } else { Vec::new() }
+                },
+            )
+        });
     }
 
     /// Open (or focus an existing) `StringsPanel` tab for the
@@ -1519,6 +1630,12 @@ impl Workspace {
         let Some(dir) = crate::patches::edits_dir() else { return };
         let dump = self.dock.read(cx).dump(cx);
         let mut seen = std::collections::HashSet::new();
+        // Only outer disk-backed `FilePanel` tabs are persisted here. VFS
+        // inner entry tabs live inside a `WorkspaceHostPanel`'s nested
+        // dock (never in `open_files`) and open read-only for writerless
+        // mounts (see `WorkspaceHostPanel::open_entry`), so they can't be
+        // dirty and have nothing to persist. Untitled outer buffers are
+        // skipped too -- no source path to key a sidecar under.
         for file in self.open_files.iter().rev() {
             let Some(path) = file.read(cx).path().map(Path::to_path_buf) else { continue };
             // `open_files` can hold stale closed entities and duplicate
@@ -2561,6 +2678,64 @@ fn resolve_close_on(weak: &WeakEntity<Workspace>, decision: CloseDecision, windo
     }
 }
 
+/// The snapshots dialog's Take button: capture a snapshot of the
+/// reference file (auto-named), then reopen the dialog so the new row
+/// shows. A plain closure because the footer builder runs outside a
+/// `Context`.
+fn snapshot_take_button(weak: &WeakEntity<Workspace>) -> Button {
+    let weak = weak.clone();
+    Button::new("snapshot-take").label(hxy_i18n::t("snapshot-take-button")).on_click(move |_, window, cx| {
+        window.close_dialog(cx);
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.capture_active_snapshot(String::new(), window, cx);
+                workspace.open_snapshots_dialog(window, cx);
+            });
+        }
+    })
+}
+
+/// A snapshot row's Delete button: drop the snapshot, then reopen the
+/// dialog to refresh the list.
+fn snapshot_delete_button(
+    weak: &WeakEntity<Workspace>,
+    file: &WeakEntity<FilePanel>,
+    id: hxy_panels::files::snapshot::SnapshotId,
+) -> Button {
+    let weak = weak.clone();
+    let file = file.clone();
+    Button::new(SharedString::from(format!("snapshot-delete-{}", id.get())))
+        .label(hxy_i18n::t("snapshot-delete"))
+        .on_click(move |_, window, cx| {
+            window.close_dialog(cx);
+            if let Some(file) = file.upgrade() {
+                file.update(cx, |file, _cx| file.delete_snapshot(id));
+            }
+            if let Some(workspace) = weak.upgrade() {
+                workspace.update(cx, |workspace, cx| workspace.open_snapshots_dialog(window, cx));
+            }
+        })
+}
+
+/// A snapshot row's Compare button: spawn a Compare tab between the
+/// snapshot's frozen bytes and the live buffer, then close the dialog.
+fn snapshot_compare_button(
+    weak: &WeakEntity<Workspace>,
+    file: &WeakEntity<FilePanel>,
+    id: hxy_panels::files::snapshot::SnapshotId,
+) -> Button {
+    let weak = weak.clone();
+    let file = file.clone();
+    Button::new(SharedString::from(format!("snapshot-compare-{}", id.get())))
+        .label(hxy_i18n::t("snapshot-compare-current"))
+        .on_click(move |_, window, cx| {
+            window.close_dialog(cx);
+            if let (Some(workspace), Some(file)) = (weak.upgrade(), file.upgrade()) {
+                workspace.update(cx, |workspace, cx| workspace.compare_snapshot_with_current(file, id, window, cx));
+            }
+        })
+}
+
 /// Register the on-quit unsaved-patch persistence hook. gpui runs
 /// `on_app_quit` callbacks during shutdown with a short budget and no way
 /// to cancel; the work here (a few small JSON writes, content-hashing
@@ -2910,6 +3085,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_strings))
             .on_action(cx.listener(Self::on_open_entropy))
             .on_action(cx.listener(Self::on_open_checksums))
+            .on_action(cx.listener(Self::on_take_snapshot))
+            .on_action(cx.listener(Self::on_open_snapshots))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_pick_pane))
             .on_action(cx.listener(Self::on_close_tab))
@@ -3245,6 +3422,71 @@ mod tests {
                 assert_eq!(byte0[0], 0xCD, "the sidecar patch's byte landed");
             })
             .unwrap();
+    }
+
+    /// Capturing a snapshot freezes the file's current patched bytes, and
+    /// "Compare with current" spawns a Compare tab whose A side holds
+    /// exactly those frozen bytes -- the snapshot -> compare round-trip.
+    #[gpui::test]
+    fn snapshot_capture_then_compare_freezes_bytes(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        crate::persist::set_snapshots_base_for_test(dir.path().join("snapshots"));
+        let path = temp_file(&dir, "snap.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &path, cx);
+        let file = dirty_active_file(window, cx);
+
+        // Capture the current (edited: byte 0 = 0xA0) bytes as a snapshot.
+        let id = window
+            .update(cx, |_ws, _window, cx| file.update(cx, |file, cx| file.capture_snapshot("v1".into(), cx)))
+            .unwrap()
+            .expect("capture returns an id");
+        let frozen =
+            window.read_with(cx, |_ws, cx| file.read(cx).snapshot_bytes(id).map(|b| b.as_ref().clone())).unwrap();
+        assert_eq!(frozen.as_deref().map(|b| b[0]), Some(0xA0), "the snapshot froze the edited byte");
+
+        // Mutate the live buffer further; the snapshot must not change.
+        window
+            .update(cx, |_ws, _window, cx| {
+                file.read(cx).pane().clone().update(cx, |pane, cx| {
+                    pane.editor_mut().splice(0, 1, vec![0x11]).unwrap();
+                    cx.notify();
+                });
+            })
+            .unwrap();
+
+        window.update(cx, |ws, window, cx| ws.compare_snapshot_with_current(file.clone(), id, window, cx)).unwrap();
+        cx.run_until_parked();
+        let names = window.read_with(cx, |ws, cx| ws.center_panel_names(cx)).unwrap();
+        assert!(names.iter().any(|n| n == crate::panels::COMPARE_PANEL_NAME), "a compare tab spawned: {names:?}");
+        // The snapshot bytes are still the captured 0xA0, independent of
+        // the later live edit to 0x11.
+        let still =
+            window.read_with(cx, |_ws, cx| file.read(cx).snapshot_bytes(id).map(|b| b.as_ref().clone())).unwrap();
+        assert_eq!(still.as_deref().map(|b| b[0]), Some(0xA0), "the snapshot stays frozen after further edits");
+    }
+
+    /// A pathless buffer has no stable snapshot key, so capture is a no-op
+    /// (the dialog reports "no store" for it).
+    #[gpui::test]
+    fn snapshot_capture_is_a_noop_without_a_path(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Vec::new(), None);
+        let file = window
+            .update(cx, |ws, window, cx| {
+                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0u8; 8]));
+                let panel = cx.new(|cx| FilePanel::new_vfs_entry(source, "entry".into(), window, cx));
+                ws.add_file_panel(panel.clone(), window, cx);
+                panel
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let id = window
+            .update(cx, |_ws, _window, cx| file.update(cx, |file, cx| file.capture_snapshot(String::new(), cx)))
+            .unwrap();
+        assert!(id.is_none(), "a pathless buffer captures nothing");
+        assert!(!window.read_with(cx, |_ws, cx| file.read(cx).has_snapshot_store()).unwrap());
     }
 
     /// The reopen ring is bounded at [`CLOSED_TABS_CAPACITY`]: closing
