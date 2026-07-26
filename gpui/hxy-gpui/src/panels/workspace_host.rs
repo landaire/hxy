@@ -274,6 +274,21 @@ impl WorkspaceHostPanel {
         let name = leaf_name(&vfs_path);
         let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
         let panel = cx.new(|cx| FilePanel::new_vfs_entry(source, name, window, cx));
+        // A VFS entry can only be persisted through the mount's writer;
+        // without one (every mount today -- the zip handler mounts
+        // READ_ONLY with `writer: None`, and plugin writers arrive M4),
+        // there is nowhere to save an edit to. Open it read-only so the
+        // buffer can't be dirtied and silently lost on host-tab close or
+        // quit -- parity with egui, whose `save_vfs_entry_in_place`
+        // rejects a writerless mount. Writer-bearing mounts (future) keep
+        // the default mutable mode for the M4 in-place writeback path.
+        if self.mount.writer.is_none() {
+            let pane = panel.read(cx).pane().clone();
+            pane.update(cx, |pane, cx| {
+                pane.editor_mut().set_edit_mode(hxy_editor::EditMode::Readonly);
+                cx.notify();
+            });
+        }
         self.owned.insert(panel.entity_id());
         self.entries.push(EntryTab { vfs_path, panel: panel.downgrade(), virtual_base });
         let view: Arc<dyn PanelView> = Arc::new(panel);
@@ -352,6 +367,13 @@ impl WorkspaceHostPanel {
         let range = hxy_core::ByteRange::new(hxy_core::ByteOffset::new(0), hxy_core::ByteOffset::new(len)).ok()?;
         source.read(range).ok()
     }
+
+    /// The live `FilePanel` behind an open entry tab (tests inspecting its
+    /// edit mode / dirty state).
+    #[cfg(test)]
+    pub fn entry_panel(&self, vfs_path: &str) -> Option<Entity<FilePanel>> {
+        self.entries.iter().find(|e| e.vfs_path == vfs_path).and_then(|e| e.panel.upgrade())
+    }
 }
 
 impl Panel for WorkspaceHostPanel {
@@ -375,6 +397,16 @@ impl Panel for WorkspaceHostPanel {
             .map(|p| display_name(p))
             .unwrap_or_else(|| hxy_i18n::t("gpui-workspace-tab-untitled"));
         Some(SharedString::from(text))
+    }
+
+    /// Refuse to close the host tab while any inner entry tab is dirty, so
+    /// the tab bar's own Close (no pre-close veto in gpui-component 0.5.1)
+    /// can't discard unsaved entry edits with the whole nested dock. Moot
+    /// for today's writerless mounts (entries open read-only via
+    /// `open_entry`, so they never go dirty), but defense in depth for the
+    /// M4 writer-bearing mounts whose entries will be mutable.
+    fn closable(&self, cx: &App) -> bool {
+        !self.entries.iter().any(|e| e.panel.upgrade().is_some_and(|p| p.read(cx).is_dirty(cx)))
     }
 
     /// Hand-compose the inner layout: the archive's re-mount path, the
@@ -621,6 +653,57 @@ mod tests {
         tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
         vcx.run_until_parked();
         host.read_with(vcx, |host, _| assert_eq!(host.entry_paths().len(), 1, "re-activation does not duplicate"));
+    }
+
+    /// A VFS entry from a writerless mount (the zip handler mounts
+    /// READ_ONLY with no writer) opens read-only, so it can't be dirtied
+    /// and silently lost -- there is nowhere to persist an edit to.
+    #[gpui::test]
+    fn vfs_entry_from_writerless_mount_opens_read_only(cx: &mut TestAppContext) {
+        setup(cx);
+        let mount = mount_fixture();
+        assert!(mount.writer.is_none(), "the zip fixture mount has no writer");
+        let (_outer, host, vcx) = build(cx, mount, None);
+
+        let tree = host.read_with(vcx, |host, _| host.tree().clone());
+        tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
+        vcx.run_until_parked();
+
+        let entry = host.read_with(vcx, |host, _| host.entry_panel("/top.txt")).expect("entry tab open");
+        entry.read_with(vcx, |entry, cx| {
+            assert_eq!(
+                entry.pane().read(cx).editor().edit_mode(),
+                hxy_editor::EditMode::Readonly,
+                "a writerless VFS entry opens read-only",
+            );
+            assert!(!entry.is_dirty(cx), "a read-only entry starts clean");
+        });
+    }
+
+    /// The host tab refuses to close while an inner entry tab is dirty
+    /// (defense in depth for future writer-bearing mounts). Forced mutable
+    /// here since today's entries open read-only.
+    #[gpui::test]
+    fn host_is_not_closable_while_an_inner_entry_is_dirty(cx: &mut TestAppContext) {
+        setup(cx);
+        let (_outer, host, vcx) = build(cx, mount_fixture(), None);
+        assert!(host.read_with(vcx, Panel::closable), "an empty host is closable");
+
+        let tree = host.read_with(vcx, |host, _| host.tree().clone());
+        tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
+        vcx.run_until_parked();
+        assert!(host.read_with(vcx, Panel::closable), "a clean entry keeps the host closable");
+
+        // Force the entry mutable and dirty it (simulating a future
+        // writer-bearing mount's editable entry).
+        let entry = host.read_with(vcx, |host, _| host.entry_panel("/top.txt")).expect("entry open");
+        let pane = entry.read_with(vcx, |entry, _| entry.pane().clone());
+        pane.update(vcx, |pane, cx| {
+            pane.editor_mut().set_edit_mode(hxy_editor::EditMode::Mutable);
+            pane.editor_mut().splice(0, 1, vec![0xFF]).unwrap();
+            cx.notify();
+        });
+        assert!(!host.read_with(vcx, Panel::closable), "a dirty inner entry makes the host non-closable");
     }
 
     /// A host with an open entry and an expanded directory round-trips
