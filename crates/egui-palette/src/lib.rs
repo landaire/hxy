@@ -248,6 +248,31 @@ impl Default for Anchor {
     }
 }
 
+/// How the result list scrolls to keep the keyboard-selected row on
+/// screen when arrow keys move the selection out of view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScrollToSelection {
+    /// Re-center the selected row in the viewport whenever it moves
+    /// offscreen. The list jumps by roughly half a viewport.
+    #[default]
+    Center,
+    /// Scroll the minimum needed to reveal the row at whichever edge it
+    /// left, so the selection pins to the top/bottom edge and the list
+    /// shifts one row at a time. Matches macOS-style launchers (Raycast,
+    /// Spotlight, the gpui client).
+    Nearest,
+}
+
+impl ScrollToSelection {
+    /// The `align` argument for [`egui::Response::scroll_to_me`].
+    fn align(self) -> Option<egui::Align> {
+        match self {
+            Self::Center => Some(egui::Align::Center),
+            Self::Nearest => None,
+        }
+    }
+}
+
 /// Everything tweakable about the palette. All `Option<Color32>` /
 /// `Option<Stroke>` fields use egui's theme visuals when `None`, so
 /// the defaults track light-mode / dark-mode switches automatically.
@@ -255,6 +280,10 @@ impl Default for Anchor {
 pub struct Style {
     // ---- Position ----
     pub anchor: Anchor,
+
+    /// How the list scrolls to keep the keyboard-selected row visible.
+    /// Defaults to [`ScrollToSelection::Center`].
+    pub scroll_to_selection: ScrollToSelection,
 
     // ---- Dimensions (in egui points) ----
     pub min_width: f32,
@@ -387,6 +416,7 @@ impl Default for Style {
     fn default() -> Self {
         Self {
             anchor: Anchor::default(),
+            scroll_to_selection: ScrollToSelection::default(),
             min_width: 360.0,
             max_width: 560.0,
             width_fraction: 0.38,
@@ -870,7 +900,7 @@ fn show_with_style_inner<'a, A: Clone>(
                         // and triggering scroll on hover causes the
                         // list to drift under the cursor.
                         if selected && selection_changed_by_kbd {
-                            resp.scroll_to_me(Some(egui::Align::Center));
+                            resp.scroll_to_me(style.scroll_to_selection.align());
                         }
                     }
                     if filtered.is_empty() {
