@@ -340,6 +340,11 @@ pub struct Workspace {
     /// when a freshly opened file has a sidecar from a previous session.
     /// One at a time.
     pending_restore: Option<PendingRestore>,
+    /// Session-restored file tabs still awaiting a patch-restore prompt.
+    /// A restored layout never routes its tabs through `open_or_focus`,
+    /// so `build_initial` enqueues them here and drains one prompt at a
+    /// time (`stage_next_restore`), advancing as each is resolved.
+    restore_queue: std::collections::VecDeque<Entity<FilePanel>>,
     /// Kept alive so the on-quit unsaved-patch persistence hook stays
     /// registered for the workspace's lifetime.
     _quit_subscription: Subscription,
@@ -415,6 +420,7 @@ impl Workspace {
             pending_close: None,
             closed_tabs: std::collections::VecDeque::with_capacity(CLOSED_TABS_CAPACITY),
             pending_restore: None,
+            restore_queue: std::collections::VecDeque::new(),
             _quit_subscription: register_quit_persistence(cx),
             _watch_poll_task: None,
             _appearance_subscription: appearance_subscription,
@@ -464,6 +470,11 @@ impl Workspace {
             // The load-built cache is accurate; register the restored
             // panels so a later resync can reuse them.
             collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+            // Session-restored tabs bypass `open_or_focus`, so their
+            // patch sidecars are never consulted; queue every restored
+            // file for a restore prompt drained one at a time at the end
+            // of this method.
+            self.restore_queue.extend(self.open_files.iter().cloned());
             let mut restored_strings = Vec::new();
             collect_strings_entities(self.dock.read(cx).items(), &mut restored_strings);
             for panel in restored_strings {
@@ -529,6 +540,28 @@ impl Workspace {
         }
 
         self.reconcile(window, cx);
+
+        // Restored tabs bypass the fresh-open restore staging; offer their
+        // sidecars (behind any CLI-opened file's prompt, one at a time).
+        // Deferred like the restore toasts above: the dialog layer's
+        // `Root` is not installed until after `Workspace::new` returns.
+        let this = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| workspace.stage_next_restore(window, cx));
+            }
+        });
+    }
+
+    /// Drain the session-restore prompt queue until one file with a live
+    /// sidecar stages a prompt or the queue empties. No-op while a
+    /// restore prompt is already up -- resolving it advances the queue.
+    fn stage_next_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while self.pending_restore.is_none() {
+            let Some(file) = self.restore_queue.pop_front() else { return };
+            let Some(path) = file.read(cx).path().map(Path::to_path_buf) else { continue };
+            self.maybe_stage_restore(file, &path, window, cx);
+        }
     }
 
     /// Make sure the right dock has an inspector panel. A restored
@@ -1306,8 +1339,17 @@ impl Workspace {
     /// currently open files, then handle whatever it drained. No-op
     /// with no watcher (`file_watch` is `None` -- see its doc).
     fn poll_file_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let live_paths: Vec<PathBuf> =
-            self.open_files.iter().filter_map(|f| f.read(cx).path().map(Path::to_path_buf)).collect();
+        // `open_files` can outlive a tab closed directly through the dock
+        // (an X-click that bypasses `close_active_tab`); confirm each path
+        // against the live dump before re-registering it, or a closed
+        // background file stays watched and fires ghost reload prompts.
+        let dump = self.dock.read(cx).dump(cx);
+        let live_paths: Vec<PathBuf> = self
+            .open_files
+            .iter()
+            .filter_map(|f| f.read(cx).path().map(Path::to_path_buf))
+            .filter(|path| dump_has_file_path(&dump.center, path))
+            .collect();
         let Some(file_watch) = self.file_watch.as_mut() else { return };
         let events = file_watch.poll(live_paths.into_iter());
         for event in events {
@@ -1467,6 +1509,29 @@ impl Workspace {
     /// `path` against its owning file's freshly reloaded bytes.
     /// Mirrors egui's `cascade_byte_change` (minus the template rerun,
     /// which the GPUI port doesn't have yet).
+    /// Move every strings / entropy / checksums panel anchored to `old`
+    /// onto `new` after a Save As rename. Global search / compare record
+    /// paths but are unaffected: global search re-derives its file set
+    /// from live entities each run, and a compare side holds the file
+    /// entity, not a path key.
+    fn rebind_analysis_panels(&mut self, old: &Path, new: &Path, cx: &mut Context<Self>) {
+        let strings: Vec<Entity<StringsPanel>> =
+            self.strings_panels.iter().filter(|p| p.read(cx).owning_path() == Some(old)).cloned().collect();
+        for panel in strings {
+            panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
+        }
+        let entropy: Vec<Entity<EntropyPanel>> =
+            self.entropy_panels.iter().filter(|p| p.read(cx).owning_path() == Some(old)).cloned().collect();
+        for panel in entropy {
+            panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
+        }
+        let checksums: Vec<Entity<ChecksumsPanel>> =
+            self.checksums_panels.iter().filter(|p| p.read(cx).owning_path() == Some(old)).cloned().collect();
+        for panel in checksums {
+            panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
+        }
+    }
+
     fn recompute_panels_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
         if let Some(panel) = self.open_entropy_panel_for_path(Some(path), cx) {
             panel.update(cx, |p, cx| p.recompute_after_reload(cx));
@@ -1572,6 +1637,12 @@ impl Workspace {
         if previous_path.as_deref() != Some(path.as_path()) {
             file.update(cx, |file, _cx| file.set_path(path.clone()));
             self.register_open_file(file, cx);
+            // Save As renamed the file: re-anchor its analysis panels onto
+            // the new path before the recompute below, or they keep owning
+            // the stale path (recompute misses, cascade misses, dump wrong).
+            if let Some(old) = previous_path.as_deref() {
+                self.rebind_analysis_panels(old, &path, cx);
+            }
         }
         if let Some(file_watch) = self.file_watch.as_mut() {
             file_watch.mark_synced(&path);
@@ -1675,11 +1746,11 @@ impl Workspace {
             dialog
                 .title(hxy_i18n::t("restore-patch-title"))
                 .child(body)
-                .on_cancel(move |_, _window, cx| {
-                    dismiss_restore(&weak_for_cancel, cx);
+                .on_cancel(move |_, window, cx| {
+                    dismiss_restore(&weak_for_cancel, window, cx);
                     true
                 })
-                .on_close(move |_, _window, cx| dismiss_restore(&weak_for_close, cx))
+                .on_close(move |_, window, cx| dismiss_restore(&weak_for_close, window, cx))
                 .footer(move |_ok, _cancel, _window, _cx| {
                     vec![
                         restore_button(
@@ -2023,6 +2094,15 @@ impl Workspace {
     pub(crate) fn browse_active_file_as_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = self.reference_active_file(cx) else { return };
         let Some(handler) = file.read(cx).detected_handler() else { return };
+        // Browsing swaps the file tab for the unpatched base mount, which
+        // would silently drop any unsaved edits. egui keeps the file
+        // entity alive across the swap; replicating that here is larger
+        // surgery, so the M3 floor is to block the browse and tell the
+        // user to save first.
+        if file.read(cx).is_dirty(cx) {
+            window.push_notification(Notification::warning(hxy_i18n::t("gpui-browse-vfs-dirty")), cx);
+            return;
+        }
         let source = file.read(cx).pane().read(cx).editor().source().clone();
         let parent_path = file.read(cx).path().map(Path::to_path_buf);
         let mount = match handler.mount(source) {
@@ -2038,6 +2118,9 @@ impl Workspace {
         // Remove the plain file tab, then add the workspace tab in its
         // place (mirrors egui swapping Tab::File for Tab::Workspace).
         self.resync_center_if_stale(window, cx);
+        // The file tab is going away for a workspace tab; record it on the
+        // reopen ring so cmd-shift-t brings the plain file back.
+        self.remember_closed(&file, cx);
         let closed = file.entity_id();
         let view: Arc<dyn PanelView> = Arc::new(file);
         self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
@@ -2895,18 +2978,31 @@ fn restore_button(id: &'static str, label: String, weak: WeakEntity<Workspace>, 
             workspace.update(cx, |workspace, cx| workspace.resolve_restore(decision, cx));
         }
         window.close_dialog(cx);
+        // Offer the next queued session-restore prompt after this dialog
+        // is torn down, so at most one is ever on screen.
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.stage_next_restore(window, cx));
+        }
     })
 }
 
 /// Dismissing the restore dialog (Escape / overlay / close icon) clears
 /// the pending prompt but leaves the sidecar on disk, so the next open
 /// re-offers it. Distinct from the Discard button, which drops it.
-fn dismiss_restore(weak: &WeakEntity<Workspace>, cx: &mut App) {
+fn dismiss_restore(weak: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
     if let Some(workspace) = weak.upgrade() {
         workspace.update(cx, |workspace, _cx| {
             workspace.pending_restore = None;
         });
     }
+    // Advance the session-restore queue after the current dialog closes,
+    // so escaping one restored file's prompt still surfaces the next.
+    let weak = weak.clone();
+    window.defer(cx, move |window, cx| {
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.stage_next_restore(window, cx));
+        }
+    });
 }
 
 /// Dismissing the dialog any way other than a footer button -- Escape,
@@ -3602,6 +3698,178 @@ mod tests {
                 assert_eq!(byte0[0], 0xCD, "the sidecar patch's byte landed");
             })
             .unwrap();
+    }
+
+    /// Session restore stages a patch-restore prompt for a rebuilt file
+    /// tab whose sidecar was persisted on quit -- the path
+    /// `build_initial` -> `dock.load` -> `FilePanel::restore` takes, which
+    /// never routes through `open_or_focus` and so, before this fix, never
+    /// consulted the sidecar (quit-dirty + relaunch silently showed clean
+    /// bytes). Resolving the staged prompt clears it and drops the sidecar.
+    /// The apply-onto-bytes half is covered by
+    /// `restore_reapplies_the_sidecar_patch`; the Clean-path byte re-verify
+    /// is a separately-parked concern.
+    #[gpui::test]
+    fn session_restore_stages_patch_restore_prompt(cx: &mut TestAppContext) {
+        use hxy_panels::files::patch_persist;
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let edits = dir.path().join("edits");
+        crate::patches::set_edits_dir_for_test(edits.clone());
+        let layout = dir.path().join("layout.json");
+        let path = temp_file(&dir, "restore-session.bin", &[0u8; 16]);
+
+        // First session: open, dirty (byte 0 -> 0xA0), persist the sidecar
+        // as the on-quit hook would, and write the layout.
+        let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
+        window_open(first, &path, cx);
+        dirty_active_file(first, cx);
+        first.read_with(cx, |ws, cx| ws.persist_unsaved_on_quit(cx)).unwrap();
+        first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
+        assert!(
+            patch_persist::load(&edits, &path).unwrap().is_some(),
+            "the on-quit hook wrote a sidecar for the dirty tab",
+        );
+
+        // Second session: rebuild from the layout. The restored tab, which
+        // never routes through `open_or_focus`, must still stage a restore
+        // prompt for its sidecar.
+        let (_window, second) = open_workspace_with_root(cx, Vec::new(), Some(layout));
+        let staged = second
+            .read_with(cx, |ws, cx| ws.pending_restore.as_ref().map(|p| p.file.read(cx).path().map(Path::to_path_buf)));
+        assert_eq!(staged, Some(Some(path.clone())), "the restored tab staged its restore prompt");
+
+        // Resolving the prompt clears it and drops the sidecar from disk.
+        second.update(cx, |ws, cx| ws.resolve_restore(RestoreDecision::Restore, cx));
+        cx.run_until_parked();
+        assert!(second.read_with(cx, |ws, _| ws.pending_restore.is_none()), "resolving cleared the prompt");
+        assert!(patch_persist::load(&edits, &path).unwrap().is_none(), "resolving dropped the sidecar");
+    }
+
+    /// Save As re-anchors the file's analysis panels onto the new path.
+    /// A strings and a checksums tab both follow the rename, so their
+    /// owning path (which keys recompute, cascade close, and dump) tracks
+    /// the live file rather than the stale original.
+    #[gpui::test]
+    fn save_as_rebinds_analysis_panels(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "orig.bin", &[0u8; 16]);
+        let f2 = dir.path().join("renamed.bin");
+        let window = open_workspace(cx, vec![f1.clone()], None);
+
+        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
+        window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(cx, |ws, cx| {
+                assert_eq!(ws.strings_panels.len(), 1);
+                assert_eq!(ws.strings_panels[0].read(cx).owning_path(), Some(f1.as_path()));
+                assert_eq!(ws.checksums_panels[0].read(cx).owning_path(), Some(f1.as_path()));
+            })
+            .unwrap();
+
+        // Save As: write the file to a new path (the post-dialog branch of
+        // `prompt_save_path`), which must rebind both panels onto f2.
+        let file = window.read_with(cx, |ws, cx| ws.open_file_for_path(&f1, cx)).unwrap().expect("f1 open");
+        window
+            .update(cx, |ws, window, cx| {
+                ws.write_file(&file, f2.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(cx, |ws, cx| {
+                assert_eq!(
+                    ws.strings_panels[0].read(cx).owning_path(),
+                    Some(f2.as_path()),
+                    "the strings panel followed the rename",
+                );
+                assert_eq!(
+                    ws.checksums_panels[0].read(cx).owning_path(),
+                    Some(f2.as_path()),
+                    "the checksums panel followed the rename",
+                );
+            })
+            .unwrap();
+    }
+
+    /// Browse VFS is blocked while the archive tab is dirty: a toast tells
+    /// the user to save first, the file tab stays put, and nothing mounts.
+    #[gpui::test]
+    fn browse_vfs_blocked_while_dirty(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let zip = temp_file(&dir, "archive.zip", &crate::panels::vfs_tree::test_support::fixture_zip_bytes());
+
+        let (window, ws) = open_workspace_with_root(cx, vec![zip.clone()], None);
+        let file = ws.read_with(cx, |ws, _| ws.active_file.clone()).expect("zip opened as a file");
+        assert!(
+            ws.read_with(cx, |_ws, cx| file.read(cx).detected_handler().is_some()),
+            "the zip handler was detected on open",
+        );
+
+        // Dirty the buffer, then attempt to browse: blocked, with a toast.
+        ws.update(cx, |_ws, cx| {
+            file.read(cx).pane().clone().update(cx, |pane, cx| {
+                pane.editor_mut().splice(0, 1, vec![0xFF]).unwrap();
+                cx.notify();
+            });
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.browse_active_file_as_workspace(window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(
+                count_file_panels(&ws.dock.read(cx).dump(cx).center),
+                1,
+                "a dirty browse leaves the file tab intact",
+            );
+            assert!(
+                !ws.center_panel_names(cx).iter().any(|n| n == crate::panels::WORKSPACE_HOST_PANEL_NAME),
+                "nothing was mounted",
+            );
+        });
+        let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(toasts, 1, "the block surfaced a toast");
+    }
+
+    /// Browsing a clean archive swaps the file tab for a workspace host and
+    /// records the file on the reopen ring, so cmd-shift-t brings it back.
+    /// A second plain file tab stays open so the center never empties (an
+    /// empty center is an unrelated welcome-panel path).
+    #[gpui::test]
+    fn browse_vfs_clean_mounts_host_and_records_reopen(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let other = temp_file(&dir, "other.bin", &[0u8; 16]);
+        let zip = temp_file(&dir, "archive.zip", &crate::panels::vfs_tree::test_support::fixture_zip_bytes());
+
+        // Open the plain file first, then the zip (now the active tab).
+        let window = open_workspace(cx, vec![other.clone(), zip.clone()], None);
+        window.update(cx, |ws, window, cx| ws.browse_active_file_as_workspace(window, cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(cx, |ws, cx| {
+                assert!(
+                    ws.center_panel_names(cx).iter().any(|n| n == crate::panels::WORKSPACE_HOST_PANEL_NAME),
+                    "a clean browse mounts a workspace host: {:?}",
+                    ws.center_panel_names(cx),
+                );
+                assert_eq!(
+                    count_file_panels(&ws.dock.read(cx).dump(cx).center),
+                    1,
+                    "the browsed zip's file tab was swapped out, the other stays",
+                );
+            })
+            .unwrap();
+
+        // The removed file tab is on the reopen ring; cmd-shift-t restores it.
+        window.update(cx, |ws, window, cx| ws.on_reopen_closed(&ReopenClosedTab, window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2, "cmd-shift-t restored the browsed file tab");
     }
 
     /// Capturing a snapshot freezes the file's current patched bytes, and
@@ -5404,6 +5672,57 @@ mod tests {
         })
         .unwrap();
         assert_eq!(workspace.read_with(cx, |ws, _| ws.pending_reload.as_ref().map(|p| p.path.clone())), Some(f1));
+    }
+
+    /// A file whose panel is removed directly through the dock (an X-click
+    /// that bypasses `close_active_tab`, leaving a stale `open_files`
+    /// entry) is reconciled out of the watcher on the next poll, so it
+    /// stops firing ghost reload prompts. Poll-driven and deterministic:
+    /// it asserts the reconciled watch set, not a real filesystem event.
+    #[gpui::test]
+    fn dock_removed_file_is_unwatched(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "f1.bin", b"aaaa");
+        let f2 = temp_file(&dir, "f2.bin", b"bbbb");
+        let window = open_workspace(cx, vec![f1.clone(), f2.clone()], None);
+
+        // First poll registers both open files.
+        window.update(cx, |ws, window, cx| ws.poll_file_watch(window, cx)).unwrap();
+        let watch_available = window.read_with(cx, |ws, _| ws.file_watch.is_some()).unwrap();
+        if !watch_available {
+            // No platform watcher in this environment; the poll is a no-op
+            // and there is nothing to assert.
+            return;
+        }
+        window
+            .read_with(cx, |ws, _| {
+                let watched = ws.file_watch.as_ref().unwrap().watched_paths();
+                assert!(watched.contains(&f1) && watched.contains(&f2), "both open files are watched: {watched:?}");
+            })
+            .unwrap();
+
+        // Remove f1's panel straight through the dock, bypassing
+        // `close_active_tab` -- `open_files` still holds the stale entry.
+        let f1_panel = window.read_with(cx, |ws, cx| ws.open_file_for_path(&f1, cx)).unwrap().expect("f1 open");
+        window
+            .update(cx, |ws, window, cx| {
+                let view: Arc<dyn PanelView> = Arc::new(f1_panel);
+                ws.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        // The next poll must drop f1 (no longer in the dump) while keeping
+        // f2, so a later external change to f1 can't stage a reload.
+        window.update(cx, |ws, window, cx| ws.poll_file_watch(window, cx)).unwrap();
+        window
+            .read_with(cx, |ws, _| {
+                let watched = ws.file_watch.as_ref().unwrap().watched_paths();
+                assert!(!watched.contains(&f1), "the dock-removed file is unwatched: {watched:?}");
+                assert!(watched.contains(&f2), "the still-open file stays watched: {watched:?}");
+            })
+            .unwrap();
     }
 
     /// Dismissing the reload dialog via Escape must resolve the

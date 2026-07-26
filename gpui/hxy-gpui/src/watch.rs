@@ -98,6 +98,13 @@ impl FileWatch {
     pub(crate) fn mark_synced(&mut self, path: &Path) {
         self.watcher.mark_synced(path);
     }
+
+    /// The set of paths currently registered with the watcher, for tests
+    /// asserting a closed file was reconciled out.
+    #[cfg(test)]
+    pub(crate) fn watched_paths(&self) -> &HashSet<PathBuf> {
+        &self.watched_paths
+    }
 }
 
 /// Why a watched path changed. A removal always just toasts (there's

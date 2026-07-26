@@ -20,7 +20,23 @@ use hxy_panels::files::patch_persist::RestoreIntegrity;
 /// so a shared dir would otherwise collide). `None` when no platform
 /// data dir resolves (persistence is then disabled, same as the layout).
 pub(crate) fn edits_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = EDITS_DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Some(dir);
+    }
     crate::persist::storage_dir().map(|dir| dir.join("gpui").join("edits"))
+}
+
+#[cfg(test)]
+thread_local! {
+    static EDITS_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Redirect [`edits_dir`] to `path` for the current test thread, so sidecar
+/// persistence and restore never touch the real data dir.
+#[cfg(test)]
+pub(crate) fn set_edits_dir_for_test(path: PathBuf) {
+    EDITS_DIR_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(path));
 }
 
 /// Load the sidecar covering `path`, if one exists, paired with its
