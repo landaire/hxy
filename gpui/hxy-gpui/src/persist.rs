@@ -128,9 +128,42 @@ pub fn save(path: &Path, state: &DockAreaState) -> Result<(), SaveError> {
     std::fs::write(path, json).map_err(|source| SaveError::Write { path: path.to_path_buf(), source })
 }
 
+/// What [`prune_for_restore`] removed, so the caller can toast it. File
+/// drops are named individually; stale/foreign tabs (older-layout
+/// placeholders with no backing path) are only counted, since there is
+/// nothing file-like to name.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PrunedTabs {
+    /// File-backed tabs (file panels, workspace hosts) dropped because
+    /// their recorded path no longer reads.
+    pub dropped_files: Vec<PathBuf>,
+    /// Tabs dropped because their panel type is not registered in this
+    /// build: stale/foreign leaves and the empty-container quirk. Left
+    /// unrestored would rebuild as an uncloseable `InvalidPanel`.
+    pub dropped_incompatible: usize,
+}
+
+impl PrunedTabs {
+    pub fn is_empty(&self) -> bool {
+        self.dropped_files.is_empty() && self.dropped_incompatible == 0
+    }
+}
+
+/// An empty horizontal split, used to replace a center that pruned away
+/// entirely (or was a degenerate `Panel(null)` container that would
+/// otherwise rebuild as an `InvalidPanel`). `Workspace::reconcile`
+/// re-adds the welcome placeholder once the layout loads.
+fn empty_center() -> PanelState {
+    PanelState {
+        panel_name: "StackPanel".to_string(),
+        children: Vec::new(),
+        info: PanelInfo::Stack { sizes: Vec::new(), axis: 0 },
+    }
+}
+
 /// Drop panels that must not be restored verbatim before handing the
-/// state to `DockArea::load`, returning the paths of the file tabs that
-/// were dropped so the caller can toast them:
+/// state to `DockArea::load`, returning what was dropped so the caller
+/// can toast it:
 ///
 /// - `FilePanel` whose backing path no longer reads (deleted/moved):
 ///   dropped with a warning and its path collected; the tab simply does
@@ -149,10 +182,16 @@ pub fn save(path: &Path, state: &DockAreaState) -> Result<(), SaveError> {
 /// Side docks are left untouched: the inspector is the only one, and it
 /// is rebuilt from the panel registry on restore (or re-added fresh by
 /// `Workspace::ensure_inspector_dock`), never pruned here.
-pub fn prune_for_restore(state: &mut DockAreaState) -> Vec<PathBuf> {
-    let mut pruned = Vec::new();
+pub fn prune_for_restore(state: &mut DockAreaState) -> PrunedTabs {
+    let mut pruned = PrunedTabs::default();
     let surviving_files = surviving_file_paths(&state.center);
-    keep(&mut state.center, &surviving_files, &mut pruned);
+    // `keep` never removes the root node itself (the caller owns it), so a
+    // center that fully pruned away -- or that arrived as a degenerate
+    // `Panel(null)` container -- would still reach `DockArea::load` and
+    // rebuild as an `InvalidPanel`. Reset it to an empty tab area instead.
+    if !keep(&mut state.center, &surviving_files, &mut pruned) {
+        state.center = empty_center();
+    }
     pruned
 }
 
@@ -239,14 +278,14 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
 /// Returns whether `panel` should survive pruning, recursively pruning
 /// container children (collecting dropped file paths into `pruned`) and
 /// clamping a tab container's active index into the surviving range.
-fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut Vec<PathBuf>) -> bool {
+fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut PrunedTabs) -> bool {
     match panel_kind(&panel.panel_name) {
         Some(PanelKind::File) => {
             if file_readable(&panel.info) {
                 return true;
             }
             if let Some(path) = file_path(&panel.info) {
-                pruned.push(path);
+                pruned.dropped_files.push(path);
             }
             false
         }
@@ -277,7 +316,7 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
                 tracing::warn!(?path, "restore: workspace archive missing/unreadable; dropping tab");
                 // Surface the drop the same way a pruned file tab does
                 // (`restore_pruned_texts` names the dropped path).
-                pruned.push(path);
+                pruned.dropped_files.push(path);
                 false
             }
             None => {
@@ -286,21 +325,52 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
             }
         },
         Some(PanelKind::AlwaysKeep) => true,
-        None => {
-            panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
-            let surviving = panel.children.len();
-            // A pruned tab only needs the active index clamped back into range. A
-            // pruned split pane leaves `PanelInfo::Stack.sizes` one entry long;
-            // `split_with_sizes` indexes sizes defensively (missing -> auto size), so
-            // restored pane sizes are at worst slightly off, never a panic. Splits are
-            // best-effort here (this shell builds a single center container).
-            if let PanelInfo::Tabs { active_index } = &mut panel.info
-                && surviving > 0
-            {
-                *active_index = (*active_index).min(surviving - 1);
+        // An unregistered name. Split by `info`: a `Panel(_)` leaf is a
+        // stale/foreign tab (or the empty-container quirk) and must be
+        // dropped so `DockArea::load` never rebuilds it as an uncloseable
+        // `InvalidPanel`; anything else is a real container to recurse.
+        None => match &panel.info {
+            PanelInfo::Panel(value) => {
+                // Empty-container quirk: gpui-component 0.5.1 dumps an empty
+                // `TabPanel`/`StackPanel` with `info = Panel(null)` (its
+                // `dump` only sets `info` inside the child loop). Such a node
+                // is indistinguishable from a leaf by name alone. If it still
+                // carries children, recover it as a tab container so the
+                // surviving tabs are preserved; otherwise drop it. A
+                // `Panel(null)`-with-children shape never arises from a real
+                // 0.5.1 dump, but is handled defensively here.
+                if value.is_null() && !panel.children.is_empty() {
+                    panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
+                    if panel.children.is_empty() {
+                        pruned.dropped_incompatible += 1;
+                        return false;
+                    }
+                    // Re-tag so `to_item` treats it as a tab area, not a
+                    // `Panel(_)` leaf bound for `InvalidPanel`.
+                    panel.info = PanelInfo::Tabs { active_index: 0 };
+                    true
+                } else {
+                    tracing::warn!(name = %panel.panel_name, "restore: dropping stale/unregistered panel");
+                    pruned.dropped_incompatible += 1;
+                    false
+                }
             }
-            surviving != 0
-        }
+            _ => {
+                panel.children.retain_mut(|child| keep(child, surviving_files, pruned));
+                let surviving = panel.children.len();
+                // A pruned tab only needs the active index clamped back into range. A
+                // pruned split pane leaves `PanelInfo::Stack.sizes` one entry long;
+                // `split_with_sizes` indexes sizes defensively (missing -> auto size), so
+                // restored pane sizes are at worst slightly off, never a panic. Splits are
+                // best-effort here (this shell builds a single center container).
+                if let PanelInfo::Tabs { active_index } = &mut panel.info
+                    && surviving > 0
+                {
+                    *active_index = (*active_index).min(surviving - 1);
+                }
+                surviving != 0
+            }
+        },
     }
 }
 
@@ -426,7 +496,7 @@ mod tests {
 
         let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
         assert_eq!(names, vec![WORKSPACE_HOST_PANEL_NAME], "only the host with a readable archive survives");
-        assert_eq!(pruned, vec![missing], "the missing archive is reported for a warning toast");
+        assert_eq!(pruned.dropped_files, vec![missing], "the missing archive is reported for a warning toast");
     }
 
     fn tabs(children: Vec<PanelState>) -> PanelState {
@@ -592,5 +662,135 @@ mod tests {
 
         let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
         assert_eq!(names, vec![GLOBAL_SEARCH_PANEL_NAME]);
+    }
+
+    /// A node that `DockArea::load` would rebuild as an `InvalidPanel`:
+    /// a `Panel(_)` leaf whose name is not a registered leaf kind (an
+    /// unknown/foreign name, or a container name carrying the empty-
+    /// container `Panel(null)` quirk).
+    fn any_invalid_panel_leaf(panel: &PanelState) -> bool {
+        let here = matches!(panel.info, PanelInfo::Panel(_)) && panel_kind(&panel.panel_name).is_none();
+        here || panel.children.iter().any(any_invalid_panel_leaf)
+    }
+
+    /// The user's stale-layout symptom, as JSON: an older build saved a
+    /// center holding an empty `TabPanel` serialized as a LEAF
+    /// (gpui-component 0.5.1 dumps an empty container with
+    /// `info = {"panel": null}`), beside a still-readable file tab.
+    /// Restored verbatim, `DockArea::load` rebuilds the leaf as an
+    /// uncloseable `InvalidPanel` titled "The `TabPanel` panel type is not
+    /// registered". Pruning must drop the placeholder and keep the file.
+    #[test]
+    fn stale_container_as_leaf_is_dropped_and_file_tab_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("kept.bin");
+        std::fs::write(&kept, b"hello").unwrap();
+
+        let json = format!(
+            r#"{{
+              "version": 1,
+              "center": {{
+                "panel_name": "StackPanel",
+                "children": [
+                  {{ "panel_name": "TabPanel", "children": [], "info": {{ "panel": null }} }},
+                  {{ "panel_name": "FilePanel", "children": [], "info": {{ "panel": {{ "path": {path:?} }} }} }}
+                ],
+                "info": {{ "stack": {{ "sizes": [], "axis": 0 }} }}
+              }},
+              "left_dock": null,
+              "right_dock": null,
+              "bottom_dock": null
+            }}"#,
+            path = kept.to_string_lossy(),
+        );
+        let mut state: DockAreaState = serde_json::from_str(&json).expect("fixture parses");
+
+        let pruned = prune_for_restore(&mut state);
+
+        assert!(!any_invalid_panel_leaf(&state.center), "no node left that would rebuild as InvalidPanel");
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![FILE_PANEL_NAME], "the readable file tab survives");
+        assert_eq!(pruned.dropped_incompatible, 1, "the placeholder is counted as a dropped incompatible tab");
+        assert!(pruned.dropped_files.is_empty(), "no file was dropped");
+    }
+
+    /// A leaf whose panel name is not registered at all (a panel type
+    /// removed since the layout was saved) is dropped and counted, never
+    /// rebuilt as an `InvalidPanel`.
+    #[test]
+    fn unknown_leaf_name_is_dropped_with_incompatible_count() {
+        let mut state = DockAreaState {
+            version: Some(LAYOUT_VERSION),
+            center: tabs(vec![PanelState {
+                panel_name: "GhostPanel".to_string(),
+                children: Vec::new(),
+                info: PanelInfo::panel(serde_json::json!({ "stale": true })),
+            }]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        assert!(!any_invalid_panel_leaf(&state.center));
+        assert_eq!(pruned.dropped_incompatible, 1);
+        assert!(pruned.dropped_files.is_empty());
+    }
+
+    /// The whole center arriving as a degenerate `Panel(null)` container
+    /// leaf: `keep` never removes the root itself, so `prune_for_restore`
+    /// must reset it to a real (empty) container rather than let
+    /// `DockArea::load` rebuild it as an `InvalidPanel`.
+    #[test]
+    fn degenerate_root_center_is_reset_not_left_as_invalid_panel() {
+        let mut state = DockAreaState {
+            version: Some(LAYOUT_VERSION),
+            center: PanelState {
+                panel_name: "TabPanel".to_string(),
+                children: Vec::new(),
+                info: PanelInfo::Panel(serde_json::Value::Null),
+            },
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        assert!(!any_invalid_panel_leaf(&state.center), "root reset to a real container");
+        assert!(matches!(state.center.info, PanelInfo::Stack { .. }));
+        assert_eq!(pruned.dropped_incompatible, 1);
+    }
+
+    /// The defensive branch of fix (b): a `Panel(null)` container that
+    /// still carries children is recovered as a tab area so the surviving
+    /// tabs are preserved (this shape never arises from a real 0.5.1 dump,
+    /// but must not lose data if it ever does).
+    #[test]
+    fn null_info_container_with_children_is_recovered_as_tabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("kept.bin");
+        std::fs::write(&kept, b"hello").unwrap();
+
+        let mut state = DockAreaState {
+            version: Some(LAYOUT_VERSION),
+            center: PanelState {
+                panel_name: "TabPanel".to_string(),
+                children: vec![file_panel(&kept)],
+                info: PanelInfo::Panel(serde_json::Value::Null),
+            },
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        assert!(matches!(state.center.info, PanelInfo::Tabs { .. }), "recovered to a tab container");
+        assert!(!any_invalid_panel_leaf(&state.center));
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![FILE_PANEL_NAME]);
+        assert_eq!(pruned.dropped_incompatible, 0, "nothing was dropped; the file was preserved");
     }
 }

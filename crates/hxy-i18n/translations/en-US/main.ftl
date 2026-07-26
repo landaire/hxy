@@ -42,6 +42,7 @@ gpui-palette-invalid-at-eof = at end of file
 gpui-status-layout-restore-failed = Could not restore the saved window layout; using the default layout.
 gpui-status-restore-dropped-file = Dropped restored tab: { $file } no longer exists.
 gpui-status-restore-dropped-summary = Dropped { $count } restored tabs whose files no longer exist.
+gpui-status-restore-dropped-incompatible = Removed { $count } incompatible tabs from an older saved layout.
 gpui-save-failed = Could not save { $name }: { $error }
 gpui-menu-take-snapshot = Take Snapshot
 gpui-menu-snapshots = Snapshots...

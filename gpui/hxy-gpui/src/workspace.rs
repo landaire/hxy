@@ -71,6 +71,7 @@ use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::panels::CHECKSUMS_PANEL_NAME;
+use crate::panels::COMPARE_PANEL_NAME;
 use crate::panels::ChecksumsPanel;
 use crate::panels::ComparePanel;
 use crate::panels::ENTROPY_PANEL_NAME;
@@ -79,6 +80,7 @@ use crate::panels::FILE_PANEL_NAME;
 use crate::panels::FilePanel;
 use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::GlobalSearchPanel;
+use crate::panels::INSPECTOR_PANEL_NAME;
 use crate::panels::InspectorPanel;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
@@ -2194,8 +2196,21 @@ impl Workspace {
             self.close_checksums_tab(checksums, window, cx);
             return;
         }
-        let Some(active) = self.active_file.clone() else { return };
-        self.request_close_file(active, window, cx);
+        if let Some(active) = self.active_file.clone() {
+            self.request_close_file(active, window, cx);
+            return;
+        }
+        // Fallback for an unrecognized active tab that has no bookkeeping
+        // here -- most importantly a stale-layout `InvalidPanel`
+        // placeholder that slipped past pruning in an older build. Remove
+        // it straight from the dock so `cmd-w` can never leave a tab
+        // un-closable. Scoped to genuinely-foreign panels (see
+        // `active_unrecognized_panel`): our own tabs that simply lack a
+        // `cmd-w` path (compare, workspace host, global search) keep their
+        // existing tab-close-button behavior and their state bookkeeping.
+        if let Some(view) = active_unrecognized_panel(self.dock.read(cx).items(), cx) {
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        }
     }
 
     /// Close `file`'s tab, first running the save-before-closing prompt
@@ -2684,26 +2699,39 @@ fn jump_cursor_to(pane: &mut HexPane, offset: u64, cx: &mut Context<HexPane>) {
 }
 
 /// Warning-toast text for tabs dropped during layout restore: one toast
-/// naming each file when few were dropped, or a single count-summary
-/// toast past a small threshold so a large stale layout does not spray
-/// the notification stack.
-fn restore_pruned_texts(pruned: &[PathBuf]) -> Vec<String> {
-    if pruned.len() > 2 {
-        return vec![hxy_i18n::t_args("gpui-status-restore-dropped-summary", &[("count", &pruned.len().to_string())])];
+/// naming each dropped file when few were dropped, or a single
+/// count-summary toast past a small threshold so a large stale layout
+/// does not spray the notification stack. Stale/foreign tabs (older-build
+/// placeholders with no file to name) add one further count-summary line.
+fn restore_pruned_texts(pruned: &persist::PrunedTabs) -> Vec<String> {
+    let mut texts = if pruned.dropped_files.len() > 2 {
+        vec![hxy_i18n::t_args(
+            "gpui-status-restore-dropped-summary",
+            &[("count", &pruned.dropped_files.len().to_string())],
+        )]
+    } else {
+        pruned
+            .dropped_files
+            .iter()
+            .map(|path| {
+                // A path with no final component (root, `..`) is not a real
+                // restored tab; fall back to its full display so the toast
+                // still names something.
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                hxy_i18n::t_args("gpui-status-restore-dropped-file", &[("file", &name)])
+            })
+            .collect()
+    };
+    if pruned.dropped_incompatible > 0 {
+        texts.push(hxy_i18n::t_args(
+            "gpui-status-restore-dropped-incompatible",
+            &[("count", &pruned.dropped_incompatible.to_string())],
+        ));
     }
-    pruned
-        .iter()
-        .map(|path| {
-            // A path with no final component (root, `..`) is not a real
-            // restored tab; fall back to its full display so the toast
-            // still names something.
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            hxy_i18n::t_args("gpui-status-restore-dropped-file", &[("file", &name)])
-        })
-        .collect()
+    texts
 }
 
 /// Total file panels anywhere under `state`, used to decide whether the
@@ -3283,6 +3311,41 @@ fn active_checksums_panel(item: &DockItem, cx: &App) -> Option<Entity<ChecksumsP
         DockItem::Panel { view, .. } => view.view().downcast::<ChecksumsPanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
+}
+
+/// The active center tab's panel view when its type is not one this
+/// build registers -- an `InvalidPanel` placeholder from a stale layout,
+/// or any foreign leaf. Returns `None` for every recognized hxy panel
+/// (so `close_active_tab`'s fallback never disturbs a real tab and its
+/// bookkeeping). Identity is by `panel_name`: `InvalidPanel` reports
+/// "InvalidPanel", absent from the known set. Mirrors
+/// `active_strings_panel`'s tree walk.
+fn active_unrecognized_panel(item: &DockItem, cx: &App) -> Option<Arc<dyn PanelView>> {
+    let active = match item {
+        DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx),
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_unrecognized_panel(item, cx)),
+        DockItem::Panel { view, .. } => Some(view.clone()),
+        DockItem::Tiles { .. } => None,
+    }?;
+    if is_known_panel_name(active.panel_name(cx)) { None } else { Some(active) }
+}
+
+/// Whether `name` is a panel type this build registers (see
+/// `panels::register`). An unknown name means a stale/foreign tab, most
+/// notably gpui-component's `InvalidPanel` fallback.
+fn is_known_panel_name(name: &str) -> bool {
+    matches!(
+        name,
+        FILE_PANEL_NAME
+            | WELCOME_PANEL_NAME
+            | INSPECTOR_PANEL_NAME
+            | STRINGS_PANEL_NAME
+            | ENTROPY_PANEL_NAME
+            | CHECKSUMS_PANEL_NAME
+            | COMPARE_PANEL_NAME
+            | GLOBAL_SEARCH_PANEL_NAME
+            | WORKSPACE_HOST_PANEL_NAME
+    )
 }
 
 /// The `GlobalSearchPanel` backing the active tab, if the active tab is
@@ -4471,6 +4534,116 @@ mod tests {
 
         let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
         assert_eq!(toasts, 1, "the pruned tab must surface a warning toast");
+    }
+
+    /// Nodes in a `dump()` that `DockArea::load` would have rebuilt as an
+    /// uncloseable `InvalidPanel`: a `Panel(_)` leaf whose name this build
+    /// does not register. `InvalidPanel::dump` echoes the original state
+    /// back, so a live placeholder still shows up here under its stale name.
+    fn count_invalid_leaves(state: &PanelState) -> usize {
+        let here = usize::from(matches!(state.info, PanelInfo::Panel(_)) && !is_known_panel_name(&state.panel_name));
+        here + state.children.iter().map(count_invalid_leaves).sum::<usize>()
+    }
+
+    /// The user's stale-layout bug end to end: an older build saved a
+    /// layout where an empty container serialized as a LEAF named
+    /// "TabPanel" (gpui-component 0.5.1's empty-container quirk) sits
+    /// beside a still-readable file. Restoring it must drop the
+    /// placeholder (never rebuild it as an uncloseable `InvalidPanel`),
+    /// keep the file tab, and surface a warning toast.
+    #[gpui::test]
+    fn restore_of_stale_container_leaf_drops_placeholder_and_toasts(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout.json");
+        let file = temp_file(&dir, "kept.bin", &[7u8; 16]);
+        let fixture = format!(
+            r#"{{
+              "version": 1,
+              "center": {{
+                "panel_name": "StackPanel",
+                "children": [
+                  {{ "panel_name": "TabPanel", "children": [], "info": {{ "panel": null }} }},
+                  {{ "panel_name": "FilePanel", "children": [], "info": {{ "panel": {{ "path": {path:?} }} }} }}
+                ],
+                "info": {{ "stack": {{ "sizes": [], "axis": 0 }} }}
+              }},
+              "left_dock": null,
+              "right_dock": null,
+              "bottom_dock": null
+            }}"#,
+            path = file.to_string_lossy(),
+        );
+        std::fs::write(&layout, fixture).unwrap();
+
+        let (window, ws) = open_workspace_with_root(cx, Vec::new(), Some(layout));
+
+        let invalid = ws.read_with(cx, |ws, cx| count_invalid_leaves(&ws.dock.read(cx).dump(cx).center));
+        assert_eq!(invalid, 0, "the container-as-leaf placeholder must never rebuild as an InvalidPanel");
+        let files = ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center));
+        assert_eq!(files, 1, "the readable file tab survives");
+
+        let toasts = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(toasts, 1, "the dropped placeholder surfaces a warning toast");
+    }
+
+    /// Belt-and-braces for fix (d): even if an unrecognized placeholder
+    /// ever reaches the live dock, `cmd-w` on it removes it via the
+    /// fallback arm. Forces the placeholder in by loading a layout with a
+    /// foreign leaf directly (bypassing the restore-path prune) beside a
+    /// readable file, with the placeholder front-most so `active_file` is
+    /// `None` and the fallback is the arm that fires.
+    #[gpui::test]
+    fn cmd_w_removes_an_unrecognized_active_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let file = temp_file(&dir, "real.bin", &[3u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+
+        window
+            .update(cx, |ws, window, cx| {
+                let state = gpui_component::dock::DockAreaState {
+                    version: Some(persist::LAYOUT_VERSION),
+                    center: PanelState {
+                        panel_name: "TabPanel".to_string(),
+                        children: vec![
+                            PanelState {
+                                panel_name: "GhostPanel".to_string(),
+                                children: Vec::new(),
+                                info: PanelInfo::panel(serde_json::json!({})),
+                            },
+                            PanelState {
+                                panel_name: FILE_PANEL_NAME.to_string(),
+                                children: Vec::new(),
+                                info: PanelInfo::panel(serde_json::json!({ "path": file.to_string_lossy() })),
+                            },
+                        ],
+                        // Placeholder front-most (index 0): `active_file`
+                        // resolves to the active tab, which is not a file, so
+                        // it stays `None` and the fallback arm is what fires.
+                        info: PanelInfo::Tabs { active_index: 0 },
+                    },
+                    left_dock: None,
+                    right_dock: None,
+                    bottom_dock: None,
+                };
+                ws.dock.update(cx, |dock, cx| dock.load(state, window, cx)).unwrap();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(invalid_leaf_count(window, cx), 1, "the foreign placeholder is present before close");
+        assert_eq!(file_count(window, cx), 1);
+
+        window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(invalid_leaf_count(window, cx), 0, "cmd-w removed the unrecognized placeholder");
+        assert_eq!(file_count(window, cx), 1, "the real file tab is untouched");
+    }
+
+    fn invalid_leaf_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |ws, cx| count_invalid_leaves(&ws.dock.read(cx).dump(cx).center)).unwrap()
     }
 
     /// A burst of layout changes coalesces into a single debounced write:
