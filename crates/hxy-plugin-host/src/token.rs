@@ -22,13 +22,8 @@ pub const TOKEN_BYTES: usize = 16;
 
 #[derive(Debug, Error)]
 pub enum TokenError {
-    /// Carrying the underlying [`getrandom::Error`] code rather than
-    /// the type itself: in `getrandom = "0.3"` the error doesn't
-    /// implement `std::error::Error` so it can't be a `#[source]`.
-    /// The numeric code round-trips to `getrandom::Error::from(code)`
-    /// for callers that want to inspect it.
-    #[error("read system entropy: getrandom code {0}")]
-    Entropy(u32),
+    #[error("read system entropy")]
+    Entropy(#[from] getrandom::Error),
 }
 
 /// Mint a fresh opaque token. Each call yields a distinct value with
@@ -38,7 +33,7 @@ pub enum TokenError {
 /// for tokens persisted alongside other plugin state.
 pub fn fresh() -> Result<String, TokenError> {
     let mut buf = [0u8; TOKEN_BYTES];
-    getrandom::fill(&mut buf).map_err(|e| TokenError::Entropy(e.raw_os_error().unwrap_or(0) as u32))?;
+    getrandom::fill(&mut buf).map_err(TokenError::Entropy)?;
     Ok(URL_SAFE_NO_PAD.encode(buf))
 }
 

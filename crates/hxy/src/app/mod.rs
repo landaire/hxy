@@ -1517,21 +1517,10 @@ fn drain_external_open_requests(ctx: &egui::Context, app: &mut HxyApp) {
 fn consume_dropped_files(ctx: &egui::Context, app: &mut HxyApp) {
     let dropped = ctx.input(|i| i.raw.dropped_files.clone());
     for file in dropped {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(path) = file.path {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            app.request_open_filesystem(name, path);
-        }
-        #[cfg(target_arch = "wasm32")]
-        if let Some(bytes) = file.bytes.as_deref() {
-            if !bytes.is_empty() {
-                let name = if file.name.is_empty() { "dropped".to_string() } else { file.name.clone() };
-                app.open_in_memory(name, bytes.to_vec());
-            }
-        }
+        let path = file.path().to_path_buf();
+        let name =
+            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        app.request_open_filesystem(name, path);
     }
 }
 

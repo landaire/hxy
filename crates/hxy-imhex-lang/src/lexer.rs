@@ -502,8 +502,8 @@ fn three_char_op(input: &mut &str) -> ModalResult<TokenKind> {
 }
 
 fn two_char_op(input: &mut &str) -> ModalResult<TokenKind> {
-    // Split into two `alt` groups -- winnow's tuple impl tops out at
-    // 21 branches per `alt` call.
+    // Nested `alt` groups -- winnow's tuple impl tops out at 9 branches
+    // per `alt` call.
     alt((
         alt((
             "==".value(TokenKind::EqEq),
@@ -513,15 +513,17 @@ fn two_char_op(input: &mut &str) -> ModalResult<TokenKind> {
             "&&".value(TokenKind::AmpAmp),
             "||".value(TokenKind::PipePipe),
             "<<".value(TokenKind::Shl),
+        )),
+        alt((
             ">>".value(TokenKind::Shr),
             "++".value(TokenKind::PlusPlus),
             "--".value(TokenKind::MinusMinus),
-        )),
-        alt((
             "+=".value(TokenKind::PlusEq),
             "-=".value(TokenKind::MinusEq),
             "*=".value(TokenKind::StarEq),
             "/=".value(TokenKind::SlashEq),
+        )),
+        alt((
             "%=".value(TokenKind::PercentEq),
             "&=".value(TokenKind::AmpEq),
             "|=".value(TokenKind::PipeEq),
@@ -535,38 +537,37 @@ fn two_char_op(input: &mut &str) -> ModalResult<TokenKind> {
 }
 
 fn single_char_op(input: &mut &str) -> ModalResult<TokenKind> {
-    alt((
-        alt((
-            "(".value(TokenKind::LParen),
-            ")".value(TokenKind::RParen),
-            "{".value(TokenKind::LBrace),
-            "}".value(TokenKind::RBrace),
-            "[".value(TokenKind::LBracket),
-            "]".value(TokenKind::RBracket),
-            ";".value(TokenKind::Semi),
-            ",".value(TokenKind::Comma),
-            ".".value(TokenKind::Dot),
-            ":".value(TokenKind::Colon),
-            "?".value(TokenKind::Question),
-            "+".value(TokenKind::Plus),
-            "-".value(TokenKind::Minus),
-            "*".value(TokenKind::Star),
-            "/".value(TokenKind::Slash),
-            "%".value(TokenKind::Percent),
-            "~".value(TokenKind::Tilde),
-            "!".value(TokenKind::Bang),
-            "&".value(TokenKind::Amp),
-            "|".value(TokenKind::Pipe),
-        )),
-        alt((
-            "^".value(TokenKind::Caret),
-            "<".value(TokenKind::Lt),
-            ">".value(TokenKind::Gt),
-            "=".value(TokenKind::Eq),
-            "@".value(TokenKind::At),
-            "$".value(TokenKind::Dollar),
-        )),
-    ))
+    any.verify_map(|c: char| {
+        Some(match c {
+            '(' => TokenKind::LParen,
+            ')' => TokenKind::RParen,
+            '{' => TokenKind::LBrace,
+            '}' => TokenKind::RBrace,
+            '[' => TokenKind::LBracket,
+            ']' => TokenKind::RBracket,
+            ';' => TokenKind::Semi,
+            ',' => TokenKind::Comma,
+            '.' => TokenKind::Dot,
+            ':' => TokenKind::Colon,
+            '?' => TokenKind::Question,
+            '+' => TokenKind::Plus,
+            '-' => TokenKind::Minus,
+            '*' => TokenKind::Star,
+            '/' => TokenKind::Slash,
+            '%' => TokenKind::Percent,
+            '~' => TokenKind::Tilde,
+            '!' => TokenKind::Bang,
+            '&' => TokenKind::Amp,
+            '|' => TokenKind::Pipe,
+            '^' => TokenKind::Caret,
+            '<' => TokenKind::Lt,
+            '>' => TokenKind::Gt,
+            '=' => TokenKind::Eq,
+            '@' => TokenKind::At,
+            '$' => TokenKind::Dollar,
+            _ => return None,
+        })
+    })
     .parse_next(input)
 }
 

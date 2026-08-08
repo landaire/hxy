@@ -1160,9 +1160,12 @@ mod outcome_tests {
         let entries = vec![Entry::new("only", "payload")];
         let mut outcome = None;
         let raw = RawInput { events: input_events, ..Default::default() };
-        let _ = ctx.run_ui(raw, |ui| {
+        let mut out = ctx.run_ui(raw, |ui| {
             outcome = show_with_style(ui.ctx(), &mut state, &entries, "", style);
         });
+        // Headless test: nothing renders, so discard texture deltas
+        // instead of applying them (egui panics on silent drops).
+        out.textures_delta.clear();
         outcome
     }
 
@@ -1230,8 +1233,9 @@ mod outcome_tests {
             }),
         ];
         let raw = egui::RawInput::default();
-        let _ = ctx.run_ui(raw, |ui| {
+        let mut out = ctx.run_ui(raw, |ui| {
             let _ = show_with_style(ui.ctx(), &mut state, &entries, "", &Style::default());
         });
+        out.textures_delta.clear();
     }
 }

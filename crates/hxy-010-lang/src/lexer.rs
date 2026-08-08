@@ -397,26 +397,34 @@ fn three_char_op(input: &mut &str) -> ModalResult<TokenKind> {
 }
 
 fn two_char_op(input: &mut &str) -> ModalResult<TokenKind> {
+    // Nested `alt` groups -- winnow's tuple impl tops out at 9 branches
+    // per `alt` call.
     alt((
-        "==".value(TokenKind::EqEq),
-        "!=".value(TokenKind::NotEq),
-        "<=".value(TokenKind::LtEq),
-        ">=".value(TokenKind::GtEq),
-        "&&".value(TokenKind::AmpAmp),
-        "||".value(TokenKind::PipePipe),
-        "<<".value(TokenKind::Shl),
-        ">>".value(TokenKind::Shr),
-        "++".value(TokenKind::PlusPlus),
-        "--".value(TokenKind::MinusMinus),
-        "+=".value(TokenKind::PlusEq),
-        "-=".value(TokenKind::MinusEq),
-        "*=".value(TokenKind::StarEq),
-        "/=".value(TokenKind::SlashEq),
-        "%=".value(TokenKind::PercentEq),
-        "&=".value(TokenKind::AmpEq),
-        "|=".value(TokenKind::PipeEq),
-        "^=".value(TokenKind::CaretEq),
-        "->".value(TokenKind::Arrow),
+        alt((
+            "==".value(TokenKind::EqEq),
+            "!=".value(TokenKind::NotEq),
+            "<=".value(TokenKind::LtEq),
+            ">=".value(TokenKind::GtEq),
+            "&&".value(TokenKind::AmpAmp),
+            "||".value(TokenKind::PipePipe),
+            "<<".value(TokenKind::Shl),
+            ">>".value(TokenKind::Shr),
+        )),
+        alt((
+            "++".value(TokenKind::PlusPlus),
+            "--".value(TokenKind::MinusMinus),
+            "+=".value(TokenKind::PlusEq),
+            "-=".value(TokenKind::MinusEq),
+            "*=".value(TokenKind::StarEq),
+            "/=".value(TokenKind::SlashEq),
+        )),
+        alt((
+            "%=".value(TokenKind::PercentEq),
+            "&=".value(TokenKind::AmpEq),
+            "|=".value(TokenKind::PipeEq),
+            "^=".value(TokenKind::CaretEq),
+            "->".value(TokenKind::Arrow),
+        )),
     ))
     .parse_next(input)
 }

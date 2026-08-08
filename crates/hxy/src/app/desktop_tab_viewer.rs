@@ -142,6 +142,10 @@ pub(super) struct HxyTabViewer<'a> {
 impl egui_dock::TabViewer for HxyTabViewer<'_> {
     type Tab = Tab;
 
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(*tab)
+    }
+
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             Tab::Welcome => hxy_i18n::t("tab-welcome").into(),

@@ -41,14 +41,14 @@ serde = ["dep:serde", "editor", "suture?/serde"]
 dhat-bench = ["dep:dhat", "dep:egui_kittest"]
 
 [dev-dependencies]
-egui_kittest = "0.35.0"
+egui_kittest = "0.36.1"
 
 [dependencies.dhat]
 version = "0.3.3"
 optional = true
 
 [dependencies.egui_kittest]
-version = "0.35.0"
+version = "0.36.1"
 optional = true
 
 [[example]]

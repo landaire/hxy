@@ -13,4 +13,4 @@ categories = ["gui"]
 
 [dependencies]
 egui = { workspace = true }
-egui_dock = { version = "0.20.1" }
+egui_dock = { version = "0.21.1" }

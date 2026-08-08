@@ -9,4 +9,4 @@ repository.workspace = true
 description = "Guest-side bindings for writing hxy WASM plugins."
 
 [dependencies]
-wit-bindgen = "0.57"
+wit-bindgen = "0.60"

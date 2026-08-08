@@ -53,26 +53,31 @@ hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
 hxy-view = { workspace = true, features = ["serde"] }
 egui = { workspace = true }
-egui-phosphor = "0.13.0"
-egui_dock = { version = "0.20.1", features = ["serde"] }
-egui_inbox = "0.12.0"
-egui_taffy = "0.13.0"
+# Upstream has no egui 0.36 release yet; 0.14 comes from the
+# [patch.crates-io] fork in the workspace Cargo.toml. Drop the patch
+# and point back at crates.io once upstream publishes for 0.36.
+egui-phosphor = "0.14"
+egui_dock = { version = "0.21.1", features = ["serde"] }
+egui_inbox = "0.13.0"
 
 # Platform-neutral utilities
 jiff = { workspace = true }
 parking_lot = { version = "0.12.5", features = ["serde"] }
 rfd = { version = "0.17.2", features = ["file-handle-inner"] }
 serde = { workspace = true }
-serde_json = "1.0.149"
+serde_json = "1.0.151"
 sys-locale = "0.3.2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 hxy-vfs.workspace = true
+# Upstream 0.8.0 pins egui 0.35; the [patch.crates-io] entry in the
+# workspace Cargo.toml swaps in the vendored copy bumped to egui 0.36.
+# Drop the patch once upstream publishes for 0.36.
 egui_ltreeview = "0.8.0"
-egui_table = "0.9.0"
+egui_table = "0.10.0"
 egui-palette = { workspace = true }
 egui_dock_picker = { workspace = true }
-similar = { version = "3.1.0", default-features = false, features = ["bytes", "std"] }
+similar = { version = "3.1.2", default-features = false, features = ["bytes", "std"] }
 
 # Built-in 010 Editor Binary Template + ImHex pattern-language
 # runtimes -- both linked as regular Rust instead of being wrapped
@@ -83,10 +88,10 @@ hxy-imhex-lang = { workspace = true }
 hxy-calculator = { workspace = true }
 suture = { workspace = true, features = ["serde", "blake3"] }
 base64 = { workspace = true }
-rkyv = { version = "0.8.16", default-features = false, features = ["alloc", "bytecheck"] }
-egui-toast = "0.21.0"
+rkyv = { version = "0.8.18", default-features = false, features = ["alloc", "bytecheck"] }
+egui-toast = "0.22.0"
 fskit = { workspace = true }
-egui_plot = "0.36"
+egui_plot = "0.37"
 dhat = { version = "0.3.3", optional = true }
 # Visualizer renderers: `image` decodes PNG/JPEG/GIF/BMP/TIFF/WebP
 # bytes for the `image` ImHex visualizer; `iced-x86` is the
@@ -99,8 +104,8 @@ iced-x86 = { version = "1.21", default-features = false, features = ["std", "dec
 # algorithm uniformly. CRC32 sits outside the RustCrypto trait family
 # but `crc32fast::Hasher` follows the same `update` + `finalize`
 # shape so the dispatcher pays no overhead.
-md-5 = "0.10"
-sha1 = "0.10"
+md-5 = "0.11"
+sha1 = "0.11"
 crc32fast = "1"
 adler2 = "2"
 # BLAKE3 used directly for: source-bytes fingerprints (snapshot,
@@ -112,7 +117,7 @@ adler2 = "2"
 # standalone crate so we don't depend on suture re-exporting a
 # `compute()` convenience.
 blake3 = "1.8"
-eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts"] }
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts"] }
 sha2 = "0.11.0"
 web-time = "1.1.0"
 
@@ -121,7 +126,7 @@ web-time = "1.1.0"
 # OpenSSL out of the build; called from a worker thread so the
 # blocking part is fine. zip + sha2 unpack the master tarball
 # and fingerprint it for the periodic-update check.
-reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"], optional = true }
@@ -129,10 +134,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 hxy-plugin-host = { workspace = true }
 dirs = "6"
 tempfile = "3"
-clap = { version = "4.6.1", features = ["derive"] }
-interprocess = "2.4.2"
+clap = { version = "4.6.6", features = ["derive"] }
+interprocess = "2.4.3"
 notify = "8"
-notify-debouncer-full = "0.5"
+notify-debouncer-full = "0.7"
 crossbeam-channel = "0.5"
 # arboard reads from the OS clipboard for Cmd+Shift+V (paste-as-hex);
 # wasm has no platform backend so the dep is desktop-only and the
@@ -140,7 +145,7 @@ crossbeam-channel = "0.5"
 arboard = { version = "3.6.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = "0.18"
+muda = "0.19"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSAppleEventDescriptor",

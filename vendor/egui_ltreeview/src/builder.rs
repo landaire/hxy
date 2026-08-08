@@ -1,0 +1,1070 @@
+use core::f32;
+use egui::{
+    layers::ShapeIdx, pos2, vec2, Pos2, Rangef, Rect, Response, Shape, Stroke, Ui, UiBuilder, Vec2,
+    WidgetText,
+};
+
+use crate::{
+    node::NodeBuilder, rect_contains_visually, DirPosition, DragState, DropQuarter,
+    IndentHintStyle, Input, Node, NodeConfig, NodeId, TreeViewSettings, TreeViewState, UiData,
+};
+
+#[derive(Clone)]
+struct DirectoryState<NodeIdType> {
+    /// Id of the directory node.
+    id: NodeIdType,
+    /// How many children this directory has.
+    /// Used for automatically closing the directory after all its children have been added.
+    child_count: Option<usize>,
+    /// If current directory branch is expanded or collapsed
+    branch_expanded: bool,
+    /// Whether or not the current branch is being dragged.
+    branch_dragged: bool,
+    /// The rectangle at which the dir would be visible.
+    row_rect: Option<Rect>,
+}
+struct IndentState<NodeIdType> {
+    /// Id of the node that created this indent
+    source_node: NodeIdType,
+    /// Anchor for the indent hint at the source directory
+    anchor: Rangef,
+    /// Positions of child nodes for the indent hint.
+    positions: Vec<Pos2>,
+    /// How far the hint should be indented.
+    indent: usize,
+    /// If true, this indent hint extends bellow the bottom edge of the clip rect.
+    extends_below_clip_rect: bool,
+}
+
+pub(crate) struct TreeViewBuilderResponse<NodeIdType> {
+    pub(crate) interaction: Response,
+    pub(crate) drop_target: Option<(NodeIdType, DirPosition<NodeIdType>)>,
+    pub(crate) drop_on_self: bool,
+    pub(crate) activate: Option<Vec<NodeIdType>>,
+    pub(crate) selected: bool,
+    pub(crate) space_used: Rect,
+    pub(crate) output: Vec<BuilderActions<NodeIdType>>,
+    pub(crate) drop_marker_idx: ShapeIdx,
+}
+
+pub(crate) enum BuilderActions<NodeIdType> {
+    SetDragged(DragState<NodeIdType>),
+    SetSecondaryClicked(NodeIdType),
+    ActivateSelection(Vec<NodeIdType>),
+    ActivateThis(NodeIdType),
+    SelectOneNode(NodeIdType, Option<Rect>),
+    ShiftSelect(Vec<NodeIdType>),
+    ToggleSelection(NodeIdType, Option<Rect>),
+    Select {
+        selection: Vec<NodeIdType>,
+        pivot: NodeIdType,
+        cursor: NodeIdType,
+        scroll_to_rect: Rect,
+    },
+    SetCursor(NodeIdType, Rect),
+    SetOpenness(NodeIdType, bool),
+    SetLastclicked(NodeIdType),
+    ClearSelection,
+    OpenFallbackContextMenuForSelection,
+    OpenFallbackContextMenuForId(NodeIdType),
+    OpenFallbackContextMenuForNothing,
+}
+
+/// The builder used to construct the tree.
+///
+/// Use this to add directories or leaves to the tree.
+pub struct TreeViewBuilder<'ui, NodeIdType: NodeId> {
+    ui: &'ui mut Ui,
+    drag_layer_ui: Ui,
+    state: &'ui TreeViewState<NodeIdType>,
+    settings: &'ui TreeViewSettings,
+    ui_data: UiData,
+    selection_background: Option<(ShapeIdx, Rect)>,
+    stack: Vec<DirectoryState<NodeIdType>>,
+    indents: Vec<IndentState<NodeIdType>>,
+    input: Input<NodeIdType>,
+    striped: bool,
+    context_menu_was_open: bool,
+    drop_target: Option<(NodeIdType, DirPosition<NodeIdType>)>,
+    drop_on_self: bool,
+    activate: Option<Vec<NodeIdType>>,
+    selected: bool,
+    space_used: Rect,
+    output: Vec<BuilderActions<NodeIdType>>,
+}
+
+impl<'ui, NodeIdType: NodeId> TreeViewBuilder<'ui, NodeIdType> {
+    pub(crate) fn run(
+        ui: &'ui mut Ui,
+        state: &'ui TreeViewState<NodeIdType>,
+        settings: &'ui TreeViewSettings,
+        ui_data: UiData,
+        input: Input<NodeIdType>,
+        user_callback: impl FnOnce(&mut TreeViewBuilder<'_, NodeIdType>),
+    ) -> TreeViewBuilderResponse<NodeIdType> {
+        let mut me = TreeViewBuilder {
+            state,
+            settings,
+            drag_layer_ui: {
+                let viewport_rect = ui.ctx().input(|i| i.content_rect());
+                let mut drag_layer_ui = ui.new_child(
+                    UiBuilder::new()
+                        .layer_id(ui_data.drag_layer)
+                        .max_rect(viewport_rect),
+                );
+                drag_layer_ui.set_clip_rect(viewport_rect);
+                drag_layer_ui
+            },
+            selection_background: None,
+            stack: Vec::new(),
+            indents: Vec::new(),
+            input,
+            striped: false,
+            context_menu_was_open: false,
+            drop_target: None,
+            drop_on_self: false,
+            activate: None,
+            selected: false,
+            space_used: Rect::from_min_size(ui.cursor().min, Vec2::ZERO),
+            output: Vec::new(),
+            ui,
+            ui_data,
+        };
+
+        user_callback(&mut me);
+
+        me.finish_unfinished_input();
+
+        TreeViewBuilderResponse {
+            interaction: me.ui_data.interaction,
+            drop_target: me.drop_target,
+            drop_on_self: me.drop_on_self,
+            activate: me.activate,
+            selected: me.selected,
+            space_used: me.space_used,
+            output: me.output,
+            drop_marker_idx: me.ui_data.drop_marker_idx,
+        }
+    }
+
+    /// Get the current parent id if any.
+    pub fn parent_id(&self) -> Option<&NodeIdType> {
+        self.stack.last().map(|dir| &dir.id)
+    }
+
+    /// Add a leaf directly to the tree with an id and the label text.
+    ///
+    /// To customize the node that is added to the tree consider using [`TreeViewBuilder::node`]
+    pub fn leaf(&mut self, id: NodeIdType, label: impl Into<WidgetText>) {
+        let widget_text = label.into();
+        self.node(NodeBuilder::leaf(id).label_ui(|ui| {
+            ui.add(egui::Label::new(widget_text.clone()).selectable(false));
+        }));
+    }
+
+    /// Add a directory to the tree.
+    ///
+    /// Returns `true` if the directory is open and its child are visible.
+    /// Returns `false` if the directory is closed.
+    ///
+    /// Must call [`TreeViewBuilder::close_dir`] to close the directory.
+    ///
+    /// To customize the node that is added to the tree consider using [`TreeViewBuilder::node`]
+    pub fn dir(&mut self, id: NodeIdType, label: impl Into<WidgetText>) -> bool {
+        let widget_text = label.into();
+        self.node(NodeBuilder::dir(id).label_ui(|ui| {
+            ui.add(egui::Label::new(widget_text.clone()).selectable(false));
+        }))
+    }
+
+    /// Automatically close the current dir after `child_count` many nodes
+    /// have been added to the tree.
+    /// If this method is called with `0` the current directory will close immediately.
+    /// Child nodes that were added before this method was called are not counted.
+    pub fn close_dir_in(&mut self, child_count: usize) {
+        if child_count == 0 {
+            self.close_dir();
+        } else if let Some(dir_state) = self.stack.last_mut() {
+            dir_state.child_count = Some(child_count);
+        }
+    }
+
+    /// Close the current directory.
+    pub fn close_dir(&mut self) {
+        while let Some(dir_state) = self.stack.pop() {
+            let indent = self
+                .indents
+                .pop_if(|indent| indent.source_node == dir_state.id);
+            if let Some(indent) = indent {
+                self.draw_indent_hint(&indent);
+                match self.drop_target.as_ref() {
+                    Some((target_id, DirPosition::Last)) if target_id == &dir_state.id => {
+                        self.draw_drop_marker(indent.anchor, &DirPosition::Last);
+                    }
+                    _ => (),
+                };
+            }
+            if !self.should_close_current_dir() {
+                break;
+            }
+        }
+    }
+
+    fn draw_indent_hint(&mut self, indent: &IndentState<NodeIdType>) {
+        let clip_rect = normalize_rect(&self.ui.clip_rect());
+        let top = clip_rect.clamp(pos2(
+            self.ui.cursor().min.x
+                + self.ui.spacing().item_spacing.x
+                + self.ui.spacing().icon_width * 0.5
+                + indent.indent as f32
+                    * self
+                        .settings
+                        .override_indent
+                        .unwrap_or(self.ui.spacing().indent),
+            indent.anchor.center() + self.ui.spacing().icon_width * 0.5 + 2.0,
+        ));
+        let bottom = clip_rect.clamp(pos2(top.x, self.space_used.bottom()));
+
+        match self.settings.indent_hint_style {
+            IndentHintStyle::None => (),
+            IndentHintStyle::Line => {
+                self.ui.painter().line_segment(
+                    [top, bottom],
+                    self.ui.visuals().widgets.noninteractive.bg_stroke,
+                );
+            }
+            IndentHintStyle::Hook => {
+                let bottom = if indent.extends_below_clip_rect {
+                    bottom
+                } else {
+                    let Some(last_child) = indent.positions.last() else {
+                        // this dir doesnt have children so we just return
+                        return;
+                    };
+                    self.ui.clip_rect().clamp(pos2(top.x, last_child.y))
+                };
+                self.ui.painter().line_segment(
+                    [top, bottom],
+                    self.ui.visuals().widgets.noninteractive.bg_stroke,
+                );
+                for child_pos in indent.positions.iter() {
+                    let p1 = pos2(top.x, child_pos.y);
+                    let p2 = *child_pos + vec2(-2.0, 0.0);
+                    self.ui
+                        .painter()
+                        .line_segment([p1, p2], self.ui.visuals().widgets.noninteractive.bg_stroke);
+                }
+            }
+        }
+    }
+
+    fn draw_drop_marker(&self, row_y_range: Rangef, dir_position: &DirPosition<NodeIdType>) {
+        pub const DROP_LINE_HEIGHT: f32 = 3.0;
+        let x_range = self.ui.available_rect_before_wrap().x_range();
+        let y_range = match dir_position {
+            DirPosition::First => Rangef::point(row_y_range.max).expand(DROP_LINE_HEIGHT * 0.5),
+            DirPosition::Last => Rangef::new(row_y_range.min, self.space_used.bottom()),
+            DirPosition::After(_) => Rangef::point(row_y_range.max).expand(DROP_LINE_HEIGHT * 0.5),
+            DirPosition::Before(_) => Rangef::point(row_y_range.min).expand(DROP_LINE_HEIGHT * 0.5),
+        };
+        self.ui.painter().set(
+            self.ui_data.drop_marker_idx,
+            Shape::rect_filled(
+                Rect::from_x_y_ranges(x_range, y_range),
+                self.ui.visuals().widgets.active.corner_radius,
+                self.ui
+                    .style()
+                    .visuals
+                    .selection
+                    .bg_fill
+                    .linear_multiply(0.6),
+            ),
+        );
+    }
+
+    /// Add a node to the tree.
+    ///
+    /// If the node is a directory this method returns the openness state of the ndode.
+    /// Returns `true` if the directory is open and its child are visible.
+    /// Returns `false` if the directory is closed.
+    ///
+    /// If the node is a directory, you must call [`TreeViewBuilder::close_dir`] to close the directory.
+    pub fn node(&mut self, mut config: impl NodeConfig<NodeIdType>) -> bool {
+        self.decrement_current_dir_child_count();
+
+        let (node_is_open, row_rect) = if self.current_branch_expanded() {
+            if config.flatten() {
+                // a flattened dir is not visible but always reports itself as open.
+                (true, None)
+            } else {
+                let node = Node::from_config(
+                    if config.is_dir() {
+                        self.state
+                            .is_open(config.id())
+                            .unwrap_or(config.default_open())
+                    } else {
+                        true
+                    },
+                    self.ui.spacing().interact_size.y,
+                    self.indents.len(),
+                    &mut config,
+                );
+                let (node_is_open, row_rect) = self.node_structually_visible(node);
+                (node_is_open, Some(row_rect))
+            }
+        } else {
+            (false, None)
+        };
+
+        if config.is_dir() {
+            self.stack.push(DirectoryState {
+                id: config.id().clone(),
+                child_count: None,
+                branch_expanded: self.current_branch_expanded() && node_is_open,
+                branch_dragged: self.current_branch_dragged() || self.state.is_dragged(config.id()),
+                row_rect,
+            });
+        }
+
+        if self.should_close_current_dir() {
+            self.close_dir();
+        }
+
+        node_is_open
+    }
+
+    fn node_structually_visible(&mut self, mut node: Node<NodeIdType>) -> (bool, Rect) {
+        let row_rect = Rect::from_min_size(
+            self.space_used.left_bottom(),
+            vec2(
+                self.ui_data.interaction.rect.width(),
+                node.node_height + self.ui.spacing().item_spacing.y,
+            ),
+        );
+
+        self.do_input_structually_visible(&node, &row_rect);
+
+        if self.ui.clip_rect().intersects(row_rect) {
+            let node_width = self.node_visible_in_clip_rect(&mut node, row_rect);
+            if node_width > self.space_used.width() {
+                self.space_used.set_width(node_width);
+            }
+        } else if self.space_used.bottom() > self.ui.clip_rect().bottom() {
+            if let Some(indent) = self.indents.last_mut() {
+                indent.extends_below_clip_rect = true;
+            }
+        }
+        // Draw node dragged
+        if self.state.is_dragged(&node.id) {
+            // We translate the rectangle to the top left of the screen.
+            // This essentially removes the effect of the scroll area and we have a fixed position
+            // where the drag overlay is rendered.
+            let r = row_rect
+                .translate(-self.ui.max_rect().min.to_vec2() + self.ui_data.drag_layer_offset);
+            if self.drag_layer_ui.max_rect().intersects(r) {
+                if self.state.is_selected(&node.id) {
+                    self.drag_layer_ui.painter().rect_filled(
+                        r,
+                        self.drag_layer_ui.visuals().widgets.active.corner_radius,
+                        self.drag_layer_ui
+                            .visuals()
+                            .selection
+                            .bg_fill
+                            .linear_multiply(0.4),
+                    );
+                }
+                node.show_node(&mut self.drag_layer_ui, self.settings, r, false, true);
+            }
+        }
+        *self.space_used.bottom_mut() += row_rect.height();
+        if node.is_dir {
+            // If the directory is opened below the clip rect its indent hint is never
+            // going to be visible anyways so we dont bother.
+            // Therfore we only add the indent hint if the cursor after the node was added
+            // is still in the clip rect.
+            if self.space_used.bottom() < self.ui.clip_rect().bottom() {
+                self.indents.push(IndentState {
+                    source_node: node.id.clone(),
+                    anchor: row_rect.y_range(),
+                    positions: Vec::new(),
+                    indent: self.indents.len(),
+                    extends_below_clip_rect: false,
+                });
+            }
+        }
+
+        (node.is_open, row_rect)
+    }
+
+    fn node_visible_in_clip_rect(&mut self, node: &mut Node<NodeIdType>, outer_rect: Rect) -> f32 {
+        // Add striping
+        let is_striped = self
+            .settings
+            .override_striped
+            .unwrap_or(self.ui.visuals().striped);
+        if self.striped && is_striped {
+            self.ui.painter().rect(
+                outer_rect,
+                self.ui.visuals().widgets.active.corner_radius,
+                self.ui.visuals().faint_bg_color,
+                Stroke::NONE,
+                egui::StrokeKind::Inside,
+            );
+        }
+        self.striped = !self.striped;
+
+        // Draw background
+        if self.state.is_selected(&node.id) {
+            let (shape_idx, rect) = self
+                .selection_background
+                .get_or_insert_with(|| (self.ui.painter().add(Shape::Noop), Rect::NOTHING));
+            *rect = Rect::from_min_max(rect.min.min(outer_rect.min), rect.max.max(outer_rect.max));
+            let visuals = self.ui.visuals();
+            let color = if self.ui_data.has_focus {
+                visuals.selection.bg_fill
+            } else {
+                visuals.widgets.inactive.weak_bg_fill.linear_multiply(0.3)
+            };
+            self.ui.painter().set(
+                *shape_idx,
+                Shape::rect_filled(*rect, self.ui.visuals().widgets.active.corner_radius, color),
+            );
+        } else {
+            self.selection_background = None;
+        }
+
+        // Draw pivot and cursor for debugging
+        // if self.state.is_selection_pivot(&node.id) {
+        //     self.ui
+        //         .painter()
+        //         .circle_filled(row_rect.left_center(), 10.0, egui::Color32::BLUE);
+        // }
+        // if self.state.is_selection_cursor(&node.id) {
+        //     self.ui
+        //         .painter()
+        //         .circle_filled(row_rect.left_center(), 5.0, egui::Color32::RED);
+        // }
+
+        // Draw node
+        let (closer, icon, label) = node.show_node(
+            self.ui,
+            self.settings,
+            outer_rect,
+            self.state.is_selected(&node.id),
+            self.ui_data.has_focus,
+        );
+
+        // Do input
+        self.do_input_output(node, &outer_rect, closer.as_ref());
+
+        let should_open_context_menu = self
+            .output
+            .iter()
+            .any(|a| matches!(a, BuilderActions::SetSecondaryClicked(id) if id == &node.id));
+        self.context_menu_was_open =
+            node.show_context_menu_popup(self.ui, should_open_context_menu);
+
+        // Draw context menu marker
+        if self.state.is_secondary_selected(&node.id) && self.context_menu_was_open {
+            self.ui.painter().rect_stroke(
+                outer_rect,
+                self.ui.visuals().widgets.active.corner_radius,
+                self.ui.visuals().widgets.inactive.fg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        // Draw selection cursor
+        if self.state.is_selection_cursor(&node.id) {
+            self.ui.painter().rect_stroke(
+                outer_rect,
+                self.ui.visuals().widgets.active.corner_radius,
+                self.ui.visuals().widgets.inactive.fg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        // Save position for indent hint
+        if let Some(indent) = self.indents.last_mut() {
+            indent
+                .positions
+                .push(closer.or(icon).unwrap_or(label).left_center());
+        }
+
+        label.right() - outer_rect.left()
+    }
+
+    fn do_input_structually_visible(&mut self, node: &Node<NodeIdType>, row_rect: &Rect) {
+        match &mut self.input {
+            Input::None => (),
+            Input::DragStarted { .. } => (),
+            Input::Dragged(_) => (),
+            Input::Click { .. } => (),
+            Input::SecondaryClick(_) => (),
+            Input::CollectActivatableNodes { activatable_nodes } => {
+                if self.state.is_selected(&node.id) && node.activatable {
+                    activatable_nodes.push(node.id.clone());
+                }
+            }
+            Input::KeySpace => {
+                if self.state.is_selection_cursor(&node.id) {
+                    self.output.push(BuilderActions::ToggleSelection(
+                        node.id.clone(),
+                        Some(*row_rect),
+                    ));
+                    self.input = Input::None;
+                }
+            }
+            Input::KeyLeft => {
+                if self.state.is_selected(&node.id) {
+                    self.input = Input::None;
+                    if self.state.selected_count() == 1 {
+                        if node.is_dir && node.is_open {
+                            self.output
+                                .push(BuilderActions::SetOpenness(node.id.clone(), !node.is_open));
+                        } else if let Some(dir_state) = self.stack.last() {
+                            self.output.push(BuilderActions::SelectOneNode(
+                                dir_state.id.clone(),
+                                dir_state.row_rect,
+                            ));
+                        }
+                    }
+                }
+            }
+            Input::KeyRight { select_next } => {
+                if *select_next {
+                    self.output.push(BuilderActions::SelectOneNode(
+                        node.id.clone(),
+                        Some(*row_rect),
+                    ));
+                    self.input = Input::None;
+                } else if self.state.is_selected(&node.id) {
+                    if self.state.selected_count() == 1 {
+                        if node.is_dir && !node.is_open {
+                            self.output
+                                .push(BuilderActions::SetOpenness(node.id.clone(), !node.is_open));
+                            self.input = Input::None;
+                        } else {
+                            *select_next = true;
+                        }
+                    } else {
+                        self.input = Input::None;
+                    }
+                }
+            }
+            Input::KeyUp { previous_node } => 'arm: {
+                let current_node_is_cursor = self
+                    .state
+                    .get_selection_cursor()
+                    .or(self.state.get_selection_pivot())
+                    .is_some_and(|cursor_id| cursor_id == &node.id);
+
+                if current_node_is_cursor {
+                    if let Some((previous_node, prev_rect)) = previous_node {
+                        self.output.push(BuilderActions::SelectOneNode(
+                            previous_node.clone(),
+                            Some(*prev_rect),
+                        ));
+                        self.input = Input::None;
+                        break 'arm;
+                    } else {
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                }
+
+                *previous_node = Some((node.id.clone(), *row_rect));
+            }
+            Input::KeyUpAndCommand { previous_node } => 'arm: {
+                let current_node_is_cursor = self
+                    .state
+                    .get_selection_cursor()
+                    .or(self.state.get_selection_pivot())
+                    .is_some_and(|cursor_id| cursor_id == &node.id);
+                if current_node_is_cursor {
+                    if let Some((previous_node, prev_rect)) = previous_node {
+                        self.output
+                            .push(BuilderActions::SetCursor(previous_node.clone(), *prev_rect));
+                    }
+                    self.input = Input::None;
+                    break 'arm;
+                }
+                *previous_node = Some((node.id.clone(), *row_rect));
+            }
+            Input::KeyUpAndShift {
+                previous_node,
+                nodes_to_select,
+                next_cursor,
+            } => 'arm: {
+                let Some(pivot) = self.state.get_selection_pivot() else {
+                    self.input = Input::None;
+                    break 'arm;
+                };
+                let previous_node = {
+                    let mut current_node = Some((node.id.clone(), *row_rect));
+                    std::mem::swap(&mut current_node, previous_node);
+                    current_node
+                };
+
+                let Some((previous_node, previous_rect)) = previous_node else {
+                    let current_node_is_cursor = self
+                        .state
+                        .get_selection_cursor()
+                        .or(self.state.get_selection_pivot())
+                        .is_some_and(|cursor_id| cursor_id == &node.id);
+                    if current_node_is_cursor {
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                    if pivot == &node.id {
+                        *nodes_to_select = Some(vec![node.id.clone()]);
+                    }
+                    break 'arm;
+                };
+
+                let Some(cursor) = self.state.get_selection_cursor() else {
+                    if self.state.is_selection_pivot(&node.id) {
+                        self.output.push(BuilderActions::Select {
+                            selection: vec![previous_node.clone(), node.id.clone()],
+                            pivot: pivot.clone(),
+                            cursor: previous_node.clone(),
+                            scroll_to_rect: previous_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    };
+                    break 'arm;
+                };
+
+                if let Some(nodes_to_select) = nodes_to_select {
+                    if cursor == &node.id {
+                        self.output.push(BuilderActions::Select {
+                            selection: nodes_to_select.clone(),
+                            pivot: pivot.clone(),
+                            cursor: previous_node.clone(),
+                            scroll_to_rect: previous_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    } else if pivot == &node.id {
+                        nodes_to_select.push(node.id.clone());
+                        let (next_cursor, next_rect) = next_cursor
+                            .clone()
+                            .expect("The selection should have started on the cursor which would have se this value");
+                        self.output.push(BuilderActions::Select {
+                            selection: nodes_to_select.clone(),
+                            pivot: pivot.clone(),
+                            cursor: next_cursor,
+                            scroll_to_rect: next_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    } else {
+                        nodes_to_select.push(node.id.clone());
+                    }
+                } else {
+                    if cursor == &node.id && pivot == &node.id {
+                        self.output.push(BuilderActions::Select {
+                            selection: vec![previous_node.clone(), node.id.clone()],
+                            pivot: pivot.clone(),
+                            cursor: previous_node.clone(),
+                            scroll_to_rect: previous_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                    if cursor == &node.id {
+                        *nodes_to_select = Some(vec![previous_node.clone(), node.id.clone()]);
+                        *next_cursor = Some((previous_node.clone(), previous_rect));
+                    } else if pivot == &node.id {
+                        *nodes_to_select = Some(vec![node.id.clone()]);
+                    }
+                }
+            }
+            Input::KeyDown(is_next) => 'arm: {
+                if *is_next {
+                    self.output.push(BuilderActions::SelectOneNode(
+                        node.id.clone(),
+                        Some(*row_rect),
+                    ));
+                    self.input = Input::None;
+                    break 'arm;
+                }
+                *is_next = self
+                    .state
+                    .get_selection_cursor()
+                    .or(self.state.get_selection_pivot())
+                    .is_some_and(|cursor_id| cursor_id == &node.id);
+            }
+            Input::KeyDownAndCommand { is_next } => 'arm: {
+                if *is_next {
+                    self.output
+                        .push(BuilderActions::SetCursor(node.id.clone(), *row_rect));
+                    self.input = Input::None;
+                    break 'arm;
+                }
+                *is_next = self
+                    .state
+                    .get_selection_cursor()
+                    .or(self.state.get_selection_pivot())
+                    .is_some_and(|cursor_id| cursor_id == &node.id);
+            }
+            Input::KeyDownAndShift {
+                nodes_to_select,
+                next_cursor,
+                is_next,
+            } => 'arm: {
+                let Some(pivot) = self.state.get_selection_pivot() else {
+                    self.input = Input::None;
+                    break 'arm;
+                };
+
+                if let Some(nodes_to_select) = nodes_to_select {
+                    nodes_to_select.push(node.id.clone());
+                    if *is_next {
+                        self.output.push(BuilderActions::Select {
+                            selection: nodes_to_select.clone(),
+                            pivot: pivot.clone(),
+                            cursor: node.id.clone(),
+                            scroll_to_rect: *row_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    } else if pivot == &node.id {
+                        let (next_cursor, next_rect) = next_cursor
+                            .clone()
+                            .expect("The selection should have started on the cursor which would have se this value");
+                        self.output.push(BuilderActions::Select {
+                            selection: nodes_to_select.clone(),
+                            pivot: pivot.clone(),
+                            cursor: next_cursor,
+                            scroll_to_rect: next_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                } else {
+                    if *is_next && pivot == &node.id {
+                        self.output.push(BuilderActions::Select {
+                            selection: vec![node.id.clone()],
+                            pivot: pivot.clone(),
+                            cursor: node.id.clone(),
+                            scroll_to_rect: *row_rect,
+                        });
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                    if *is_next {
+                        *nodes_to_select = Some(vec![node.id.clone()]);
+                        *next_cursor = Some((node.id.clone(), *row_rect));
+                    } else if pivot == &node.id {
+                        *nodes_to_select = Some(vec![node.id.clone()]);
+                    }
+                }
+
+                *is_next = self
+                    .state
+                    .get_selection_cursor()
+                    .or(self.state.get_selection_pivot())
+                    .is_some_and(|cursor_id| cursor_id == &node.id);
+            }
+        }
+    }
+
+    fn do_input_output(&mut self, node: &Node<NodeIdType>, row_rect: &Rect, closer: Option<&Rect>) {
+        // Handle inputs
+        match &mut self.input {
+            Input::DragStarted {
+                pos,
+                selected_node_dragged,
+                visited_selected_nodes,
+                simplified_dragged,
+            } => 'arm: {
+                if rect_contains_visually(row_rect, pos) {
+                    if self.state.is_selected(&node.id) {
+                        *selected_node_dragged = true;
+                    } else {
+                        self.output.push(BuilderActions::SetDragged(DragState {
+                            drag_overlay_offset: self.ui.max_rect().min.to_vec2(),
+                            dragged: vec![node.id.clone()],
+                            simplified: vec![node.id.clone()],
+                        }));
+                        self.input = Input::None;
+                        break 'arm;
+                    }
+                }
+                if self.state.is_selected(&node.id) {
+                    let was_parent_visited = self
+                        .stack
+                        .last()
+                        .map(|d| &d.id)
+                        .is_some_and(|parent_id| visited_selected_nodes.contains(parent_id));
+                    if !was_parent_visited {
+                        simplified_dragged.push(node.id.clone());
+                    }
+                    visited_selected_nodes.insert(node.id.clone());
+                }
+            }
+            Input::Dragged(pos) => {
+                let pos = *pos;
+                if rect_contains_visually(row_rect, &pos) && !self.current_branch_dragged() {
+                    self.drop_on_self = self.state.is_dragged(&node.id);
+                    if !self.drop_on_self {
+                        self.drop_target = self.get_drop_position(row_rect, node, &pos);
+                        match self.drop_target.as_ref() {
+                            Some((_, dir_position)) if dir_position != &DirPosition::Last => {
+                                self.draw_drop_marker(row_rect.y_range(), dir_position);
+                            }
+                            _ => (),
+                        };
+                        self.input = Input::None;
+                    }
+                }
+            }
+            Input::Click {
+                pos,
+                double,
+                modifiers,
+                activatable_nodes,
+                shift_click_nodes,
+            } => 'block: {
+                // Closer click
+                let closer_clicked =
+                    closer.is_some_and(|closer| rect_contains_visually(closer, pos));
+                if closer_clicked {
+                    self.output
+                        .push(BuilderActions::SetOpenness(node.id.clone(), !node.is_open));
+                    self.input = Input::None;
+                    break 'block;
+                }
+
+                let row_clicked = rect_contains_visually(row_rect, pos);
+                let double_click = row_clicked
+                    && *double
+                    && !closer_clicked
+                    && self.state.was_clicked_last(&node.id);
+                if row_clicked {
+                    self.output
+                        .push(BuilderActions::SetLastclicked(node.id.clone()));
+                }
+
+                // upkeep for the activate action
+                if self.state.is_selected(&node.id) && node.activatable {
+                    activatable_nodes.push(node.id.clone());
+                }
+
+                // Double clicked
+                if double_click {
+                    if node.activatable {
+                        if self.state.is_selected(&node.id) {
+                            self.input = Input::CollectActivatableNodes {
+                                activatable_nodes: activatable_nodes.clone(),
+                            };
+                        } else {
+                            self.output
+                                .push(BuilderActions::ActivateThis(node.id.clone()));
+                            self.input = Input::None;
+                        }
+                    } else {
+                        self.output
+                            .push(BuilderActions::SetOpenness(node.id.clone(), !node.is_open));
+                        self.input = Input::None;
+                    }
+                    break 'block;
+                }
+                // Single click
+                if modifiers.matches_exact(self.settings.range_selection_modifier) {
+                    if let Some(shift_click_nodes) = shift_click_nodes {
+                        shift_click_nodes.push(node.id.clone());
+                        if row_clicked || self.state.is_selection_pivot(&node.id) {
+                            self.output
+                                .push(BuilderActions::ShiftSelect(shift_click_nodes.clone()));
+                            self.input = Input::None;
+                            break 'block;
+                        }
+                    } else if row_clicked && self.state.get_selection_pivot().is_none() {
+                        self.output
+                            .push(BuilderActions::SelectOneNode(node.id.clone(), None));
+                        self.input = Input::None;
+                    } else if row_clicked || self.state.is_selection_pivot(&node.id) {
+                        *shift_click_nodes = Some(vec![node.id.clone()]);
+                    }
+                } else if modifiers.matches_exact(self.settings.set_selection_modifier) {
+                    if row_clicked {
+                        self.output
+                            .push(BuilderActions::ToggleSelection(node.id.clone(), None));
+                        self.input = Input::None;
+                        break 'block;
+                    }
+                } else if row_clicked {
+                    self.output
+                        .push(BuilderActions::SelectOneNode(node.id.clone(), None));
+                    self.input = Input::None;
+                    break 'block;
+                }
+            }
+            Input::SecondaryClick(pos) => {
+                if rect_contains_visually(row_rect, pos) {
+                    if node.config.has_context_menu() {
+                        if self.state.is_selected(&node.id) {
+                            if self.state.selected_count() == 1 {
+                                self.output
+                                    .push(BuilderActions::SetSecondaryClicked(node.id.clone()));
+                            } else {
+                                self.output
+                                    .push(BuilderActions::OpenFallbackContextMenuForSelection);
+                            }
+                        } else {
+                            self.output
+                                .push(BuilderActions::SetSecondaryClicked(node.id.clone()));
+                        }
+                    } else {
+                        self.output
+                            .push(BuilderActions::OpenFallbackContextMenuForId(
+                                node.id.clone(),
+                            ));
+                    }
+                    self.input = Input::None;
+                }
+            }
+            Input::KeyLeft => (),
+            Input::KeyRight { .. } => (),
+            Input::KeyUp { .. } => (),
+            Input::KeyUpAndCommand { .. } => (),
+            Input::KeyUpAndShift { .. } => (),
+            Input::KeyDown(_) => (),
+            Input::KeyDownAndCommand { .. } => (),
+            Input::KeyDownAndShift { .. } => (),
+            Input::KeySpace => (),
+            Input::CollectActivatableNodes { .. } => (),
+            Input::None => (),
+        };
+    }
+
+    fn get_drop_position(
+        &self,
+        row: &Rect,
+        node: &Node<NodeIdType>,
+        cursor_pos: &Pos2,
+    ) -> Option<(NodeIdType, DirPosition<NodeIdType>)> {
+        let drop_quarter = DropQuarter::new(row.y_range(), cursor_pos.y)?;
+        match drop_quarter {
+            DropQuarter::Top => {
+                if let Some(parent_id) = self.parent_id() {
+                    return Some((parent_id.clone(), DirPosition::Before(node.id.clone())));
+                }
+                if node.drop_allowed {
+                    return Some((node.id.clone(), DirPosition::Last));
+                }
+                None
+            }
+            DropQuarter::MiddleTop => {
+                if node.drop_allowed {
+                    return Some((node.id.clone(), DirPosition::Last));
+                }
+                if let Some(parent_id) = self.parent_id() {
+                    return Some((parent_id.clone(), DirPosition::Before(node.id.clone())));
+                }
+                None
+            }
+            DropQuarter::MiddleBottom => {
+                if node.drop_allowed {
+                    return Some((node.id.clone(), DirPosition::Last));
+                }
+                if let Some(parent_id) = self.parent_id() {
+                    return Some((parent_id.clone(), DirPosition::After(node.id.clone())));
+                }
+                None
+            }
+            DropQuarter::Bottom => {
+                if node.drop_allowed && node.is_open {
+                    return Some((node.id.clone(), DirPosition::First));
+                }
+                if let Some(parent_id) = self.parent_id() {
+                    return Some((parent_id.clone(), DirPosition::After(node.id.clone())));
+                }
+                if node.drop_allowed {
+                    return Some((node.id.clone(), DirPosition::Last));
+                }
+                None
+            }
+        }
+    }
+
+    fn should_close_current_dir(&self) -> bool {
+        self.stack
+            .last()
+            .and_then(|dir| dir.child_count)
+            .is_some_and(|count| count == 0)
+    }
+    fn decrement_current_dir_child_count(&mut self) {
+        if let Some(dir_state) = self.stack.last_mut() {
+            if let Some(child_count) = &mut dir_state.child_count {
+                *child_count -= 1;
+            }
+        }
+    }
+
+    fn current_branch_expanded(&self) -> bool {
+        self.stack.last().is_none_or(|state| state.branch_expanded)
+    }
+    fn current_branch_dragged(&self) -> bool {
+        let Some(dir_state) = self.stack.last() else {
+            return false;
+        };
+        dir_state.branch_dragged
+    }
+
+    fn finish_unfinished_input(&mut self) {
+        match &self.input {
+            Input::CollectActivatableNodes { activatable_nodes } => {
+                if !activatable_nodes.is_empty() {
+                    self.output
+                        .push(BuilderActions::ActivateSelection(activatable_nodes.clone()));
+                }
+                self.input = Input::None;
+            }
+            Input::DragStarted {
+                selected_node_dragged,
+                simplified_dragged,
+                ..
+            } if *selected_node_dragged => {
+                self.output.push(BuilderActions::SetDragged(DragState {
+                    drag_overlay_offset: self.ui.max_rect().min.to_vec2(),
+                    dragged: self.state.selected().clone(),
+                    simplified: simplified_dragged.clone(),
+                }));
+                self.input = Input::None;
+            }
+            Input::Click { .. } => {
+                // This means that the click could not find a node that was clicked.
+                // Usually this should only happen if the empty space below the tree
+                // was clicked. In this case we clear the selection;
+                self.output.push(BuilderActions::ClearSelection);
+                self.input = Input::None;
+            }
+            Input::SecondaryClick(_) => {
+                self.output
+                    .push(BuilderActions::OpenFallbackContextMenuForNothing);
+                self.input = Input::None;
+            }
+            _ => (),
+        }
+    }
+}
+
+/// Sometimes there is an invalid rect where the min is actually larger than the max.
+/// This function returns a normalized rect where min is always <= max.
+/// This means that the height/width that was previously negative is then collapsed to zero.
+fn normalize_rect(rect: &Rect) -> Rect {
+    Rect {
+        min: Pos2 {
+            x: rect.min.x.min(rect.max.x),
+            y: rect.min.y.min(rect.max.y),
+        },
+        max: Pos2 {
+            x: rect.min.x.max(rect.max.x),
+            y: rect.min.y.max(rect.max.y),
+        },
+    }
+}

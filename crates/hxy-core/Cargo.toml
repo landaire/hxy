@@ -11,8 +11,8 @@ description = "Core types and file abstractions for the hxy hex editor"
 [dependencies]
 fskit = { workspace = true, features = ["jiff"] }
 jiff = { workspace = true }
-lru = "0.18.0"
-rootcause = "0.12.1"
+lru = "0.18.2"
+rootcause = "0.13.0"
 rustc-hash = { workspace = true }
 serde = { workspace = true }
 suture = { workspace = true }

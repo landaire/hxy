@@ -15,11 +15,14 @@ members = [
     "crates/egui_minimap",
     "crates/egui_dock_picker",
 ]
+# Vendored [patch.crates-io] sources are standalone packages, not
+# workspace members.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.4.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
@@ -42,18 +45,30 @@ egui_dock_picker = { path = "crates/egui_dock_picker", version = "0.4.0" }
 # the same version and feature baseline; per-crate Cargo.tomls add
 # extra features on top via `features = [...]` next to
 # `workspace = true`.
-egui = "0.35.0"
+egui = "0.36.1"
 fskit = { version = "0.2", features = ["vfs"] }
-jiff = { version = "0.2.24", features = ["serde"] }
+jiff = { version = "0.2.35", features = ["serde"] }
 rustc-hash = "2"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 suture = "0.3.0"
-thiserror = "2.0.18"
+thiserror = "2.0.19"
 tracing = "0.1.44"
 vfs = "0.13.0"
-winnow = "0.7"
-base64 = "0.22.1"
-insta = { version = "1.43.2", features = ["yaml"] }
+winnow = "1.0"
+base64 = "0.23.1"
+insta = { version = "1.48.0", features = ["yaml"] }
+
+# Temporary bridges for the egui 0.36 upgrade: neither crate has an
+# upstream release supporting egui 0.36 yet. Both block publishing the
+# hxy app crate (patched versions do not exist on crates.io); the
+# egui-* widget crates are unaffected. Drop each entry the moment
+# upstream publishes for 0.36.
+#
+# egui-phosphor: fork is upstream 0.13.0 with only the version set to
+# 0.14.0 and egui/eframe bumped to 0.36 (diffed at this rev).
+[patch.crates-io]
+egui-phosphor = { git = "https://github.com/ssoj13/egui-phosphor", rev = "1ada8bafd2630ce5afbb7f17bba1f45c7a630232" }
+egui_ltreeview = { path = "vendor/egui_ltreeview" }
 
 [profile.release]
 opt-level = 3

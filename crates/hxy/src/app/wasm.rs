@@ -399,15 +399,27 @@ impl eframe::App for HxyApp {
             ctx.set_zoom_factor(target_zoom);
             self.applied_zoom = target_zoom;
         }
-        // Drag-and-drop file open.
-        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+        // Drag-and-drop file open. Browser file reads are async, so
+        // the bytes land in the same open-request inbox the file
+        // picker uses and get drained on a later frame.
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
-            let bytes = match f.bytes {
-                Some(b) => b.to_vec(),
-                None => continue,
-            };
-            let name = if f.name.is_empty() { "dropped".to_owned() } else { f.name };
-            self.open_bytes_wasm(name, bytes);
+            // On the web the path is just the file name.
+            let name = f
+                .path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "dropped".to_owned());
+            let ctx_clone = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match f.bytes_async().await {
+                    Ok(bytes) => {
+                        push_open_request_wasm(name, Arc::new(hxy_core::MemorySource::new(bytes)));
+                        ctx_clone.request_repaint();
+                    }
+                    Err(e) => tracing::warn!(error = %e, "dropped file read"),
+                }
+            });
         }
         // Wasm-only shortcuts that don't have a shared dispatcher
         // yet: tab close (Cmd+W), reopen-closed (Cmd+Shift+T),
@@ -702,6 +714,10 @@ struct WasmTabViewer<'a> {
 impl egui_dock::TabViewer for WasmTabViewer<'_> {
     type Tab = Tab;
 
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(*tab)
+    }
+
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
         matches!(tab, Tab::File(_))
     }
@@ -866,6 +882,18 @@ struct WasmWorkspaceTabViewer<'a> {
 
 impl egui_dock::TabViewer for WasmWorkspaceTabViewer<'_> {
     type Tab = crate::files::WorkspaceTab;
+
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        // Distinct ids per workspace so two open workspaces don't
+        // share `WorkspaceTab::Editor` when egui_dock interns the tab.
+        match tab {
+            crate::files::WorkspaceTab::Editor => egui::Id::new(("ws-editor", self.workspace_id.get())),
+            crate::files::WorkspaceTab::VfsTree => egui::Id::new(("ws-tree", self.workspace_id.get())),
+            crate::files::WorkspaceTab::Entry(file_id) => {
+                egui::Id::new(("ws-entry", self.workspace_id.get(), file_id.get()))
+            }
+        }
+    }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
         matches!(tab, crate::files::WorkspaceTab::Entry(_) | crate::files::WorkspaceTab::VfsTree)

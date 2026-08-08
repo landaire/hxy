@@ -15,4 +15,4 @@ hxy-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 vfs = { workspace = true }
-zip = { version = "8.5.1", default-features = false, features = ["deflate", "deflate64"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate", "deflate64"] }
