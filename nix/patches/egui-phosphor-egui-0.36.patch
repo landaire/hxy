@@ -1,0 +1,30 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 8a015ee..40f98a6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,13 +1,13 @@
+ [package]
+ name = "egui-phosphor"
+ description = "Phosphor icons for egui"
+-version = "0.13.0"
++version = "0.14.0"
+ edition = "2021"
+ license = "MIT OR Apache-2.0"
+ repository = "https://github.com/amPerl/egui-phosphor"
+ 
+ [dependencies]
+-egui = { version = "0.35", default-features = false }
++egui = { version = "0.36", default-features = false }
+ 
+ [features]
+ default = ["regular"]
+@@ -18,7 +18,7 @@ regular = []
+ bold = []
+ fill = []
+ 
+ [dev-dependencies]
+-eframe = "0.35"
++eframe = "0.36"
+ 
+ [[example]]
+ name = "multiple_variants"

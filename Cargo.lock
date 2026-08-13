@@ -1750,7 +1750,6 @@ dependencies = [
 [[package]]
 name = "egui-phosphor"
 version = "0.14.0"
-source = "git+https://github.com/ssoj13/egui-phosphor?rev=1ada8bafd2630ce5afbb7f17bba1f45c7a630232#1ada8bafd2630ce5afbb7f17bba1f45c7a630232"
 dependencies = [
  "egui",
 ]

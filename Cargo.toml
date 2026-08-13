@@ -63,11 +63,10 @@ insta = { version = "1.48.0", features = ["yaml"] }
 # hxy app crate (patched versions do not exist on crates.io); the
 # egui-* widget crates are unaffected. Drop each entry the moment
 # upstream publishes for 0.36.
-#
-# egui-phosphor: fork is upstream 0.13.0 with only the version set to
-# 0.14.0 and egui/eframe bumped to 0.36 (diffed at this rev).
 [patch.crates-io]
-egui-phosphor = { git = "https://github.com/ssoj13/egui-phosphor", rev = "1ada8bafd2630ce5afbb7f17bba1f45c7a630232" }
+# Nix applies nix/patches/egui-phosphor-egui-0.36.patch to the pinned
+# upstream source and exposes the immutable result at this path.
+egui-phosphor = { path = "vendor/egui-phosphor" }
 egui_ltreeview = { path = "vendor/egui_ltreeview" }
 
 [profile.release]
