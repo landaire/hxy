@@ -1,0 +1,4 @@
+load("@prelude//toolchains:demo.bzl", "system_demo_toolchains")
+
+# Default local toolchains supplied by the bundled prelude.
+system_demo_toolchains()
