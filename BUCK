@@ -6,6 +6,7 @@ load("@prelude//rust:cargo_package.bzl", "cargo")
 genrule(
     name = "hxy",
     out = "hxy",
+    executable = True,
     srcs = glob([
         "BUCK",
         "Cargo.lock",

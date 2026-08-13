@@ -13,6 +13,7 @@ buck-out/
 # Wasm build output (wasm-pack / trunk) lives under `crates/hxy/dist/`.
 crates/hxy/dist/
 .claude/
+.direnv/
 .DS_Store
 *.log
 *.json.gz
