@@ -124,6 +124,7 @@
         # macOS clamps the file-descriptor limit below Reindeer's test value.
         doCheck = false;
       });
+
     in
       with pkgs; {
         packages = let
@@ -251,20 +252,45 @@
           '';
         };
 
-        checks.environment = runCommand "hxy-environment-check" {
-          nativeBuildInputs = [nushell buck2 reindeer rustToolchain pkg-config];
-          CARGO_NET_OFFLINE = "true";
-        } ''
-          cargo_home="$PWD/cargo-home"
-          mkdir -p "$cargo_home"
-          install -m 644 ${cargoVendorDir}/config.toml "$cargo_home/config.toml"
-          cd ${commonArgs.src}
-          export CARGO_HOME="$cargo_home"
-          CARGO_HOME="$cargo_home" nu ${./nix/check-flake.nu}
-          CARGO_HOME="$cargo_home" nu ${./scripts/check-cargo-offline.nu}
-          CARGO_HOME="$cargo_home" nu ${./nix/check-reindeer.nu}
-          touch $out
-        '';
+        checks = {
+          environment = runCommand "hxy-environment-check" {
+            nativeBuildInputs = [nushell buck2 reindeer rustToolchain pkg-config];
+            CARGO_NET_OFFLINE = "true";
+          } ''
+            cargo_home="$PWD/cargo-home"
+            mkdir -p "$cargo_home"
+            install -m 644 ${cargoVendorDir}/config.toml "$cargo_home/config.toml"
+            cd ${commonArgs.src}
+            export CARGO_HOME="$cargo_home"
+            nu ${./nix/check-flake.nu}
+            touch $out
+          '';
+
+          cargo-offline = runCommand "hxy-cargo-offline-check" {
+            nativeBuildInputs = [nushell rustToolchain];
+            CARGO_NET_OFFLINE = "true";
+          } ''
+            cargo_home="$PWD/cargo-home"
+            mkdir -p "$cargo_home"
+            install -m 644 ${cargoVendorDir}/config.toml "$cargo_home/config.toml"
+            cd ${commonArgs.src}
+            export CARGO_HOME="$cargo_home"
+            nu ${./scripts/check-cargo-offline.nu}
+            touch $out
+          '';
+          reindeer = runCommand "hxy-reindeer-check" {
+            nativeBuildInputs = [nushell reindeer rustToolchain];
+            CARGO_NET_OFFLINE = "true";
+          } ''
+            cargo_home="$PWD/cargo-home"
+            mkdir -p "$cargo_home"
+            install -m 644 ${cargoVendorDir}/config.toml "$cargo_home/config.toml"
+            cd ${commonArgs.src}
+            export CARGO_HOME="$cargo_home"
+            nu ${./nix/check-reindeer.nu}
+            touch $out
+          '';
+        };
 
         apps.check-flake = {
           type = "app";

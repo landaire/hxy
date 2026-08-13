@@ -5,6 +5,84 @@ precise_srcs = true
 cargo_env = true
 vendor = false
 
+[platform.linux-x86_64]
+target = "x86_64-unknown-linux-gnu"
+target_abi = [""]
+target_arch = ["x86_64"]
+target_endian = ["little"]
+target_env = ["gnu"]
+target_family = ["unix"]
+target_feature = ["fxsr", "sse", "sse2"]
+target_has_atomic = ["16", "32", "64", "8", "ptr"]
+target_os = ["linux"]
+target_pointer_width = ["64"]
+target_vendor = ["unknown"]
+
+[platform.linux-arm64]
+target = "aarch64-unknown-linux-gnu"
+target_abi = [""]
+target_arch = ["aarch64"]
+target_endian = ["little"]
+target_env = ["gnu"]
+target_family = ["unix"]
+target_feature = ["neon"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+target_os = ["linux"]
+target_pointer_width = ["64"]
+target_vendor = ["unknown"]
+
+[platform.macos-x86_64]
+target = "x86_64-apple-darwin"
+target_abi = [""]
+target_arch = ["x86_64"]
+target_endian = ["little"]
+target_env = [""]
+target_family = ["unix"]
+target_feature = ["cmpxchg16b", "fxsr", "sse", "sse2", "sse3", "sse4.1", "ssse3"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+target_os = ["macos"]
+target_pointer_width = ["64"]
+target_vendor = ["apple"]
+
+[platform.macos-arm64]
+target = "aarch64-apple-darwin"
+target_abi = [""]
+target_arch = ["aarch64"]
+target_endian = ["little"]
+target_env = [""]
+target_family = ["unix"]
+target_feature = ["aes", "crc", "dit", "dotprod", "dpb", "dpb2", "fcma", "fhm", "flagm", "fp16", "frintts", "jsconv", "lor", "lse", "neon", "paca", "pacg", "pan", "pmuv3", "ras", "rcpc", "rcpc2", "rdm", "sb", "sha2", "sha3", "ssbs", "vh"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+target_os = ["macos"]
+target_pointer_width = ["64"]
+target_vendor = ["apple"]
+
+[platform.windows-msvc]
+target = "x86_64-pc-windows-msvc"
+target_abi = [""]
+target_arch = ["x86_64"]
+target_endian = ["little"]
+target_env = ["msvc"]
+target_family = ["windows"]
+target_feature = ["cmpxchg16b", "fxsr", "sse", "sse2", "sse3"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+target_os = ["windows"]
+target_pointer_width = ["64"]
+target_vendor = ["pc"]
+
+[platform.windows-gnu]
+target = "x86_64-pc-windows-gnu"
+target_abi = [""]
+target_arch = ["x86_64"]
+target_endian = ["little"]
+target_env = ["gnu"]
+target_family = ["windows"]
+target_feature = ["cmpxchg16b", "fxsr", "sse", "sse2", "sse3"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+target_os = ["windows"]
+target_pointer_width = ["64"]
+target_vendor = ["pc"]
+
 [buck]
 rust_library = "cargo.rust_library"
 rust_binary = "cargo.rust_binary"
