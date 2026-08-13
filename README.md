@@ -42,13 +42,16 @@ nix develop
 nix flake check
 nix build .#hxy
 nix develop --command buck2 build //:hxy
+nix develop --command buck2 run //:hxy
+nix develop --command buck2 run @modes/release //:hxy
 ```
 
 `//:hxy` is Buck's entry point to the hermetic Nix package. It stages only its
 declared source files before Nix evaluates the flake; it does not traverse back
-to the checkout. Reindeer also generates the native Rust graph in `BUCK` for
-inspection and incremental Buck work, but that graph uses Buck's local system
-toolchain and is not the reproducible release build.
+to the checkout. Its default Buck profile is debug; `@modes/release` selects
+the optimized release package. Reindeer also generates the native Rust graph in
+`BUCK` for inspection and incremental Buck work, but that graph uses Buck's
+local system toolchain and is not the reproducible release build.
 
 ## What's in the box
 

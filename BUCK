@@ -3,6 +3,13 @@
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
 
+hxy_packages = {
+    "debug": "hxy-debug",
+    "release": "hxy",
+}
+hxy_profile = read_config("hxy", "profile", "debug")
+hxy_package = hxy_packages.get(hxy_profile, "hxy-invalid-profile")
+
 genrule(
     name = "hxy",
     out = "hxy",
@@ -30,16 +37,16 @@ genrule(
         source_dir="$workdir/source"
         for source in $SRCS; do
             destination="$source_dir/${source#././}"
-            mkdir -p "${destination%/*}"
+            mkdir -p "${destination%%/*}"
             if [ -d "$source" ]; then
                 cp -R -L "$source" "$destination"
             else
                 cp -L "$source" "$destination"
             fi
         done
-        nix build --no-write-lock-file --out-link "$workdir/result" "path:$source_dir#hxy"
+        nix build --no-write-lock-file --out-link "$workdir/result" "path:$source_dir#%s"
         cp "$workdir/result/bin/hxy" "$OUT"
-    ''',
+    ''' % hxy_package,
 )
 
 http_archive(

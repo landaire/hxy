@@ -111,10 +111,14 @@
         ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
       '';
 
-      cargoArtifacts = craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs ["src"]) // {
-        inherit cargoVendorDir;
-        dummySrc = hxyDummySource;
-      });
+      cargoArtifactsFor = profile:
+        craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs ["src"]) // {
+          inherit cargoVendorDir;
+          dummySrc = hxyDummySource;
+          CARGO_PROFILE = profile;
+        });
+
+      cargoArtifacts = cargoArtifactsFor "release";
 
       reindeer = pkgs.reindeer.overrideAttrs (_: {
         # macOS clamps the file-descriptor limit below Reindeer's test value.
@@ -147,15 +151,21 @@
               fontconfig
             ];
 
-          unwrapped = craneLib.buildPackage (commonArgs
-            // {
-              inherit cargoArtifacts cargoVendorDir;
-              cargoExtraArgs = "-p hxy";
-              buildInputs = guiBuildInputs;
+          unwrappedFor = profile:
+            craneLib.buildPackage (commonArgs
+              // {
+                inherit cargoVendorDir;
+                cargoArtifacts = cargoArtifactsFor profile;
+                cargoExtraArgs = "-p hxy";
+                CARGO_PROFILE = profile;
+                doCheck = false;
+                buildInputs = guiBuildInputs;
               meta.mainProgram = "hxy";
             });
-        in {
-          hxy =
+
+          packageFor = profile: let
+            unwrapped = unwrappedFor profile;
+          in
             if stdenv.hostPlatform.isLinux
             then
               (pkgs.symlinkJoin {
@@ -168,6 +178,9 @@
                 '';
               }).overrideAttrs {meta.mainProgram = "hxy";}
             else unwrapped;
+        in {
+          hxy = packageFor "release";
+          hxy-debug = packageFor "dev";
 
           default = self.packages.${system}.hxy;
           egui-phosphor-source = eguiPhosphor;

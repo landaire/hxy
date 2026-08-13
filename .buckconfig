@@ -24,3 +24,6 @@
 
 [build]
   execution_platforms = prelude//platforms:default
+
+[hxy]
+  profile = debug
