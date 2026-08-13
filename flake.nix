@@ -34,11 +34,14 @@
 
       srcFilter = path: type:
         (craneLib.filterCargoSources path type)
+        || (builtins.match ".*/BUCK" path != null)
+        || (builtins.match ".*/reindeer\.toml" path != null)
         || (builtins.match ".*assets.*" path != null)
         || (builtins.match ".*translations.*" path != null)
         || (builtins.match ".*img.*" path != null)
         || (builtins.match ".*\\.wit" path != null)
-        || (builtins.match ".*/wit" path != null);
+        || (builtins.match ".*/wit" path != null)
+        || (builtins.match ".*/vendor/.*" path != null);
 
       filteredSource = pkgs.lib.cleanSourceWith {
         src = ./.;
@@ -58,11 +61,28 @@
         patches = [./nix/patches/egui-phosphor-egui-0.36.patch];
       };
 
+      buck2FixupsSource = sourcePkgs.fetchFromGitHub {
+        owner = "facebook";
+        repo = "buck2";
+        rev = "dd59be39291fea745565e6d93fa33e8d11025b56";
+        hash = "sha256-l1X+2JhISLST4N8PMJlGJVfr9tdkqKiZJn5N/hvXTj0=";
+      };
+
+      buck2Fixups = sourcePkgs.runCommand "hxy-buck2-fixups" {} ''
+        cp -R ${buck2FixupsSource}/shim/third-party/rust/fixups "$out"
+        chmod -R u+w "$out"
+        rm -rf "$out/aws-lc-rs" "$out/aws-lc-sys" "$out/ring" "$out/syn" "$out/winapi"
+        cp -R ${./nix/reindeer-fixups}/. "$out"
+      '';
+
       hxySource = sourcePkgs.runCommand "hxy-source" {} ''
         mkdir -p "$out"
         cp -R ${filteredSource}/. "$out"
-        chmod u+w "$out/vendor"
-        ln -s ${eguiPhosphor} "$out/vendor/egui-phosphor"
+        mkdir -p "$out/third-party/overrides"
+        ln -s ${eguiPhosphor} "$out/third-party/overrides/egui-phosphor"
+        ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
+        mkdir -p "$out/fixups"
+        cp -R ${buck2Fixups}/. "$out/fixups"
       '';
 
       commonArgs = {
@@ -86,9 +106,9 @@
       hxyDummySource = sourcePkgs.runCommand "hxy-dummy-source" {} ''
         mkdir -p "$out"
         cp -R ${craneLib.mkDummySrc (commonArgs // {src = filteredSource;})}/. "$out"
-        mkdir -p "$out/vendor"
-        chmod u+w "$out/vendor"
-        ln -s ${eguiPhosphor} "$out/vendor/egui-phosphor"
+        mkdir -p "$out/third-party/overrides"
+        ln -s ${eguiPhosphor} "$out/third-party/overrides/egui-phosphor"
+        ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
       '';
 
       cargoArtifacts = craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs ["src"]) // {
@@ -194,7 +214,7 @@
             "${lib.makeLibraryPath buildInputs}";
 
           shellHook = lib.optionalString stdenv.hostPlatform.isDarwin ''
-            nu ${./nix/check-xcode.nu} || exit $?
+            export DEVELOPER_DIR="$(env -u PROMPT_MULTILINE_INDICATOR -u SPROMPT nu ${./nix/check-xcode.nu})"
           '' + ''
             hxy_workspace_root="$PWD"
             while ! grep -q '^\[workspace\]' "$hxy_workspace_root/Cargo.toml" 2>/dev/null && [ "$hxy_workspace_root" != / ]; do
@@ -204,8 +224,13 @@
               echo "could not find the hxy workspace root" >&2
               exit 1
             fi
-            mkdir -p "$hxy_workspace_root/vendor"
-            ln -sfn ${eguiPhosphor} "$hxy_workspace_root/vendor/egui-phosphor"
+            mkdir -p "$hxy_workspace_root/third-party/overrides"
+            ln -sfn ${eguiPhosphor} "$hxy_workspace_root/third-party/overrides/egui-phosphor"
+            ln -sfn "$hxy_workspace_root/vendor/egui_ltreeview" "$hxy_workspace_root/third-party/overrides/egui_ltreeview"
+            if [ -e "$hxy_workspace_root/fixups" ] && [ ! -L "$hxy_workspace_root/fixups" ]; then
+              rm -rf "$hxy_workspace_root/fixups"
+            fi
+            ln -sfn ${buck2Fixups} "$hxy_workspace_root/fixups"
             hxy_cargo_home="''${XDG_CACHE_HOME:-$HOME/.cache}/hxy/cargo/${cargoVendorCacheKey}"
             mkdir -p "$hxy_cargo_home"
             install -m 644 ${cargoVendorDir}/config.toml "$hxy_cargo_home/config.toml"
@@ -224,7 +249,7 @@
           export CARGO_HOME="$cargo_home"
           CARGO_HOME="$cargo_home" nu ${./nix/check-flake.nu}
           CARGO_HOME="$cargo_home" nu ${./scripts/check-cargo-offline.nu}
-          reindeer buckify --stdout > /dev/null
+          CARGO_HOME="$cargo_home" nu ${./nix/check-reindeer.nu}
           touch $out
         '';
 
@@ -242,15 +267,24 @@
                 echo "could not find the hxy workspace root" >&2
                 exit 1
               fi
-              mkdir -p "$hxy_workspace_root/vendor"
-              ln -sfn ${eguiPhosphor} "$hxy_workspace_root/vendor/egui-phosphor"
+              mkdir -p "$hxy_workspace_root/third-party/overrides"
+              ln -sfn ${eguiPhosphor} "$hxy_workspace_root/third-party/overrides/egui-phosphor"
+              ln -sfn "$hxy_workspace_root/vendor/egui_ltreeview" "$hxy_workspace_root/third-party/overrides/egui_ltreeview"
+              if [ -e "$hxy_workspace_root/fixups" ] && [ ! -L "$hxy_workspace_root/fixups" ]; then
+                rm -rf "$hxy_workspace_root/fixups"
+              fi
+              ln -sfn ${buck2Fixups} "$hxy_workspace_root/fixups"
               hxy_cargo_home="''${XDG_CACHE_HOME:-$HOME/.cache}/hxy/cargo/${cargoVendorCacheKey}"
               mkdir -p "$hxy_cargo_home"
               install -m 644 ${cargoVendorDir}/config.toml "$hxy_cargo_home/config.toml"
               export CARGO_HOME="$hxy_cargo_home"
               export CARGO_NET_OFFLINE=true
-              nu ${./nix/check-flake.nu}
-              exec nu ${./scripts/check-cargo-offline.nu}
+              hxy_nu() {
+                env -u PROMPT_MULTILINE_INDICATOR -u SPROMPT nu "$@"
+              }
+              hxy_nu ${./nix/check-flake.nu}
+              hxy_nu ${./nix/check-reindeer.nu}
+              exec env -u PROMPT_MULTILINE_INDICATOR -u SPROMPT nu ${./scripts/check-cargo-offline.nu}
             '';
           }}/bin/hxy-check-flake";
         };

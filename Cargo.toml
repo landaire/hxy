@@ -64,10 +64,9 @@ insta = { version = "1.48.0", features = ["yaml"] }
 # egui-* widget crates are unaffected. Drop each entry the moment
 # upstream publishes for 0.36.
 [patch.crates-io]
-# Nix applies nix/patches/egui-phosphor-egui-0.36.patch to the pinned
-# upstream source and exposes the immutable result at this path.
-egui-phosphor = { path = "vendor/egui-phosphor" }
-egui_ltreeview = { path = "vendor/egui_ltreeview" }
+# Nix materializes these patch overlays for Cargo and Reindeer.
+egui-phosphor = { path = "third-party/overrides/egui-phosphor" }
+egui_ltreeview = { path = "third-party/overrides/egui_ltreeview" }
 
 [profile.release]
 opt-level = 3

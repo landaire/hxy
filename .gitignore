@@ -1,6 +1,7 @@
 target/
 buck-out/
-/vendor/egui-phosphor
+/third-party/overrides/
+/fixups
 # Ignore generated bundle output but keep the static packaging
 # tree under /dist/macos/ checked in (Info.plist + build_app.sh
 # drive the Finder integration). Anchor to the repo root so the

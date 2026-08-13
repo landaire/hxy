@@ -26,3 +26,5 @@ if not ($sdk | str starts-with $expected_developer_dir) {
 if (^/usr/bin/env -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-version | str trim) != $expected_sdk_version {
   error make {msg: $"expected macOS SDK ($expected_sdk_version)"}
 }
+
+print $expected_developer_dir

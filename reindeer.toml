@@ -1,0 +1,52 @@
+manifest_path = "Cargo.toml"
+third_party_dir = "."
+include_workspace_members = true
+precise_srcs = true
+cargo_env = true
+vendor = false
+
+[buck]
+rust_library = "cargo.rust_library"
+rust_binary = "cargo.rust_binary"
+buckfile_imports = """
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+genrule(
+    name = "hxy",
+    out = "hxy",
+    srcs = glob([
+        "BUCK",
+        "Cargo.lock",
+        "Cargo.toml",
+        "assets/**",
+        "crates/**",
+        "flake.lock",
+        "flake.nix",
+        "img/**",
+        "nix/**",
+        "reindeer.toml",
+        "rust-toolchain.toml",
+        "translations/**",
+        "vendor/**",
+        "wit/**",
+    ]),
+    cmd = '''
+        set -eu
+        workdir="`mktemp -d "${TMPDIR:-/tmp}/hxy-nix.XXXXXX"`"
+        trap 'rm -rf "$workdir"' EXIT
+        source_dir="$workdir/source"
+        for source in $SRCS; do
+            destination="$source_dir/${source#././}"
+            mkdir -p "${destination%/*}"
+            if [ -d "$source" ]; then
+                cp -R -L "$source" "$destination"
+            else
+                cp -L "$source" "$destination"
+            fi
+        done
+        nix build --no-write-lock-file --out-link "$workdir/result" "path:$source_dir#hxy"
+        cp "$workdir/result/bin/hxy" "$OUT"
+    ''',
+)
+"""

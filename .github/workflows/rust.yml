@@ -1,146 +1,28 @@
-on: [push, pull_request]
-
 name: CI
 
-env:
-  RUST_TOOLCHAIN: "1.92.0"
-  RUSTFLAGS: -D warnings
-  RUSTDOCFLAGS: -D warnings
+on: [push, pull_request]
+
+permissions:
+  contents: read
 
 jobs:
-  check:
-    name: Check
+  verify:
+    name: Hermetic build and checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libgl-dev libfontconfig-dev \
-            libssl-dev libvulkan-dev pkg-config
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo check --workspace --all-features
-
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libgl-dev libfontconfig-dev \
-            libssl-dev libvulkan-dev pkg-config
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo clippy --workspace --all-features -- -D warnings
-
-  check-wasm:
-    name: Check (wasm32)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: wasm32-unknown-unknown
-      # `hxy-plugin-host` depends on wasmtime which doesn't build
-      # for wasm32-unknown-unknown; it stays excluded. Every other
-      # crate (including `hxy` itself, which has its own wasm
-      # `HxyApp` re-exported from `lib.rs`) is checked.
-      - run: cargo check --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown
-      - run: cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm
-      - run: cargo clippy --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown -- -D warnings
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix flake check --accept-flake-config
+      - run: nix build .#hxy --no-link
+      - run: nix develop --command cargo test --workspace
+      - run: nix develop --command cargo fmt --all -- --check
+      - run: nix develop --command cargo clippy --workspace --all-features -- -D warnings
+      - run: nix develop --command cargo check --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown
+      - run: nix develop --command cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm
+      - run: nix develop --command cargo clippy --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown -- -D warnings
         env:
           RUSTFLAGS: ""
-      - run: cargo clippy -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
+      - run: nix develop --command cargo clippy -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
         env:
           RUSTFLAGS: ""
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libgl-dev libfontconfig-dev \
-            libssl-dev libvulkan-dev pkg-config
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test --workspace
-
-  macos-bundle:
-    name: macOS bundle
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      # Builds a release binary and assembles
-      # `target/release/bundle/macos/hxy.app` with the Info.plist
-      # that registers Launch Services file associations and the
-      # "Open in hxy" NSServices entry.
-      - run: dist/macos/build_app.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hxy-macos-app
-          path: target/bundle/macos/hxy.app
+      - run: nix develop --command buck2 build //:hxy
