@@ -74,7 +74,7 @@ where
         mr.match_indices.sort_unstable();
         mr.match_indices.dedup();
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|score| std::cmp::Reverse(score.0));
     scored.into_iter().map(|(_, mr)| mr).collect()
 }
 

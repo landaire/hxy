@@ -277,7 +277,7 @@ impl ByteCache {
             .iter()
             .map(|(&(attribution, source), &bytes)| AttributionBytes { attribution, source, bytes })
             .collect();
-        by_attribution.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        by_attribution.sort_by_key(|entry| std::cmp::Reverse(entry.bytes));
         CacheStats {
             used_bytes: g.used_bytes,
             limit_bytes: g.limit.as_bytes(),
