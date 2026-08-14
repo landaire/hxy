@@ -20,6 +20,30 @@ if not ($result.stdout | str contains 'name = "hxy"') {
   error make {msg: "Reindeer must generate the hermetic Nix-backed hxy target"}
 }
 
-if $result.stdout != (open --raw BUCK) {
-  error make {msg: "BUCK is stale; regenerate it with reindeer -c reindeer.toml buckify"}
+let expected = open --raw BUCK
+
+if $result.stdout != $expected {
+  let expected_lines = $expected | lines
+  let generated_lines = $result.stdout | lines
+  let line_count = [($expected_lines | length) ($generated_lines | length)] | math max
+  let difference = 0..<$line_count
+    | each {|index|
+      {
+        index: $index
+        expected: ($expected_lines | get -o $index)
+        generated: ($generated_lines | get -o $index)
+      }
+    }
+    | where {|line| $line.expected != $line.generated}
+    | first
+
+  if $difference == null {
+    error make {
+      msg: $"BUCK differs at end of file; expected ($expected | str length) characters, generated ($result.stdout | str length)"
+    }
+  } else {
+    error make {
+      msg: $"BUCK is stale at line ($difference.index + 1); expected: ($difference.expected); generated: ($difference.generated)"
+    }
+  }
 }
