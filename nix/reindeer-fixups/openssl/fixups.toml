@@ -1,0 +1,13 @@
+# The openssl crate derives its version cfgs (ossl300, ossl350, ...) in its own
+# build script from DEP_OPENSSL_VERSION_NUMBER, which Cargo forwards from the
+# openssl-sys `links = "openssl"` build script. Buck2's buildscript_run does not
+# forward a links crate's metadata to dependent build scripts, so without this
+# the openssl build script sees no DEP_OPENSSL_* vars, emits no ossl* cfgs, and
+# the crate compiles against the pre-1.1.0 symbol set that openssl-sys (detecting
+# the real OpenSSL 3.x) does not expose (EVP_MD_CTX_create, SSL_get_peer_certificate,
+# ERR_put_error, FIPS_mode, ...), failing to link on Linux where native-tls uses
+# OpenSSL. Pin the number to the OpenSSL the Nix dev shell provides: 3.6.3 ->
+# OPENSSL_VERSION_NUMBER 0x30600030. No osslconf cfgs are needed because that
+# build disables none of the algorithms the openssl crate gates on.
+[buildscript.run]
+env = { DEP_OPENSSL_VERSION_NUMBER = "30600030" }

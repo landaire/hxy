@@ -17233,6 +17233,7 @@ buildscript_run(
         "CARGO_PKG_VERSION_MINOR": "10",
         "CARGO_PKG_VERSION_PATCH": "81",
         "CARGO_PKG_VERSION_PRE": "",
+        "DEP_OPENSSL_VERSION_NUMBER": "30600030",
     },
     features = ["default"],
     version = "0.10.81",
