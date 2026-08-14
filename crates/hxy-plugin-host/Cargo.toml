@@ -19,7 +19,31 @@ thiserror = { workspace = true }
 toml = "1.1.4"
 tracing = { workspace = true }
 vfs = { workspace = true }
-wasmtime = { version = "44", features = ["component-model", "runtime", "cranelift"] }
+# default-features disabled to drop debug-builtins / wasmtime-jit-debug /
+# profiling: those pull GDB-JIT-debug and VTune C helpers whose build-script
+# static libs Buck doesn't propagate to the final link. hxy doesn't use them.
+wasmtime = { version = "44", default-features = false, features = [
+    "addr2line",
+    "async",
+    "cache",
+    "component-model",
+    "component-model-async",
+    "cranelift",
+    "coredump",
+    "debug",
+    "demangle",
+    "gc",
+    "gc-drc",
+    "gc-null",
+    "parallel-compilation",
+    "pooling-allocator",
+    "runtime",
+    "stack-switching",
+    "std",
+    "threads",
+    "wasmtime-jit-icache-coherence",
+    "wat",
+] }
 wasmtime-wasi = "44"
 
 [dev-dependencies]
