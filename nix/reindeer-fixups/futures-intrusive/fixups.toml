@@ -1,0 +1,2 @@
+['cfg(version = "=0.5.0")'.env]
+CARGO_PKG_README = ""

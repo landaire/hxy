@@ -8624,7 +8624,7 @@ cargo.rust_library(
         "CARGO_PKG_DESCRIPTION": "Futures based on intrusive data structures - for std and no-std environments.\n",
         "CARGO_PKG_HOMEPAGE": "https://github.com/Matthias247/futures-intrusive",
         "CARGO_PKG_NAME": "futures-intrusive",
-        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_README": "",
         "CARGO_PKG_REPOSITORY": "https://github.com/Matthias247/futures-intrusive",
         "CARGO_PKG_RUST_VERSION": "",
         "CARGO_PKG_VERSION": "0.5.0",

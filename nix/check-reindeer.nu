@@ -20,6 +20,15 @@ if not ($result.stdout | str contains 'name = "hxy"') {
   error make {msg: "Reindeer must generate the hermetic Nix-backed hxy target"}
 }
 
+let futures_intrusive_rule = $result.stdout
+  | split row 'cargo.rust_library('
+  | where {|rule| $rule | str contains 'name = "futures-intrusive-0.5",'}
+  | first
+
+if not ($futures_intrusive_rule | str contains '"CARGO_PKG_README": "",') {
+  error make {msg: "futures-intrusive must use the canonical empty README environment value"}
+}
+
 let expected = open --raw BUCK
 
 if $result.stdout != $expected {
