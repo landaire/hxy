@@ -336,7 +336,7 @@ fn encode_number(s: &str, width: NumberWidth, signed: bool, endian: Endian) -> R
             return Err(EncodeError::NumberOverflow { value: s.to_owned(), bytes, sign: "signed integer" });
         }
         let mask = (1u128 << (bytes * 8)) - 1;
-        let unsigned = (v as i128 as u128) & mask;
+        let unsigned = (v as u128) & mask;
         Ok(emit_with_endian(unsigned, bytes, endian))
     } else {
         let v = parse_unsigned(s)?;

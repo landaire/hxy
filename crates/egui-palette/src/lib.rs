@@ -460,10 +460,7 @@ impl Default for Style {
                 egui::Modifiers { shift: true, ..egui::Modifiers::NONE },
                 egui::Modifiers::NONE,
             ]),
-            sub_action_shortcut: Some(egui::KeyboardShortcut::new(
-                egui::Modifiers::COMMAND,
-                egui::Key::K,
-            )),
+            sub_action_shortcut: Some(egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K)),
         }
     }
 }
@@ -631,10 +628,11 @@ fn show_with_style_inner<'a, A: Clone>(
                     break;
                 }
             }
-            if let Some(shortcut) = &style.sub_action_shortcut {
-                if i.consume_shortcut(shortcut) && !filtered.is_empty() {
-                    sub_action_idx = Some(state.selected);
-                }
+            if let Some(shortcut) = &style.sub_action_shortcut
+                && i.consume_shortcut(shortcut)
+                && !filtered.is_empty()
+            {
+                sub_action_idx = Some(state.selected);
             }
         });
     }
@@ -722,8 +720,7 @@ fn show_with_style_inner<'a, A: Clone>(
                 // `inner_margin` around this content, so constrain the content to
                 // `panel_width - horizontal margin` or the panel draws wider than
                 // requested and overflows its host on the right.
-                let content_width =
-                    panel_width - style.inner_margin.leftf() - style.inner_margin.rightf();
+                let content_width = panel_width - style.inner_margin.leftf() - style.inner_margin.rightf();
                 ui.set_min_width(content_width);
                 ui.set_max_width(content_width);
 
@@ -824,10 +821,8 @@ fn show_with_style_inner<'a, A: Clone>(
                     if let Some(r) = post_state.as_ref().and_then(|st| st.cursor.char_range()) {
                         let lo = r.primary.index.min(r.secondary.index);
                         let hi = r.primary.index.max(r.secondary.index);
-                        let still_selected = lo == egui::text::CharIndex(start)
-                            && hi == egui::text::CharIndex(end);
-                        let committed = r.is_empty()
-                            && r.primary.index == egui::text::CharIndex(display_chars);
+                        let still_selected = lo == egui::text::CharIndex(start) && hi == egui::text::CharIndex(end);
+                        let committed = r.is_empty() && r.primary.index == egui::text::CharIndex(display_chars);
                         if still_selected {
                             state.query.clone()
                         } else if committed {
@@ -868,49 +863,42 @@ fn show_with_style_inner<'a, A: Clone>(
                     .max_height(list_max_height)
                     .auto_shrink([false, style.list_shrink_to_fit])
                     .show(ui, |ui| {
-                    for (row, hit) in filtered.iter().enumerate() {
-                        let entry = &entries[hit.index];
-                        let selected = row == state.selected;
-                        // Salt each row's widget id with its stable entry index.
-                        // Without this the row's click-sense rect takes an
-                        // auto-generated id off the sequential counter, which
-                        // shifts between egui's sizing and render passes in a
-                        // tall list and spams "changed id between passes".
-                        // Salt each row's widget id with its stable entry index.
-                        // Without this the row's click-sense rect takes an
-                        // auto-generated id off the sequential counter; if an
-                        // upstream widget count shifts between egui's sizing and
-                        // render passes (e.g. the input's ghost completion) every
-                        // row's id moves and egui spams "changed id between
-                        // passes". A stable per-row id is immune to that shift.
-                        let resp = ui
-                            .push_id(hit.index, |ui| {
-                                render_row(ui, entry, selected, style, &hit.match_indices)
-                            })
-                            .inner;
-                        if resp.clicked() {
-                            picked_idx = Some(row);
+                        for (row, hit) in filtered.iter().enumerate() {
+                            let entry = &entries[hit.index];
+                            let selected = row == state.selected;
+                            // Salt each row's widget id with its stable entry index.
+                            // Without this the row's click-sense rect takes an
+                            // auto-generated id off the sequential counter; if an
+                            // upstream widget count shifts between egui's sizing and
+                            // render passes (e.g. the input's ghost completion) every
+                            // row's id moves and egui spams "changed id between
+                            // passes". A stable per-row id is immune to that shift.
+                            let resp = ui
+                                .push_id(hit.index, |ui| render_row(ui, entry, selected, style, &hit.match_indices))
+                                .inner;
+                            if resp.clicked() {
+                                picked_idx = Some(row);
+                            }
+                            if resp.hovered() && pointer_moving {
+                                state.selected = row;
+                            }
+                            // Keep the keyboard-driven selection on screen.
+                            // Skip on hover-driven changes -- those are
+                            // already inside the viewport by definition,
+                            // and triggering scroll on hover causes the
+                            // list to drift under the cursor.
+                            if selected && selection_changed_by_kbd {
+                                resp.scroll_to_me(style.scroll_to_selection.align());
+                            }
                         }
-                        if resp.hovered() && pointer_moving {
-                            state.selected = row;
+                        if filtered.is_empty() {
+                            ui.add_space(16.0);
+                            ui.vertical_centered(|ui| {
+                                ui.weak("No matches.");
+                            });
+                            ui.add_space(16.0);
                         }
-                        // Keep the keyboard-driven selection on screen.
-                        // Skip on hover-driven changes -- those are
-                        // already inside the viewport by definition,
-                        // and triggering scroll on hover causes the
-                        // list to drift under the cursor.
-                        if selected && selection_changed_by_kbd {
-                            resp.scroll_to_me(style.scroll_to_selection.align());
-                        }
-                    }
-                    if filtered.is_empty() {
-                        ui.add_space(16.0);
-                        ui.vertical_centered(|ui| {
-                            ui.weak("No matches.");
-                        });
-                        ui.add_space(16.0);
-                    }
-                });
+                    });
                 if let Some(footer_fn) = footer {
                     ui.separator();
                     footer_fn(ui);
@@ -1141,16 +1129,13 @@ fn layout_truncated(
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
-    use egui::{Event, Key, Modifiers, RawInput};
+    use egui::Event;
+    use egui::Key;
+    use egui::Modifiers;
+    use egui::RawInput;
 
     fn press(modifiers: Modifiers, key: Key) -> Event {
-        Event::Key {
-            key,
-            physical_key: Some(key),
-            pressed: true,
-            repeat: false,
-            modifiers,
-        }
+        Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
     }
 
     fn drive(input_events: Vec<Event>, style: &Style) -> Option<Outcome<&'static str>> {

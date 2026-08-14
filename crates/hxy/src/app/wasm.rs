@@ -405,11 +405,8 @@ impl eframe::App for HxyApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
             // On the web the path is just the file name.
-            let name = f
-                .path()
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "dropped".to_owned());
+            let name =
+                f.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "dropped".to_owned());
             let ctx_clone = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match f.bytes_async().await {

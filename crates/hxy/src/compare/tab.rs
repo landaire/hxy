@@ -56,12 +56,9 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
         });
     });
 
-    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show(
-        ui,
-        |ui| {
-            render_compare_diff_table(ui, session);
-        },
-    );
+    egui::Panel::bottom(tab_id.with("diff-table")).resizable(true).min_size(120.0).default_size(160.0).show(ui, |ui| {
+        render_compare_diff_table(ui, session);
+    });
 
     let cols = state.app.hex_columns.as_u64();
     let (a_ranges, b_ranges, row_maps) = match session.diff.as_ref() {
@@ -286,7 +283,11 @@ impl egui_table::TableDelegate for CompareTableDelegate<'_> {
                     ),
                     HunkKind::Changed => (
                         "compare-kind-changed",
-                        if dark { egui::Color32::from_rgb(220, 160, 60) } else { egui::Color32::from_rgb(158, 110, 10) },
+                        if dark {
+                            egui::Color32::from_rgb(220, 160, 60)
+                        } else {
+                            egui::Color32::from_rgb(158, 110, 10)
+                        },
                     ),
                     HunkKind::Equal => return,
                 };
