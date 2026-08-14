@@ -224,6 +224,78 @@ pub fn dispatch_copy_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
     }
 }
 
+/// Consume the plain "copy" shortcut in all the forms the integration
+/// might deliver it: as an `Event::Copy` (winit on macOS converts Cmd+C
+/// to a semantic copy event), or as a normal `Event::Key` with the
+/// Command modifier on platforms that pass it through.
+pub fn consume_copy_event(input: &mut egui::InputState) -> bool {
+    use crate::commands::shortcuts::COPY_BYTES;
+
+    // winit on macOS sends Cmd+C as BOTH an `Event::Copy` (the
+    // semantic copy) AND a regular Cmd+C `Event::Key`. A previous
+    // version of this function returned after draining the semantic
+    // form, which left the Key event for the hex-view's dispatcher
+    // to grab -- so the status-bar label would copy its value and
+    // the hex view would immediately overwrite the clipboard with
+    // the current selection. Drain BOTH so a single "copy" click
+    // produces one clipboard write.
+    let mut any = false;
+    let before = input.events.len();
+    input.events.retain(|e| !matches!(e, egui::Event::Copy));
+    if input.events.len() != before {
+        any = true;
+    }
+    if input.consume_shortcut(&COPY_BYTES) {
+        any = true;
+    }
+    any
+}
+
+/// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
+/// opens the cross-file search results tab.
+pub fn dispatch_find_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
+    use crate::commands::shortcuts::FIND_GLOBAL;
+    use crate::commands::shortcuts::FIND_LOCAL;
+
+    let global = ctx.input_mut(|i| i.consume_shortcut(&FIND_GLOBAL));
+    let local = !global && ctx.input_mut(|i| i.consume_shortcut(&FIND_LOCAL));
+    if global {
+        toggle_global_search(app);
+        return;
+    }
+    if local {
+        toggle_local_search(app);
+    }
+}
+
+fn toggle_local_search(app: &mut HxyApp) {
+    let Some(id) = crate::app::active_file_id(app) else { return };
+    let Some(file) = app.files.get_mut(&id) else { return };
+    file.search.open = !file.search.open;
+    if file.search.open {
+        if let Some(sel) = file.editor.selection()
+            && !sel.is_caret()
+        {
+            let r = sel.range();
+            file.search.scope =
+                crate::search::SearchScope::Selection { start: r.start().get(), end_exclusive: r.end().get() };
+        } else {
+            file.search.scope = crate::search::SearchScope::File;
+        }
+        file.search.refresh_pattern();
+        file.search.refresh_replace_pattern();
+    }
+}
+
+pub(crate) fn toggle_global_search(app: &mut HxyApp) {
+    if let Some(path) = app.dock.find_tab(&crate::tabs::Tab::SearchResults) {
+        let _ = app.dock.remove_tab(path);
+        return;
+    }
+    app.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.65, vec![crate::tabs::Tab::SearchResults]);
+    app.global_search.open = true;
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -303,76 +375,4 @@ mod tests {
         assert_eq!(read_all(&ed), vec![0x11, 0x22]);
         assert_eq!(ed.selection().unwrap().cursor.get(), 1);
     }
-}
-
-/// Consume the plain "copy" shortcut in all the forms the integration
-/// might deliver it: as an `Event::Copy` (winit on macOS converts Cmd+C
-/// to a semantic copy event), or as a normal `Event::Key` with the
-/// Command modifier on platforms that pass it through.
-pub fn consume_copy_event(input: &mut egui::InputState) -> bool {
-    use crate::commands::shortcuts::COPY_BYTES;
-
-    // winit on macOS sends Cmd+C as BOTH an `Event::Copy` (the
-    // semantic copy) AND a regular Cmd+C `Event::Key`. A previous
-    // version of this function returned after draining the semantic
-    // form, which left the Key event for the hex-view's dispatcher
-    // to grab -- so the status-bar label would copy its value and
-    // the hex view would immediately overwrite the clipboard with
-    // the current selection. Drain BOTH so a single "copy" click
-    // produces one clipboard write.
-    let mut any = false;
-    let before = input.events.len();
-    input.events.retain(|e| !matches!(e, egui::Event::Copy));
-    if input.events.len() != before {
-        any = true;
-    }
-    if input.consume_shortcut(&COPY_BYTES) {
-        any = true;
-    }
-    any
-}
-
-/// Cmd+F opens / closes the active file tab's search bar; Cmd+Shift+F
-/// opens the cross-file search results tab.
-pub fn dispatch_find_shortcut(ctx: &egui::Context, app: &mut HxyApp) {
-    use crate::commands::shortcuts::FIND_GLOBAL;
-    use crate::commands::shortcuts::FIND_LOCAL;
-
-    let global = ctx.input_mut(|i| i.consume_shortcut(&FIND_GLOBAL));
-    let local = !global && ctx.input_mut(|i| i.consume_shortcut(&FIND_LOCAL));
-    if global {
-        toggle_global_search(app);
-        return;
-    }
-    if local {
-        toggle_local_search(app);
-    }
-}
-
-fn toggle_local_search(app: &mut HxyApp) {
-    let Some(id) = crate::app::active_file_id(app) else { return };
-    let Some(file) = app.files.get_mut(&id) else { return };
-    file.search.open = !file.search.open;
-    if file.search.open {
-        if let Some(sel) = file.editor.selection()
-            && !sel.is_caret()
-        {
-            let r = sel.range();
-            file.search.scope =
-                crate::search::SearchScope::Selection { start: r.start().get(), end_exclusive: r.end().get() };
-        } else {
-            file.search.scope = crate::search::SearchScope::File;
-        }
-        file.search.refresh_pattern();
-        file.search.refresh_replace_pattern();
-    }
-}
-
-pub(crate) fn toggle_global_search(app: &mut HxyApp) {
-    if let Some(path) = app.dock.find_tab(&crate::tabs::Tab::SearchResults) {
-        let _ = app.dock.remove_tab(path);
-        return;
-    }
-    app.dock.main_surface_mut().split_below(egui_dock::NodeIndex::root(), 0.65, vec![crate::tabs::Tab::SearchResults]);
-    app.global_search.open = true;
 }

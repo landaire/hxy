@@ -86,7 +86,7 @@ fn main() {
     println!();
     println!("  top compile-failure reasons:");
     let mut by_count: Vec<(String, usize)> = errors_by_reason.into_iter().collect();
-    by_count.sort_by(|a, b| b.1.cmp(&a.1));
+    by_count.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (reason, count) in by_count.iter().take(15) {
         println!("    {count:4}  {reason}");
     }
