@@ -1,0 +1,3 @@
+# sqlx `migrate!("./migrations")` embeds the migration SQL at compile
+# time relative to CARGO_MANIFEST_DIR; precise_srcs only stages .rs.
+extra_srcs = ["migrations/**/*"]

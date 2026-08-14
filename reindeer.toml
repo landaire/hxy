@@ -135,4 +135,12 @@ genrule(
         cp "$workdir/result/bin/hxy" "$OUT"
     ''' % hxy_package,
 )
+
+# Buck-native build of the hxy binary (Reindeer graph + Buck's Rust rules,
+# not the Nix genrule above). Requires the Nix dev shell for the toolchain.
+alias(
+    name = "hxy-native",
+    actual = ":hxy-0.5-hxy",
+    visibility = ["PUBLIC"],
+)
 """

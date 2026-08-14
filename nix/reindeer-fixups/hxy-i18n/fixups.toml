@@ -1,0 +1,4 @@
+# The fluent i18n proc-macro reads this crate's translations dir at
+# compile time (relative to CARGO_MANIFEST_DIR); precise_srcs only
+# stages .rs files, so pull the locale data in explicitly.
+extra_srcs = ["translations/**/*"]

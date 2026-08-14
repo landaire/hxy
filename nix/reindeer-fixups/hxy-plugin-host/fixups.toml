@@ -1,0 +1,4 @@
+# wasmtime `bindgen!` reads wit/world.wit (a symlink into hxy-plugin-api)
+# at compile time relative to CARGO_MANIFEST_DIR. Reference the file, not
+# the wit/ symlink dir, or the srcs staging conflicts on the symlink.
+extra_srcs = ["wit/world.wit"]

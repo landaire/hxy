@@ -1,1 +1,2 @@
---config=hxy.profile=release
+--config=hxy_rust.opt-level=3
+--config=hxy_rust.debuginfo=none

@@ -38,6 +38,7 @@
         || (builtins.match ".*/reindeer\.toml" path != null)
         || (builtins.match ".*assets.*" path != null)
         || (builtins.match ".*translations.*" path != null)
+        || (builtins.match ".*/migrations/.*" path != null)
         || (builtins.match ".*img.*" path != null)
         || (builtins.match ".*\\.wit" path != null)
         || (builtins.match ".*/wit" path != null)
@@ -227,9 +228,9 @@
             lib.optionalString stdenv.hostPlatform.isLinux
             "${lib.makeLibraryPath buildInputs}";
 
-          shellHook = lib.optionalString stdenv.hostPlatform.isDarwin ''
-            export DEVELOPER_DIR="$(env -u PROMPT_MULTILINE_INDICATOR -u SPROMPT nu ${./nix/check-xcode.nu})"
-          '' + ''
+          # The macOS SDK (headers + frameworks) comes from nixpkgs via SDKROOT,
+          # so the build needs no system Xcode -- not even DEVELOPER_DIR.
+          shellHook = ''
             hxy_workspace_root="$PWD"
             while ! grep -q '^\[workspace\]' "$hxy_workspace_root/Cargo.toml" 2>/dev/null && [ "$hxy_workspace_root" != / ]; do
               hxy_workspace_root="$(dirname "$hxy_workspace_root")"
@@ -249,6 +250,21 @@
             mkdir -p "$hxy_cargo_home"
             install -m 644 ${cargoVendorDir}/config.toml "$hxy_cargo_home/config.toml"
             export CARGO_HOME="$hxy_cargo_home"
+            # Native `buck2 build //:hxy-native` runs the C compiler through the
+            # prelude's from_any_dir.py (os.execl, no PATH search), so the cxx
+            # toolchain needs absolute tool paths. Publish the dev-shell's clang
+            # via the toolchains cell's config (read_config in demo_local.bzl
+            # resolves against that cell, not the root .buckconfig.local).
+            {
+              echo '[hxy_cxx]'
+              echo "  cc = $(command -v clang)"
+              echo "  cxx = $(command -v clang++)"
+              echo "  ar = $(command -v llvm-ar || command -v ar)"
+            } > "$hxy_workspace_root/toolchains/.buckconfig.local"
+            # A full native graph link opens thousands of files; macOS defaults
+            # the descriptor limit far below that. Raise it for buck2 daemons
+            # started from this shell.
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
           '';
         };
 
@@ -294,6 +310,7 @@
 
         apps.check-flake = {
           type = "app";
+          meta.description = "Run the hermetic flake, Reindeer graph, and cargo-offline checks";
           program = "${writeShellApplication {
             name = "hxy-check-flake";
             runtimeInputs = [nushell buck2 reindeer rustToolchain pkg-config];

@@ -37,21 +37,33 @@ cargo install hxy
 Nix is the supported development and CI environment. It pins the Rust toolchain,
 system libraries, Cargo sources, and local dependency overlays.
 
+A bare `cargo` invocation outside the dev shell fails: `Cargo.toml` resolves
+`egui-phosphor` and `egui_ltreeview` from `third-party/overrides/`, which only
+`nix develop` (or the flake build) materializes. Run cargo through
+`nix develop --command cargo ...`.
+
 ```sh
 nix develop
 nix flake check
 nix build .#hxy
+nix develop --command buck2 build //:hxy-native
 nix develop --command buck2 build //:hxy
-nix develop --command buck2 run //:hxy
-nix develop --command buck2 run @modes/release //:hxy
 ```
 
-`//:hxy` is Buck's entry point to the hermetic Nix package. It stages only its
-declared source files before Nix evaluates the flake; it does not traverse back
-to the checkout. Its default Buck profile is debug; `@modes/release` selects
-the optimized release package. Reindeer also generates the native Rust graph in
-`BUCK` for inspection and incremental Buck work, but that graph uses Buck's
-local system toolchain and is not the reproducible release build.
+There are two Buck builds:
+
+- `//:hxy-native` compiles the binary with Buck's own Rust rules from the
+  Reindeer-generated graph in `BUCK`. Toolchain (rustc, clang, macOS SDK) and
+  vendored sources come from the Nix dev shell, so it must run under
+  `nix develop`; the shell writes `.buckconfig.local` with the clang paths the
+  build-script cc shims need and raises the file-descriptor limit for the link.
+  Verified on aarch64-darwin.
+- `//:hxy` is a genrule that stages the declared sources and shells out to
+  `nix build`, i.e. the reproducible Nix package. Its default Buck profile is
+  debug; `@modes/release` selects the optimized release package.
+
+`BUCK` is regenerated with `reindeer buckify`; the flake's `reindeer` check
+fails CI if it drifts from the committed graph.
 
 ## What's in the box
 

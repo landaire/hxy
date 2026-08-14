@@ -32,3 +32,6 @@ fuzz/coverage/
 # pattern corpus + `std/` library. Kept out of the source tree on
 # purpose -- we link to it but do not redistribute it.
 .imhex-patterns/
+
+# Native buck2 build: dev-shell-generated toolchain paths
+toolchains/.buckconfig.local

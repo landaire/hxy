@@ -1,4 +1,5 @@
-load("@prelude//toolchains:demo.bzl", "system_demo_toolchains")
+load(":demo_local.bzl", "hxy_system_toolchains")
 
-# Default local toolchains supplied by the bundled prelude.
-system_demo_toolchains()
+# Prelude demo toolchains, copied locally so the Rust toolchain can carry
+# a -Copt-level flag (see demo_local.bzl) that cc-rs build scripts require.
+hxy_system_toolchains()
