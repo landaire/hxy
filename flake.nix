@@ -252,14 +252,21 @@
             export CARGO_HOME="$hxy_cargo_home"
             # Native `buck2 build //:hxy-native` runs the C compiler through the
             # prelude's from_any_dir.py (os.execl, no PATH search), so the cxx
-            # toolchain needs absolute tool paths. Publish the dev-shell's clang
-            # via the toolchains cell's config (read_config in demo_local.bzl
-            # resolves against that cell, not the root .buckconfig.local).
+            # toolchain needs absolute tool paths. Publish them via the
+            # toolchains cell's config (read_config in demo_local.bzl resolves
+            # against that cell, not the root .buckconfig.local).
+            #
+            # Must be the *wrapped* clang: it sets the nix dynamic linker AND the
+            # -rpath to nix glibc. The unwrapped clang (which `command -v clang`
+            # finds on Linux, where the stdenv is gcc-based) sets the nix ld.so
+            # but no rpath, so binaries load the host's incompatible libc and
+            # segfault before main -- which is exactly how the build-script
+            # runners were crashing on the Linux CI.
             {
               echo '[hxy_cxx]'
-              echo "  cc = $(command -v clang)"
-              echo "  cxx = $(command -v clang++)"
-              echo "  ar = $(command -v llvm-ar || command -v ar)"
+              echo "  cc = ${llvmPackages.clang}/bin/clang"
+              echo "  cxx = ${llvmPackages.clang}/bin/clang++"
+              echo "  ar = ${llvmPackages.llvm}/bin/llvm-ar"
             } > "$hxy_workspace_root/toolchains/.buckconfig.local"
             # A full native graph link opens thousands of files; macOS defaults
             # the descriptor limit far below that. Raise it for buck2 daemons

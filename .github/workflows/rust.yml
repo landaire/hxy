@@ -112,20 +112,5 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
-      # TEMP diagnostic: build-script binaries crash at startup on Linux.
-      # Inspect and run one to capture the cause. Remove once root-caused.
-      - name: Diagnose build-script binary
-        run: |
-          nix develop --command bash -c '
-            set +e
-            b=$(buck2 build //:cranelift-isle-0.131-build-script-build --show-output 2>/dev/null | tail -1 | awk "{print \$NF}")
-            echo "binary=$b"
-            /usr/bin/file "$b"
-            echo "--- program interpreter ---"; /usr/bin/readelf -l "$b" 2>/dev/null | grep -i "program interpreter"
-            echo "--- NEEDED ---"; /usr/bin/readelf -d "$b" 2>/dev/null | grep -i NEEDED
-            echo "--- ldd ---"; ldd "$b" 2>&1
-            echo "--- run directly ---"; "$b"; echo "exit=$?"
-            echo "--- strace tail ---"; /usr/bin/strace "$b" 2>&1 | tail -25
-          '
       # //:hxy is the Buck-native build (Reindeer graph + Buck's Rust rules).
       - run: nix develop --command buck2 build //:hxy
