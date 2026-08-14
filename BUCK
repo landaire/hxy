@@ -17398,6 +17398,8 @@ buildscript_run(
         "CARGO_PKG_VERSION_PATCH": "117",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    rustc_link_lib = True,
+    rustc_link_search = True,
     version = "0.9.117",
 )
 

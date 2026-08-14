@@ -1,0 +1,11 @@
+# openssl-sys's build script probes the system OpenSSL with pkg-config and emits
+# `cargo:rustc-link-lib=ssl`, `cargo:rustc-link-lib=crypto`, and a
+# `cargo:rustc-link-search` for the Nix OpenSSL lib dir. Buck2's buildscript_run
+# ignores those directives unless explicitly told to translate them, so without
+# this the final hxy link has no libssl/libcrypto and fails with undefined
+# symbols (SSL_CTX_ctrl, X509_STORE_new, EVP_PKEY_free, ...) on Linux, where
+# native-tls uses OpenSSL. Enable the translation. See the sibling openssl fixup
+# for the separate version-cfg forwarding this build also needs.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true
