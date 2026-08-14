@@ -13172,7 +13172,6 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "0",
         "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :khronos-egl-6-build-script-run[out_dir])",
     },
     features = [
         "1_0",
@@ -13185,79 +13184,11 @@ cargo.rust_library(
         "dynamic",
         "libloading",
     ],
-    rustc_flags = ["@$(location :khronos-egl-6-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":libc-0.2",
         ":libloading-0.8",
     ],
-)
-
-cargo.rust_binary(
-    name = "khronos-egl-6-build-script-build",
-    srcs = [":khronos-egl-6.0.0.crate"],
-    crate = "build_script_build",
-    crate_root = "khronos-egl-6.0.0.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "khronos-egl-6.0.0.crate",
-        "CARGO_PKG_AUTHORS": "Timothée Haudebourg <author@haudebourg.net>:Sean Kerr <sean@metatomic.io>",
-        "CARGO_PKG_DESCRIPTION": "Rust bindings for EGL",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "khronos-egl",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/timothee-haudebourg/khronos-egl",
-        "CARGO_PKG_RUST_VERSION": "",
-        "CARGO_PKG_VERSION": "6.0.0",
-        "CARGO_PKG_VERSION_MAJOR": "6",
-        "CARGO_PKG_VERSION_MINOR": "0",
-        "CARGO_PKG_VERSION_PATCH": "0",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "1_0",
-        "1_1",
-        "1_2",
-        "1_3",
-        "1_4",
-        "1_5",
-        "default",
-        "dynamic",
-        "libloading",
-    ],
-    visibility = [],
-)
-
-buildscript_run(
-    name = "khronos-egl-6-build-script-run",
-    package_name = "khronos-egl",
-    buildscript_rule = ":khronos-egl-6-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Timothée Haudebourg <author@haudebourg.net>:Sean Kerr <sean@metatomic.io>",
-        "CARGO_PKG_DESCRIPTION": "Rust bindings for EGL",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/timothee-haudebourg/khronos-egl",
-        "CARGO_PKG_RUST_VERSION": "",
-        "CARGO_PKG_VERSION_MAJOR": "6",
-        "CARGO_PKG_VERSION_MINOR": "0",
-        "CARGO_PKG_VERSION_PATCH": "0",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "1_0",
-        "1_1",
-        "1_2",
-        "1_3",
-        "1_4",
-        "1_5",
-        "default",
-        "dynamic",
-        "libloading",
-    ],
-    version = "6.0.0",
 )
 
 http_archive(
@@ -22174,13 +22105,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "19",
         "CARGO_PKG_VERSION_PATCH": "2",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :smithay-client-toolkit-0.19-build-script-run[out_dir])",
     },
     features = [
         "calloop",
         "calloop-wayland-source",
     ],
-    rustc_flags = ["@$(location :smithay-client-toolkit-0.19-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":bitflags-2",
@@ -22201,59 +22130,6 @@ cargo.rust_library(
         ":wayland-scanner-0.31",
         ":xkeysym-0.2",
     ],
-)
-
-cargo.rust_binary(
-    name = "smithay-client-toolkit-0.19-build-script-build",
-    srcs = [":smithay-client-toolkit-0.19.2.crate"],
-    crate = "build_script_build",
-    crate_root = "smithay-client-toolkit-0.19.2.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "smithay-client-toolkit-0.19.2.crate",
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>:i509VCB <mail@i509.me>:Ashley Wulber <ashley@system76.com>",
-        "CARGO_PKG_DESCRIPTION": "Toolkit for making client wayland applications.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "smithay-client-toolkit",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/client-toolkit",
-        "CARGO_PKG_RUST_VERSION": "",
-        "CARGO_PKG_VERSION": "0.19.2",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "19",
-        "CARGO_PKG_VERSION_PATCH": "2",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "calloop",
-        "calloop-wayland-source",
-    ],
-    visibility = [],
-)
-
-buildscript_run(
-    name = "smithay-client-toolkit-0.19-build-script-run",
-    package_name = "smithay-client-toolkit",
-    buildscript_rule = ":smithay-client-toolkit-0.19-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>:i509VCB <mail@i509.me>:Ashley Wulber <ashley@system76.com>",
-        "CARGO_PKG_DESCRIPTION": "Toolkit for making client wayland applications.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/client-toolkit",
-        "CARGO_PKG_RUST_VERSION": "",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "19",
-        "CARGO_PKG_VERSION_PATCH": "2",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "calloop",
-        "calloop-wayland-source",
-    ],
-    version = "0.19.2",
 )
 
 http_archive(
@@ -22286,13 +22162,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "20",
         "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :smithay-client-toolkit-0.20-build-script-run[out_dir])",
     },
     features = [
         "calloop",
         "calloop-wayland-source",
     ],
-    rustc_flags = ["@$(location :smithay-client-toolkit-0.20-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":bitflags-2",
@@ -22315,59 +22189,6 @@ cargo.rust_library(
         ":wayland-scanner-0.31",
         ":xkeysym-0.2",
     ],
-)
-
-cargo.rust_binary(
-    name = "smithay-client-toolkit-0.20-build-script-build",
-    srcs = [":smithay-client-toolkit-0.20.0.crate"],
-    crate = "build_script_build",
-    crate_root = "smithay-client-toolkit-0.20.0.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "smithay-client-toolkit-0.20.0.crate",
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>:i509VCB <mail@i509.me>:Ashley Wulber <ashley@system76.com>",
-        "CARGO_PKG_DESCRIPTION": "Toolkit for making client wayland applications.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "smithay-client-toolkit",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/client-toolkit",
-        "CARGO_PKG_RUST_VERSION": "1.65",
-        "CARGO_PKG_VERSION": "0.20.0",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "20",
-        "CARGO_PKG_VERSION_PATCH": "0",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "calloop",
-        "calloop-wayland-source",
-    ],
-    visibility = [],
-)
-
-buildscript_run(
-    name = "smithay-client-toolkit-0.20-build-script-run",
-    package_name = "smithay-client-toolkit",
-    buildscript_rule = ":smithay-client-toolkit-0.20-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>:i509VCB <mail@i509.me>:Ashley Wulber <ashley@system76.com>",
-        "CARGO_PKG_DESCRIPTION": "Toolkit for making client wayland applications.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/client-toolkit",
-        "CARGO_PKG_RUST_VERSION": "1.65",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "20",
-        "CARGO_PKG_VERSION_PATCH": "0",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "calloop",
-        "calloop-wayland-source",
-    ],
-    version = "0.20.0",
 )
 
 http_archive(
@@ -27538,13 +27359,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "3",
         "CARGO_PKG_VERSION_PATCH": "16",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :wayland-backend-0.3-build-script-run[out_dir])",
     },
     features = [
         "client_system",
         "dlopen",
     ],
-    rustc_flags = ["@$(location :wayland-backend-0.3-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":downcast-rs-1",
@@ -27553,60 +27372,6 @@ cargo.rust_library(
         ":smallvec-1",
         ":wayland-sys-0.31",
     ],
-)
-
-cargo.rust_binary(
-    name = "wayland-backend-0.3-build-script-build",
-    srcs = [":wayland-backend-0.3.16.crate"],
-    crate = "build_script_build",
-    crate_root = "wayland-backend-0.3.16.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "wayland-backend-0.3.16.crate",
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "Low-level bindings to the Wayland protocol",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "wayland-backend",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION": "0.3.16",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "3",
-        "CARGO_PKG_VERSION_PATCH": "16",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "client_system",
-        "dlopen",
-    ],
-    visibility = [],
-    deps = [":cc-1"],
-)
-
-buildscript_run(
-    name = "wayland-backend-0.3-build-script-run",
-    package_name = "wayland-backend",
-    buildscript_rule = ":wayland-backend-0.3-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "Low-level bindings to the Wayland protocol",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "3",
-        "CARGO_PKG_VERSION_PATCH": "16",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "client_system",
-        "dlopen",
-    ],
-    version = "0.3.16",
 )
 
 http_archive(
@@ -27639,9 +27404,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "31",
         "CARGO_PKG_VERSION_PATCH": "15",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :wayland-client-0.31-build-script-run[out_dir])",
     },
-    rustc_flags = ["@$(location :wayland-client-0.31-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":bitflags-2",
@@ -27649,51 +27412,6 @@ cargo.rust_library(
         ":wayland-backend-0.3",
         ":wayland-scanner-0.31",
     ],
-)
-
-cargo.rust_binary(
-    name = "wayland-client-0.31-build-script-build",
-    srcs = [":wayland-client-0.31.15.crate"],
-    crate = "build_script_build",
-    crate_root = "wayland-client-0.31.15.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "wayland-client-0.31.15.crate",
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "Bindings to the standard C implementation of the wayland protocol, client side.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "wayland-client",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION": "0.31.15",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "31",
-        "CARGO_PKG_VERSION_PATCH": "15",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    visibility = [],
-)
-
-buildscript_run(
-    name = "wayland-client-0.31-build-script-run",
-    package_name = "wayland-client",
-    buildscript_rule = ":wayland-client-0.31-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "Bindings to the standard C implementation of the wayland protocol, client side.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "31",
-        "CARGO_PKG_VERSION_PATCH": "15",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    version = "0.31.15",
 )
 
 http_archive(
@@ -28070,7 +27788,6 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "31",
         "CARGO_PKG_VERSION_PATCH": "11",
         "CARGO_PKG_VERSION_PRE": "",
-        "OUT_DIR": "$(location :wayland-sys-0.31-build-script-run[out_dir])",
     },
     features = [
         "client",
@@ -28078,71 +27795,12 @@ cargo.rust_library(
         "egl",
         "once_cell",
     ],
-    rustc_flags = ["@$(location :wayland-sys-0.31-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":dlib-0.5",
         ":log-0.4",
         ":once_cell-1",
     ],
-)
-
-cargo.rust_binary(
-    name = "wayland-sys-0.31-build-script-build",
-    srcs = [":wayland-sys-0.31.11.crate"],
-    crate = "build_script_build",
-    crate_root = "wayland-sys-0.31.11.crate/build.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "build-script-build",
-        "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "wayland-sys-0.31.11.crate",
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "FFI bindings to the various libwayland-*.so libraries. You should only need this crate if you are working on custom wayland protocol extensions. Look at the crate wayland-client for usable bindings.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "wayland-sys",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION": "0.31.11",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "31",
-        "CARGO_PKG_VERSION_PATCH": "11",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "client",
-        "dlopen",
-        "egl",
-        "once_cell",
-    ],
-    visibility = [],
-    deps = [":pkg-config-0.3"],
-)
-
-buildscript_run(
-    name = "wayland-sys-0.31-build-script-run",
-    package_name = "wayland-sys",
-    buildscript_rule = ":wayland-sys-0.31-build-script-build",
-    env = {
-        "CARGO_PKG_AUTHORS": "Elinor Berger <elinor@safaradeg.net>",
-        "CARGO_PKG_DESCRIPTION": "FFI bindings to the various libwayland-*.so libraries. You should only need this crate if you are working on custom wayland protocol extensions. Look at the crate wayland-client for usable bindings.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/smithay/wayland-rs",
-        "CARGO_PKG_RUST_VERSION": "1.71",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "31",
-        "CARGO_PKG_VERSION_PATCH": "11",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "client",
-        "dlopen",
-        "egl",
-        "once_cell",
-    ],
-    version = "0.31.11",
 )
 
 alias(
