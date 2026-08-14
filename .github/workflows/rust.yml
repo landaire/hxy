@@ -6,39 +6,110 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Hermetic build and checks
+  nix-flake-evaluation:
+    name: Nix flake evaluation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
-      - name: Nix flake evaluation
-        run: nix flake check --no-build --accept-flake-config
-      - name: Hermetic environment
-        run: nix build .#checks.x86_64-linux.environment --no-link
-      - name: Cargo offline
-        run: nix build .#checks.x86_64-linux.cargo-offline --no-link
-      - name: Reindeer graph
-        run: nix build .#checks.x86_64-linux.reindeer --no-link
-      - name: Release package
-        run: nix build .#hxy --no-link
-      - name: Native tests
-        run: nix develop --command cargo test --workspace
-      - name: Rust formatting
-        run: nix develop --command cargo fmt --all -- --check
-      - name: Native clippy
-        run: nix develop --command cargo clippy --workspace --all-features -- -D warnings
-      - name: WASM check
-        run: nix develop --command cargo check --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown
-      - name: WASM hxy check
-        run: nix develop --command cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm
-      - name: WASM clippy
-        run: nix develop --command cargo clippy --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown -- -D warnings
+      - run: nix flake check --no-build --accept-flake-config
+
+  hermetic-environment:
+    name: Hermetic environment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix build .#checks.x86_64-linux.environment --no-link
+
+  cargo-offline:
+    name: Cargo offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix build .#checks.x86_64-linux.cargo-offline --no-link
+
+  reindeer-graph:
+    name: Reindeer graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix build .#checks.x86_64-linux.reindeer --no-link
+
+  release-package:
+    name: Release package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix build .#hxy --no-link
+
+  native-tests:
+    name: Native tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo test --workspace
+
+  rust-formatting:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo fmt --all -- --check
+
+  native-clippy:
+    name: Native clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo clippy --workspace --all-features -- -D warnings
+
+  wasm-check:
+    name: WASM check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo check --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown
+
+  wasm-hxy-check:
+    name: WASM hxy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo check -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm
+
+  wasm-clippy:
+    name: WASM clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo clippy --workspace --exclude hxy --exclude hxy-plugin-host --target wasm32-unknown-unknown -- -D warnings
         env:
           RUSTFLAGS: ""
-      - name: WASM hxy clippy
-        run: nix develop --command cargo clippy -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
+
+  wasm-hxy-clippy:
+    name: WASM hxy clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command cargo clippy -p hxy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
         env:
           RUSTFLAGS: ""
-      - name: Buck package
-        run: nix develop --command buck2 build //:hxy
+
+  buck-package:
+    name: Buck package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      - run: nix develop --command buck2 build //:hxy
