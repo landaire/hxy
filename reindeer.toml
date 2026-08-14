@@ -98,7 +98,7 @@ hxy_profile = read_config("hxy", "profile", "debug")
 hxy_package = hxy_packages.get(hxy_profile, "hxy-invalid-profile")
 
 genrule(
-    name = "hxy",
+    name = "hxy-nix",
     out = "hxy",
     executable = True,
     srcs = glob([
@@ -136,8 +136,15 @@ genrule(
     ''' % hxy_package,
 )
 
-# Buck-native build of the hxy binary (Reindeer graph + Buck's Rust rules,
-# not the Nix genrule above). Requires the Nix dev shell for the toolchain.
+# The canonical build: hxy compiled by Buck's own Rust rules from the Reindeer
+# graph. Requires the Nix dev shell for the toolchain. `//:hxy-nix` above is the
+# reproducible Nix package (a genrule wrapping `nix build`), kept as a fallback.
+alias(
+    name = "hxy",
+    actual = ":hxy-0.5-hxy",
+    visibility = ["PUBLIC"],
+)
+
 alias(
     name = "hxy-native",
     actual = ":hxy-0.5-hxy",

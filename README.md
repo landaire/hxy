@@ -45,22 +45,23 @@ A bare `cargo` invocation outside the dev shell fails: `Cargo.toml` resolves
 ```sh
 nix develop
 nix flake check
-nix build .#hxy
-nix develop --command buck2 build //:hxy-native
 nix develop --command buck2 build //:hxy
+nix develop --command buck2 build @modes/release //:hxy
 ```
 
-There are two Buck builds:
+`//:hxy` is the canonical build: hxy compiled by Buck's own Rust rules from the
+Reindeer-generated graph in `BUCK`. Toolchain (rustc, clang, macOS SDK) and
+vendored sources come from the Nix dev shell, so it must run under `nix develop`;
+the shell writes `toolchains/.buckconfig.local` with the clang paths the
+build-script cc shims need and raises the file-descriptor limit for the link.
+The default profile is debug (opt-level 0, line-tables debuginfo); `@modes/release`
+is opt-level 3 with no debuginfo, and `@modes/debug-full` adds full debuginfo.
 
-- `//:hxy-native` compiles the binary with Buck's own Rust rules from the
-  Reindeer-generated graph in `BUCK`. Toolchain (rustc, clang, macOS SDK) and
-  vendored sources come from the Nix dev shell, so it must run under
-  `nix develop`; the shell writes `.buckconfig.local` with the clang paths the
-  build-script cc shims need and raises the file-descriptor limit for the link.
-  Verified on aarch64-darwin.
-- `//:hxy` is a genrule that stages the declared sources and shells out to
-  `nix build`, i.e. the reproducible Nix package. Its default Buck profile is
-  debug; `@modes/release` selects the optimized release package.
+- `//:hxy-nix` is a genrule that stages the declared sources and shells out to
+  `nix build`, i.e. the reproducible Nix package -- kept as a fallback.
+- `nix build .#hxy` builds that same reproducible package directly.
+
+Verified on aarch64-darwin; the Linux native build is exercised by CI.
 
 `BUCK` is regenerated with `reindeer buckify`; the flake's `reindeer` check
 fails CI if it drifts from the committed graph.

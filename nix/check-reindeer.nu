@@ -13,11 +13,15 @@ if not ($result.stdout | str contains 'crate_root = "third-party/overrides/egui-
 }
 
 if not ($result.stdout | str contains 'name = "hxy-0.5-hxy"') {
-  error make {msg: "Reindeer must generate the hxy binary target"}
+  error make {msg: "Reindeer must generate the native hxy binary target"}
 }
 
 if not ($result.stdout | str contains 'name = "hxy"') {
-  error make {msg: "Reindeer must generate the hermetic Nix-backed hxy target"}
+  error make {msg: "Reindeer must alias //:hxy to the native binary"}
+}
+
+if not ($result.stdout | str contains 'name = "hxy-nix"') {
+  error make {msg: "Reindeer must generate the Nix-backed hxy-nix fallback target"}
 }
 
 let futures_intrusive_rule = $result.stdout
