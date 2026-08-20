@@ -8,6 +8,7 @@
 
 mod cache;
 mod error;
+pub mod format;
 mod geometry;
 mod patched;
 mod selection;

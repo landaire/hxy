@@ -1,12 +1,7 @@
 //! Tiny formatting + clipboard helpers shared across the status
 //! bar, hex view, and palette context-builders.
 
-pub fn format_offset(value: u64, base: crate::settings::OffsetBase) -> String {
-    match base {
-        crate::settings::NumericBase::Hex => format!("0x{value:X}"),
-        crate::settings::NumericBase::Decimal => format!("{value}"),
-    }
-}
+pub use hxy_core::format::format_offset;
 
 /// Format `value` as a virtual address: shifts by `vaddr` before
 /// rendering with `base`. Saturates on overflow rather than wrapping
