@@ -10803,6 +10803,7 @@ cargo.rust_library(
         ":hxy-imhex-lang-0.5",
         ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
+        ":hxy-templates-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
         ":iced-x86-1",
@@ -10913,6 +10914,7 @@ cargo.rust_binary(
         ":hxy-imhex-lang-0.5",
         ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
+        ":hxy-templates-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
         ":iced-x86-1",
@@ -11374,6 +11376,52 @@ cargo.rust_library(
         ":vfs-0.13",
         ":wasmtime-44",
         ":wasmtime-wasi-44",
+    ],
+)
+
+alias(
+    name = "hxy-templates",
+    actual = ":hxy-templates-0.5",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "hxy-templates-0.5",
+    srcs = [
+        "crates/hxy-templates/src/builtin.rs",
+        "crates/hxy-templates/src/lib.rs",
+        "crates/hxy-templates/src/library.rs",
+        "crates/hxy-templates/src/run.rs",
+    ],
+    crate = "hxy_templates",
+    crate_root = "crates/hxy-templates/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_templates",
+        "CARGO_CRATE_NAME": "hxy_templates",
+        "CARGO_MANIFEST_DIR": "crates/hxy-templates",
+        "CARGO_PKG_AUTHORS": "Lander Brandt",
+        "CARGO_PKG_DESCRIPTION": "Desktop-only template subsystem shared by the hxy frontends: builtin 010/ImHex runtimes, template library and include sandbox, and pure run helpers",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-templates",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/hxy",
+        "CARGO_PKG_RUST_VERSION": "1.95",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":blake3-1",
+        ":dirs-6",
+        ":hxy-010-lang-0.5",
+        ":hxy-core-0.5",
+        ":hxy-imhex-lang-0.5",
+        ":hxy-plugin-host-0.5",
+        ":hxy-vfs-0.5",
     ],
 )
 
