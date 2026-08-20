@@ -3,6 +3,7 @@
 //! sandbox, and pure template-run helpers. Depends on
 //! `hxy-plugin-host` (wasmtime), so it cannot build for wasm32.
 
+pub mod breadcrumb;
 pub mod builtin;
 pub mod color;
 pub mod format;
