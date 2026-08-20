@@ -695,3 +695,33 @@ gpui-template-read-failed = Failed to read template source { $path }: { $error }
 gpui-template-parse-failed = Parse failed: { $error }
 gpui-template-execute-failed = Execute failed: { $error }
 gpui-template-diagnostic-error = { $template }: { $message }
+
+# gpui template results panel (rendered below the hex pane; the egui
+# panel hardcodes these strings in English)
+template-panel-title = Template
+template-toggle-colors = Tint bytes by field
+template-close = Hide template panel
+template-remove-instance = Remove template
+template-whole-file = (whole file)
+template-running = Running { $name }...
+template-running-elapsed = { $ms } ms
+template-diagnostics = Diagnostics ({ $count })
+template-no-template = No template active.
+template-no-tree = No tree produced.
+template-col-color = Color
+template-col-name = Name
+template-col-type = Type
+template-col-start = Start
+template-col-end = End
+template-col-length = Length
+template-col-value = Value
+template-expand = Expand
+template-deferred-array = [{ $count } x { $type }]
+template-row-bytes = { $name } ({ $len } bytes)
+template-copy-value = Copy value
+template-copy-struct = Copy as Rust struct
+template-save-bytes = Save bytes to file...
+template-save-failed = Failed to save bytes to { $path }: { $error }
+template-read-bytes-failed = Failed to read the field's bytes: { $error }
+template-swatch-tooltip = Click to override color
+template-swatch-tooltip-override = Click to edit, shift-click to reset

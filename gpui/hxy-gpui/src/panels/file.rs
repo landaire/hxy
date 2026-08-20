@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use gpui::App;
 use gpui::AppContext;
+use gpui::ClipboardItem;
 use gpui::Context;
 use gpui::Entity;
 use gpui::EventEmitter;
@@ -20,24 +21,49 @@ use gpui::ParentElement;
 use gpui::Render;
 use gpui::SharedString;
 use gpui::Styled;
+use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::FluentBuilder;
+use gpui::px;
+use gpui_component::ActiveTheme;
+use gpui_component::WindowExt;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
+use gpui_component::notification::Notification;
+use hxy_core::ByteOffset;
+use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::Selection;
+use hxy_templates::format::format_template_copy;
+use hxy_templates::format::format_template_struct;
+use hxy_templates::state::TemplateEvent;
 use hxy_templates::state::TemplateInstance;
 use hxy_templates::state::TemplateInstanceId;
+use hxy_templates::state::TemplateNodeIdx;
+use hxy_templates::state::build_visible;
+use hxy_templates::state::children_by_parent;
+use hxy_templates::state::expand_array;
+use hxy_templates::state::recompute_leaf_colors;
+use hxy_templates::state::toggle_collapse;
+use hxy_templates::state::visible_node_indices;
 use hxy_vfs::VfsHandler;
 use hxy_view_gpui::HexPane;
 
 use super::search_bar::SearchBar;
+use super::template_view::TemplateOffsetJump;
+use super::template_view::TemplateView;
 use crate::templates::TemplateRunHandle;
 use crate::workspace::CloseSearch;
 use crate::workspace::ToggleSearch;
+
+/// Height of the template results section under the hex pane. The
+/// egui panel defaults to 300 pt (user-resizable there; fixed here
+/// until a resizable-dock treatment lands).
+const TEMPLATE_PANEL_HEIGHT: f32 = 300.0;
 
 /// Stable identifier for layout (de)serialization; must never change.
 pub const FILE_PANEL_NAME: &str = "FilePanel";
@@ -73,15 +99,26 @@ pub struct FilePanel {
     /// Path of the template most recently run against this tab, so a
     /// reload can re-fire it without asking again.
     pub(crate) last_template_path: Option<PathBuf>,
-    /// Whether the per-file template panel is shown (rendered under the
-    /// pane once the template panel UI lands). Off until a run starts.
+    /// Whether the per-file template panel section under the pane is
+    /// shown. Off until a run starts.
     pub(crate) template_panel_visible: bool,
+    /// The template results panel rendered under the pane. Always
+    /// constructed; only mounted while [`Self::template_panel_visible`]
+    /// and at least one instance (or run) exists.
+    template_view: Entity<TemplateView>,
+    _template_subs: Vec<Subscription>,
 }
 
 impl FilePanel {
     pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
+        let weak = cx.entity().downgrade();
+        let template_view = cx.new(|cx| TemplateView::new(weak, window, cx));
+        let template_subs = vec![
+            cx.subscribe_in(&template_view, window, Self::on_template_event),
+            cx.subscribe_in(&template_view, window, Self::on_template_offset_jump),
+        ];
         Self {
             pane,
             path,
@@ -95,6 +132,8 @@ impl FilePanel {
             next_template_instance_id: 1,
             last_template_path: None,
             template_panel_visible: false,
+            template_view,
+            _template_subs: template_subs,
         }
     }
 
@@ -268,6 +307,255 @@ impl FilePanel {
         }
     }
 
+    /// The template results panel entity, for tests asserting on its
+    /// cached rows.
+    #[cfg(test)]
+    pub(crate) fn template_view(&self) -> &Entity<TemplateView> {
+        &self.template_view
+    }
+
+    fn on_template_event(
+        &mut self,
+        _view: &Entity<TemplateView>,
+        event: &TemplateEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_template_event(event, window, cx);
+    }
+
+    /// Diagnostic offset link clicked in the template panel: park the
+    /// caret on that byte and scroll it into view.
+    fn on_template_offset_jump(
+        &mut self,
+        _view: &Entity<TemplateView>,
+        event: &TemplateOffsetJump,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let offset = event.0;
+        self.pane.update(cx, |pane, cx| {
+            pane.editor_mut().set_selection(Some(Selection { anchor: offset, cursor: offset }));
+            pane.editor_mut().set_scroll_to_byte(offset);
+            pane.sync_pending_scroll(cx);
+        });
+    }
+
+    /// Dispatch one event from the template panel; ports the egui
+    /// reducer (`apply_template_event`, `crates/hxy/src/app/mod.rs`).
+    /// Every event ends with a row-cache + overlay resync so the
+    /// panel and hex view reflect the new state.
+    pub(crate) fn apply_template_event(&mut self, event: &TemplateEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.handle_template_event(event, window, cx);
+        self.sync_template_rows(cx);
+        self.sync_pane_overlays(cx);
+        cx.notify();
+    }
+
+    fn handle_template_event(&mut self, event: &TemplateEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            TemplateEvent::HidePanel => {
+                self.template_panel_visible = false;
+            }
+            TemplateEvent::SetActive(id) => {
+                self.active_template = Some(*id);
+            }
+            TemplateEvent::RemoveInstance(id) => {
+                self.templates.retain(|t| t.id != *id);
+                // Dropping a running handle cancels its background task.
+                self.templates_running.retain(|r| r.id != *id);
+                if self.active_template == Some(*id) {
+                    self.active_template =
+                        self.templates.first().map(|t| t.id).or_else(|| self.templates_running.first().map(|r| r.id));
+                }
+            }
+            TemplateEvent::ExpandArray { array_id, count } => {
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    expand_array(state, *array_id, *count);
+                }
+            }
+            TemplateEvent::ToggleCollapse(idx) => {
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    toggle_collapse(state, *idx);
+                }
+            }
+            TemplateEvent::Hover(idx) => {
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    state.hovered_node = *idx;
+                }
+            }
+            TemplateEvent::Select(idx) => {
+                self.select_template_node(*idx, cx);
+            }
+            TemplateEvent::Copy { idx, kind } => {
+                let Some(state) = self.active_template().map(|t| &t.state) else { return };
+                let text = if kind.is_struct() {
+                    format_template_struct(&state.tree.nodes, idx.0 as usize, *kind)
+                } else if let Some(node) = state.tree.nodes.get(idx.0 as usize) {
+                    let source = self.pane.read(cx).editor().source();
+                    format_template_copy(source, node, *kind)
+                } else {
+                    None
+                };
+                if let Some(text) = text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+            TemplateEvent::SaveBytes(idx) => {
+                self.save_template_bytes(*idx, window, cx);
+            }
+            TemplateEvent::ToggleColors(on) => {
+                // Hex-view restyling from this flag lands with the
+                // styler composition (M4a Task 5).
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    state.show_colors = *on;
+                }
+            }
+            TemplateEvent::SetColor { idx, color } => {
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    state.node_color_overrides.insert(idx.0, *color);
+                    recompute_leaf_colors(state);
+                }
+            }
+            TemplateEvent::ResetColor(idx) => {
+                if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
+                    state.node_color_overrides.remove(&idx.0);
+                    recompute_leaf_colors(state);
+                }
+            }
+            TemplateEvent::MoveSelection(delta) => {
+                self.move_template_selection(*delta, cx);
+            }
+            TemplateEvent::CollapseSelected => {
+                let Some(state) = self.active_template_mut().map(|t| &mut t.state) else { return };
+                if let Some(idx) = state.selected_node {
+                    state.collapsed.insert(idx);
+                }
+            }
+            TemplateEvent::ExpandSelected => {
+                let Some(state) = self.active_template_mut().map(|t| &mut t.state) else { return };
+                if let Some(idx) = state.selected_node {
+                    state.collapsed.remove(&idx);
+                }
+            }
+            TemplateEvent::OpenVisualizer(idx) => {
+                // Visualizer dock tabs land in M4b; keep the arm
+                // handled so the marker click isn't a silent drop.
+                tracing::debug!(node = idx.0, "open visualizer requested (not wired until M4b)");
+            }
+        }
+    }
+
+    /// Set the active template's selected row and re-fire the byte
+    /// selection / scroll side effects so the hex view jumps to the
+    /// field. Shared between row clicks and arrow-key moves (port of
+    /// egui's `select_template_node`).
+    fn select_template_node(&mut self, idx: TemplateNodeIdx, cx: &mut Context<Self>) {
+        let span = {
+            let Some(state) = self.active_template_mut().map(|t| &mut t.state) else { return };
+            state.selected_node = Some(idx);
+            let Some(node) = state.tree.nodes.get(idx.0 as usize) else { return };
+            (node.span.offset, node.span.length)
+        };
+        let (offset, length) = span;
+        // Zero-length nodes still park the caret on their offset.
+        let end_inclusive = offset.saturating_add(length.max(1) - 1);
+        self.pane.update(cx, |pane, cx| {
+            pane.editor_mut().set_selection(Some(Selection {
+                anchor: ByteOffset::new(offset),
+                cursor: ByteOffset::new(end_inclusive),
+            }));
+            pane.editor_mut().set_scroll_to_byte(ByteOffset::new(offset));
+            pane.sync_pending_scroll(cx);
+        });
+    }
+
+    /// Move the selection by `delta` positions in the flattened
+    /// visible row list, skipping non-Node rows (port of egui's
+    /// `move_template_selection`).
+    fn move_template_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let next_idx = {
+            let Some(template) = self.active_template() else { return };
+            let state = &template.state;
+            let Some(current) = state.selected_node else { return };
+            let visible = visible_node_indices(state);
+            if visible.is_empty() {
+                return;
+            }
+            // A selection collapsed out of view restarts from the top.
+            let pos = visible.iter().position(|i| *i == current).unwrap_or_default();
+            let next = (pos as i32 + delta).clamp(0, visible.len() as i32 - 1) as usize;
+            visible[next]
+        };
+        self.select_template_node(next_idx, cx);
+    }
+
+    /// "Save bytes to file...": read the node's span now (against the
+    /// current bytes), then prompt for a destination asynchronously.
+    fn save_template_bytes(&mut self, idx: TemplateNodeIdx, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.active_template().map(|t| &t.state) else { return };
+        let Some(node) = state.tree.nodes.get(idx.0 as usize).cloned() else { return };
+        let start = ByteOffset::new(node.span.offset);
+        let end = ByteOffset::new(node.span.offset.saturating_add(node.span.length));
+        let Ok(range) = ByteRange::new(start, end) else { return };
+        let bytes = match self.pane.read(cx).editor().source().read(range) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                window.push_notification(
+                    Notification::error(hxy_i18n::t_args("template-read-bytes-failed", &[("error", &err.to_string())])),
+                    cx,
+                );
+                return;
+            }
+        };
+        let default_name = format!("{}.bin", hxy_core::copy::sanitize_ident(&node.name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(handle) = rfd::AsyncFileDialog::new().set_file_name(&default_name).save_file().await else {
+                return;
+            };
+            let path = handle.path().to_path_buf();
+            if let Err(err) = std::fs::write(&path, &bytes) {
+                let _ = this.update_in(cx, |_, window, cx| {
+                    window.push_notification(
+                        Notification::error(hxy_i18n::t_args(
+                            "template-save-failed",
+                            &[("path", &path.display().to_string()), ("error", &err.to_string())],
+                        )),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Recompute the active instance's visible-row list and push it
+    /// into the template view (which owns no state of its own).
+    pub(crate) fn sync_template_rows(&mut self, cx: &mut Context<Self>) {
+        let (rows, selected) = match self.active_template() {
+            Some(template) => {
+                let children = children_by_parent(&template.state.tree.nodes);
+                (build_visible(&template.state, &children), template.state.selected_node)
+            }
+            None => (Vec::new(), None),
+        };
+        self.template_view.update(cx, |view, cx| view.set_rows(rows, selected, cx));
+    }
+
+    /// Mirror template state into the hex pane's overlays. For now
+    /// that is the hovered field's highlight band; the byte tints and
+    /// palette override join in the styler composition (M4a Task 5).
+    pub(crate) fn sync_pane_overlays(&mut self, cx: &mut Context<Self>) {
+        let hover = self.active_template().and_then(|template| {
+            let idx = template.state.hovered_node?;
+            let node = template.state.tree.nodes.get(idx.0 as usize)?;
+            let start = node.span.offset;
+            let end = start.saturating_add(node.span.length);
+            ByteRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
+        });
+        self.pane.update(cx, |pane, cx| pane.set_hover_span(hover, cx));
+    }
+
     /// The tab label: the VFS entry title if set, else the file leaf name,
     /// else the untitled placeholder.
     fn tab_label(&self) -> String {
@@ -389,6 +677,8 @@ impl EventEmitter<PanelEvent> for FilePanel {}
 impl Render for FilePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.search.read(cx).is_open();
+        let show_templates =
+            self.template_panel_visible && (!self.templates.is_empty() || !self.templates_running.is_empty());
         div()
             .size_full()
             .flex()
@@ -397,6 +687,16 @@ impl Render for FilePanel {
             .on_action(cx.listener(Self::on_close_search))
             .child(div().flex_1().min_h_0().child(self.pane.clone()))
             .when(open, |root| root.child(self.search.clone()))
+            .when(show_templates, |root| {
+                root.child(
+                    div()
+                        .h(px(TEMPLATE_PANEL_HEIGHT))
+                        .flex_none()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(self.template_view.clone()),
+                )
+            })
     }
 }
 

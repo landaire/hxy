@@ -20,6 +20,7 @@ pub mod global_search;
 pub mod inspector;
 mod search_bar;
 pub mod strings;
+pub mod template_view;
 pub mod vfs_tree;
 mod welcome;
 pub mod workspace_host;

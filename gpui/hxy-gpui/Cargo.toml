@@ -28,6 +28,10 @@ serde_json = "1"
 thiserror = "2"
 tracing = { workspace = true }
 
+# Template panel "Save bytes to file..." dialog; matches the egui
+# app's rfd version.
+rfd = "0.17.2"
+
 # Referenced for its `notify::Result` alias (`hxy_panels::watch::FileWatcher`'s
 # constructors return it); pinned to the same version hxy-panels uses.
 notify = "8"

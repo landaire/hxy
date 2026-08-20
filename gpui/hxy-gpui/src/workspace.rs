@@ -228,6 +228,7 @@ pub fn init_keybindings(cx: &mut App) {
         // they don't handle it themselves (not `clean_on_escape`).
         gpui::KeyBinding::new("escape", CloseSearch, Some("SearchBar")),
     ]);
+    crate::panels::template_view::init_keybindings(cx);
 }
 
 pub struct Workspace {

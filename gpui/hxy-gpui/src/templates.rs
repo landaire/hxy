@@ -16,6 +16,7 @@ use gpui::App;
 use gpui::AppContext;
 use gpui::Context;
 use gpui::Global;
+use gpui::Hsla;
 use gpui::Task;
 use gpui::Window;
 use gpui_component::WindowExt;
@@ -78,6 +79,30 @@ pub fn load_runtimes() -> TemplateRuntimes {
         }
     }
     TemplateRuntimes(out)
+}
+
+/// Convert the shared template color newtype into a gpui [`Hsla`].
+/// [`Rgba`] stores premultiplied sRGBA bytes (Color32-compatible);
+/// gpui wants straight alpha, so translucent colors un-multiply on
+/// the way through. Used for swatches now and hex-view tints in the
+/// styler composition (M4a Task 5).
+pub fn rgba_to_hsla(c: Rgba) -> Hsla {
+    let (r, g, b) = match c.a {
+        // Fully transparent has no color to recover; fully opaque
+        // is already straight.
+        0 => (0, 0, 0),
+        255 => (c.r, c.g, c.b),
+        a => {
+            let un = |v: u8| ((f32::from(v) * 255.0 / f32::from(a)).round().min(255.0)) as u8;
+            (un(c.r), un(c.g), un(c.b))
+        }
+    };
+    Hsla::from(gpui::Rgba {
+        r: f32::from(r) / 255.0,
+        g: f32::from(g) / 255.0,
+        b: f32::from(b) / 255.0,
+        a: f32::from(c.a) / 255.0,
+    })
 }
 
 /// Restart-time context for an auto-rerun. The restore path passes
@@ -258,6 +283,10 @@ fn spawn_run(
             for text in error_toasts {
                 window.push_notification(Notification::error(text), cx);
             }
+            this.sync_template_rows(cx);
+            // A hover band from the previously active instance must
+            // not linger once the finished run becomes active.
+            this.sync_pane_overlays(cx);
             cx.notify();
         });
     });
@@ -269,6 +298,7 @@ fn spawn_run(
     });
     panel.active_template = Some(instance_id);
     panel.template_panel_visible = true;
+    panel.sync_template_rows(cx);
     cx.notify();
 }
 
@@ -314,6 +344,7 @@ fn record_error_instance(
     });
     panel.active_template = Some(instance_id);
     panel.template_panel_visible = true;
+    panel.sync_template_rows(cx);
     cx.notify();
 }
 
