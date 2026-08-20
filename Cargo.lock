@@ -3183,8 +3183,11 @@ dependencies = [
  "hxy-imhex-lang",
  "hxy-plugin-host",
  "hxy-vfs",
+ "reqwest",
+ "sha2 0.11.0",
  "tempfile",
  "tracing",
+ "zip",
 ]
 
 [[package]]

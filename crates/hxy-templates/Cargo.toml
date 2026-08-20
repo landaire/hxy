@@ -28,6 +28,13 @@ dirs = "6"
 # Template-source fingerprints (run/restart match).
 blake3 = "1.8"
 
+# ImHex-Patterns corpus download: blocking reqwest run on a worker
+# thread by the hosts; zip + sha2 unpack and fingerprint the corpus.
+# Versions match crates/hxy so the graph stays deduplicated.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "native-tls"] }
+sha2 = "0.11.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -8,6 +8,7 @@ pub mod builtin;
 pub mod color;
 pub mod format;
 pub mod library;
+pub mod patterns_fetch;
 pub mod run;
 pub mod state;
 

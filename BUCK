@@ -11398,6 +11398,7 @@ cargo.rust_library(
         "crates/hxy-templates/src/format.rs",
         "crates/hxy-templates/src/lib.rs",
         "crates/hxy-templates/src/library.rs",
+        "crates/hxy-templates/src/patterns_fetch.rs",
         "crates/hxy-templates/src/run.rs",
         "crates/hxy-templates/src/state.rs",
     ],
@@ -11430,7 +11431,10 @@ cargo.rust_library(
         ":hxy-imhex-lang-0.5",
         ":hxy-plugin-host-0.5",
         ":hxy-vfs-0.5",
+        ":reqwest-0.13",
+        ":sha2-0.11",
         ":tracing-0.1",
+        ":zip-8",
     ],
 )
 
