@@ -1686,7 +1686,7 @@ name = "egui-palette"
 version = "0.7.0"
 dependencies = [
  "egui",
- "palette-core",
+ "nucleo-matcher",
 ]
 
 [[package]]
@@ -3087,12 +3087,12 @@ dependencies = [
 
 [[package]]
 name = "hxy-editor"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "hxy-core",
  "serde",
  "suture",
- "thiserror 2.0.18",
+ "thiserror 2.0.20",
  "tracing",
  "web-time",
 ]
@@ -3118,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "hxy-panels"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adler2",
  "blake3",
@@ -3127,17 +3127,17 @@ dependencies = [
  "hxy-core",
  "hxy-editor",
  "jiff",
- "md-5",
+ "md-5 0.11.0",
  "notify",
  "notify-debouncer-full",
  "serde",
  "serde_json",
- "sha1",
+ "sha1 0.11.0",
  "sha2 0.11.0",
- "similar 3.1.0",
+ "similar 3.1.2",
  "suture",
  "tempfile",
- "thiserror 2.0.18",
+ "thiserror 2.0.20",
  "tracing",
  "web-time",
 ]
@@ -3193,10 +3193,6 @@ dependencies = [
  "hxy-core",
  "hxy-editor",
  "serde",
- "suture",
- "thiserror 2.0.20",
- "tracing",
- "web-time",
 ]
 
 [[package]]
@@ -4825,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "palette-core"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "nucleo-matcher",
 ]

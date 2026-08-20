@@ -10801,6 +10801,7 @@ cargo.rust_library(
         ":hxy-core-0.5",
         ":hxy-i18n-0.5",
         ":hxy-imhex-lang-0.5",
+        ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
@@ -10910,6 +10911,7 @@ cargo.rust_binary(
         ":hxy-core-0.5",
         ":hxy-i18n-0.5",
         ":hxy-imhex-lang-0.5",
+        ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
@@ -11082,6 +11084,58 @@ cargo.rust_library(
 )
 
 alias(
+    name = "hxy-editor",
+    actual = ":hxy-editor-0.5",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "hxy-editor-0.5",
+    srcs = [
+        "crates/hxy-editor/src/dispatch.rs",
+        "crates/hxy-editor/src/editor.rs",
+        "crates/hxy-editor/src/events.rs",
+        "crates/hxy-editor/src/input.rs",
+        "crates/hxy-editor/src/lib.rs",
+        "crates/hxy-editor/src/vim.rs",
+    ],
+    crate = "hxy_editor",
+    crate_root = "crates/hxy-editor/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_editor",
+        "CARGO_CRATE_NAME": "hxy_editor",
+        "CARGO_MANIFEST_DIR": "crates/hxy-editor",
+        "CARGO_PKG_AUTHORS": "Lander Brandt",
+        "CARGO_PKG_DESCRIPTION": "Framework-agnostic hex editor model: edit state, undo/redo, vim-style input",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-editor",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/hxy",
+        "CARGO_PKG_RUST_VERSION": "1.95",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "editor",
+        "serde",
+    ],
+    visibility = [],
+    deps = [
+        ":hxy-core-0.5",
+        ":serde-1",
+        ":suture-0.3",
+        ":thiserror-2",
+        ":tracing-0.1",
+        ":web-time-1",
+    ],
+)
+
+alias(
     name = "hxy-i18n",
     actual = ":hxy-i18n-0.5",
     visibility = ["PUBLIC"],
@@ -11166,6 +11220,73 @@ cargo.rust_library(
         ":rustc-hash-2",
         ":thiserror-2",
         ":winnow-1",
+    ],
+)
+
+alias(
+    name = "hxy-panels",
+    actual = ":hxy-panels-0.5",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "hxy-panels-0.5",
+    srcs = [
+        "crates/hxy-panels/src/checksums.rs",
+        "crates/hxy-panels/src/diff.rs",
+        "crates/hxy-panels/src/entropy.rs",
+        "crates/hxy-panels/src/files/mod.rs",
+        "crates/hxy-panels/src/files/patch_persist.rs",
+        "crates/hxy-panels/src/files/snapshot.rs",
+        "crates/hxy-panels/src/goto.rs",
+        "crates/hxy-panels/src/inspector.rs",
+        "crates/hxy-panels/src/lib.rs",
+        "crates/hxy-panels/src/search.rs",
+        "crates/hxy-panels/src/strings.rs",
+        "crates/hxy-panels/src/watch.rs",
+    ],
+    crate = "hxy_panels",
+    crate_root = "crates/hxy-panels/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_panels",
+        "CARGO_CRATE_NAME": "hxy_panels",
+        "CARGO_MANIFEST_DIR": "crates/hxy-panels",
+        "CARGO_PKG_AUTHORS": "Lander Brandt",
+        "CARGO_PKG_DESCRIPTION": "Framework-agnostic panel logic for hxy: goto/range parsing, search engine, inspector decoders, strings/entropy/checksums, and compare-view diffing",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-panels",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/hxy",
+        "CARGO_PKG_RUST_VERSION": "1.95",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":adler2-2",
+        ":blake3-1",
+        ":crc32fast-1",
+        ":hxy-calculator-0.5",
+        ":hxy-core-0.5",
+        ":hxy-editor-0.5",
+        ":jiff-0.2",
+        ":md-5-0.11",
+        ":notify-8",
+        ":notify-debouncer-full-0.7",
+        ":serde-1",
+        ":serde_json-1",
+        ":sha1-0.11",
+        ":sha2-0.11",
+        ":similar-3",
+        ":suture-0.3",
+        ":tempfile-3",
+        ":thiserror-2",
+        ":tracing-0.1",
+        ":web-time-1",
     ],
 )
 
@@ -11315,10 +11436,8 @@ alias(
 cargo.rust_library(
     name = "hxy-view-0.5",
     srcs = [
-        "crates/hxy-view/src/editor.rs",
         "crates/hxy-view/src/input.rs",
         "crates/hxy-view/src/lib.rs",
-        "crates/hxy-view/src/vim.rs",
     ],
     crate = "hxy_view",
     crate_root = "crates/hxy-view/src/lib.rs",
@@ -11350,11 +11469,8 @@ cargo.rust_library(
         ":egui-0.36",
         ":egui_minimap-0.5",
         ":hxy-core-0.5",
+        ":hxy-editor-0.5",
         ":serde-1",
-        ":suture-0.3",
-        ":thiserror-2",
-        ":tracing-0.1",
-        ":web-time-1",
     ],
 )
 
@@ -17508,6 +17624,36 @@ cargo.rust_library(
         ":futures-core-0.3",
         ":pin-project-lite-0.2",
     ],
+)
+
+cargo.rust_library(
+    name = "palette-core-0.5",
+    srcs = [
+        "crates/palette-core/src/fuzzy.rs",
+        "crates/palette-core/src/lib.rs",
+    ],
+    crate = "palette_core",
+    crate_root = "crates/palette-core/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "palette_core",
+        "CARGO_CRATE_NAME": "palette_core",
+        "CARGO_MANIFEST_DIR": "crates/palette-core",
+        "CARGO_PKG_AUTHORS": "Lander Brandt",
+        "CARGO_PKG_DESCRIPTION": "Framework-agnostic command palette state and fuzzy filtering",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "palette-core",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/hxy",
+        "CARGO_PKG_RUST_VERSION": "1.95",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":nucleo-matcher-0.3"],
 )
 
 http_archive(
