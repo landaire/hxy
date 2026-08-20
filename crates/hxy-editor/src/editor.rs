@@ -129,6 +129,11 @@ pub(crate) struct EditState {
     /// every keystroke. Inserts / deletes / undo / redo / revert all
     /// fall back to the full rebuild path.
     non_lp_entries: usize,
+    /// Monotonic count of content mutations (writes, splices, undo,
+    /// redo, revert). Lets consumers detect "the bytes changed" even
+    /// when derived views like `modified_ranges` come back equal
+    /// (e.g. overwriting an already-patched byte with a new value).
+    pub(crate) revision: u64,
 }
 
 impl EditState {
@@ -149,6 +154,7 @@ impl EditState {
             last_edit_at: None,
             base_cache: None,
             non_lp_entries: 0,
+            revision: 0,
         }
     }
 
@@ -343,6 +349,7 @@ impl EditState {
     ///      the single tail insert instead of spawning its own
     ///      entry.
     fn record_entry(&mut self, entry: EditEntry) {
+        self.revision += 1;
         self.redo_stack.clear();
         let now = Instant::now();
         let idle_break = self.last_edit_at.is_some_and(|last| now.duration_since(last) >= EDIT_COALESCE_IDLE);
@@ -399,6 +406,7 @@ impl EditState {
     }
 
     pub(crate) fn revert(&mut self) {
+        self.revision += 1;
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.history_break = true;
@@ -412,6 +420,7 @@ impl EditState {
             return None;
         }
         let entry = self.undo_stack.pop()?;
+        self.revision += 1;
         if entry.old_bytes.len() != entry.new_bytes.len() {
             self.non_lp_entries = self.non_lp_entries.saturating_sub(1);
         }
@@ -427,6 +436,7 @@ impl EditState {
             return None;
         }
         let entry = self.redo_stack.pop()?;
+        self.revision += 1;
         if entry.old_bytes.len() != entry.new_bytes.len() {
             self.non_lp_entries += 1;
         }
@@ -645,6 +655,36 @@ mod tests {
         let mut s = state();
         s.mode = EditMode::Readonly;
         assert!(matches!(s.request_write(0, vec![0xAA]), Err(WriteError::Readonly)));
+    }
+
+    #[test]
+    fn revision_bumps_on_every_content_mutation() {
+        let mut s = state();
+        assert_eq!(s.revision, 0);
+        s.request_write(1, vec![0xAA]).unwrap();
+        assert_eq!(s.revision, 1);
+        // Same-range overwrite coalesces into the previous undo entry
+        // and leaves `modified_ranges` equal, but the bytes changed --
+        // the revision must still move.
+        s.request_write(1, vec![0xAB]).unwrap();
+        assert_eq!(s.revision, 2);
+        s.splice(0, 1, Vec::new()).unwrap();
+        assert_eq!(s.revision, 3);
+        assert!(s.undo().is_some());
+        assert_eq!(s.revision, 4);
+        assert!(s.redo().is_some());
+        assert_eq!(s.revision, 5);
+        s.revert();
+        assert_eq!(s.revision, 6);
+    }
+
+    #[test]
+    fn revision_unchanged_on_rejected_writes() {
+        let mut s = state();
+        s.mode = EditMode::Readonly;
+        assert!(s.request_write(0, vec![0xAA]).is_err());
+        assert!(s.undo().is_none());
+        assert_eq!(s.revision, 0);
     }
 
     #[test]

@@ -375,6 +375,16 @@ impl HexEditor {
         self.edit.modified_ranges()
     }
 
+    /// Monotonic count of content mutations (writes, splices, undo,
+    /// redo, revert), starting at 0. Unlike [`Self::modified_ranges`]
+    /// it changes even when a mutation leaves the range set equal
+    /// (e.g. overwriting an already-patched byte with a new value),
+    /// so consumers can use it as a cheap "bytes changed" signal.
+    #[cfg(feature = "editor")]
+    pub fn revision(&self) -> u64 {
+        self.edit.revision
+    }
+
     #[cfg(feature = "editor")]
     pub fn undo_stack(&self) -> &[EditEntry] {
         &self.edit.undo_stack
