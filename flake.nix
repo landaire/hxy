@@ -101,7 +101,16 @@
           ];
       };
 
-      cargoVendorDir = craneLib.vendorCargoDeps (commonArgs // {src = filteredSource;});
+      # Union vendor of both cargo workspaces: the root workspace and the
+      # nested gpui/ workspace (excluded from the root graph so its pinned
+      # gpui stack does not unify with eframe/egui). Vendoring both locks
+      # lets offline cargo work anywhere inside the dev shell.
+      cargoVendorDir = craneLib.vendorMultipleCargoDeps {
+        cargoLockList = [
+          ./Cargo.lock
+          ./gpui/Cargo.lock
+        ];
+      };
       cargoVendorCacheKey = builtins.baseNameOf (toString cargoVendorDir);
 
       hxyDummySource = sourcePkgs.runCommand "hxy-dummy-source" {} ''
