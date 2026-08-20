@@ -1506,6 +1506,10 @@ impl Workspace {
                 return;
             }
             self.recompute_panels_for_path(&pending.path, cx);
+            // Re-fire the tab's completed templates against the
+            // reloaded bytes right away (no debounce -- the reload is
+            // a single discrete event, mirroring egui's cascade).
+            pending.file.update(cx, |panel, cx| panel.rerun_templates(window, cx));
         }
         if let Some(file_watch) = self.file_watch.as_mut() {
             file_watch.mark_synced(&pending.path);
@@ -1516,7 +1520,7 @@ impl Workspace {
     /// Re-run any already-open strings/entropy/checksums panel for
     /// `path` against its owning file's freshly reloaded bytes.
     /// Mirrors egui's `cascade_byte_change` (minus the template rerun,
-    /// which the GPUI port doesn't have yet).
+    /// handled on the `FilePanel` itself).
     /// Move every strings / entropy / checksums panel anchored to `old`
     /// onto `new` after a Save As rename. Global search / compare record
     /// paths but are unaffected: global search re-derives its file set

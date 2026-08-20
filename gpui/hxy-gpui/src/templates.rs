@@ -317,6 +317,11 @@ fn spawn_run(
             // A hover band from the previously active instance must
             // not linger once the finished run becomes active.
             this.sync_pane_overlays(cx);
+            // An edit landed while this run was in flight: replay one
+            // re-run against the now-current bytes.
+            if this.templates_running.is_empty() && std::mem::take(&mut this.template_rerun_pending) {
+                this.rerun_templates(window, cx);
+            }
             cx.notify();
         });
     });

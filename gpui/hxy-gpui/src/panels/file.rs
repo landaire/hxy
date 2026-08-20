@@ -70,6 +70,12 @@ use crate::workspace::ToggleSearch;
 /// until a resizable-dock treatment lands).
 const TEMPLATE_PANEL_HEIGHT: f32 = 300.0;
 
+/// Idle window after the last byte edit before completed templates
+/// re-execute against the new bytes. Matches the workspace's
+/// `SAVE_DEBOUNCE` cadence so a typing burst costs one re-run, not
+/// one per keystroke.
+const TEMPLATE_RERUN_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Stable identifier for layout (de)serialization; must never change.
 pub const FILE_PANEL_NAME: &str = "FilePanel";
 
@@ -122,6 +128,17 @@ pub struct FilePanel {
     /// live), so the pane observer below rebuilds the overlays when
     /// an edit changes the set.
     last_modified_ranges: Vec<(u64, u64)>,
+    /// Editor revision the template re-run cascade last reacted to.
+    /// Unlike `last_modified_ranges` the revision moves on every
+    /// content mutation (including same-range overwrites), so it is
+    /// the trigger for re-executing templates after an edit.
+    last_template_revision: u64,
+    /// An edit landed while a template run was in flight; replay one
+    /// re-run when the running list drains (strings.rs pattern).
+    pub(crate) template_rerun_pending: bool,
+    /// Debounce timer for the edit-triggered template re-run.
+    /// Replaced on every trigger; dropping the old task cancels it.
+    _template_rerun_task: Option<gpui::Task<()>>,
     _overlay_observe: Subscription,
 }
 
@@ -135,7 +152,7 @@ impl FilePanel {
             cx.subscribe_in(&template_view, window, Self::on_template_event),
             cx.subscribe_in(&template_view, window, Self::on_template_offset_jump),
         ];
-        let overlay_observe = cx.observe(&pane, Self::on_pane_notify);
+        let overlay_observe = cx.observe_in(&pane, window, Self::on_pane_notify);
         Self {
             pane,
             path,
@@ -153,6 +170,9 @@ impl FilePanel {
             template_view,
             _template_subs: template_subs,
             last_modified_ranges: Vec::new(),
+            last_template_revision: 0,
+            template_rerun_pending: false,
+            _template_rerun_task: None,
             _overlay_observe: overlay_observe,
         }
     }
@@ -160,11 +180,73 @@ impl FilePanel {
     /// Pane repainted: if an edit changed the modified-byte set the
     /// installed styler snapshot is stale, so rebuild the overlays.
     /// The rebuild notifies the pane again; the equal-ranges check
-    /// terminates that echo.
-    fn on_pane_notify(&mut self, _pane: Entity<HexPane>, cx: &mut Context<Self>) {
+    /// terminates that echo. A moved editor revision additionally
+    /// schedules the debounced template re-run (ports egui's
+    /// byte-change cascade, `desktop.rs::rerun_template_for_file`).
+    fn on_pane_notify(&mut self, _pane: Entity<HexPane>, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.pane.read(cx).editor().modified_ranges();
         if current != self.last_modified_ranges {
             self.sync_pane_overlays(cx);
+        }
+        let revision = self.pane.read(cx).editor().revision();
+        if revision != self.last_template_revision {
+            self.last_template_revision = revision;
+            self.schedule_template_rerun(window, cx);
+        }
+    }
+
+    /// Arm (or re-arm) the debounce timer for the edit-triggered
+    /// template re-run. No-op when the tab has nothing to re-run.
+    fn schedule_template_rerun(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.templates.is_empty() && self.templates_running.is_empty() {
+            return;
+        }
+        self._template_rerun_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(TEMPLATE_RERUN_DEBOUNCE).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this._template_rerun_task = None;
+                this.rerun_templates(window, cx);
+            });
+        }));
+    }
+
+    /// Re-fire every completed template on this tab against the
+    /// current bytes, carrying each instance's fingerprint + color
+    /// overrides so a data-only change preserves the user's picks
+    /// (ports egui's `rerun_template_for_file`). While any run is in
+    /// flight the re-run is deferred to the completion handler via
+    /// `template_rerun_pending` -- the worker hasn't seen the old
+    /// bytes yet either, so racing it would just duplicate work.
+    pub(crate) fn rerun_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Checked before the completed list: while a run is in flight
+        // `templates` may be empty (first run, or mid-rerun after the
+        // clear below), and bailing on emptiness first would drop the
+        // pending replay and lose the edit.
+        if !self.templates_running.is_empty() {
+            self.template_rerun_pending = true;
+            return;
+        }
+        if self.templates.is_empty() {
+            return;
+        }
+        let to_rerun: Vec<(PathBuf, ByteRange, RestoreContext)> = self
+            .templates
+            .iter()
+            .map(|t| {
+                (
+                    t.source_path.clone(),
+                    t.range,
+                    RestoreContext {
+                        expected_fingerprint: t.source_fingerprint,
+                        overrides: t.state.node_color_overrides.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.templates.clear();
+        self.active_template = None;
+        for (path, range, restore) in to_rerun {
+            crate::templates::run_template(self, path, Some(range), restore, window, cx);
         }
     }
 
@@ -1130,6 +1212,145 @@ mod tests {
         assert!(range_contains(&ranges, 8));
         assert!(!range_contains(&ranges, 9));
         assert!(!range_contains(&[], 0));
+    }
+
+    /// Editing the bytes re-executes the completed template after the
+    /// debounce window, with the new bytes reflected in the tree and
+    /// the user's color overrides carried across the re-run.
+    #[gpui::test]
+    fn edit_reruns_templates_after_debounce_with_overrides(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let template_path = dir.path().join("one.bt");
+        std::fs::write(&template_path, "LittleEndian();\nuint32 a;\n").unwrap();
+
+        let window = cx.add_window(|window, cx| {
+            let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x01, 0x02, 0x03, 0x04]));
+            let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                crate::templates::run_template(
+                    panel,
+                    template_path.clone(),
+                    None,
+                    RestoreContext::default(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        vcx.run_until_parked();
+        let picked = hxy_core::color::Rgba::rgb(9, 8, 7);
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.apply_template_event(
+                    &TemplateEvent::SetColor { idx: TemplateNodeIdx(0), color: picked },
+                    window,
+                    cx,
+                );
+            });
+        });
+        panel.read_with(vcx, |panel, _| {
+            let value = panel.templates[0].state.tree.nodes[0].value.clone();
+            assert!(
+                matches!(value, Some(hxy_plugin_host::template::Value::U32Val(0x04030201))),
+                "sanity: first run decoded the original bytes, got {value:?}"
+            );
+        });
+
+        // Overwrite the low byte; the observer sees the revision move
+        // and arms the debounce.
+        panel.update(vcx, |panel, cx| {
+            panel.pane().update(cx, |pane, cx| {
+                pane.editor_mut().splice(0, 1, vec![0xFF]).unwrap();
+                cx.notify();
+            });
+        });
+        vcx.executor().advance_clock(TEMPLATE_RERUN_DEBOUNCE + std::time::Duration::from_millis(50));
+        vcx.run_until_parked();
+
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.templates.len(), 1, "re-run replaced the instance, not duplicated it");
+            assert!(panel.templates_running.is_empty());
+            let instance = &panel.templates[0];
+            let value = instance.state.tree.nodes[0].value.clone();
+            assert!(
+                matches!(value, Some(hxy_plugin_host::template::Value::U32Val(0x040302FF))),
+                "re-run decoded the edited bytes, got {value:?}"
+            );
+            assert_eq!(
+                instance.state.node_color_overrides.get(&0),
+                Some(&picked),
+                "overrides survive the re-run (fingerprint unchanged)"
+            );
+        });
+    }
+
+    /// A re-run requested while a run is still in flight (even the
+    /// tab's FIRST run, when the completed list is empty) must queue
+    /// one pending replay and execute it when the running list drains
+    /// -- not silently drop the edit.
+    #[gpui::test]
+    fn rerun_requested_mid_run_queues_and_replays(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let template_path = dir.path().join("one.bt");
+        std::fs::write(&template_path, "LittleEndian();\nuint32 a;\n").unwrap();
+
+        let window = cx.add_window(|window, cx| {
+            let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x01, 0x02, 0x03, 0x04]));
+            let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+
+        // Kick off the first run but do NOT park: the background task
+        // has not completed, so the run is still in flight and the
+        // completed list is empty.
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                crate::templates::run_template(
+                    panel,
+                    template_path.clone(),
+                    None,
+                    RestoreContext::default(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.templates_running.len(), 1, "sanity: run in flight");
+            assert!(panel.templates.is_empty(), "sanity: nothing completed yet");
+        });
+
+        // An edit's debounce firing now must queue the replay.
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.rerun_templates(window, cx)));
+        panel.read_with(vcx, |panel, _| {
+            assert!(panel.template_rerun_pending, "mid-run request queues a pending replay");
+        });
+
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert!(!panel.template_rerun_pending, "pending flag consumed");
+            assert!(panel.templates_running.is_empty());
+            assert_eq!(panel.templates.len(), 1);
+            assert_eq!(panel.templates[0].id.get(), 2, "the surviving instance is the replay, not the first run");
+        });
     }
 
     #[test]
