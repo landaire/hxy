@@ -3010,6 +3010,7 @@ dependencies = [
  "hxy-imhex-lang",
  "hxy-panels",
  "hxy-plugin-host",
+ "hxy-templates",
  "hxy-vfs",
  "hxy-view",
  "iced-x86",
@@ -3167,6 +3168,18 @@ dependencies = [
  "vfs",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "hxy-templates"
+version = "0.5.0"
+dependencies = [
+ "dirs",
+ "hxy-010-lang",
+ "hxy-core",
+ "hxy-imhex-lang",
+ "hxy-plugin-host",
+ "hxy-vfs",
 ]
 
 [[package]]

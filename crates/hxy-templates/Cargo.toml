@@ -1,0 +1,26 @@
+[package]
+name = "hxy-templates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Desktop-only template subsystem shared by the hxy frontends: builtin 010/ImHex runtimes, template library and include sandbox, and pure run helpers"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+hxy-core = { workspace = true }
+hxy-vfs = { workspace = true }
+hxy-plugin-host = { workspace = true }
+
+# Built-in 010 Editor Binary Template + ImHex pattern-language
+# runtimes -- both linked as regular Rust instead of being wrapped
+# in a WASM component.
+hxy-010-lang = { workspace = true }
+hxy-imhex-lang = { workspace = true }
+
+# Locates the per-user imhex-patterns data dir for import resolution.
+dirs = "6"
