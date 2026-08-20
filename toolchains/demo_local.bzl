@@ -83,6 +83,17 @@ def hxy_system_toolchains():
         visibility = ["PUBLIC"],
     )
 
+    # The prelude's cxx toolchain attr defaults to a select with a
+    # config//:none branch naming toolchains//:cxx_no_default_deps. That
+    # branch is never chosen in a configured build, but unconfigured
+    # queries (buck2 uquery deps(...)) traverse every branch and fail if
+    # the target does not exist.
+    android_hack_alias(
+        name = "cxx_no_default_deps",
+        actual = ":cxx",
+        visibility = ["PUBLIC"],
+    )
+
     system_dex_toolchain(
         name = "dex",
         android_sdk_tools_target = ":android_sdk_tools",
