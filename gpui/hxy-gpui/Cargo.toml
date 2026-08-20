@@ -18,6 +18,8 @@ hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
 hxy-panels = { workspace = true }
+hxy-plugin-host = { workspace = true }
+hxy-templates = { workspace = true }
 hxy-vfs = { workspace = true }
 hxy-view-gpui = { workspace = true }
 jiff = { workspace = true }

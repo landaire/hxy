@@ -16,6 +16,10 @@ mod panels;
 mod patches;
 mod persist;
 mod status;
+// The run flow is exercised by tests only until the template panel UI
+// (M4a Task 4) mounts it; the allow keeps the intermediate state warning-free.
+#[allow(dead_code)]
+mod templates;
 mod watch;
 mod workspace;
 
@@ -31,6 +35,7 @@ fn main() -> ExitCode {
     gpui::Application::new().run(move |cx: &mut App| {
         gpui_component::init(cx);
         panels::register(cx);
+        cx.set_global(templates::load_runtimes());
         workspace::init_keybindings(cx);
         menu::init_keybindings(cx);
         menu::init_global_actions(cx);

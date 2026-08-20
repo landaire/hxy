@@ -29,10 +29,13 @@ use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_templates::state::TemplateInstance;
+use hxy_templates::state::TemplateInstanceId;
 use hxy_vfs::VfsHandler;
 use hxy_view_gpui::HexPane;
 
 use super::search_bar::SearchBar;
+use crate::templates::TemplateRunHandle;
 use crate::workspace::CloseSearch;
 use crate::workspace::ToggleSearch;
 
@@ -54,13 +57,45 @@ pub struct FilePanel {
     /// to store sidecars under). Restored from disk so snapshots survive
     /// an app restart. `None` until first touched.
     snapshots: Option<hxy_panels::files::snapshot::SnapshotStore>,
+    /// Completed template runs for this tab, in the order the user
+    /// kicked them off. Each instance carries the byte range it was
+    /// applied to so multiple templates -- on overlapping or disjoint
+    /// regions -- can coexist as separate tabs in the template panel.
+    pub(crate) templates: Vec<TemplateInstance>,
+    /// In-flight parse+execute jobs. Each one lands in
+    /// [`Self::templates`] on completion (success or a diagnostics-only
+    /// error instance).
+    pub(crate) templates_running: Vec<TemplateRunHandle>,
+    /// Which template tab is currently selected in the template panel.
+    pub(crate) active_template: Option<TemplateInstanceId>,
+    /// Counter for handing out fresh template instance ids on this tab.
+    pub(crate) next_template_instance_id: u64,
+    /// Path of the template most recently run against this tab, so a
+    /// reload can re-fire it without asking again.
+    pub(crate) last_template_path: Option<PathBuf>,
+    /// Whether the per-file template panel is shown (rendered under the
+    /// pane once the template panel UI lands). Off until a run starts.
+    pub(crate) template_panel_visible: bool,
 }
 
 impl FilePanel {
     pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
-        Self { pane, path, title_override: None, detected_handler: None, search, snapshots: None }
+        Self {
+            pane,
+            path,
+            title_override: None,
+            detected_handler: None,
+            search,
+            snapshots: None,
+            templates: Vec::new(),
+            templates_running: Vec::new(),
+            active_template: None,
+            next_template_instance_id: 1,
+            last_template_path: None,
+            template_panel_visible: false,
+        }
     }
 
     /// A file panel over a VFS entry: no on-disk path, but a stable tab
@@ -193,6 +228,43 @@ impl FilePanel {
                 tracing::warn!(%err, "load snapshot bytes");
                 None
             }
+        }
+    }
+
+    /// Allocate a fresh [`TemplateInstanceId`] for a new run on this
+    /// tab. Counter is monotonic for the tab's lifetime.
+    pub(crate) fn fresh_template_instance_id(&mut self) -> TemplateInstanceId {
+        let id = TemplateInstanceId::new(self.next_template_instance_id);
+        self.next_template_instance_id += 1;
+        id
+    }
+
+    /// The currently-selected template instance, if any. Consumers are
+    /// the template panel UI and hex-view tinting (M4a Tasks 4-5); the
+    /// allow keeps the intermediate state warning-free.
+    #[allow(dead_code)]
+    pub(crate) fn active_template(&self) -> Option<&TemplateInstance> {
+        let id = self.active_template?;
+        self.templates.iter().find(|t| t.id == id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn active_template_mut(&mut self) -> Option<&mut TemplateInstance> {
+        let id = self.active_template?;
+        self.templates.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Insert or replace a template instance under a known id, so a
+    /// re-run rebinds into the same tab without disturbing siblings.
+    pub(crate) fn upsert_template_instance(&mut self, instance: TemplateInstance) {
+        let id = instance.id;
+        if let Some(slot) = self.templates.iter_mut().find(|t| t.id == id) {
+            *slot = instance;
+        } else {
+            self.templates.push(instance);
+        }
+        if self.active_template.is_none() {
+            self.active_template = Some(id);
         }
     }
 

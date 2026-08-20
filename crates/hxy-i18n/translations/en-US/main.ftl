@@ -686,3 +686,12 @@ memory-panel-row-template = Template: { $name }
 memory-panel-row-plugin = Plugin: { $name }
 memory-panel-row-unknown = Source { $id }
 memory-panel-bytes-mib = { $mib } MiB
+
+# gpui template runner (run failures surface as toasts; the egui app
+# logs them to its console instead)
+gpui-template-no-runtime = No template runtime is registered for .{ $ext } files. Install a matching runtime component (.wasm) into: { $dir }
+gpui-template-range-out-of-bounds = Template range { $start }..{ $end } exceeds source length { $len }.
+gpui-template-read-failed = Failed to read template source { $path }: { $error }
+gpui-template-parse-failed = Parse failed: { $error }
+gpui-template-execute-failed = Execute failed: { $error }
+gpui-template-diagnostic-error = { $template }: { $message }

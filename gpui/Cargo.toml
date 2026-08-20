@@ -28,6 +28,8 @@ hxy-core = { path = "../crates/hxy-core", version = "0.5.0" }
 hxy-editor = { path = "../crates/hxy-editor", version = "0.5.0" }
 hxy-i18n = { path = "../crates/hxy-i18n", version = "0.5.0" }
 hxy-panels = { path = "../crates/hxy-panels", version = "0.5.0" }
+hxy-plugin-host = { path = "../crates/hxy-plugin-host", version = "0.5.0" }
+hxy-templates = { path = "../crates/hxy-templates", version = "0.5.0" }
 hxy-vfs = { path = "../crates/hxy-vfs", version = "0.5.0" }
 hxy-view-gpui = { path = "hxy-view-gpui", version = "0.3.0" }
 jiff = "0.2.24"
