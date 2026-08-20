@@ -5,6 +5,7 @@
 
 pub mod builtin;
 pub mod library;
+pub mod run;
 
 /// Per-user data-directory component. Must match the app's
 /// `APP_NAME` so every frontend shares the same plugin and

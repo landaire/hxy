@@ -3174,6 +3174,7 @@ dependencies = [
 name = "hxy-templates"
 version = "0.5.0"
 dependencies = [
+ "blake3",
  "dirs",
  "hxy-010-lang",
  "hxy-core",
