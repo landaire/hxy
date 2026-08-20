@@ -3,6 +3,7 @@
 
 use hxy_view::HexEditorExt;
 
+use crate::settings::ByteHighlightModeExt;
 use crate::state::PersistedState;
 
 /// Sorted-by-start `(start, end_exclusive, kind)` ranges for one

@@ -5,6 +5,7 @@ use hxy_view::HexEditorExt;
 
 use crate::files::OpenFile;
 use crate::files::copy::CopyKind;
+use crate::settings::ByteHighlightModeExt;
 use crate::state::PersistedState;
 
 /// Pair of (boundaries, colors) that the hex view applies as

@@ -1,0 +1,23 @@
+[package]
+name = "hxy-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared hxy application settings model and SQLite persistence"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+hxy-core = { workspace = true }
+hxy-editor = { workspace = true, features = ["serde"] }
+jiff = { workspace = true }
+serde = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# jiff::Timestamp::now() panics on wasm32-unknown-unknown without the
+# `js` feature; `record_recent` stamps entries with the current time.
+jiff = { workspace = true, features = ["js"] }

@@ -51,6 +51,7 @@ dhat = ["dep:dhat"]
 # Internal crates
 hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
+hxy-settings = { workspace = true }
 hxy-view = { workspace = true, features = ["serde"] }
 egui = { workspace = true }
 # Upstream has no egui 0.36 release yet; 0.14 comes from the
