@@ -2760,19 +2760,9 @@ pub(crate) fn user_plugins_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::data_dir()?;
-    Some(base.join(APP_NAME).join("template-plugins"))
-}
-
-/// Directory for user-authored template sources (`.bt` files). The
-/// [`TemplateLibrary`] scans this for auto-detection; distinct from
-/// `template-plugins/`, which holds compiled WASM runtimes.
+pub(crate) use hxy_templates::user_template_plugins_dir;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn user_templates_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::data_dir()?;
-    Some(base.join(APP_NAME).join("templates"))
-}
+pub(crate) use hxy_templates::user_templates_dir;
 
 /// Build the global template library from every relevant on-disk
 /// source: the user's hand-curated `templates/` directory plus the

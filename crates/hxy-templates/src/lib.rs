@@ -15,3 +15,20 @@ pub mod state;
 /// `APP_NAME` so every frontend shares the same plugin and
 /// template directories.
 pub(crate) const APP_NAME: &str = "hxy";
+
+/// Directory holding user-installed WASM template runtimes
+/// (compiled components). Distinct from [`user_templates_dir`],
+/// which holds template *sources*. Shared by every frontend so
+/// plugins installed once are visible everywhere.
+pub fn user_template_plugins_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::data_dir()?;
+    Some(base.join(APP_NAME).join("template-plugins"))
+}
+
+/// Directory for user-authored template sources (`.bt` files). The
+/// [`library::TemplateLibrary`] scans this for auto-detection, and
+/// the runners sandbox `#include` resolution to it.
+pub fn user_templates_dir() -> Option<std::path::PathBuf> {
+    let base = dirs::data_dir()?;
+    Some(base.join(APP_NAME).join("templates"))
+}
