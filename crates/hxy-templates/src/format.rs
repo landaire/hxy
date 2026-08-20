@@ -1,7 +1,9 @@
 //! Template value formatting shared by the frontends: scalar value
 //! rendering for the panel's Value column, byte/string previews,
-//! and on-demand decoding of primitive-array elements.
+//! on-demand decoding of primitive-array elements, and clipboard
+//! copy formatting for template nodes.
 
+use hxy_core::copy::CopyKind;
 use hxy_core::format::IntValueType;
 use hxy_core::format::NumericBase;
 use hxy_core::format::NumericFormat;
@@ -324,6 +326,253 @@ pub fn decode_scalar_bytes(
     })
 }
 
+/// Read `node`'s byte span from `source` and format it according to
+/// `kind`. Returns `None` when the bytes can't be read (out of
+/// bounds, I/O error) -- the caller silently drops the copy.
+pub fn format_template_copy(
+    source: &std::sync::Arc<dyn hxy_core::HexSource>,
+    node: &Node,
+    kind: CopyKind,
+) -> Option<String> {
+    if kind.is_value() {
+        let raw = scalar_value_u64(node.value.as_ref()?)?;
+        return hxy_core::copy::format_scalar(kind, raw);
+    }
+    let start = hxy_core::ByteOffset::new(node.span.offset);
+    let end = hxy_core::ByteOffset::new(node.span.offset.saturating_add(node.span.length));
+    let range = hxy_core::ByteRange::new(start, end).ok()?;
+    let bytes = source.read(range).ok()?;
+    let ty = hxy_plugin_host::node_type_label(&node.type_name);
+    hxy_core::copy::format_bytes(kind, &bytes, &node.name, &ty)
+}
+
+/// Walk a struct (or array-of-structs) node and produce a C99
+/// designated-initialiser block or a Rust struct literal that
+/// mirrors its children's field layout and values. Runs recursively
+/// so nested structs and arrays render inline.
+pub fn format_template_struct(nodes: &[Node], root_idx: usize, kind: CopyKind) -> Option<String> {
+    let root = nodes.get(root_idx)?;
+    let mut out = String::new();
+    let ident = hxy_core::copy::sanitize_ident(&root.name);
+    let ty = hxy_plugin_host::node_type_label(&root.type_name);
+    match kind {
+        CopyKind::StructRust => {
+            use std::fmt::Write;
+            let _ = write!(out, "let {ident}: {ty} = ");
+            write_struct_body(&mut out, nodes, root_idx, StructSyntax::Rust, 0)?;
+            out.push(';');
+        }
+        CopyKind::StructC => {
+            use std::fmt::Write;
+            let _ = write!(out, "{ty} {ident} = ");
+            write_struct_body(&mut out, nodes, root_idx, StructSyntax::C, 0)?;
+            out.push(';');
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+#[derive(Clone, Copy)]
+enum StructSyntax {
+    Rust,
+    C,
+}
+
+/// Recursive body writer: emits `{ field: value, ... }` for a
+/// struct, `[v0, v1, ...]` / `{ v0, v1, ... }` for an array, or a
+/// literal for a scalar leaf. Returns `None` if the tree is
+/// inconsistent (no children of a struct, e.g.).
+fn write_struct_body(out: &mut String, nodes: &[Node], idx: usize, syntax: StructSyntax, depth: usize) -> Option<()> {
+    use hxy_plugin_host::template::NodeType;
+    use std::fmt::Write;
+
+    let node = nodes.get(idx)?;
+    let children: Vec<usize> =
+        nodes.iter().enumerate().filter_map(|(i, n)| (n.parent == Some(idx as u32)).then_some(i)).collect();
+
+    match &node.type_name {
+        NodeType::StructType(name) | NodeType::StructArray((name, _)) => {
+            // For arrays of structs, each child element IS a
+            // struct node; we recurse into each so the output is
+            // `[ Struct { .. }, Struct { .. } ]`.
+            let is_array = matches!(node.type_name, NodeType::StructArray(_));
+            if is_array {
+                open_array(out, syntax);
+                for (i, &cidx) in children.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_struct_body(out, nodes, cidx, syntax, depth + 1)?;
+                }
+                close_array(out, syntax);
+            } else {
+                match syntax {
+                    StructSyntax::Rust => {
+                        let _ = write!(out, "{name} {{");
+                    }
+                    StructSyntax::C => out.push('{'),
+                }
+                for &cidx in &children {
+                    let child = &nodes[cidx];
+                    out.push('\n');
+                    for _ in 0..=depth {
+                        out.push_str("    ");
+                    }
+                    match syntax {
+                        StructSyntax::Rust => {
+                            let _ = write!(out, "{}: ", hxy_core::copy::sanitize_ident(&child.name));
+                        }
+                        StructSyntax::C => {
+                            let _ = write!(out, ".{} = ", hxy_core::copy::sanitize_ident(&child.name));
+                        }
+                    }
+                    write_struct_body(out, nodes, cidx, syntax, depth + 1)?;
+                    out.push(',');
+                }
+                out.push('\n');
+                for _ in 0..depth {
+                    out.push_str("    ");
+                }
+                out.push('}');
+            }
+        }
+        NodeType::EnumType(_) | NodeType::EnumArray(_) => {
+            // Enums and enum-arrays print their raw scalar value --
+            // the named variant isn't tracked on the wire.
+            write_scalar_or_array(out, node, &children, nodes, syntax, depth)?;
+        }
+        NodeType::Scalar(_) | NodeType::ScalarArray(_) | NodeType::Unknown(_) => {
+            write_scalar_or_array(out, node, &children, nodes, syntax, depth)?;
+        }
+    }
+    Some(())
+}
+
+fn write_scalar_or_array(
+    out: &mut String,
+    node: &Node,
+    children: &[usize],
+    nodes: &[Node],
+    syntax: StructSyntax,
+    depth: usize,
+) -> Option<()> {
+    use hxy_plugin_host::template::NodeType;
+    let is_array = matches!(node.type_name, NodeType::ScalarArray(_) | NodeType::EnumArray(_));
+    if is_array {
+        open_array(out, syntax);
+        // Scalar arrays may either have child element nodes (one
+        // per entry) or a bare `value` of Bytes. Handle the nodes
+        // case first; when empty, fall back to formatting the
+        // raw value.
+        if !children.is_empty() {
+            for (i, &cidx) in children.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_struct_body(out, nodes, cidx, syntax, depth + 1)?;
+            }
+        } else if let Some(v) = node.value.as_ref() {
+            out.push_str(&format_scalar_literal(v, syntax));
+        }
+        close_array(out, syntax);
+    } else if let Some(v) = node.value.as_ref() {
+        out.push_str(&format_scalar_literal(v, syntax));
+    } else {
+        out.push('0');
+    }
+    Some(())
+}
+
+fn open_array(out: &mut String, syntax: StructSyntax) {
+    out.push_str(match syntax {
+        StructSyntax::Rust => "[",
+        StructSyntax::C => "{",
+    });
+}
+
+fn close_array(out: &mut String, syntax: StructSyntax) {
+    out.push_str(match syntax {
+        StructSyntax::Rust => "]",
+        StructSyntax::C => "}",
+    });
+}
+
+/// Literal rendering for a single scalar value. Mirrors the
+/// inspector's conventions: integers hex-prefixed for Rust/C
+/// (`0x...`), floats with trailing type suffix for Rust, booleans
+/// lowercased. Falls back to a lossless debug form for values the
+/// scalar formatters can't represent directly (strings, bytes,
+/// enums).
+fn format_scalar_literal(v: &hxy_plugin_host::template::Value, syntax: StructSyntax) -> String {
+    use hxy_plugin_host::template::Value;
+    match v {
+        Value::U8Val(x) => format!("0x{x:02X}"),
+        Value::U16Val(x) => format!("0x{x:04X}"),
+        Value::U32Val(x) => format!("0x{x:08X}"),
+        Value::U64Val(x) => format!("0x{x:016X}"),
+        Value::S8Val(x) => format!("{x}"),
+        Value::S16Val(x) => format!("{x}"),
+        Value::S32Val(x) => format!("{x}"),
+        Value::S64Val(x) => format!("{x}"),
+        Value::F32Val(x) => match syntax {
+            StructSyntax::Rust => format!("{x}f32"),
+            StructSyntax::C => format!("{x}f"),
+        },
+        Value::F64Val(x) => match syntax {
+            StructSyntax::Rust => format!("{x}f64"),
+            StructSyntax::C => format!("{x}"),
+        },
+        Value::StringVal(s) => format!("{s:?}"),
+        Value::BytesVal(bs) => {
+            let mut out = String::new();
+            out.push_str(match syntax {
+                StructSyntax::Rust => "[",
+                StructSyntax::C => "{",
+            });
+            for (i, b) in bs.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&format!("0x{b:02X}"));
+            }
+            out.push_str(match syntax {
+                StructSyntax::Rust => "]",
+                StructSyntax::C => "}",
+            });
+            out
+        }
+        Value::EnumVal((name, value)) => {
+            // Print the numeric value (both syntaxes accept integer
+            // literals here), with the variant name as a trailing
+            // comment so it's still visible in the output.
+            format!("{value} /* {name} */")
+        }
+        Value::BoolVal(b) => match syntax {
+            StructSyntax::Rust | StructSyntax::C => format!("{b}"),
+        },
+    }
+}
+
+/// Extract a u64 bit pattern from a scalar [`hxy_plugin_host::template::Value`],
+/// preserving signed-bit representation so hex displays match what the
+/// user sees on the wire. Returns `None` for non-scalar values (Str /
+/// Bool / Bytes / Enum).
+fn scalar_value_u64(v: &hxy_plugin_host::template::Value) -> Option<u64> {
+    use hxy_plugin_host::template::Value;
+    Some(match v {
+        Value::U8Val(x) => u64::from(*x),
+        Value::U16Val(x) => u64::from(*x),
+        Value::U32Val(x) => u64::from(*x),
+        Value::U64Val(x) => *x,
+        Value::S8Val(x) => *x as u8 as u64,
+        Value::S16Val(x) => *x as u16 as u64,
+        Value::S32Val(x) => *x as u32 as u64,
+        Value::S64Val(x) => *x as u64,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +686,51 @@ mod tests {
         *fmts.slot_mut(IntValueType::U32) = NumericFormat::Always(NumericBase::Decimal);
         assert_eq!(fmts.slot(IntValueType::U8), NumericFormat::Always(NumericBase::Hex));
         assert_eq!(fmts.slot(IntValueType::U32), NumericFormat::Always(NumericBase::Decimal));
+    }
+
+    use hxy_plugin_host::template::NodeType;
+    use hxy_plugin_host::template::ScalarKind;
+    use hxy_plugin_host::template::Span;
+    use hxy_plugin_host::template::Value;
+
+    fn tree_node(name: &str, type_name: NodeType, parent: Option<u32>, value: Option<Value>, span: (u64, u64)) -> Node {
+        Node {
+            name: name.to_owned(),
+            type_name,
+            span: Span { offset: span.0, length: span.1 },
+            value,
+            parent,
+            array: None,
+            display: None,
+            attributes: Vec::new(),
+        }
+    }
+
+    /// Byte-for-byte parity with the egui app's struct copy output
+    /// (the fns moved here verbatim from `crates/hxy/src/app/mod.rs`).
+    #[test]
+    fn struct_copy_matches_egui_fixture() {
+        let nodes = vec![
+            tree_node("header", NodeType::StructType("Header".to_owned()), None, None, (0, 6)),
+            tree_node("magic", NodeType::Scalar(ScalarKind::U32K), Some(0), Some(Value::U32Val(0xCAFE_BABE)), (0, 4)),
+            tree_node("flags", NodeType::Scalar(ScalarKind::S16K), Some(0), Some(Value::S16Val(-2)), (4, 2)),
+        ];
+        let rust = format_template_struct(&nodes, 0, CopyKind::StructRust).unwrap();
+        assert_eq!(rust, "let header: Header = Header {\n    magic: 0xCAFEBABE,\n    flags: -2,\n};");
+        let c = format_template_struct(&nodes, 0, CopyKind::StructC).unwrap();
+        assert_eq!(c, "Header header = {\n    .magic = 0xCAFEBABE,\n    .flags = -2,\n};");
+        assert!(format_template_struct(&nodes, 0, CopyKind::BytesHexSpaced).is_none());
+    }
+
+    #[test]
+    fn template_copy_value_uses_bit_pattern_and_bytes_read_the_span() {
+        let source: std::sync::Arc<dyn hxy_core::HexSource> =
+            std::sync::Arc::new(hxy_core::MemorySource::new(vec![0x00, 0x50, 0x4B, 0xFF]));
+        let node = tree_node("sig", NodeType::Scalar(ScalarKind::S8K), None, Some(Value::S8Val(-1)), (1, 2));
+        assert_eq!(format_template_copy(&source, &node, CopyKind::ValueHex).as_deref(), Some("0xFF"));
+        assert_eq!(format_template_copy(&source, &node, CopyKind::BytesHexSpaced).as_deref(), Some("50 4B"));
+        // Span past EOF: the read fails and the copy is dropped.
+        let oob = tree_node("oob", NodeType::Scalar(ScalarKind::U8K), None, None, (3, 4));
+        assert_eq!(format_template_copy(&source, &oob, CopyKind::BytesHexSpaced), None);
     }
 }

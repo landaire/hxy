@@ -11076,6 +11076,7 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [
+        ":base64-0.23",
         ":fskit-0.2",
         ":jiff-0.2",
         ":lru-0.18",

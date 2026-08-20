@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Core types and file abstractions for the hxy hex editor"
 
 [dependencies]
+base64 = { workspace = true }
 fskit = { workspace = true, features = ["jiff"] }
 jiff = { workspace = true }
 lru = "0.18.2"
