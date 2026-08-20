@@ -55,7 +55,7 @@ fn format_span(value: u64, fmt: crate::settings::NumericFormat, inverse: bool) -
 }
 
 /// Per-cell value formatter for the table visualizer. Mostly
-/// delegates to [`crate::panels::template::format_value`] so the
+/// delegates to [`hxy_templates::format::format_value`] so the
 /// hex/decimal toggle and template `[[hex]]` hint behave the same
 /// as in the main panel; the only divergence is `BytesVal`, which
 /// the table renders as a compact `[N bytes]` summary instead of
@@ -65,5 +65,5 @@ fn format_value_for_table(node: &Node, fmts: &crate::settings::TemplateValueForm
     if let Some(Value::BytesVal(b)) = node.value.as_ref() {
         return Some(format!("[{} bytes]", b.len()));
     }
-    crate::panels::template::format_value(node, fmts, inverse)
+    hxy_templates::format::format_value(node, fmts, inverse)
 }
