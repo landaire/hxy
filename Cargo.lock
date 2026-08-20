@@ -3184,6 +3184,7 @@ dependencies = [
  "hxy-imhex-lang",
  "hxy-plugin-host",
  "hxy-vfs",
+ "image",
  "reqwest",
  "sha2 0.11.0",
  "tempfile",

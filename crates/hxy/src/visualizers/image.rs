@@ -23,18 +23,15 @@ pub struct ImageCache {
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCache) {
     let cache = cache.image.get_or_insert_with(ImageCache::default);
-    let fingerprint = *blake3::hash(ctx.bytes).as_bytes();
+    let fingerprint = hxy_templates::visualize::image::fingerprint(ctx.bytes);
     let stale = cache.fingerprint != Some(fingerprint);
     if stale {
         cache.fingerprint = Some(fingerprint);
         cache.texture = None;
         cache.error = None;
         cache.size = (0, 0);
-        match ::image::load_from_memory(ctx.bytes) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
-                let (w, h) = rgba.dimensions();
-                let pixels = rgba.into_raw();
+        match hxy_templates::visualize::image::decode_rgba(ctx.bytes) {
+            Ok((w, h, pixels)) => {
                 let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
                 let texture = ui.ctx().load_texture(
                     format!("hxy-visualizer-image-{:?}", ctx.ui_id),
@@ -45,7 +42,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
                 cache.size = (w, h);
             }
             Err(e) => {
-                cache.error = Some(format!("{e}"));
+                cache.error = Some(e);
             }
         }
     }

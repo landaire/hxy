@@ -18,6 +18,11 @@
 //! functions in the submodules. Texture upload, plotting, and painting
 //! stay in each frontend.
 
+pub mod bitmap;
+pub mod digram;
+pub mod distribution;
+pub mod image;
+
 use std::sync::Arc;
 
 use hxy_core::HexSource;

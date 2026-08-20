@@ -26,8 +26,14 @@ hxy-imhex-lang = { workspace = true }
 # Locates the per-user imhex-patterns data dir for import resolution.
 dirs = "6"
 
-# Template-source fingerprints (run/restart match).
+# Template-source fingerprints (run/restart match) and visualizer
+# content fingerprints.
 blake3 = "1.8"
+
+# `image` visualizer decode: sniffs + decodes PNG/JPEG/GIF/BMP/TIFF/
+# WebP bytes into RGBA buffers. Version matches crates/hxy so the
+# graph stays deduplicated.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
 
 # ImHex-Patterns corpus download: blocking reqwest run on a worker
 # thread by the hosts; zip + sha2 unpack and fingerprint the corpus.
