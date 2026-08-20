@@ -72,6 +72,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::UninstallTemplate(path) => ws.uninstall_template(&path, window, cx),
         PaletteAction::JumpNextField => ws.jump_template_field(FieldJump::Next, cx),
         PaletteAction::JumpPrevField => ws.jump_template_field(FieldJump::Prev, cx),
+        PaletteAction::FetchImhexPatterns => ws.fetch_imhex_patterns(window, cx),
         PaletteAction::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         PaletteAction::CopySelection(format) => {
             let Some(pane) = ws.active_pane(cx) else { return };

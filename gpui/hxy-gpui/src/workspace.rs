@@ -328,6 +328,9 @@ pub struct Workspace {
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
     save_debounce: Option<Task<()>>,
+    /// The in-flight ImHex-Patterns download, if any. Guards against
+    /// starting a second concurrent fetch; cleared on completion.
+    patterns_fetch: Option<Task<()>>,
     /// `None` when the platform watcher failed to start (rare --
     /// notify setup can fail on some sandboxes); external changes
     /// simply go undetected in that case, same as egui's fallback.
@@ -422,6 +425,7 @@ impl Workspace {
             _global_search_sub: None,
             layout_path,
             save_debounce: None,
+            patterns_fetch: None,
             file_watch: None,
             pending_reload: None,
             pending_close: None,
@@ -2237,6 +2241,48 @@ impl Workspace {
     pub(crate) fn jump_template_field(&mut self, jump: FieldJump, cx: &mut Context<Self>) {
         let Some(file) = self.reference_active_file(cx) else { return };
         file.update(cx, |panel, cx| panel.jump_to_template_field(jump, cx));
+    }
+
+    /// Download the ImHex-Patterns corpus into the shared install
+    /// directory and refresh the template library. One info toast on
+    /// start and one on completion (success or failure); per-byte
+    /// progress is intentionally not surfaced. A second invocation
+    /// while a download is running is a no-op.
+    pub(crate) fn fetch_imhex_patterns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.patterns_fetch.is_some() {
+            return;
+        }
+        let Some(dest) = hxy_templates::patterns_fetch::install_dir() else {
+            window.push_notification(Notification::error(hxy_i18n::t("patterns-fetch-no-data-dir")), cx);
+            return;
+        };
+        if let Some(parent) = dest.parent() {
+            // Best-effort pre-create (egui's spawn_default_fetch does
+            // the same): if it fails, extraction fails loudly below
+            // and surfaces through the failure toast.
+            let _ = std::fs::create_dir_all(parent);
+        }
+        window.push_notification(Notification::info(hxy_i18n::t("patterns-fetch-started")), cx);
+        self.patterns_fetch = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { hxy_templates::patterns_fetch::run_fetch(&dest, |_progress| {}) })
+                .await;
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.patterns_fetch = None;
+                match result {
+                    Ok((_sha256, _root)) => {
+                        crate::templates::refresh_library(cx);
+                        window.push_notification(Notification::success(hxy_i18n::t("patterns-fetch-done")), cx);
+                    }
+                    Err(error) => {
+                        window.push_notification(
+                            Notification::error(hxy_i18n::t_args("patterns-fetch-failed", &[("error", &error)])),
+                            cx,
+                        );
+                    }
+                }
+            });
+        }));
     }
 
     /// After a successful open: if the library recognises the file's

@@ -209,6 +209,9 @@ pub enum PaletteAction {
     /// Move the caret to the previous template field boundary before
     /// the cursor, wrapping to the last field at the start.
     JumpPrevField,
+    /// Download the upstream WerWolv/ImHex-Patterns corpus into the
+    /// shared install directory so hundreds more formats auto-detect.
+    FetchImhexPatterns,
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -429,6 +432,12 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
         hxy_i18n::t("palette-uninstall-template"),
         PaletteAction::SwitchMode(PaletteMode::UninstallTemplate),
     ));
+    // Workspace-scoped like the compare entry: downloading the corpus
+    // needs no active file.
+    out.push(
+        Entry::new(hxy_i18n::t("gpui-palette-fetch-imhex-patterns"), PaletteAction::FetchImhexPatterns)
+            .with_subtitle(hxy_i18n::t("gpui-palette-fetch-imhex-patterns-subtitle")),
+    );
     let has_fields = ctx.template_field_count > 0;
     for (key, action) in [
         ("palette-jump-next-field", PaletteAction::JumpNextField),
@@ -849,6 +858,7 @@ mod tests {
         let data = actions(&entries);
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::Templates)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::UninstallTemplate)));
+        assert!(data.contains(&PaletteAction::FetchImhexPatterns));
         // No selection: the at-selection cascade is omitted, not disabled.
         assert!(!data.contains(&PaletteAction::SwitchMode(PaletteMode::TemplatesAtSelection)));
         // No template run: the jump entries are present but disabled.
