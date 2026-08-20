@@ -22,6 +22,7 @@ use gpui::Point;
 use gpui::Render;
 use gpui::ScrollDelta;
 use gpui::ScrollWheelEvent;
+use gpui::StatefulInteractiveElement;
 use gpui::Styled;
 use gpui::Window;
 use gpui::div;
@@ -105,6 +106,15 @@ pub struct HexPane {
     /// Per-byte color override consulted in the paint loop. `None`
     /// leaves the built-in byte-class palette in charge.
     byte_styler: Option<ByteStyler>,
+    /// Custom byte-value glyph palette, indexed by byte value. When
+    /// set, it replaces the built-in byte-class glyph colors in both
+    /// the hex and ascii panes; a styler `fg` still wins per cell.
+    /// Mirrors egui hxy-view's `HighlightPalette::Custom`.
+    value_palette: Option<Arc<[Hsla; 256]>>,
+    /// Byte cell currently under the pointer, if any. Fed by mouse
+    /// moves, cleared when the pointer leaves the pane. Consumers
+    /// (template breadcrumbs) read it via [`Self::hovered_offset`].
+    hovered_offset: Option<ByteOffset>,
 }
 
 impl HexPane {
@@ -120,6 +130,8 @@ impl HexPane {
             row_map: None,
             hover_span: None,
             byte_styler: None,
+            value_palette: None,
+            hovered_offset: None,
         }
     }
 
@@ -154,6 +166,8 @@ impl HexPane {
         self.row_map = None;
         self.hover_span = None;
         self.byte_styler = None;
+        self.value_palette = None;
+        self.hovered_offset = None;
         cx.notify();
     }
 
@@ -197,6 +211,35 @@ impl HexPane {
     ) {
         self.byte_styler = styler.map(Arc::from);
         cx.notify();
+    }
+
+    /// The installed per-byte styler, if any. An [`Arc`] clone, so
+    /// consumers (and tests) can evaluate the composed style for a
+    /// given cell without re-plumbing the closure.
+    pub fn byte_styler(&self) -> Option<ByteStyler> {
+        self.byte_styler.clone()
+    }
+
+    /// Install (or clear) the custom byte-value glyph palette. Indexed
+    /// by byte value in the paint loop; replaces the built-in
+    /// byte-class glyph colors in both the hex and ascii panes while
+    /// set. Mirrors egui hxy-view's `HighlightPalette::Custom`, which
+    /// egui can also render as a background fill depending on the
+    /// user's highlight mode; the gpui pane has no highlight-mode
+    /// setting yet, so the palette always drives the glyph color.
+    pub fn set_value_palette(&mut self, palette: Option<Arc<[Hsla; 256]>>, cx: &mut Context<Self>) {
+        self.value_palette = palette;
+        cx.notify();
+    }
+
+    /// The installed custom byte-value palette, if any.
+    pub fn value_palette(&self) -> Option<&Arc<[Hsla; 256]>> {
+        self.value_palette.as_ref()
+    }
+
+    /// The byte cell currently under the pointer, if any.
+    pub fn hovered_offset(&self) -> Option<ByteOffset> {
+        self.hovered_offset
     }
 
     /// Total visual rows. With a row map, that is the slot count; the
@@ -372,6 +415,7 @@ impl HexPane {
     /// untouched (see [`Self::handle_mouse_down`]'s doc for why that's
     /// still parity-correct rather than a bypass).
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.update_hovered_offset(event.position, cx);
         if self.minimap_scrubbing {
             if event.pressed_button == Some(MouseButton::Left) {
                 self.scrub_minimap(event.position.y);
@@ -399,6 +443,19 @@ impl HexPane {
         // A hit always extends the selection (above), so this branch
         // always repaints regardless of whether the scroll also moved.
         cx.notify();
+    }
+
+    /// Track the byte cell under the pointer, repainting only when it
+    /// changes (mouse moves are frequent; most stay within one cell).
+    /// The trailing EOF slot hit-tests to `len` for caret placement;
+    /// that is not a real byte, so hover skips it.
+    fn update_hovered_offset(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let len = self.editor.source().len().get();
+        let hovered = self.hit_at(position).map(|hit| hit.offset).filter(|offset| offset.get() < len);
+        if hovered != self.hovered_offset {
+            self.hovered_offset = hovered;
+            cx.notify();
+        }
     }
 
     /// Left-up: end the drag or the minimap scrub.
@@ -557,10 +614,12 @@ impl Render for HexPane {
             row_map: self.row_map.clone(),
             hover_span: self.hover_span,
             byte_styler: self.byte_styler.clone(),
+            value_palette: self.value_palette.clone(),
         };
         let canvas = hex_canvas(snap, cx.entity());
 
         div()
+            .id("hex-pane")
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
@@ -570,9 +629,20 @@ impl Render for HexPane {
                     cx.stop_propagation();
                 }
             }))
+            // Consumers key breadcrumb detail off the live modifier
+            // state (Alt); repaint so their observers re-read it.
+            .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
             .on_mouse_move(cx.listener(Self::handle_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            // Mouse moves stop arriving once the pointer leaves the
+            // pane, so the hover latch needs the leave edge to clear.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.hovered_offset.is_some() {
+                    this.hovered_offset = None;
+                    cx.notify();
+                }
+            }))
             .child(div().size_full().child(canvas))
     }
 }
@@ -603,6 +673,38 @@ mod tests {
     fn lines_delta_is_rows_pixels_delta_divides_by_line_height() {
         assert_eq!(scroll_delta_to_rows(ScrollDelta::Lines(point(0.0, -3.0)), px(16.0)), -3.0);
         assert_eq!(scroll_delta_to_rows(ScrollDelta::Pixels(point(px(0.0), px(-32.0))), px(16.0)), -2.0);
+    }
+
+    /// The value palette round-trips through its setter and is cleared
+    /// by `set_source` along with the other offset-keyed overlays.
+    #[gpui::test]
+    fn set_source_clears_value_palette_and_hover_state(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
+        let palette = Arc::new([gpui::hsla(0.5, 0.5, 0.5, 1.0); 256]);
+        let span = ByteRange::new(ByteOffset::new(2), ByteOffset::new(6)).unwrap();
+        window
+            .update(cx, |p, _, cx| {
+                p.set_value_palette(Some(palette.clone()), cx);
+                p.set_hover_span(Some(span), cx);
+            })
+            .unwrap();
+        window
+            .update(cx, |p, _, _| {
+                assert!(p.value_palette().is_some_and(|installed| Arc::ptr_eq(installed, &palette)));
+                assert_eq!(p.hover_span(), Some(span));
+            })
+            .unwrap();
+
+        window.update(cx, |p, _, cx| p.set_source(source_64_rows(), cx)).unwrap();
+        window
+            .update(cx, |p, _, _| {
+                assert!(p.value_palette().is_none(), "set_source clears the value palette");
+                assert!(p.hover_span().is_none());
+                assert!(p.hovered_offset().is_none());
+                assert!(p.byte_styler().is_none());
+            })
+            .unwrap();
     }
 
     #[gpui::test]

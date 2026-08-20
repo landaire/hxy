@@ -295,3 +295,30 @@ fn shift_click_extends_selection(cx: &mut TestAppContext) {
     cx.simulate_click(hex_point(&frame, 10), Modifiers { shift: true, ..Modifiers::none() });
     assert_eq!(selection(cx, &pane), (2, 10));
 }
+
+/// A buttonless mouse move latches the byte cell under the pointer as
+/// `hovered_offset` (hex and ascii panes both hit); a move over the
+/// address gutter resolves to no cell and clears it.
+#[gpui::test]
+fn mouse_move_tracks_hovered_offset(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
+    focus(cx, &pane);
+    let frame = frame(cx, &pane);
+
+    cx.simulate_mouse_move(hex_point(&frame, 19), None, Modifiers::none());
+    assert_eq!(pane.read_with(cx, |p, _| p.hovered_offset()), Some(ByteOffset::new(19)));
+
+    cx.simulate_mouse_move(ascii_point(&frame, 5), None, Modifiers::none());
+    assert_eq!(pane.read_with(cx, |p, _| p.hovered_offset()), Some(ByteOffset::new(5)));
+
+    // The address gutter is inside the pane but hits no byte cell.
+    let gutter = point(frame.content_origin.x + frame.geometry.address_x() + px(1.0), hex_point(&frame, 0).y);
+    cx.simulate_mouse_move(gutter, None, Modifiers::none());
+    assert_eq!(pane.read_with(cx, |p, _| p.hovered_offset()), None);
+
+    // The trailing EOF row hit-tests to offset == len (for caret
+    // placement); that byte does not exist, so hover stays clear.
+    cx.simulate_mouse_move(hex_point(&frame, 64), None, Modifiers::none());
+    assert_eq!(pane.read_with(cx, |p, _| p.hovered_offset()), None);
+}

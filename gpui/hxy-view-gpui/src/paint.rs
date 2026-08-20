@@ -95,6 +95,8 @@ pub(crate) struct GridSnapshot {
     pub hover_span: Option<ByteRange>,
     /// Per-byte color override consulted in the paint loop.
     pub byte_styler: Option<crate::ByteStyler>,
+    /// Custom byte-value glyph palette, indexed by byte value.
+    pub value_palette: Option<Arc<[Hsla; 256]>>,
 }
 
 /// Build the canvas element that paints the grid. `entity` is used from
@@ -540,7 +542,7 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
         // Styler foreground overrides the byte-class color (egui
         // lib.rs:1400-1418: `fg_override` wins over the palette).
         let fg_override = snap.byte_styler.as_ref().and_then(|f| f(byte, offset).fg);
-        let color = fg_override.unwrap_or_else(|| byte_color(byte, &snap.colors));
+        let color = fg_override.unwrap_or_else(|| glyph_color(snap.value_palette.as_deref(), byte, &snap.colors));
 
         let hex = format!("{byte:02X}");
         paint_line(mono, &hex, snap.mono_size, color, point(ctx.origin_x + g.hex_x(col), ctx.row_y), window, app);
@@ -634,6 +636,16 @@ fn paint_line(
 
 fn run(len: usize, color: Hsla, mono: &Font) -> TextRun {
     TextRun { len, font: mono.clone(), color, background_color: None, underline: None, strikethrough: None }
+}
+
+/// Glyph color for a byte: the custom value palette when one is
+/// installed (egui hxy-view's `HighlightPalette::Custom`, applied to
+/// both the hex and ascii glyphs), otherwise the byte-class color.
+fn glyph_color(palette: Option<&[Hsla; 256]>, byte: u8, colors: &PaintColors) -> Hsla {
+    match palette {
+        Some(table) => table[byte as usize],
+        None => byte_color(byte, colors),
+    }
 }
 
 fn byte_color(byte: u8, colors: &PaintColors) -> Hsla {
@@ -730,6 +742,27 @@ mod tests {
         let last = 15u16;
         let hex_right = g.hex_x(last) + g.hex_cell_w();
         assert!(hex_right < g.ascii_x(0), "hex run right edge must stop before the ascii pane");
+    }
+
+    /// A custom value palette drives the glyph color for its byte
+    /// value; without one, the byte-class colors stay in charge.
+    #[test]
+    fn glyph_color_prefers_the_value_palette() {
+        let colors = PaintColors {
+            foreground: color(0.2),
+            muted: color(0.3),
+            accent: color(0.4),
+            selection: color(0.5),
+            hover: color(0.6),
+            background: color(0.7),
+        };
+        let mut table = [color(0.0); 256];
+        table[0x41] = color(0.9);
+        assert_eq!(glyph_color(Some(&table), 0x41, &colors), color(0.9));
+        assert_eq!(glyph_color(Some(&table), 0x00, &colors), color(0.0), "palette indexes by byte value");
+        assert_eq!(glyph_color(None, 0x00, &colors), colors.muted);
+        assert_eq!(glyph_color(None, b'A', &colors), colors.foreground);
+        assert_eq!(glyph_color(None, 0xFF, &colors), colors.accent);
     }
 
     /// The header band spans the pane's top edge down to the first

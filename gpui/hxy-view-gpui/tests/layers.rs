@@ -141,6 +141,20 @@ fn hover_span_paints(cx: &mut TestAppContext) {
     let _ = frame(cx, &pane);
 }
 
+/// Installing a custom byte-value palette paints without panic (the
+/// per-glyph color resolution is unit-tested in paint.rs; this smokes
+/// the full pass with a palette in the snapshot).
+#[gpui::test]
+fn value_palette_paints(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
+    focus(cx, &pane);
+    pane.update(cx, |p, cx| {
+        p.set_value_palette(Some(Arc::new([hsla(0.1, 0.5, 0.5, 1.0); 256])), cx);
+    });
+    let _ = frame(cx, &pane);
+}
+
 /// The byte styler is consulted for on-screen cells during paint.
 #[gpui::test]
 fn byte_styler_consulted_during_paint(cx: &mut TestAppContext) {
