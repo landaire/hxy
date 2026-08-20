@@ -8,54 +8,12 @@
 use egui_plot::Line;
 use egui_plot::Plot;
 use egui_plot::PlotPoints;
+use hxy_templates::visualize::sound::SampleFormat;
+pub use hxy_templates::visualize::sound::SoundCache;
+use hxy_templates::visualize::sound::downsample_for_plot;
 
 use super::VisualizerCache;
 use super::VisualizerContext;
-
-#[derive(Default)]
-pub struct SoundCache {
-    pub fingerprint: Option<[u8; 32]>,
-    pub samples: Vec<f64>,
-    pub channels: u16,
-    pub sample_rate: u32,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum SampleFormat {
-    PcmU8,
-    PcmS16Le,
-    PcmS16Be,
-    PcmF32Le,
-}
-
-impl SampleFormat {
-    fn parse(s: &str) -> Option<Self> {
-        Some(match s.to_ascii_lowercase().as_str() {
-            "u8" | "pcm_u8" => Self::PcmU8,
-            "s16" | "s16le" | "pcm_s16le" => Self::PcmS16Le,
-            "s16be" | "pcm_s16be" => Self::PcmS16Be,
-            "f32" | "f32le" | "pcm_f32le" => Self::PcmF32Le,
-            _ => return None,
-        })
-    }
-
-    fn width(&self) -> usize {
-        match self {
-            Self::PcmU8 => 1,
-            Self::PcmS16Le | Self::PcmS16Be => 2,
-            Self::PcmF32Le => 4,
-        }
-    }
-
-    fn read(&self, b: &[u8]) -> f64 {
-        match self {
-            Self::PcmU8 => (b[0] as f64 - 128.0) / 128.0,
-            Self::PcmS16Le => i16::from_le_bytes([b[0], b[1]]) as f64 / i16::MAX as f64,
-            Self::PcmS16Be => i16::from_be_bytes([b[0], b[1]]) as f64 / i16::MAX as f64,
-            Self::PcmF32Le => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
-        }
-    }
-}
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCache) {
     let cache = cache.sound.get_or_insert_with(SoundCache::default);
@@ -94,32 +52,4 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext, cache: &mut VisualizerCa
     Plot::new(ctx.ui_id.with("sound")).height(ui.available_height() - 4.0).show(ui, |plot_ui| {
         plot_ui.line(Line::new("waveform", points));
     });
-}
-
-fn downsample_for_plot(bytes: &[u8], format: SampleFormat, channels: u16) -> Vec<f64> {
-    const TARGET: usize = 4096;
-    let stride = format.width() * channels.max(1) as usize;
-    let total = bytes.len() / stride;
-    if total == 0 {
-        return Vec::new();
-    }
-    let bucket = total.div_ceil(TARGET).max(1);
-    let mut out = Vec::with_capacity(total.div_ceil(bucket));
-    let mut i = 0;
-    while i < total {
-        let mut sum = 0.0f64;
-        let mut count = 0;
-        for j in 0..bucket {
-            let idx = i + j;
-            if idx >= total {
-                break;
-            }
-            let off = idx * stride;
-            sum += format.read(&bytes[off..off + format.width()]);
-            count += 1;
-        }
-        out.push(sum / count.max(1) as f64);
-        i += bucket;
-    }
-    out
 }

@@ -5,10 +5,12 @@
 //! readout plus a normalised world-rect with a dot at the lat/lng;
 //! a real basemap is out of scope for this milestone.
 
+use hxy_templates::visualize::coordinates::resolve_coordinates;
+
 use super::VisualizerContext;
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
-    let (lat, lng) = match resolve_coordinates(ctx) {
+    let (lat, lng) = match resolve_coordinates(ctx.bytes, &ctx.spec.args) {
         Ok(v) => v,
         Err(e) => {
             ui.colored_label(ui.visuals().error_fg_color, e);
@@ -51,29 +53,4 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
     let pos = to_screen(lat, lng);
     let dot_color = ui.visuals().selection.bg_fill;
     painter.circle_filled(pos, 6.0, dot_color);
-}
-
-fn resolve_coordinates(ctx: &VisualizerContext) -> Result<(f64, f64), String> {
-    if ctx.spec.args.len() >= 2 {
-        let lat: f64 = ctx.spec.args[0].parse().map_err(|_| {
-            hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lat"), ("got", &ctx.spec.args[0])])
-        })?;
-        let lng: f64 = ctx.spec.args[1].parse().map_err(|_| {
-            hxy_i18n::t_args("visualizer-coords-bad-arg", &[("which", "lng"), ("got", &ctx.spec.args[1])])
-        })?;
-        return Ok((clamp_lat(lat), clamp_lng(lng)));
-    }
-    if ctx.bytes.len() >= 16 {
-        let lat = f64::from_le_bytes(ctx.bytes[0..8].try_into().unwrap());
-        let lng = f64::from_le_bytes(ctx.bytes[8..16].try_into().unwrap());
-        return Ok((clamp_lat(lat), clamp_lng(lng)));
-    }
-    Err(hxy_i18n::t("visualizer-coords-need-bytes-or-args"))
-}
-
-fn clamp_lat(v: f64) -> f64 {
-    v.clamp(-90.0, 90.0)
-}
-fn clamp_lng(v: f64) -> f64 {
-    v.clamp(-180.0, 180.0)
 }

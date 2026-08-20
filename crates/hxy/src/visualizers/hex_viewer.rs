@@ -4,16 +4,10 @@
 //! the user can inspect a small slice without scrolling the main
 //! editor.
 
-use std::fmt::Write;
+use hxy_templates::visualize::hex_dump::MAX_BYTES;
+use hxy_templates::visualize::hex_dump::format_dump;
 
 use super::VisualizerContext;
-
-/// Bytes per row in the dump. Matches the hex view's default width
-/// so the user can mentally line up offsets without doing math.
-const COLS: usize = 16;
-/// Cap how much we render so a 100MB field doesn't blow up the UI
-/// thread. The user opened a *visualizer*, not the main editor.
-const MAX_BYTES: usize = 64 * 1024;
 
 pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
     let truncated = ctx.bytes.len() > MAX_BYTES;
@@ -39,29 +33,4 @@ pub fn show(ui: &mut egui::Ui, ctx: &VisualizerContext) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add(egui::TextEdit::multiline(&mut dump.as_str()).font(egui::TextStyle::Monospace).code_editor());
     });
-}
-
-fn format_dump(base_offset: u64, bytes: &[u8]) -> String {
-    let rows = bytes.len().div_ceil(COLS);
-    let mut out = String::with_capacity(rows * (10 + COLS * 3 + 2 + COLS + 1));
-    for (row_idx, chunk) in bytes.chunks(COLS).enumerate() {
-        let off = base_offset + (row_idx * COLS) as u64;
-        let _ = write!(out, "{off:08X}  ");
-        for col in 0..COLS {
-            if col < chunk.len() {
-                let _ = write!(out, "{:02X} ", chunk[col]);
-            } else {
-                out.push_str("   ");
-            }
-            if col == 7 {
-                out.push(' ');
-            }
-        }
-        out.push(' ');
-        for &b in chunk {
-            out.push(if (0x20..0x7f).contains(&b) { b as char } else { '.' });
-        }
-        out.push('\n');
-    }
-    out
 }

@@ -94,12 +94,10 @@ egui-toast = "0.22.0"
 fskit = { workspace = true }
 egui_plot = "0.37"
 dhat = { version = "0.3.3", optional = true }
-# Visualizer renderers: `image` decodes PNG/JPEG/GIF/BMP/TIFF/WebP
-# bytes for the `image` ImHex visualizer; `iced-x86` is the
-# pure-Rust disassembler backing the `disassembler` visualizer
-# (other ISAs are stubbed -- adding capstone would pull in C deps).
+# Image decode for the visualizer pipeline integration test; the
+# `image` visualizer's decode itself lives in hxy-templates now
+# (same version there so the graph stays deduplicated).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
-iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel"] }
 # Checksum tool: each crate exposes the same RustCrypto `Digest` API
 # so the streaming-pass implementation can fan out to every selected
 # algorithm uniformly. CRC32 sits outside the RustCrypto trait family

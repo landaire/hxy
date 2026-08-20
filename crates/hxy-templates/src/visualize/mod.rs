@@ -19,9 +19,16 @@
 //! stay in each frontend.
 
 pub mod bitmap;
+pub mod coordinates;
 pub mod digram;
+pub mod disasm;
 pub mod distribution;
+pub mod hex_dump;
 pub mod image;
+pub mod plot;
+pub mod sound;
+pub mod text;
+pub mod timestamp;
 
 use std::sync::Arc;
 

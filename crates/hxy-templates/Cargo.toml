@@ -30,10 +30,13 @@ dirs = "6"
 # content fingerprints.
 blake3 = "1.8"
 
-# `image` visualizer decode: sniffs + decodes PNG/JPEG/GIF/BMP/TIFF/
-# WebP bytes into RGBA buffers. Version matches crates/hxy so the
-# graph stays deduplicated.
+# Visualizer decoders: `image` sniffs + decodes PNG/JPEG/GIF/BMP/
+# TIFF/WebP bytes into RGBA buffers; `iced-x86` is the x86
+# disassembler backend; `jiff` decodes timestamp fields. Versions
+# match crates/hxy so the graph stays deduplicated.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel"] }
+jiff = { workspace = true }
 
 # ImHex-Patterns corpus download: blocking reqwest run on a worker
 # thread by the hosts; zip + sha2 unpack and fingerprint the corpus.
