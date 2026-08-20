@@ -109,6 +109,18 @@ impl TemplateLibrary {
         Self { entries }
     }
 
+    /// Build the library from every default on-disk source: the
+    /// user's hand-curated templates directory plus the
+    /// auto-installed ImHex-Patterns corpus. Either path may be
+    /// missing (first launch, never installed, unresolvable data
+    /// dir); the loader skips absent dirs gracefully.
+    pub fn load_default() -> Self {
+        let user = crate::user_templates_dir();
+        let patterns = crate::patterns_fetch::install_dir();
+        let dirs: Vec<&Path> = [user.as_deref(), patterns.as_deref()].into_iter().flatten().collect();
+        Self::load_from_dirs(dirs)
+    }
+
     pub fn entries(&self) -> &[TemplateEntry] {
         &self.entries
     }

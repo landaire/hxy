@@ -2504,16 +2504,11 @@ pub(crate) use hxy_templates::user_template_plugins_dir;
 pub(crate) use hxy_templates::user_templates_dir;
 
 /// Build the global template library from every relevant on-disk
-/// source: the user's hand-curated `templates/` directory plus the
-/// auto-installed ImHex-Patterns corpus. Either path may be missing
-/// (first launch, never installed, etc.); the loader skips empty
-/// dirs gracefully.
+/// source (shared default dirs: user templates + ImHex-Patterns
+/// corpus).
 #[cfg(not(target_arch = "wasm32"))]
 fn load_template_library_dirs() -> crate::templates::library::TemplateLibrary {
-    let user = user_templates_dir();
-    let patterns = crate::templates::patterns_fetch::install_dir();
-    let dirs: Vec<&std::path::Path> = [user.as_deref(), patterns.as_deref()].into_iter().flatten().collect();
-    crate::templates::library::TemplateLibrary::load_from_dirs(dirs)
+    crate::templates::library::TemplateLibrary::load_default()
 }
 
 /// Default byte count for a fresh anonymous tab. Writes are
