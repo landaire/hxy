@@ -3180,6 +3180,7 @@ dependencies = [
  "dirs",
  "hxy-010-lang",
  "hxy-core",
+ "hxy-i18n",
  "hxy-imhex-lang",
  "hxy-plugin-host",
  "hxy-vfs",

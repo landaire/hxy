@@ -13,6 +13,7 @@ unsafe_code = "forbid"
 
 [dependencies]
 hxy-core = { workspace = true }
+hxy-i18n = { workspace = true }
 hxy-vfs = { workspace = true }
 hxy-plugin-host = { workspace = true }
 

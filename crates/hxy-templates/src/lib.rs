@@ -11,6 +11,7 @@ pub mod library;
 pub mod patterns_fetch;
 pub mod run;
 pub mod state;
+pub mod visualize;
 
 /// Per-user data-directory component. Must match the app's
 /// `APP_NAME` so every frontend shares the same plugin and
