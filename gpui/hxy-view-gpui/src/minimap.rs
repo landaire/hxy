@@ -94,14 +94,16 @@ pub(crate) fn strip_bounds(content_bounds: Bounds<Pixels>, char_w: Pixels) -> Mi
     }
 }
 
-/// Paints the strip's background, per-row downsampled byte-class
-/// colors, and the translucent viewport indicator.
+/// Paints the strip's background, per-row downsampled byte colors
+/// (byte-class blend when `colored`, grayscale gradient otherwise),
+/// and the translucent viewport indicator.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_minimap(
     source: &dyn HexSource,
     source_len: ByteLen,
     columns: ColumnCount,
     colors: &PaintColors,
+    colored: bool,
     strip: MinimapBounds,
     row_count: u64,
     first_visible_row: u64,
@@ -153,7 +155,7 @@ pub(crate) fn paint_minimap(
         if bytes.is_empty() {
             continue;
         }
-        let color = average_class_color(&bytes, colors);
+        let color = if colored { average_class_color(&bytes, colors) } else { average_gray_color(&bytes, colors.dark) };
         let y = strip.origin.y + bin_h * bin as f32;
         window.paint_quad(fill(bounds(point(strip.origin.x, y), size(strip.size.width, bin_h)), color));
     }
@@ -188,6 +190,20 @@ fn average_class_color(bytes: &[u8], colors: &PaintColors) -> Hsla {
     let p = weighted(colors.foreground, printable);
     let o = weighted(colors.accent, other);
     Hsla::from(Rgba { r: z.r + p.r + o.r, g: z.g + p.g + o.g, b: z.b + p.b + o.b, a: z.a + p.a + o.a })
+}
+
+/// Grayscale fallback for one strip row: the row's mean byte value
+/// picks a gray level between the theme-tuned endpoints. Ports egui
+/// hxy-view's `grayscale_for_byte` (0x00 dark gray, 0xFF near-white),
+/// applied to the bin average since this strip paints one flat color
+/// per row rather than per-byte cells. Same alpha as the class blend
+/// so the two modes read equally muted.
+fn average_gray_color(bytes: &[u8], dark: bool) -> Hsla {
+    let sum: u64 = bytes.iter().map(|&b| u64::from(b)).sum();
+    let t = (sum as f32 / bytes.len() as f32) / 255.0;
+    let (lo, hi) = if dark { (40.0, 230.0) } else { (40.0, 220.0) };
+    let v = (lo * (1.0 - t) + hi * t) / 255.0;
+    Hsla { h: 0.0, s: 0.0, l: v, a: CLASS_ALPHA }
 }
 
 /// Translucent quad over the strip rows spanned by the grid's current

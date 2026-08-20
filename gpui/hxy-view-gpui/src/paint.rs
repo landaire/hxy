@@ -74,6 +74,9 @@ pub(crate) struct PaintColors {
     /// rows scrolled up under the header, so it must be fully opaque
     /// (egui renders the header outside the scroll area entirely).
     pub background: Hsla,
+    /// Whether the theme is dark, for the minimap's grayscale
+    /// gradient endpoints (egui hxy-view's `grayscale_for_byte`).
+    pub dark: bool,
 }
 
 /// Snapshot of the editor state a single paint pass needs. Captured in
@@ -97,6 +100,10 @@ pub(crate) struct GridSnapshot {
     pub byte_styler: Option<crate::ByteStyler>,
     /// Custom byte-value glyph palette, indexed by byte value.
     pub value_palette: Option<Arc<[Hsla; 256]>>,
+    /// Whether the right-edge minimap strip is painted this frame.
+    pub show_minimap: bool,
+    /// Byte-class colors when true; grayscale gradient when false.
+    pub minimap_colored: bool,
 }
 
 /// Build the canvas element that paints the grid. `entity` is used from
@@ -153,11 +160,20 @@ fn paint_grid(
     // Grid content width shrinks by the strip width + gap: the strip
     // claims the right edge of the content area (below the header,
     // same height as the scrollable rows) and nothing else paints
-    // there.
-    let minimap_bounds = crate::minimap::strip_bounds(
-        gpui::bounds(point(bounds.origin.x, grid_top), size(bounds.size.width, grid_area_h)),
-        metrics.char_w,
-    );
+    // there. A hidden minimap latches a zero-width strip at the right
+    // edge so hit-testing (`in_minimap_strip`) can never match and the
+    // grid reclaims the full width.
+    let minimap_bounds = if snap.show_minimap {
+        crate::minimap::strip_bounds(
+            gpui::bounds(point(bounds.origin.x, grid_top), size(bounds.size.width, grid_area_h)),
+            metrics.char_w,
+        )
+    } else {
+        crate::MinimapBounds {
+            origin: point(bounds.origin.x + bounds.size.width, grid_top),
+            size: size(px(0.0), grid_area_h),
+        }
+    };
 
     // Feed this frame's viewport back into the editor so its own
     // scrolloff/visibility bookkeeping (`ensure_cursor_visible_with_scrolloff`,
@@ -192,17 +208,20 @@ fn paint_grid(
     // when mapped), exactly as egui hxy-view does -- egui passes
     // `total_rows = slots.len()` to `draw_minimap` but its
     // `HexMinimapSource` still reads `row * cols` (lib.rs:2049-2057).
-    crate::minimap::paint_minimap(
-        snap.source.as_ref(),
-        source_len,
-        snap.columns,
-        &snap.colors,
-        minimap_bounds,
-        row_count,
-        first_visible_row,
-        rows_visible,
-        window,
-    );
+    if snap.show_minimap {
+        crate::minimap::paint_minimap(
+            snap.source.as_ref(),
+            source_len,
+            snap.columns,
+            &snap.colors,
+            snap.minimap_colored,
+            minimap_bounds,
+            row_count,
+            first_visible_row,
+            rows_visible,
+            window,
+        );
+    }
 
     let selected = snap.selection.map(|s| s.range());
     let cursor = snap.selection.map(|s| s.cursor.get());
@@ -224,7 +243,11 @@ fn paint_grid(
 
     // Clip the header and rows to the width left after the strip and
     // its gap, so the grid can never paint over the minimap.
-    let grid_w = (bounds.size.width - minimap_bounds.size.width - px(crate::minimap::STRIP_GAP)).max(px(0.0));
+    let grid_w = if snap.show_minimap {
+        (bounds.size.width - minimap_bounds.size.width - px(crate::minimap::STRIP_GAP)).max(px(0.0))
+    } else {
+        bounds.size.width
+    };
     let grid_clip = gpui::bounds(bounds.origin, size(grid_w, bounds.size.height));
     // Full-width opaque strip the header sits on, from the pane's top
     // edge down to the first content row.
@@ -522,6 +545,11 @@ fn paint_cursor_cell(ctx: &RowCtx, snap: &GridSnapshot, cursor: Option<u64>, win
 
 fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut Window, app: &mut App) {
     let g = ctx.geometry;
+    // Deviation from egui: the `address_separator_enabled/_char`
+    // settings are not honored here -- the grouped-address formatter
+    // (`format_address_grouped`) lives in the egui-only hxy-view
+    // crate, not shared code, so wiring it would mean new pane
+    // capability work.
     let addr = format!("{:0width$X}", ctx.row_start, width = g.address_chars);
     paint_line(
         mono,
@@ -679,6 +707,7 @@ impl PaintColors {
             selection: theme.selection,
             hover: theme.selection.opacity(HOVER_TINT_ALPHA),
             background: theme.background,
+            dark: theme.mode.is_dark(),
         }
     }
 }
@@ -755,6 +784,7 @@ mod tests {
             selection: color(0.5),
             hover: color(0.6),
             background: color(0.7),
+            dark: true,
         };
         let mut table = [color(0.0); 256];
         table[0x41] = color(0.9);

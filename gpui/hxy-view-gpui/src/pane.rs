@@ -111,6 +111,14 @@ pub struct HexPane {
     /// the hex and ascii panes; a styler `fg` still wins per cell.
     /// Mirrors egui hxy-view's `HighlightPalette::Custom`.
     value_palette: Option<Arc<[Hsla; 256]>>,
+    /// Whether the right-edge minimap strip is painted. Mirrors egui
+    /// hxy-view's `minimap(bool)` builder flag; the host drives it
+    /// from the user's settings.
+    show_minimap: bool,
+    /// When the strip is shown, paint byte-class colors; off falls
+    /// back to a grayscale gradient. Mirrors egui hxy-view's
+    /// `minimap_colored`.
+    minimap_colored: bool,
     /// Byte cell currently under the pointer, if any. Fed by mouse
     /// moves, cleared when the pointer leaves the pane. Consumers
     /// (template breadcrumbs) read it via [`Self::hovered_offset`].
@@ -131,6 +139,8 @@ impl HexPane {
             hover_span: None,
             byte_styler: None,
             value_palette: None,
+            show_minimap: true,
+            minimap_colored: true,
             hovered_offset: None,
         }
     }
@@ -235,6 +245,32 @@ impl HexPane {
     /// The installed custom byte-value palette, if any.
     pub fn value_palette(&self) -> Option<&Arc<[Hsla; 256]>> {
         self.value_palette.as_ref()
+    }
+
+    /// Show or hide the right-edge minimap strip and repaint. Unlike
+    /// the offset-keyed overlays, this survives `set_source`: it is a
+    /// user preference, not derived from the bytes.
+    pub fn set_show_minimap(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_minimap = show;
+        cx.notify();
+    }
+
+    /// Whether the minimap strip is currently painted.
+    pub fn show_minimap(&self) -> bool {
+        self.show_minimap
+    }
+
+    /// Toggle the strip between byte-class colors and the grayscale
+    /// gradient, then repaint. Survives `set_source` like
+    /// [`Self::set_show_minimap`].
+    pub fn set_minimap_colored(&mut self, colored: bool, cx: &mut Context<Self>) {
+        self.minimap_colored = colored;
+        cx.notify();
+    }
+
+    /// Whether the minimap paints byte-class colors.
+    pub fn minimap_colored(&self) -> bool {
+        self.minimap_colored
     }
 
     /// The byte cell currently under the pointer, if any.
@@ -615,6 +651,8 @@ impl Render for HexPane {
             hover_span: self.hover_span,
             byte_styler: self.byte_styler.clone(),
             value_palette: self.value_palette.clone(),
+            show_minimap: self.show_minimap,
+            minimap_colored: self.minimap_colored,
         };
         let canvas = hex_canvas(snap, cx.entity());
 
@@ -705,6 +743,40 @@ mod tests {
                 assert!(p.byte_styler().is_none());
             })
             .unwrap();
+    }
+
+    /// Hiding the minimap latches a zero-width strip, so the grid
+    /// reclaims the full width and strip hit-testing can never match;
+    /// re-showing restores it. The colored flag round-trips too.
+    #[gpui::test]
+    fn hidden_minimap_latches_a_zero_width_strip(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.run_until_parked();
+        let shown_w = window.update(cx, |p, _, _| p.last_frame.unwrap().minimap_bounds.size.width).unwrap();
+        assert!(shown_w > px(0.0), "default paints a real strip");
+
+        window
+            .update(cx, |p, _, cx| {
+                p.set_show_minimap(false, cx);
+                p.set_minimap_colored(false, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |p, _, _| {
+                assert_eq!(p.last_frame.unwrap().minimap_bounds.size.width, px(0.0));
+                assert!(!p.show_minimap());
+                assert!(!p.minimap_colored());
+                assert!(!p.in_minimap_strip(p.last_frame.unwrap().minimap_bounds.origin.x - px(1.0)));
+            })
+            .unwrap();
+
+        window.update(cx, |p, _, cx| p.set_show_minimap(true, cx)).unwrap();
+        cx.run_until_parked();
+        let restored_w = window.update(cx, |p, _, _| p.last_frame.unwrap().minimap_bounds.size.width).unwrap();
+        assert_eq!(restored_w, shown_w);
     }
 
     #[gpui::test]
