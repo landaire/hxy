@@ -2293,6 +2293,8 @@ impl Workspace {
     /// notification widget has no dismissal hook, so dismissing and
     /// ignoring both count as declining (the closest mirror of the
     /// egui prompt's semantics the widget allows). Not persisted.
+    /// Disk opens only: VFS-entry tabs have no filesystem path for
+    /// library matching, so they never get a suggestion.
     fn suggest_template_for(&mut self, panel: &Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
         // Only harnesses run without the library global (`main`
         // installs it at startup); no library, no suggestions.

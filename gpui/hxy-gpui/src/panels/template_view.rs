@@ -834,6 +834,9 @@ impl TemplateTableDelegate {
             5 => self.numeric_cell(node.span.length, cx),
             6 => {
                 let (_, fmts) = self.formats(cx);
+                // Always the primary base: the egui table flips to the
+                // inverse numeric base while Alt is held; here Alt only
+                // affects the breadcrumb strip.
                 match format_value(&node, &fmts, false) {
                     Some(text) => div().truncate().child(text).into_any_element(),
                     None => div().into_any_element(),
@@ -930,6 +933,9 @@ impl TemplateTableDelegate {
             5 => self.numeric_cell(node.span.length, cx),
             6 => {
                 let (_, fmts) = self.formats(cx);
+                // Always the primary base: the egui table flips to the
+                // inverse numeric base while Alt is held; here Alt only
+                // affects the breadcrumb strip.
                 match format_value(&node, &fmts, false) {
                     Some(text) => div().truncate().child(text).into_any_element(),
                     None => div().into_any_element(),
@@ -1048,6 +1054,8 @@ impl TableDelegate for TemplateTableDelegate {
         })
     }
 
+    // Compact three-entry menu; egui additionally offers per-base
+    // copy-as submenus (bytes-as / value-as / C struct variants).
     fn context_menu(
         &mut self,
         row_ix: usize,

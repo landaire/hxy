@@ -425,16 +425,12 @@ impl FilePanel {
         id
     }
 
-    /// The currently-selected template instance, if any. Consumers are
-    /// the template panel UI and hex-view tinting (M4a Tasks 4-5); the
-    /// allow keeps the intermediate state warning-free.
-    #[allow(dead_code)]
+    /// The currently-selected template instance, if any.
     pub(crate) fn active_template(&self) -> Option<&TemplateInstance> {
         let id = self.active_template?;
         self.templates.iter().find(|t| t.id == id)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn active_template_mut(&mut self) -> Option<&mut TemplateInstance> {
         let id = self.active_template?;
         self.templates.iter_mut().find(|t| t.id == id)
@@ -514,6 +510,12 @@ impl FilePanel {
                 if self.active_template == Some(*id) {
                     self.active_template =
                         self.templates.first().map(|t| t.id).or_else(|| self.templates_running.first().map(|r| r.id));
+                }
+                // The cancelled run was the only consumer of a pending
+                // rerun request; replay it so surviving instances still
+                // re-execute against the edited bytes.
+                if self.templates_running.is_empty() && std::mem::take(&mut self.template_rerun_pending) {
+                    self.rerun_templates(window, cx);
                 }
             }
             TemplateEvent::ExpandArray { array_id, count } => {
