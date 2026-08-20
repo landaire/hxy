@@ -11044,7 +11044,10 @@ cargo.rust_library(
     name = "hxy-core-0.5",
     srcs = [
         "crates/hxy-core/src/cache.rs",
+        "crates/hxy-core/src/color.rs",
+        "crates/hxy-core/src/copy.rs",
         "crates/hxy-core/src/error.rs",
+        "crates/hxy-core/src/format.rs",
         "crates/hxy-core/src/geometry.rs",
         "crates/hxy-core/src/lib.rs",
         "crates/hxy-core/src/patched.rs",
@@ -11388,10 +11391,14 @@ alias(
 cargo.rust_library(
     name = "hxy-templates-0.5",
     srcs = [
+        "crates/hxy-templates/src/breadcrumb.rs",
         "crates/hxy-templates/src/builtin.rs",
+        "crates/hxy-templates/src/color.rs",
+        "crates/hxy-templates/src/format.rs",
         "crates/hxy-templates/src/lib.rs",
         "crates/hxy-templates/src/library.rs",
         "crates/hxy-templates/src/run.rs",
+        "crates/hxy-templates/src/state.rs",
     ],
     crate = "hxy_templates",
     crate_root = "crates/hxy-templates/src/lib.rs",
@@ -11422,6 +11429,7 @@ cargo.rust_library(
         ":hxy-imhex-lang-0.5",
         ":hxy-plugin-host-0.5",
         ":hxy-vfs-0.5",
+        ":tracing-0.1",
     ],
 )
 
