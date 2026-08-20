@@ -10634,8 +10634,6 @@ cargo.rust_library(
 cargo.rust_library(
     name = "hxy-0.5",
     srcs = [
-        "crates/hxy/migrations/001_init.sql",
-        "crates/hxy/migrations/002_plugin_state.sql",
         "crates/hxy/src/app/desktop.rs",
         "crates/hxy/src/app/desktop_tab_viewer.rs",
         "crates/hxy/src/app/dialogs.rs",
@@ -10694,7 +10692,6 @@ cargo.rust_library(
         "crates/hxy/src/settings/mod.rs",
         "crates/hxy/src/settings/persist/kv.rs",
         "crates/hxy/src/settings/persist/mod.rs",
-        "crates/hxy/src/settings/persist/plugin_state.rs",
         "crates/hxy/src/settings/persist/save.rs",
         "crates/hxy/src/state.rs",
         "crates/hxy/src/style.rs",
@@ -10803,6 +10800,7 @@ cargo.rust_library(
         ":hxy-imhex-lang-0.5",
         ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
+        ":hxy-settings-0.5",
         ":hxy-templates-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
@@ -10835,11 +10833,7 @@ cargo.rust_library(
 
 cargo.rust_binary(
     name = "hxy-0.5-hxy",
-    srcs = [
-        "crates/hxy/migrations/001_init.sql",
-        "crates/hxy/migrations/002_plugin_state.sql",
-        "crates/hxy/src/main.rs",
-    ],
+    srcs = ["crates/hxy/src/main.rs"],
     crate = "hxy",
     crate_root = "crates/hxy/src/main.rs",
     edition = "2024",
@@ -10912,6 +10906,7 @@ cargo.rust_binary(
         ":hxy-imhex-lang-0.5",
         ":hxy-panels-0.5",
         ":hxy-plugin-host-0.5",
+        ":hxy-settings-0.5",
         ":hxy-templates-0.5",
         ":hxy-vfs-0.5",
         ":hxy-view-0.5",
@@ -11376,6 +11371,58 @@ cargo.rust_library(
         ":vfs-0.13",
         ":wasmtime-44",
         ":wasmtime-wasi-44",
+    ],
+)
+
+alias(
+    name = "hxy-settings",
+    actual = ":hxy-settings-0.5",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "hxy-settings-0.5",
+    srcs = [
+        "crates/hxy-settings/migrations/001_init.sql",
+        "crates/hxy-settings/migrations/002_plugin_state.sql",
+        "crates/hxy-settings/src/lib.rs",
+        "crates/hxy-settings/src/persist/kv.rs",
+        "crates/hxy-settings/src/persist/mod.rs",
+        "crates/hxy-settings/src/persist/plugin_state.rs",
+        "crates/hxy-settings/src/persist/save.rs",
+    ],
+    crate = "hxy_settings",
+    crate_root = "crates/hxy-settings/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_settings",
+        "CARGO_CRATE_NAME": "hxy_settings",
+        "CARGO_MANIFEST_DIR": "crates/hxy-settings",
+        "CARGO_PKG_AUTHORS": "Lander Brandt",
+        "CARGO_PKG_DESCRIPTION": "Shared hxy application settings model and SQLite persistence",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-settings",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/hxy",
+        "CARGO_PKG_RUST_VERSION": "1.95",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":hxy-core-0.5",
+        ":hxy-editor-0.5",
+        ":hxy-plugin-host-0.5",
+        ":hxy-vfs-0.5",
+        ":jiff-0.2",
+        ":serde-1",
+        ":serde_json-1",
+        ":sqlx-0.8",
+        ":thiserror-2",
+        ":tokio-1",
     ],
 )
 
