@@ -4,6 +4,7 @@
 //! `hxy-plugin-host` (wasmtime), so it cannot build for wasm32.
 
 pub mod builtin;
+pub mod library;
 
 /// Per-user data-directory component. Must match the app's
 /// `APP_NAME` so every frontend shares the same plugin and

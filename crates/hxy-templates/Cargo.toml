@@ -24,3 +24,6 @@ hxy-imhex-lang = { workspace = true }
 
 # Locates the per-user imhex-patterns data dir for import resolution.
 dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
