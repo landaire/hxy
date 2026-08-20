@@ -17,7 +17,20 @@ hxy-editor = { workspace = true, features = ["serde"] }
 jiff = { workspace = true }
 serde = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# SQLite persistence, desktop-only like the `persist` module itself.
+# sqlx/tokio feature sets mirror crates/hxy's desktop dependencies.
+hxy-plugin-host = { workspace = true }
+hxy-vfs = { workspace = true }
+serde_json = "1.0"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # jiff::Timestamp::now() panics on wasm32-unknown-unknown without the
 # `js` feature; `record_recent` stamps entries with the current time.
 jiff = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+tempfile = "3"

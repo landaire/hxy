@@ -1,8 +1,8 @@
 //! SQLite-backed [`hxy_plugin_host::StateStore`] implementation.
-//! Lives in the app crate so the host crate stays independent of
-//! sqlx; the bridge from sync (the trait contract, driven by WIT
-//! calls) to async (sqlx) goes through the same `Arc<Runtime>` the
-//! [`crate::settings::persist::SaveSink`] uses.
+//! Lives here so the host crate stays independent of sqlx; the
+//! bridge from sync (the trait contract, driven by WIT calls) to
+//! async (sqlx) goes through the same `Arc<Runtime>` the
+//! [`crate::persist::SaveSink`] uses.
 
 use std::sync::Arc;
 
