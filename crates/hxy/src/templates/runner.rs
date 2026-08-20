@@ -37,7 +37,7 @@ pub fn run_template_dialog(ctx: &egui::Context, app: &mut HxyApp) {
 #[derive(Clone, Default)]
 pub struct RestoreContext {
     pub expected_fingerprint: Option<[u8; 32]>,
-    pub overrides: std::collections::HashMap<u32, egui::Color32>,
+    pub overrides: std::collections::HashMap<u32, hxy_templates::color::Rgba>,
 }
 
 /// Run `path` against `id`'s bytes. When `range` is `Some`, the runtime
@@ -190,7 +190,7 @@ pub fn drain_template_runs(ctx: &egui::Context, app: &mut HxyApp) {
         display_name: String,
         range: ByteRange,
         source_fingerprint: Option<[u8; 32]>,
-        pending_overrides: std::collections::HashMap<u32, egui::Color32>,
+        pending_overrides: std::collections::HashMap<u32, hxy_templates::color::Rgba>,
         outcome: crate::files::TemplateRunOutcome,
     }
     let mut done: Vec<Done> = Vec::new();

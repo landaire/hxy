@@ -6,50 +6,7 @@
 
 use std::fmt::Write;
 
-/// Every format the app knows how to render a selection / field as.
-/// The Value-prefixed variants only make sense for scalar nodes
-/// (known integer width + signedness) -- the byte variants work on
-/// any span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CopyKind {
-    BytesLossyUtf8,
-    BytesHexSpaced,
-    BytesHexCompact,
-    BytesDecimalCsv,
-    BytesOctalCsv,
-    BytesCArray,
-    BytesRustArray,
-    /// Standard base64 (RFC 4648) over the raw selection bytes.
-    BytesBase64,
-    /// Lossy UTF-8 decode of the selection, then base64 over that
-    /// text. Non-UTF-8 bytes become U+FFFD before encoding, so the
-    /// output round-trips cleanly through "base64 -d" as valid UTF-8.
-    TextBase64,
-    ValueHex,
-    ValueDecimal,
-    ValueOctal,
-    /// Render a parsed struct node (from the template panel) as a
-    /// Rust struct literal with inline `field: value` initialisers.
-    /// Requires tree context, so it's handled outside
-    /// [`format_bytes`] (see `format_template_struct`).
-    StructRust,
-    /// Same idea, but as a C99 designated initialiser block
-    /// (`.field = value`).
-    StructC,
-}
-
-impl CopyKind {
-    pub fn is_value(self) -> bool {
-        matches!(self, Self::ValueHex | Self::ValueDecimal | Self::ValueOctal)
-    }
-
-    /// True for the struct-literal variants -- those need the
-    /// template tree and are handled outside [`format_bytes`] /
-    /// [`format_scalar`].
-    pub fn is_struct(self) -> bool {
-        matches!(self, Self::StructRust | Self::StructC)
-    }
-}
+pub use hxy_core::copy::CopyKind;
 
 /// Menu items for the bytes submenu (available on any selection).
 pub const BYTES_MENU: &[(&str, CopyKind)] = &[

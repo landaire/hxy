@@ -38,9 +38,38 @@ pub struct PersistedTemplateInstance {
     #[serde(default)]
     pub source_fingerprint: Option<[u8; 32]>,
     /// `BTreeMap` for stable JSON key ordering across saves; the keys
-    /// are tree-node indices (`TemplateNodeIdx::0`).
+    /// are tree-node indices (`TemplateNodeIdx::0`). Values are
+    /// [`hxy_core::color::Rgba`], which serializes as the same
+    /// `[r, g, b, a]` array `egui::Color32` used to, so state files
+    /// from older versions load unchanged.
     #[serde(default)]
-    pub node_color_overrides: BTreeMap<u32, egui::Color32>,
+    pub node_color_overrides: BTreeMap<u32, hxy_core::color::Rgba>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_template_instance_reads_old_color32_json() {
+        // Fixture captured from the pre-Rgba format, where
+        // node_color_overrides serialized egui::Color32 values.
+        let json = r#"{
+            "source_path": "/tmp/png.bt",
+            "display_name": "png.bt",
+            "range": {"start": 0, "end": 16},
+            "source_fingerprint": null,
+            "node_color_overrides": {"3": [23, 190, 207, 255], "7": [64, 0, 0, 128]}
+        }"#;
+        let parsed: PersistedTemplateInstance = serde_json::from_str(json).expect("old-format json deserializes");
+        assert_eq!(parsed.node_color_overrides.get(&3), Some(&hxy_core::color::Rgba::rgba(23, 190, 207, 255)));
+        assert_eq!(parsed.node_color_overrides.get(&7), Some(&hxy_core::color::Rgba::rgba(64, 0, 0, 128)));
+        // Round trip: re-serializing produces the same JSON value,
+        // so saves from the new type stay readable by the old one.
+        let reserialized = serde_json::to_value(&parsed).expect("serialize");
+        let original: serde_json::Value = serde_json::from_str(json).expect("fixture is valid json");
+        assert_eq!(reserialized, original);
+    }
 }
 
 /// State for a single tab's open file -- enough to reopen it on launch

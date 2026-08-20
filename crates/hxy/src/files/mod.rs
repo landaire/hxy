@@ -377,53 +377,16 @@ pub struct SuggestedTemplate {
     pub display_name: String,
 }
 
-/// Identifier for one template applied to a file. Allocated by the
-/// owning [`OpenFile`] so lookups inside [`OpenFile::templates`] don't
-/// need to compare paths or ranges. Two instances of the same template
-/// run against different ranges get distinct ids.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TemplateInstanceId(u64);
-
+pub use hxy_templates::state::TemplateArrayId;
 #[cfg(not(target_arch = "wasm32"))]
-impl TemplateInstanceId {
-    pub fn new(id: u64) -> Self {
-        Self(id)
-    }
-    pub fn get(self) -> u64 {
-        self.0
-    }
-}
-
-/// One completed template applied to a slice of the file. The owned
-/// [`TemplateState`] reports node offsets in **file-absolute** coordinates
-/// (the runner adjusts them by `range.start()` on the way in), so
-/// downstream code -- hex view tinting, breadcrumb tooltips, copy
-/// formatting -- doesn't need to know whether the template was run
-/// against the whole file or a sub-range.
+pub use hxy_templates::state::TemplateInstance;
 #[cfg(not(target_arch = "wasm32"))]
-pub struct TemplateInstance {
-    pub id: TemplateInstanceId,
-    /// Path of the template source file. Carried so reload can re-fire
-    /// the same template, and so the panel header can show the source.
-    pub source_path: PathBuf,
-    /// Short name for the tab strip (template's filename or library
-    /// display name).
-    pub display_name: String,
-    /// Byte range of the file the template was bound to. The whole file
-    /// for the default "Run template..." flow; a user-picked range for
-    /// "Run template at selection..." or for nested templates over
-    /// embedded streams (e.g. zlib-decompressed PNG IDAT).
-    pub range: ByteRange,
-    /// BLAKE3 of the *expanded* template source (post `#include`) at
-    /// the moment the run kicked off. Persisted so a restart-time
-    /// auto-rerun can detect "the template author edited the file
-    /// since last session" -- in which case the node-id-keyed color
-    /// overrides are dropped because the indices may no longer align.
-    /// `None` for error-only instances where no run happened.
-    pub source_fingerprint: Option<[u8; 32]>,
-    pub state: TemplateState,
-}
+pub use hxy_templates::state::TemplateInstanceId;
+#[cfg(not(target_arch = "wasm32"))]
+pub use hxy_templates::state::TemplateNodeIdx;
+#[cfg(not(target_arch = "wasm32"))]
+pub use hxy_templates::state::TemplateState;
 
 /// In-flight template run on a worker thread. Receives the full
 /// parse+execute result via an [`egui_inbox::UiInbox`]; sending into
@@ -456,7 +419,7 @@ pub struct TemplateRunInstance {
     /// `source_fingerprint`. Mismatches drop the overrides at runner
     /// kickoff so we never apply them to a node tree they no longer
     /// fit.
-    pub pending_overrides: std::collections::HashMap<u32, egui::Color32>,
+    pub pending_overrides: std::collections::HashMap<u32, hxy_templates::color::Rgba>,
     pub run: TemplateRun,
 }
 
@@ -464,85 +427,6 @@ pub struct TemplateRunInstance {
 pub enum TemplateRunOutcome {
     Ok { parsed: std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>, tree: hxy_plugin_host::template::ResultTree },
     Err(String),
-}
-
-/// Result of applying a template-language runtime to the tab's byte
-/// source. Holds the parsed template (so deferred arrays can be
-/// expanded lazily) and the current tree view state.
-/// Index into a [`TemplateState::tree`]'s flat node list. Newtype so
-/// we don't confuse it with the `u64` array ids the runtime hands out
-/// for deferred arrays.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TemplateNodeIdx(pub u32);
-
-/// Opaque identifier for a deferred array, handed back to the plugin
-/// when the UI wants to materialise more elements. Distinct from
-/// [`TemplateNodeIdx`] -- same `u64` width as the WIT record but
-/// typed so we can't pass a node index where an array id is wanted.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TemplateArrayId(pub u64);
-
-#[cfg(not(target_arch = "wasm32"))]
-pub struct TemplateState {
-    /// `None` when the state was built as a diagnostics-only surface
-    /// (e.g. missing runtime, parse failure) -- in that case
-    /// `expand_array` can't be called and the panel renders only the
-    /// diagnostics header.
-    pub parsed: Option<std::sync::Arc<dyn hxy_plugin_host::ParsedTemplate>>,
-    pub tree: hxy_plugin_host::template::ResultTree,
-    /// Array id -> materialised children, by order of expansion.
-    pub expanded_arrays: std::collections::HashMap<TemplateArrayId, Vec<hxy_plugin_host::template::Node>>,
-    /// Indexes of nodes whose subtrees the user has collapsed. Default
-    /// is expanded; we store the negation so freshly-run templates
-    /// reveal everything without per-node defaults.
-    pub collapsed: std::collections::HashSet<TemplateNodeIdx>,
-    /// Last-frame's hover target in the panel table: the node index
-    /// whose row the pointer is over, if any. Consumed by the hex
-    /// view to paint a highlight over that node's byte span.
-    pub hovered_node: Option<TemplateNodeIdx>,
-    /// Currently keyboard-selected row in the panel. Persists across
-    /// frames so up/down/left/right have somewhere to operate from
-    /// after the user clicked an initial row. Distinct from
-    /// `hovered_node` (which follows the pointer) and from the
-    /// editor's byte selection (which is what the hex view paints);
-    /// click and arrow-key moves both update this AND re-fire the
-    /// `Select` side effects so the hex view follows along.
-    pub selected_node: Option<TemplateNodeIdx>,
-    /// Precomputed (offset, length) spans for every leaf node in
-    /// the tree, sorted by offset. Passed to `HexView` so it can
-    /// draw field-boundary outlines without walking the tree each
-    /// frame.
-    pub leaf_boundaries: Vec<(hxy_core::ByteOffset, hxy_core::ByteLen)>,
-    /// One tint per entry in `leaf_boundaries`. The hex view uses
-    /// these to paint each field's bytes a distinct color when
-    /// [`Self::show_colors`] is on. Resolved at construction (and on
-    /// every override change) as `node_color_overrides` >
-    /// `hxy_color`/`hxy_bg_color` attribute > hue-cycle fallback.
-    pub leaf_colors: Vec<egui::Color32>,
-    /// Node index for each entry in `leaf_boundaries` / `leaf_colors`.
-    /// Lets the panel and override pipeline map "this row" -> "this
-    /// field's byte coloring slot" in O(1) via [`Self::leaf_slot_by_node`].
-    pub leaf_node_indices: Vec<u32>,
-    /// Reverse index: node-tree index -> position in
-    /// `leaf_boundaries`. Built once at construction; consulted on
-    /// every panel row to decide whether the Color column gets a
-    /// swatch (only nodes that actually paint bytes do).
-    pub leaf_slot_by_node: std::collections::HashMap<u32, usize>,
-    /// User-dialed color overrides, keyed by node-tree index. Take
-    /// precedence over template-supplied `hxy_color` and over the
-    /// hue-cycle fallback. Persisted across restarts via
-    /// [`crate::state::PersistedTemplateInstance::node_color_overrides`].
-    pub node_color_overrides: std::collections::HashMap<u32, egui::Color32>,
-    /// When true, the hex view recolors bytes by their containing
-    /// template field. Toggled from the template panel header.
-    pub show_colors: bool,
-    /// Plugin-supplied per-byte palette (one color per value 0..=255),
-    /// extracted once from the runtime's `ResultTree::byte_palette`.
-    /// When `Some`, overrides the user's byte-value highlight for
-    /// this tab.
-    pub byte_palette_override: Option<std::sync::Arc<[egui::Color32; 256]>>,
 }
 
 impl OpenFile {
@@ -686,7 +570,7 @@ impl OpenFile {
     /// tab. Counter is monotonic for the tab's lifetime.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn fresh_template_instance_id(&mut self) -> TemplateInstanceId {
-        let id = TemplateInstanceId(self.next_template_instance_id);
+        let id = TemplateInstanceId::new(self.next_template_instance_id);
         self.next_template_instance_id += 1;
         id
     }

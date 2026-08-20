@@ -66,7 +66,7 @@ chunk_t c @ 0x00;
             state.leaf_node_indices
         )
     });
-    let resolved = state.leaf_colors[slot];
+    let resolved = hxy_lib::panels::template::color32_from_rgba(state.leaf_colors[slot]);
     let expected = egui::Color32::from_rgb(0x17, 0xBE, 0xCF);
     assert_eq!(
         resolved, expected,

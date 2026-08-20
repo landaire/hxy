@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 
 mod cache;
+pub mod color;
+pub mod copy;
 mod error;
 pub mod format;
 mod geometry;

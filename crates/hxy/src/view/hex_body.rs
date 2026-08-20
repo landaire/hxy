@@ -7,11 +7,13 @@ use crate::files::OpenFile;
 use crate::files::copy::CopyKind;
 use crate::state::PersistedState;
 
-/// Pair of (boundaries, colors) slices that the hex view applies as
-/// per-field tinting. Both slices line up by index: `boundaries[i]`
-/// describes the byte span that gets `colors[i]`.
+/// Pair of (boundaries, colors) that the hex view applies as
+/// per-field tinting. Both sequences line up by index:
+/// `boundaries[i]` describes the byte span that gets `colors[i]`.
+/// The colors are owned because the desktop path converts the
+/// template state's `Rgba` tints to `Color32` at this boundary.
 #[cfg(target_arch = "wasm32")]
-type FieldColorBands<'a> = (&'a [(hxy_core::ByteOffset, hxy_core::ByteLen)], &'a [egui::Color32]);
+type FieldColorBands<'a> = (&'a [(hxy_core::ByteOffset, hxy_core::ByteLen)], Vec<egui::Color32>);
 
 /// Background tint for patched bytes when the user's highlight mode
 /// paints glyphs. Saturated red stands out against the default cell
@@ -35,7 +37,9 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         file.active_template.and_then(|active_id| file.templates.iter().find(|t| t.id == active_id)).map(|t| &t.state);
 
     #[cfg(not(target_arch = "wasm32"))]
-    let template_palette_override = active_state.and_then(|s| s.byte_palette_override.clone());
+    let template_palette_override: Option<std::sync::Arc<[egui::Color32; 256]>> = active_state
+        .and_then(|s| s.byte_palette_override.as_deref())
+        .map(|table| std::sync::Arc::new(table.map(crate::panels::template::color32_from_rgba)));
     #[cfg(target_arch = "wasm32")]
     let template_palette_override: Option<std::sync::Arc<[egui::Color32; 256]>> = None;
     let (highlight, palette) = if let Some(table) = template_palette_override {
@@ -69,9 +73,11 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
     #[cfg(target_arch = "wasm32")]
     let field_boundaries: &[(hxy_core::ByteOffset, hxy_core::ByteLen)] = &[];
     #[cfg(not(target_arch = "wasm32"))]
-    let field_colors = active_state
-        .filter(|s| s.show_colors && !s.leaf_boundaries.is_empty())
-        .map(|s| (s.leaf_boundaries.as_slice(), s.leaf_colors.as_slice()));
+    let field_colors = active_state.filter(|s| s.show_colors && !s.leaf_boundaries.is_empty()).map(|s| {
+        let colors: Vec<egui::Color32> =
+            s.leaf_colors.iter().map(|&c| crate::panels::template::color32_from_rgba(c)).collect();
+        (s.leaf_boundaries.as_slice(), colors)
+    });
     #[cfg(target_arch = "wasm32")]
     let field_colors: Option<FieldColorBands<'_>> = None;
 
@@ -86,7 +92,7 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
         } else {
             hxy_view::ByteStyle { bg: None, fg: Some(MODIFIED_BYTE_FG) }
         };
-        let field_data = field_colors.map(|(b, c)| (b.to_vec(), c.to_vec()));
+        let field_data = field_colors.as_ref().map(|(b, c)| (b.to_vec(), c.clone()));
         Some((text_mode, modified_style, field_data))
     } else {
         None
@@ -140,7 +146,7 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
             s
         });
     }
-    if let Some((_, colors)) = field_colors {
+    if let Some((_, colors)) = &field_colors {
         view = view.field_colors(colors);
     }
     if let Some((text_mode, modified_style, field_data)) = styler_data {
