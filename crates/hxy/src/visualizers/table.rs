@@ -63,7 +63,7 @@ fn format_span(value: u64, fmt: crate::settings::NumericFormat, inverse: bool) -
 fn format_value_for_table(node: &Node, fmts: &crate::settings::TemplateValueFormats, inverse: bool) -> Option<String> {
     use hxy_plugin_host::template::Value;
     if let Some(Value::BytesVal(b)) = node.value.as_ref() {
-        return Some(format!("[{} bytes]", b.len()));
+        return Some(hxy_i18n::t_args("visualizer-table-bytes-value", &[("n", &b.len().to_string())]));
     }
     hxy_templates::format::format_value(node, fmts, inverse)
 }

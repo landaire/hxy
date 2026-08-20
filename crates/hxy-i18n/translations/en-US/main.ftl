@@ -625,6 +625,7 @@ visualizer-timestamp-bad = timestamp out of range: { $err }
 visualizer-timestamp-unknown = Unknown timestamp format: { $name }
 
 # Table visualizer
+visualizer-table-bytes-value = [{ $n } bytes]
 visualizer-table-no-children = This field has no children to tabulate.
 visualizer-table-info = { $count } children
 visualizer-table-col-name = Name

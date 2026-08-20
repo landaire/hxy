@@ -619,7 +619,9 @@ impl VisualizerPanel {
         let points: Vec<(f64, f64)> = values.iter().enumerate().map(|(i, v)| (i as f64, *v)).collect();
         let (mut y0, mut y1) = value_extent(values.iter().copied());
         if shape == SeriesShape::Bar {
-            // Bars baseline at zero, like egui_plot's BarChart.
+            // Bars baseline at zero, like egui_plot's BarChart. The
+            // first and last bars extend band/2 past the x domain and
+            // clip at the chart edge; egui_plot auto-expands bounds.
             y0 = y0.min(0.0);
             y1 = y1.max(0.0);
         }
@@ -1151,11 +1153,10 @@ fn paint_world(
 }
 
 /// `[N bytes]` summary for `BytesVal`, else the shared template value
-/// formatter (egui `format_value_for_table` parity, hardcoded bracket
-/// text included).
+/// formatter (egui `format_value_for_table` parity).
 fn format_table_value(node: &Node, fmts: &TemplateValueFormats) -> String {
     if let Some(Value::BytesVal(b)) = node.value.as_ref() {
-        return format!("[{} bytes]", b.len());
+        return hxy_i18n::t_args("visualizer-table-bytes-value", &[("n", &b.len().to_string())]);
     }
     format_value(node, fmts, false).unwrap_or_default()
 }

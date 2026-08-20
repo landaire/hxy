@@ -120,8 +120,9 @@ review, commit); this spec governs all of them.
   workspace tabs via the nested-dock wrapper), file watching, snapshots,
   save, global search.
 - M4 is delivered in sub-milestones: M4a (template runner, done; plan
-  2026-08-20-m4a-gpui-templates.md), then visualizers, plugins/mounts,
-  IPC, settings, console/i18n sweep.
+  2026-08-20-m4a-gpui-templates.md), M4b (visualizers, done; plan
+  2026-08-20-m4b-gpui-visualizers.md), then plugins/mounts, IPC,
+  settings, console/i18n sweep.
 - M4: template runner (010/ImHex), visualizers (they are driven by
   template visualize attributes and have no data source before templates
   exist), plugins and mounts, IPC single-instance, settings persistence,
