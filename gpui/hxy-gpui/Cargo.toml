@@ -22,6 +22,10 @@ hxy-plugin-host = { workspace = true }
 hxy-templates = { workspace = true }
 hxy-vfs = { workspace = true }
 hxy-view-gpui = { workspace = true }
+# Only for `image::{Frame, RgbaImage}` in `gpui::RenderImage::new`'s
+# signature (gpui does not re-export them); version range matches
+# gpui 0.2.2's own `image = "0.25.1"` so the types unify.
+image = { version = "0.25", default-features = false }
 jiff = { workspace = true }
 palette-core = { workspace = true }
 serde_json = "1"

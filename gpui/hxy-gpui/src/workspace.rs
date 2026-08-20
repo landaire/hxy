@@ -83,8 +83,11 @@ use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::GlobalSearchPanel;
 use crate::panels::INSPECTOR_PANEL_NAME;
 use crate::panels::InspectorPanel;
+use crate::panels::OpenVisualizerRequested;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
+use crate::panels::VISUALIZER_PANEL_NAME;
+use crate::panels::VisualizerPanel;
 use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WORKSPACE_HOST_PANEL_NAME;
 use crate::panels::WelcomePanel;
@@ -314,6 +317,15 @@ pub struct Workspace {
     /// registry shape and staleness caveat as `entropy_panels` (no
     /// jump event either).
     checksums_panels: Vec<Entity<ChecksumsPanel>>,
+    /// `VisualizerPanel` entities the workspace has opened. Same
+    /// registry shape and staleness caveat as `entropy_panels`.
+    visualizer_panels: Vec<Entity<VisualizerPanel>>,
+    /// One [`OpenVisualizerRequested`] subscription per entry in
+    /// `open_files`, so a template row's visualizer marker click
+    /// reaches `on_open_visualizer_request`. Same lifecycle rules as
+    /// `strings_panel_subs`: never pruned individually, replaced
+    /// wholesale whenever `open_files` is rebuilt.
+    file_visualizer_subs: Vec<Subscription>,
     /// The live `GlobalSearchPanel`, if the user has opened one this
     /// session. A true singleton (unlike the per-file registries above):
     /// there is at most one at a time. May point at a closed/stale
@@ -421,6 +433,8 @@ impl Workspace {
             strings_panel_subs: Vec::new(),
             entropy_panels: Vec::new(),
             checksums_panels: Vec::new(),
+            visualizer_panels: Vec::new(),
+            file_visualizer_subs: Vec::new(),
             global_search_panel: None,
             _global_search_sub: None,
             layout_path,
@@ -481,6 +495,7 @@ impl Workspace {
             // The load-built cache is accurate; register the restored
             // panels so a later resync can reuse them.
             collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+            self.resubscribe_file_visualizer_events(window, cx);
             // Session-restored tabs bypass `open_or_focus`, so their
             // patch sidecars are never consulted; queue every restored
             // file for a restore prompt drained one at a time at the end
@@ -500,6 +515,11 @@ impl Workspace {
             collect_checksums_entities(self.dock.read(cx).items(), &mut restored_checksums);
             for panel in restored_checksums {
                 self.track_checksums_panel(panel);
+            }
+            let mut restored_visualizers = Vec::new();
+            collect_visualizer_entities(self.dock.read(cx).items(), &mut restored_visualizers);
+            for panel in restored_visualizers {
+                self.track_visualizer_panel(panel);
             }
             // Singleton: a restored layout has at most one. Without
             // this, `self.global_search_panel` stays `None` even
@@ -939,6 +959,93 @@ impl Workspace {
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
+    /// Palette "Show Visualizer panel": open (or focus) the
+    /// visualizer tab for the reference file. No specific sub-tab is
+    /// requested, so an existing selection (or the first target) wins.
+    pub(crate) fn open_visualizer_for_active_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        self.open_visualizer_for_file(file, None, window, cx);
+    }
+
+    /// A template row's visualizer marker was clicked in `panel`'s
+    /// template table: open/focus its visualizer tab on that node.
+    fn on_open_visualizer_request(
+        &mut self,
+        panel: &Entity<FilePanel>,
+        event: &OpenVisualizerRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_visualizer_for_file(panel.clone(), Some(event.0), window, cx);
+    }
+
+    /// Open (or focus an existing) `VisualizerPanel` tab for `file`,
+    /// selecting `key`'s sub-tab when given. Mirrors
+    /// `open_entropy_for_active_file`'s open-or-focus shape, plus the
+    /// active-key handoff.
+    fn open_visualizer_for_file(
+        &mut self,
+        file: Entity<FilePanel>,
+        key: Option<hxy_templates::visualize::VisualizerKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = file.read(cx).path().map(Path::to_path_buf);
+        if let Some(panel) = self.open_visualizer_panel_for_path(path.as_deref(), cx) {
+            if let Some(key) = key {
+                panel.update(cx, |panel, cx| panel.set_active(key, cx));
+            }
+            self.focus_visualizer_tab(panel, window, cx);
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| VisualizerPanel::new(file, path, window, cx));
+        if let Some(key) = key {
+            panel.update(cx, |panel, cx| panel.set_active(key, cx));
+        }
+        self.track_visualizer_panel(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Register `panel` in `visualizer_panels` if not already tracked.
+    /// Mirrors `track_entropy_panel` (fresh opens, boot restore,
+    /// center-cache rebuild).
+    fn track_visualizer_panel(&mut self, panel: Entity<VisualizerPanel>) {
+        if self.visualizer_panels.iter().any(|p| p.entity_id() == panel.entity_id()) {
+            return;
+        }
+        self.visualizer_panels.push(panel);
+    }
+
+    /// The live `VisualizerPanel` for `path` if it already has a tab,
+    /// else `None`. Mirrors `open_entropy_panel_for_path`.
+    fn open_visualizer_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<VisualizerPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_visualizer_path(&dump.center, path) {
+            return None;
+        }
+        self.visualizer_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
+    }
+
+    /// Bring an already-open visualizer tab to the foreground. Mirrors
+    /// `focus_entropy_tab`.
+    fn focus_visualizer_tab(&mut self, panel: Entity<VisualizerPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if active_visualizer_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        let path = panel.read(cx).owning_path().map(Path::to_path_buf);
+        self.resync_center_if_stale(window, cx);
+        let panel = self.visualizer_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
+        let Some(panel) = panel else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
     /// `cmd-shift-f` / the palette entry: close the global search tab if
     /// one is open, else open (or focus) one. Mirrors egui's
     /// `toggle_global_search` exactly (open-or-close, not just focus).
@@ -1121,19 +1228,38 @@ impl Workspace {
         // cache from the live tree first so the add never lands in a
         // collapsed-away tab panel (see `resync_center_if_stale`).
         self.resync_center_if_stale(window, cx);
-        self.register_open_file(&panel, cx);
+        self.register_open_file(&panel, window, cx);
         let view: Arc<dyn PanelView> = Arc::new(panel);
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
     /// Track a newly opened file for later resync reuse, replacing any
     /// prior entry for the same path (a reopen supersedes) so the
-    /// registry does not accumulate duplicate paths.
-    fn register_open_file(&mut self, panel: &Entity<FilePanel>, cx: &Context<Self>) {
+    /// registry does not accumulate duplicate paths. Also subscribes
+    /// the panel's [`OpenVisualizerRequested`] events (skipped when
+    /// the same entity is re-registered, e.g. a Save As rename, so it
+    /// never double-fires).
+    fn register_open_file(&mut self, panel: &Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        let already_tracked = self.open_files.iter().any(|file| file.entity_id() == panel.entity_id());
         if let Some(path) = panel.read(cx).path().map(Path::to_path_buf) {
             self.open_files.retain(|file| file.read(cx).path() != Some(path.as_path()));
         }
         self.open_files.push(panel.clone());
+        if !already_tracked {
+            self.file_visualizer_subs.push(cx.subscribe_in(panel, window, Self::on_open_visualizer_request));
+        }
+    }
+
+    /// Rebuild the [`OpenVisualizerRequested`] subscriptions for the
+    /// current `open_files` set. Called wherever that registry is
+    /// replaced wholesale (boot restore, center-cache rebuild); the
+    /// old subscriptions target dead entities and are dropped.
+    fn resubscribe_file_visualizer_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_visualizer_subs.clear();
+        let files = self.open_files.clone();
+        for file in &files {
+            self.file_visualizer_subs.push(cx.subscribe_in(file, window, Self::on_open_visualizer_request));
+        }
     }
 
     /// Rebuild the center's cached `DockItem` tree from the live panel
@@ -1232,6 +1358,7 @@ impl Workspace {
         let mut live_files = Vec::new();
         collect_file_entities(self.dock.read(cx).items(), &mut live_files);
         self.open_files = live_files;
+        self.resubscribe_file_visualizer_events(window, cx);
         let mut live_strings = Vec::new();
         collect_strings_entities(self.dock.read(cx).items(), &mut live_strings);
         self.strings_panels.clear();
@@ -1250,6 +1377,12 @@ impl Workspace {
         self.checksums_panels.clear();
         for panel in live_checksums {
             self.track_checksums_panel(panel);
+        }
+        let mut live_visualizers = Vec::new();
+        collect_visualizer_entities(self.dock.read(cx).items(), &mut live_visualizers);
+        self.visualizer_panels.clear();
+        for panel in live_visualizers {
+            self.track_visualizer_panel(panel);
         }
         // Singleton, so a direct overwrite (rather than a clear-then-
         // track loop) is correct: at most one survives the rebuild,
@@ -1546,6 +1679,11 @@ impl Workspace {
         for panel in checksums {
             panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
         }
+        let visualizers: Vec<Entity<VisualizerPanel>> =
+            self.visualizer_panels.iter().filter(|p| p.read(cx).owning_path() == Some(old)).cloned().collect();
+        for panel in visualizers {
+            panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
+        }
     }
 
     fn recompute_panels_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -1652,7 +1790,7 @@ impl Workspace {
         // path-keyed reuse registry so a resync keeps this live entity.
         if previous_path.as_deref() != Some(path.as_path()) {
             file.update(cx, |file, _cx| file.set_path(path.clone()));
-            self.register_open_file(file, cx);
+            self.register_open_file(file, window, cx);
             // Save As renamed the file: re-anchor its analysis panels onto
             // the new path before the recompute below, or they keep owning
             // the stale path (recompute misses, cascade misses, dump wrong).
@@ -2091,6 +2229,9 @@ impl Workspace {
         // 0 = no template run (or a run with no fields); the jump
         // entries gate on this.
         let template_field_count = file.read(cx).active_template().map(|t| t.state.leaf_boundaries.len()).unwrap_or(0);
+        // 0 = no field carries a visualize attribute; the visualizer
+        // entry is only offered when nonzero (egui `has_visualizer`).
+        let visualizer_target_count = hxy_templates::visualize::collect_targets(&file.read(cx).templates).len();
         PaletteContext {
             has_active_file: true,
             cursor,
@@ -2099,6 +2240,7 @@ impl Workspace {
             vim_on: matches!(editor.input_mode(), InputMode::Vim),
             can_browse_vfs,
             template_field_count,
+            visualizer_target_count,
         }
     }
 
@@ -2466,6 +2608,10 @@ impl Workspace {
             self.close_checksums_tab(checksums, window, cx);
             return;
         }
+        if let Some(visualizer) = active_visualizer_panel(self.dock.read(cx).items(), cx) {
+            self.close_visualizer_tab(visualizer, window, cx);
+            return;
+        }
         if let Some(active) = self.active_file.clone() {
             self.request_close_file(active, window, cx);
             return;
@@ -2598,6 +2744,7 @@ impl Workspace {
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_entropy_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_checksums_tabs_for_path(closed_path.as_deref(), window, cx);
+        self.close_visualizer_tabs_for_path(closed_path.as_deref(), window, cx);
     }
 
     /// Push a just-closed file tab onto the reopen ring, capturing the
@@ -2681,6 +2828,34 @@ impl Workspace {
     fn close_checksums_tabs_for_path(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) {
         let mut closing = Vec::new();
         self.checksums_panels.retain(|panel| {
+            if panel.read(cx).owning_path() == path {
+                closing.push(panel.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for panel in closing {
+            let view: Arc<dyn PanelView> = Arc::new(panel);
+            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        }
+    }
+
+    /// Close one `VisualizerPanel` tab by identity. Mirrors
+    /// `close_entropy_tab`.
+    fn close_visualizer_tab(&mut self, panel: Entity<VisualizerPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        self.visualizer_panels.retain(|p| p.entity_id() != panel.entity_id());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+    }
+
+    /// Close every `VisualizerPanel` tab bound to `path`. Mirrors
+    /// `close_entropy_tabs_for_path` (a left-open visualizer tab would
+    /// pin the closed file's `FilePanel` alive through its strong
+    /// entity handle).
+    fn close_visualizer_tabs_for_path(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) {
+        let mut closing = Vec::new();
+        self.visualizer_panels.retain(|panel| {
             if panel.read(cx).owning_path() == path {
                 closing.push(panel.clone());
                 false
@@ -3045,6 +3220,12 @@ fn count_global_search_panels(state: &PanelState) -> usize {
     here + state.children.iter().map(count_global_search_panels).sum::<usize>()
 }
 
+#[cfg(test)]
+fn count_visualizer_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == VISUALIZER_PANEL_NAME);
+    here + state.children.iter().map(count_visualizer_panels).sum::<usize>()
+}
+
 /// Whether any tab container in the center cache has no live panels,
 /// i.e. a `TabPanel` that emptied and detached itself from the live tree
 /// while its `DockItem::Tabs` entry lingers in the cache. This is the
@@ -3360,6 +3541,13 @@ fn dump_has_checksums_path(state: &PanelState, target: Option<&Path>) -> bool {
         || state.children.iter().any(|child| dump_has_checksums_path(child, target))
 }
 
+/// Same idea as `dump_has_strings_path` but for a `VisualizerPanel`'s
+/// owning path.
+fn dump_has_visualizer_path(state: &PanelState, target: Option<&Path>) -> bool {
+    (state.panel_name == VISUALIZER_PANEL_NAME && file_path_from_info(&state.info).as_deref() == target)
+        || state.children.iter().any(|child| dump_has_visualizer_path(child, target))
+}
+
 /// Whether the dumped tree has a `GlobalSearchPanel` anywhere -- a
 /// singleton with no owning path, so unlike its `dump_has_*_path`
 /// siblings this only needs to check presence.
@@ -3484,6 +3672,27 @@ fn collect_checksums_entities(item: &DockItem, out: &mut Vec<Entity<ChecksumsPan
     }
 }
 
+/// Collect the live `VisualizerPanel` entities from a `DockItem` tree.
+/// Mirrors `collect_strings_entities`.
+fn collect_visualizer_entities(item: &DockItem, out: &mut Vec<Entity<VisualizerPanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_visualizer_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(visualizer) = panel.view().downcast::<VisualizerPanel>() {
+                    out.push(visualizer);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(visualizer) = view.view().downcast::<VisualizerPanel>() {
+                out.push(visualizer);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
 /// Collect the live `GlobalSearchPanel` entities from a `DockItem` tree
 /// (at most one -- it's a singleton -- but shaped like its siblings for
 /// reuse in `rebuild_center_cache`). Mirrors `collect_checksums_entities`.
@@ -3583,6 +3792,19 @@ fn active_checksums_panel(item: &DockItem, cx: &App) -> Option<Entity<ChecksumsP
     }
 }
 
+/// The `VisualizerPanel` backing the active tab, if the active tab is a
+/// visualizer tab. Mirrors `active_strings_panel`.
+fn active_visualizer_panel(item: &DockItem, cx: &App) -> Option<Entity<VisualizerPanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<VisualizerPanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_visualizer_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<VisualizerPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
 /// The active center tab's panel view when its type is not one this
 /// build registers -- an `InvalidPanel` placeholder from a stale layout,
 /// or any foreign leaf. Returns `None` for every recognized hxy panel
@@ -3613,6 +3835,7 @@ fn is_known_panel_name(name: &str) -> bool {
             | ENTROPY_PANEL_NAME
             | CHECKSUMS_PANEL_NAME
             | COMPARE_PANEL_NAME
+            | VISUALIZER_PANEL_NAME
             | GLOBAL_SEARCH_PANEL_NAME
             | WORKSPACE_HOST_PANEL_NAME
     )
@@ -6551,5 +6774,177 @@ mod tests {
         for child in &state.children {
             collect_file_paths_into(child, out);
         }
+    }
+
+    /// Inert stand-in for a parsed template, so the visualizer tests
+    /// can install a completed instance without a real runtime.
+    struct InertParsed;
+
+    impl hxy_plugin_host::ParsedTemplate for InertParsed {
+        fn execute(
+            &self,
+            _args: &[hxy_plugin_host::template::Arg],
+        ) -> Result<hxy_plugin_host::template::ResultTree, hxy_vfs::HandlerError> {
+            Err(hxy_vfs::HandlerError::Unsupported("test template never re-executes".into()))
+        }
+
+        fn expand_array(
+            &self,
+            _array_id: u64,
+            _start: u64,
+            _end: u64,
+        ) -> Result<Vec<hxy_plugin_host::template::Node>, hxy_vfs::HandlerError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Install a completed template instance whose node `1` carries a
+    /// `hxy_visualize` attribute on `window`'s active file, returning
+    /// the instance id and the file's entity (the file tab stops being
+    /// the ACTIVE tab once the visualizer tab opens, so later steps
+    /// need the handle, not `ws.active_file`).
+    fn install_visualizer_fixture(
+        window: WindowHandle<Workspace>,
+        cx: &mut TestAppContext,
+    ) -> (hxy_templates::state::TemplateInstanceId, Entity<FilePanel>) {
+        use hxy_plugin_host::template::Node;
+        use hxy_plugin_host::template::NodeType;
+        use hxy_plugin_host::template::ScalarKind;
+        use hxy_plugin_host::template::Span;
+
+        let node = |name: &str, span: (u64, u64), visualize: Option<&str>| Node {
+            name: name.to_owned(),
+            type_name: NodeType::Scalar(ScalarKind::U8K),
+            span: Span { offset: span.0, length: span.1 },
+            value: None,
+            parent: None,
+            array: None,
+            display: None,
+            attributes: visualize
+                .map(|spec| vec![(hxy_plugin_host::VISUALIZE_ATTR.to_owned(), spec.to_owned())])
+                .into_iter()
+                .flatten()
+                .collect(),
+        };
+        let tree = hxy_plugin_host::template::ResultTree {
+            nodes: vec![node("plain", (0, 4), None), node("pixels", (4, 4), Some("digram"))],
+            diagnostics: Vec::new(),
+            byte_palette: None,
+        };
+        window
+            .update(cx, |ws, _window, cx| {
+                let file = ws.active_file.clone().expect("a file is active");
+                let id = file.update(cx, |file, cx| {
+                    let state = hxy_templates::state::new_state_from(
+                        Arc::new(InertParsed),
+                        tree,
+                        std::collections::HashMap::new(),
+                    );
+                    let id = file.fresh_template_instance_id();
+                    file.upsert_template_instance(hxy_templates::state::TemplateInstance {
+                        id,
+                        source_path: PathBuf::from("/tmp/fixture.bt"),
+                        display_name: "fixture.bt".to_owned(),
+                        range: ByteRange::new(ByteOffset::new(0), ByteOffset::new(8)).unwrap(),
+                        source_fingerprint: None,
+                        state,
+                    });
+                    file.active_template = Some(id);
+                    cx.notify();
+                    id
+                });
+                (id, file)
+            })
+            .unwrap()
+    }
+
+    /// The end-to-end OpenVisualizer round trip: a template row's
+    /// visualizer marker click (its `TemplateEvent`) makes the
+    /// workspace open a `VisualizerPanel` tab for that file with the
+    /// clicked node's sub-tab active; a second request reuses the tab
+    /// and just moves the active key.
+    #[gpui::test]
+    fn open_visualizer_event_opens_panel_with_active_key(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 8]);
+        let window = open_workspace(cx, vec![a], None);
+        let (id, file) = install_visualizer_fixture(window, cx);
+        cx.run_until_parked();
+
+        let idx = hxy_templates::state::TemplateNodeIdx(1);
+        window
+            .update(cx, |_ws, window, cx| {
+                file.update(cx, |file, cx| {
+                    file.apply_template_event(&hxy_templates::state::TemplateEvent::OpenVisualizer(idx), window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(count, 1, "the visualizer tab opened");
+        let key = hxy_templates::visualize::VisualizerKey { instance: id, node: idx };
+        window
+            .read_with(cx, |ws, cx| {
+                let panel = ws.visualizer_panels.first().expect("tracked");
+                assert_eq!(panel.read(cx).active_key(), Some(key));
+            })
+            .unwrap();
+
+        // Second request on the same node: no second tab.
+        window
+            .update(cx, |_ws, window, cx| {
+                file.update(cx, |file, cx| {
+                    file.apply_template_event(&hxy_templates::state::TemplateEvent::OpenVisualizer(idx), window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(count, 1, "open-or-focus never duplicates the tab");
+    }
+
+    /// The palette context only advertises visualizer targets once a
+    /// template with visualize-bearing fields has run, so the palette
+    /// entry appears exactly when egui's `has_visualizer` gate would
+    /// list it.
+    #[gpui::test]
+    fn palette_context_counts_visualizer_targets(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 8]);
+        let window = open_workspace(cx, vec![a], None);
+        let before = window.read_with(cx, |ws, cx| ws.palette_context(cx).visualizer_target_count).unwrap();
+        assert_eq!(before, 0);
+        install_visualizer_fixture(window, cx);
+        cx.run_until_parked();
+        let after = window.read_with(cx, |ws, cx| ws.palette_context(cx).visualizer_target_count).unwrap();
+        assert_eq!(after, 1);
+    }
+
+    /// Closing a file tab cascades to its visualizer tab, exactly as
+    /// it does for strings/entropy/checksums.
+    #[gpui::test]
+    fn closing_the_file_closes_its_visualizer_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 8]);
+        let window = open_workspace(cx, vec![a], None);
+        let (_id, file) = install_visualizer_fixture(window, cx);
+        window.update(cx, |ws, window, cx| ws.open_visualizer_for_active_file(window, cx)).unwrap();
+        cx.run_until_parked();
+        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(count, 1);
+
+        window
+            .update(cx, |ws, window, cx| {
+                ws.close_file_tab(file.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        assert_eq!(count, 0, "the visualizer tab closed with its file");
+        assert!(window.read_with(cx, |ws, _| ws.visualizer_panels.is_empty()).unwrap());
     }
 }

@@ -3284,6 +3284,7 @@ dependencies = [
  "hxy-templates",
  "hxy-vfs",
  "hxy-view-gpui",
+ "image",
  "jiff",
  "notify 8.2.0",
  "palette-core",

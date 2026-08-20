@@ -19,6 +19,7 @@ use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
+use crate::panels::VISUALIZER_PANEL_NAME;
 use crate::panels::WELCOME_PANEL_NAME;
 use crate::panels::WORKSPACE_HOST_PANEL_NAME;
 
@@ -268,6 +269,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         STRINGS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "strings panel" }),
         ENTROPY_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "entropy panel" }),
         CHECKSUMS_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "checksums panel" }),
+        VISUALIZER_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "visualizer panel" }),
         COMPARE_PANEL_NAME => Some(PanelKind::Compare),
         WORKSPACE_HOST_PANEL_NAME => Some(PanelKind::WorkspaceHost),
         GLOBAL_SEARCH_PANEL_NAME => Some(PanelKind::AlwaysKeep),
@@ -458,6 +460,14 @@ mod tests {
         }
     }
 
+    fn visualizer_panel(path: Option<&Path>) -> PanelState {
+        PanelState {
+            panel_name: VISUALIZER_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({ "path": path.map(|p| p.to_string_lossy()) })),
+        }
+    }
+
     fn global_search_panel() -> PanelState {
         PanelState {
             panel_name: GLOBAL_SEARCH_PANEL_NAME.to_string(),
@@ -638,6 +648,40 @@ mod tests {
             names,
             vec![FILE_PANEL_NAME, CHECKSUMS_PANEL_NAME],
             "only the file and its own checksums tab survive"
+        );
+        assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
+    }
+
+    /// Same rule again, for the visualizer panel: kept only while its
+    /// owning file's tab survives, dropped otherwise (including when it
+    /// never recorded a path).
+    #[test]
+    fn visualizer_panel_kept_only_when_its_owning_file_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept_path = dir.path().join("kept.bin");
+        std::fs::write(&kept_path, b"hello").unwrap();
+        let missing_path = dir.path().join("missing.bin");
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![
+                file_panel(&kept_path),
+                visualizer_panel(Some(&kept_path)),
+                visualizer_panel(Some(&missing_path)),
+                visualizer_panel(None),
+            ]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![FILE_PANEL_NAME, VISUALIZER_PANEL_NAME],
+            "only the file and its own visualizer tab survive"
         );
         assert_eq!(file_path(&state.center.children[1].info), Some(kept_path));
     }

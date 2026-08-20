@@ -51,6 +51,7 @@ use hxy_templates::state::expand_array;
 use hxy_templates::state::recompute_leaf_colors;
 use hxy_templates::state::toggle_collapse;
 use hxy_templates::state::visible_node_indices;
+use hxy_templates::visualize::VisualizerKey;
 use hxy_vfs::VfsHandler;
 use hxy_view_gpui::ByteStyleOverride;
 use hxy_view_gpui::HexPane;
@@ -78,6 +79,14 @@ const TEMPLATE_RERUN_DEBOUNCE: std::time::Duration = std::time::Duration::from_m
 
 /// Stable identifier for layout (de)serialization; must never change.
 pub const FILE_PANEL_NAME: &str = "FilePanel";
+
+/// A template row's visualizer marker was clicked: the workspace
+/// should open (or focus) this file's [`VisualizerPanel`]
+/// (`crate::panels::VisualizerPanel`) with the carried key active.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenVisualizerRequested(pub VisualizerKey);
+
+impl EventEmitter<OpenVisualizerRequested> for FilePanel {}
 
 pub struct FilePanel {
     pane: Entity<HexPane>,
@@ -586,9 +595,11 @@ impl FilePanel {
                 }
             }
             TemplateEvent::OpenVisualizer(idx) => {
-                // Visualizer dock tabs land in M4b; keep the arm
-                // handled so the marker click isn't a silent drop.
-                tracing::debug!(node = idx.0, "open visualizer requested (not wired until M4b)");
+                // The workspace opens/focuses this file's visualizer
+                // panel and selects the clicked node's sub-tab.
+                if let Some(instance) = self.active_template() {
+                    cx.emit(OpenVisualizerRequested(VisualizerKey { instance: instance.id, node: *idx }));
+                }
             }
         }
     }

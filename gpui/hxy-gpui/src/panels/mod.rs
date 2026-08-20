@@ -22,6 +22,7 @@ mod search_bar;
 pub mod strings;
 pub mod template_view;
 pub mod vfs_tree;
+pub mod visualizer;
 mod welcome;
 pub mod workspace_host;
 
@@ -33,12 +34,15 @@ pub use entropy::ENTROPY_PANEL_NAME;
 pub use entropy::EntropyPanel;
 pub use file::FILE_PANEL_NAME;
 pub use file::FilePanel;
+pub use file::OpenVisualizerRequested;
 pub use global_search::GLOBAL_SEARCH_PANEL_NAME;
 pub use global_search::GlobalSearchPanel;
 pub use inspector::INSPECTOR_PANEL_NAME;
 pub use inspector::InspectorPanel;
 pub use strings::STRINGS_PANEL_NAME;
 pub use strings::StringsPanel;
+pub use visualizer::VISUALIZER_PANEL_NAME;
+pub use visualizer::VisualizerPanel;
 pub use welcome::WELCOME_PANEL_NAME;
 pub use welcome::WelcomePanel;
 pub use workspace_host::WORKSPACE_HOST_PANEL_NAME;
@@ -67,6 +71,9 @@ pub fn register(cx: &mut App) {
     });
     register_panel(cx, COMPARE_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| ComparePanel::restore(info, window, cx))) as Box<dyn PanelView>
+    });
+    register_panel(cx, VISUALIZER_PANEL_NAME, |_dock, _state, info, window, cx| {
+        Box::new(cx.new(|cx| VisualizerPanel::restore(info, window, cx))) as Box<dyn PanelView>
     });
     // Global search restores as a fresh, empty panel -- egui likewise
     // persists only the `SearchResults` tab marker, not the query
@@ -112,6 +119,7 @@ mod tests {
                     ENTROPY_PANEL_NAME,
                     CHECKSUMS_PANEL_NAME,
                     COMPARE_PANEL_NAME,
+                    VISUALIZER_PANEL_NAME,
                     GLOBAL_SEARCH_PANEL_NAME,
                     WORKSPACE_HOST_PANEL_NAME,
                 ] {

@@ -159,6 +159,11 @@ pub enum PaletteAction {
     /// Open (or focus) the checksums panel for the active file, hashing
     /// the whole file under the panel's own auto-run rule.
     OpenChecksums,
+    /// Open (or focus) the visualizer panel for the active file. Only
+    /// offered while a template field carries a visualize attribute
+    /// (`PaletteContext::visualizer_target_count`), mirroring egui's
+    /// `has_visualizer` gate.
+    OpenVisualizer,
     /// Mount the active file through its detected VFS handler and swap its
     /// tab for a nested-dock workspace. Only meaningful when the active
     /// file has a detected handler (`PaletteContext::can_browse_vfs`).
@@ -234,6 +239,11 @@ pub struct PaletteContext {
     /// instance. Zero when no template has run (or it produced no
     /// fields); the jump next/prev field entries gate on this.
     pub template_field_count: usize,
+    /// Number of visualizer-bearing fields across the active file's
+    /// template instances. Zero when no template has run or none of
+    /// its fields carry a `[[hex::visualize(...)]]` attribute; the
+    /// visualizer entry is only listed when nonzero.
+    pub visualizer_target_count: usize,
 }
 
 /// Resolved keybinding hints for the Main-list commands that mirror a
@@ -398,6 +408,13 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
             .with_subtitle(hxy_i18n::t("palette-checksums-whole-file-subtitle"))
             .with_disabled(!ctx.has_active_file),
     );
+
+    // Only listed while a template field carries a visualize
+    // attribute (mirrors egui: the entry is absent, not disabled,
+    // without targets).
+    if ctx.has_active_file && ctx.visualizer_target_count > 0 {
+        out.push(Entry::new(hxy_i18n::t("palette-tool-show-visualizer"), PaletteAction::OpenVisualizer));
+    }
 
     // Surfaced whether or not it applies (mirrors the egui "Browse VFS"
     // entry) so the command is discoverable; disabled with a reason when
@@ -672,6 +689,7 @@ mod tests {
             vim_on: false,
             can_browse_vfs: true,
             template_field_count: 0,
+            visualizer_target_count: 0,
         }
     }
 
@@ -729,6 +747,25 @@ mod tests {
         let browse = entries.iter().find(|e| e.data == PaletteAction::BrowseVfs).expect("browse vfs row present");
         assert!(browse.disabled, "disabled when no handler matches the file");
         assert!(browse.subtitle.is_some(), "shows a reason when disabled");
+    }
+
+    /// The visualizer entry mirrors egui's `has_visualizer` gate: it
+    /// is absent (not disabled) until a template field carries a
+    /// visualize attribute.
+    #[test]
+    fn visualizer_entry_listed_only_with_targets() {
+        let data = actions(&build_entries(PaletteMode::Main, "", active_ctx(), &Shortcuts::default()));
+        assert!(!data.contains(&PaletteAction::OpenVisualizer), "no targets, no row");
+
+        let mut ctx = active_ctx();
+        ctx.visualizer_target_count = 2;
+        let data = actions(&build_entries(PaletteMode::Main, "", ctx, &Shortcuts::default()));
+        assert!(data.contains(&PaletteAction::OpenVisualizer));
+
+        // Never listed without an active file, targets or not.
+        let ctx = PaletteContext { visualizer_target_count: 2, ..PaletteContext::default() };
+        let data = actions(&build_entries(PaletteMode::Main, "", ctx, &Shortcuts::default()));
+        assert!(!data.contains(&PaletteAction::OpenVisualizer));
     }
 
     #[test]

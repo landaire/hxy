@@ -575,8 +575,9 @@ fn node_comment(node: &Node) -> Option<&str> {
 
 /// The visualizer name from a `hxy_visualize` / `hxy_inline_visualize`
 /// attribute, if the node carries one (the part before the first
-/// argument separator). Full visualizer wiring lands in M4b; for now
-/// the name only feeds the marker icon's tooltip.
+/// argument separator). Feeds the marker icon's tooltip; the click
+/// emits `TemplateEvent::OpenVisualizer`, which the owning `FilePanel`
+/// forwards to the workspace to open the visualizer panel.
 fn node_visualizer_name(node: &Node) -> Option<String> {
     let raw = node.attributes.iter().find_map(|(k, v)| {
         ((k == hxy_plugin_host::VISUALIZE_ATTR || k == hxy_plugin_host::INLINE_VISUALIZE_ATTR) && !v.is_empty())
