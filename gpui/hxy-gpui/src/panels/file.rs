@@ -15,6 +15,7 @@ use gpui::Entity;
 use gpui::EventEmitter;
 use gpui::FocusHandle;
 use gpui::Focusable;
+use gpui::Hsla;
 use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::ParentElement;
@@ -51,12 +52,14 @@ use hxy_templates::state::recompute_leaf_colors;
 use hxy_templates::state::toggle_collapse;
 use hxy_templates::state::visible_node_indices;
 use hxy_vfs::VfsHandler;
+use hxy_view_gpui::ByteStyleOverride;
 use hxy_view_gpui::HexPane;
 
 use super::search_bar::SearchBar;
 use super::template_view::TemplateOffsetJump;
 use super::template_view::TemplateView;
 use crate::templates::TemplateRunHandle;
+use crate::templates::rgba_to_hsla;
 use crate::workspace::CloseSearch;
 use crate::workspace::ToggleSearch;
 
@@ -107,6 +110,12 @@ pub struct FilePanel {
     /// and at least one instance (or run) exists.
     template_view: Entity<TemplateView>,
     _template_subs: Vec<Subscription>,
+    /// The modified-byte ranges the current styler was built from.
+    /// The styler closure snapshots them (it cannot read the editor
+    /// live), so the pane observer below rebuilds the overlays when
+    /// an edit changes the set.
+    last_modified_ranges: Vec<(u64, u64)>,
+    _overlay_observe: Subscription,
 }
 
 impl FilePanel {
@@ -114,11 +123,12 @@ impl FilePanel {
         let pane = cx.new(|cx| HexPane::new(source, cx));
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
         let weak = cx.entity().downgrade();
-        let template_view = cx.new(|cx| TemplateView::new(weak, window, cx));
+        let template_view = cx.new(|cx| TemplateView::new(weak, pane.clone(), window, cx));
         let template_subs = vec![
             cx.subscribe_in(&template_view, window, Self::on_template_event),
             cx.subscribe_in(&template_view, window, Self::on_template_offset_jump),
         ];
+        let overlay_observe = cx.observe(&pane, Self::on_pane_notify);
         Self {
             pane,
             path,
@@ -134,6 +144,19 @@ impl FilePanel {
             template_panel_visible: false,
             template_view,
             _template_subs: template_subs,
+            last_modified_ranges: Vec::new(),
+            _overlay_observe: overlay_observe,
+        }
+    }
+
+    /// Pane repainted: if an edit changed the modified-byte set the
+    /// installed styler snapshot is stale, so rebuild the overlays.
+    /// The rebuild notifies the pane again; the equal-ranges check
+    /// terminates that echo.
+    fn on_pane_notify(&mut self, _pane: Entity<HexPane>, cx: &mut Context<Self>) {
+        let current = self.pane.read(cx).editor().modified_ranges();
+        if current != self.last_modified_ranges {
+            self.sync_pane_overlays(cx);
         }
     }
 
@@ -405,8 +428,6 @@ impl FilePanel {
                 self.save_template_bytes(*idx, window, cx);
             }
             TemplateEvent::ToggleColors(on) => {
-                // Hex-view restyling from this flag lands with the
-                // styler composition (M4a Task 5).
                 if let Some(state) = self.active_template_mut().map(|t| &mut t.state) {
                     state.show_colors = *on;
                 }
@@ -542,18 +563,39 @@ impl FilePanel {
         self.template_view.update(cx, |view, cx| view.set_rows(rows, selected, cx));
     }
 
-    /// Mirror template state into the hex pane's overlays. For now
-    /// that is the hovered field's highlight band; the byte tints and
-    /// palette override join in the styler composition (M4a Task 5).
+    /// Mirror template state into the hex pane's overlays: the hovered
+    /// field's highlight band, the composed byte styler (patched-byte
+    /// marks over template field tints), and the plugin-supplied
+    /// byte-value palette. Ports the egui wiring in
+    /// `crates/hxy/src/view/hex_body.rs` with its precedence intact:
+    /// selection/hover bands (paint-side) > patched bytes > field tint.
     pub(crate) fn sync_pane_overlays(&mut self, cx: &mut Context<Self>) {
-        let hover = self.active_template().and_then(|template| {
-            let idx = template.state.hovered_node?;
-            let node = template.state.tree.nodes.get(idx.0 as usize)?;
-            let start = node.span.offset;
-            let end = start.saturating_add(node.span.length);
-            ByteRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
+        let (hover, fields, palette) = match self.active_template() {
+            Some(template) => {
+                let state = &template.state;
+                let hover = state.hovered_node.and_then(|idx| {
+                    let node = state.tree.nodes.get(idx.0 as usize)?;
+                    let start = node.span.offset;
+                    let end = start.saturating_add(node.span.length);
+                    ByteRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
+                });
+                let fields = (state.show_colors && !state.leaf_boundaries.is_empty()).then(|| FieldTints {
+                    boundaries: state.leaf_boundaries.clone(),
+                    colors: state.leaf_colors.iter().map(|&c| template_tint(c)).collect(),
+                });
+                let palette = state.byte_palette_override.as_deref().map(|table| Arc::new(table.map(rgba_to_hsla)));
+                (hover, fields, palette)
+            }
+            None => (None, None, None),
+        };
+        let modified = self.pane.read(cx).editor().modified_ranges();
+        self.last_modified_ranges = modified.clone();
+        let styler = build_template_styler(modified, fields);
+        self.pane.update(cx, |pane, cx| {
+            pane.set_hover_span(hover, cx);
+            pane.set_byte_styler(styler, cx);
+            pane.set_value_palette(palette, cx);
         });
-        self.pane.update(cx, |pane, cx| pane.set_hover_span(hover, cx));
     }
 
     /// The tab label: the VFS entry title if set, else the file leaf name,
@@ -603,6 +645,80 @@ fn read_all_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
             Vec::new()
         }
     }
+}
+
+/// Opacity applied to a template field's color for the hex-view
+/// background tint. Approximates egui's `gamma_multiply(0.45)` (which
+/// also darkens the rgb components in gamma space) with a straight
+/// alpha multiply; over the theme background the difference is minor.
+const TEMPLATE_TINT_ALPHA: f32 = 0.45;
+
+/// A template field color prepared for the styler: converted to
+/// [`Hsla`] and softened to the tint opacity.
+fn template_tint(color: hxy_core::color::Rgba) -> Hsla {
+    let mut tint = rgba_to_hsla(color);
+    tint.a *= TEMPLATE_TINT_ALPHA;
+    tint
+}
+
+/// Foreground tint for patched bytes, mirroring egui's
+/// `MODIFIED_BYTE_FG` (`crates/hxy/src/view/hex_body.rs`). The gpui
+/// pane colors glyphs by byte class, so the patched marker rides the
+/// glyph exactly as egui's default (background-highlight) mode does.
+fn modified_byte_fg() -> Hsla {
+    Hsla::from(gpui::Rgba { r: 1.0, g: f32::from(0x5Au8) / 255.0, b: f32::from(0x4Au8) / 255.0, a: 1.0 })
+}
+
+/// Sorted field spans plus their tints, one color per span, both
+/// aligned by index (the shape `TemplateState::leaf_boundaries` /
+/// `leaf_colors` carry).
+struct FieldTints {
+    boundaries: Vec<(ByteOffset, hxy_core::ByteLen)>,
+    colors: Vec<Hsla>,
+}
+
+/// Compose the pane's per-byte styler: patched bytes keep their marker
+/// (the user is editing them right now, the template color can wait),
+/// otherwise the field covering the byte supplies a background tint.
+/// `None` when there is nothing to style, keeping the pane on its
+/// zero-cost default path. `modified` is the sorted, non-overlapping
+/// `(start, end)` list from `HexEditor::modified_ranges`.
+fn build_template_styler(
+    modified: Vec<(u64, u64)>,
+    fields: Option<FieldTints>,
+) -> Option<Box<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send>> {
+    if modified.is_empty() && fields.is_none() {
+        return None;
+    }
+    Some(Box::new(move |_byte, offset| {
+        let b = offset.get();
+        if range_contains(&modified, b) {
+            return ByteStyleOverride { bg: None, fg: Some(modified_byte_fg()) };
+        }
+        let Some(fields) = fields.as_ref() else {
+            return ByteStyleOverride::default();
+        };
+        let idx = fields.boundaries.partition_point(|(start, _)| start.get() <= b);
+        if idx == 0 {
+            return ByteStyleOverride::default();
+        }
+        let (start, len) = fields.boundaries[idx - 1];
+        if b >= start.get().saturating_add(len.get()) {
+            return ByteStyleOverride::default();
+        }
+        ByteStyleOverride { bg: Some(fields.colors[idx - 1]), fg: None }
+    }))
+}
+
+/// Binary search a sorted, non-overlapping `(start, end)` range list
+/// for `offset`. Port of the egui helper in
+/// `crates/hxy/src/view/hex_body.rs`.
+fn range_contains(ranges: &[(u64, u64)], offset: u64) -> bool {
+    let idx = ranges.partition_point(|(start, _)| *start <= offset);
+    if idx == 0 {
+        return false;
+    }
+    offset < ranges[idx - 1].1
 }
 
 /// Extract the stored file path from a `FilePanel` payload, if present.
@@ -773,6 +889,42 @@ mod tests {
             });
         });
         assert!(!panel.read_with(cx, Panel::closable), "a dirty buffer is not closable");
+    }
+
+    /// Styler precedence, egui parity (`hex_body.rs`): a patched byte
+    /// keeps its foreground mark and never receives the field tint; an
+    /// untouched byte inside a field gets the background tint; bytes
+    /// outside every field stay default; nothing to style means no
+    /// styler at all.
+    #[test]
+    fn template_styler_patches_win_over_field_tints() {
+        let tint_a = template_tint(hxy_core::color::Rgba::rgb(200, 40, 40));
+        let tint_b = template_tint(hxy_core::color::Rgba::rgb(40, 200, 40));
+        let span = |start: u64, len: u64| (ByteOffset::new(start), hxy_core::ByteLen::new(len));
+        let fields = FieldTints { boundaries: vec![span(0, 4), span(4, 4)], colors: vec![tint_a, tint_b] };
+        let styler = build_template_styler(vec![(2, 3)], Some(fields)).expect("styler");
+
+        assert_eq!(styler(0, ByteOffset::new(2)), ByteStyleOverride { bg: None, fg: Some(modified_byte_fg()) });
+        assert_eq!(styler(0, ByteOffset::new(1)), ByteStyleOverride { bg: Some(tint_a), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(3)), ByteStyleOverride { bg: Some(tint_a), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(7)), ByteStyleOverride { bg: Some(tint_b), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(8)), ByteStyleOverride::default(), "past the last field");
+
+        let marks_only = build_template_styler(vec![(2, 3)], None).expect("patch marks without tints");
+        assert_eq!(marks_only(0, ByteOffset::new(1)), ByteStyleOverride::default());
+        assert!(build_template_styler(Vec::new(), None).is_none(), "nothing to style installs no styler");
+    }
+
+    #[test]
+    fn range_contains_binary_searches_sorted_ranges() {
+        let ranges = [(2u64, 4u64), (8, 9)];
+        assert!(!range_contains(&ranges, 1));
+        assert!(range_contains(&ranges, 2));
+        assert!(range_contains(&ranges, 3));
+        assert!(!range_contains(&ranges, 4), "end is exclusive");
+        assert!(range_contains(&ranges, 8));
+        assert!(!range_contains(&ranges, 9));
+        assert!(!range_contains(&[], 0));
     }
 
     /// A restored zip-backed tab re-runs VFS-handler detection on the

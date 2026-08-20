@@ -299,6 +299,9 @@ fn spawn_run(
     panel.active_template = Some(instance_id);
     panel.template_panel_visible = true;
     panel.sync_template_rows(cx);
+    // The running instance has no state yet, so the previous active
+    // instance's tints/palette must not linger while it computes.
+    panel.sync_pane_overlays(cx);
     cx.notify();
 }
 
@@ -345,6 +348,9 @@ fn record_error_instance(
     panel.active_template = Some(instance_id);
     panel.template_panel_visible = true;
     panel.sync_template_rows(cx);
+    // An error instance has no tree; drop the previous instance's
+    // tints/palette so the hex view matches the now-active state.
+    panel.sync_pane_overlays(cx);
     cx.notify();
 }
 

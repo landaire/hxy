@@ -62,6 +62,8 @@ use hxy_core::format::TemplateValueFormats;
 use hxy_core::format::format_offset;
 use hxy_plugin_host::template::Node;
 use hxy_plugin_host::template::Severity;
+use hxy_templates::breadcrumb::BreadcrumbDetail;
+use hxy_templates::breadcrumb::breadcrumb_for_offset;
 use hxy_templates::format::decode_scalar_bytes;
 use hxy_templates::format::format_value;
 use hxy_templates::format::scalar_kind_name;
@@ -73,6 +75,7 @@ use hxy_templates::state::TemplateEvent;
 use hxy_templates::state::TemplateInstanceId;
 use hxy_templates::state::TemplateNodeIdx;
 use hxy_templates::state::TemplateState;
+use hxy_view_gpui::HexPane;
 
 use super::FilePanel;
 use crate::templates::rgba_to_hsla;
@@ -106,6 +109,11 @@ pub struct TemplateOffsetJump(pub ByteOffset);
 
 pub struct TemplateView {
     file: WeakEntity<FilePanel>,
+    /// The owning panel's hex pane, read for the hovered byte and the
+    /// source the breadcrumb decodes values from. Observed so hover
+    /// moves in the grid re-render the breadcrumb strip.
+    pane: Entity<HexPane>,
+    _pane_observe: Subscription,
     focus_handle: FocusHandle,
     /// Visible-row cache for the ACTIVE instance, recomputed by the
     /// owning panel's reducer after every state change (the panel
@@ -142,12 +150,20 @@ pub struct TemplateView {
 }
 
 impl TemplateView {
-    pub fn new(file: WeakEntity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        file: WeakEntity<FilePanel>,
+        pane: Entity<HexPane>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let weak = cx.entity().downgrade();
         let table = cx.new(|cx| TableState::new(TemplateTableDelegate::new(weak), window, cx));
         let table_sub = cx.subscribe_in(&table, window, Self::on_table_event);
+        let pane_observe = cx.observe(&pane, |_, _, cx| cx.notify());
         Self {
             file,
+            pane,
+            _pane_observe: pane_observe,
             focus_handle: cx.focus_handle(),
             rows: Vec::new(),
             selected: None,
@@ -414,10 +430,30 @@ impl EventEmitter<TemplateEvent> for TemplateView {}
 impl EventEmitter<TemplateOffsetJump> for TemplateView {}
 
 impl Render for TemplateView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let root = v_flex().size_full().bg(cx.theme().background);
         let Some(panel) = self.file.upgrade() else {
             return root;
+        };
+
+        // Breadcrumb for the byte under the pointer in the hex grid.
+        // Alt (Option on macOS) switches to the full struct path and
+        // flips the numeric format, mirroring the egui tooltip
+        // (crates/hxy/src/view/hex_body.rs).
+        let alt = window.modifiers().alt;
+        let breadcrumb = {
+            let pane_ref = self.pane.read(cx);
+            pane_ref.hovered_offset().and_then(|byte| {
+                let panel_ref = panel.read(cx);
+                let instance = panel_ref.active_template()?;
+                breadcrumb_line(
+                    &instance.state.tree,
+                    pane_ref.editor().source().as_ref(),
+                    byte.get(),
+                    alt,
+                    &self.value_formats,
+                )
+            })
         };
 
         // Extract owned render data up front so the panel borrow
@@ -459,10 +495,14 @@ impl Render for TemplateView {
             (tabs, show_colors, active_running, active_body)
         };
 
-        let mut root = root
-            .child(self.render_header(show_colors, cx))
-            .child(self.render_tab_strip(tabs, cx))
-            .child(div().border_t_1().border_color(cx.theme().border));
+        let mut root = root.child(self.render_header(show_colors, cx));
+        if let Some(text) = breadcrumb {
+            root = root.child(
+                div().px_2().pb_1().font_family(cx.theme().mono_font_family.clone()).text_sm().truncate().child(text),
+            );
+        }
+        let mut root =
+            root.child(self.render_tab_strip(tabs, cx)).child(div().border_t_1().border_color(cx.theme().border));
 
         if let Some((name, started)) = active_running {
             return root.child(self.render_running(&name, started, cx));
@@ -490,6 +530,25 @@ impl Render for TemplateView {
                 .child(Table::new(&self.table)),
         )
     }
+}
+
+/// Single-line breadcrumb for the template field covering `byte`:
+/// the [`breadcrumb_for_offset`] path with its tree decorations
+/// stripped, joined with " > ". `alt` selects the full root-to-leaf
+/// chain (and the inverse numeric format); the default is the compact
+/// leaf line. `None` when no field covers the offset.
+fn breadcrumb_line(
+    tree: &hxy_plugin_host::template::ResultTree,
+    source: &dyn HexSource,
+    byte: u64,
+    alt: bool,
+    fmts: &TemplateValueFormats,
+) -> Option<String> {
+    let detail = if alt { BreadcrumbDetail::Full } else { BreadcrumbDetail::Leaf };
+    let path = breadcrumb_for_offset(tree, source, byte, detail, fmts, alt)?;
+    let line =
+        path.iter().map(|row| row.trim_start_matches([' ', '\u{2514}', '\u{2500}'])).collect::<Vec<_>>().join(" > ");
+    Some(line)
 }
 
 /// Emit a [`TemplateEvent`] on the view from a widget callback that
@@ -1174,9 +1233,16 @@ mod tests {
     /// Install the fixture tree as a completed instance on the panel
     /// and return its id.
     fn install_fixture(panel: &gpui::Entity<FilePanel>, cx: &mut gpui::VisualTestContext) -> TemplateInstanceId {
+        install_tree(panel, cx, fixture_tree())
+    }
+
+    fn install_tree(
+        panel: &gpui::Entity<FilePanel>,
+        cx: &mut gpui::VisualTestContext,
+        tree: ResultTree,
+    ) -> TemplateInstanceId {
         let id = panel.update(cx, |panel, cx| {
-            let state =
-                new_state_from(Arc::new(FakeParsed { elements: fixture_elements() }), fixture_tree(), HashMap::new());
+            let state = new_state_from(Arc::new(FakeParsed { elements: fixture_elements() }), tree, HashMap::new());
             let id = panel.fresh_template_instance_id();
             panel.upsert_template_instance(TemplateInstance {
                 id,
@@ -1189,6 +1255,7 @@ mod tests {
             panel.active_template = Some(id);
             panel.template_panel_visible = true;
             panel.sync_template_rows(cx);
+            panel.sync_pane_overlays(cx);
             id
         });
         cx.run_until_parked();
@@ -1402,6 +1469,89 @@ mod tests {
         let collapsed = panel
             .read_with(cx, |panel, _| panel.active_template().unwrap().state.collapsed.contains(&TemplateNodeIdx(2)));
         assert!(collapsed, "left collapses the selected node");
+    }
+
+    /// Installing an instance composes the pane's byte styler: field
+    /// bytes get a background tint, a patched byte flips to the
+    /// modified foreground mark (the pane observer rebuilds the stale
+    /// styler snapshot after the edit), and toggling colors off drops
+    /// the styler entirely once no patches remain to mark.
+    #[gpui::test]
+    fn overlays_tint_fields_and_patches_win(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx);
+        install_fixture(&panel, cx);
+
+        let styler = panel.read_with(cx, |panel, cx| panel.pane().read(cx).byte_styler()).expect("styler installed");
+        let field = styler(0x01, ByteOffset::new(1));
+        assert!(field.bg.is_some(), "field byte gets a background tint");
+        assert!(field.fg.is_none());
+        let outside = styler(0x00, ByteOffset::new(20));
+        assert_eq!(outside, hxy_view_gpui::ByteStyleOverride::default(), "no field covers byte 20");
+
+        panel.update(cx, |panel, cx| {
+            panel.pane().update(cx, |pane, cx| {
+                pane.editor_mut().splice(1, 1, vec![0xAA]).unwrap();
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let styler = panel.read_with(cx, |panel, cx| panel.pane().read(cx).byte_styler()).expect("styler rebuilt");
+        let patched = styler(0xAA, ByteOffset::new(1));
+        assert!(patched.fg.is_some(), "patched byte wins over the field tint");
+        assert!(patched.bg.is_none());
+        assert!(styler(0x02, ByteOffset::new(2)).bg.is_some(), "neighboring field byte keeps its tint");
+
+        apply(&panel, cx, TemplateEvent::ToggleColors(false));
+        let styler = panel.read_with(cx, |panel, cx| panel.pane().read(cx).byte_styler()).expect("patch marks remain");
+        assert!(styler(0x02, ByteOffset::new(2)).bg.is_none(), "colors off drops the field tint");
+        assert!(styler(0xAA, ByteOffset::new(1)).fg.is_some(), "patch mark survives colors off");
+    }
+
+    /// A tree-supplied byte palette lands on the pane as the custom
+    /// value palette (0xAARRGGBB unpacked per byte value) and clears
+    /// when the instance goes away.
+    #[gpui::test]
+    fn palette_override_installs_and_clears(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx);
+        let mut tree = fixture_tree();
+        tree.byte_palette = Some(vec![0xFF336699u32; 256]);
+        let id = install_tree(&panel, cx, tree);
+
+        let installed = panel.read_with(cx, |panel, cx| panel.pane().read(cx).value_palette().map(|table| table[0x41]));
+        let expected = rgba_to_hsla(hxy_core::color::Rgba::from_argb_u32(0xFF336699));
+        assert_eq!(installed, Some(expected), "palette entry converted through rgba_to_hsla");
+
+        apply(&panel, cx, TemplateEvent::RemoveInstance(id));
+        let cleared = panel.read_with(cx, |panel, cx| panel.pane().read(cx).value_palette().is_none());
+        assert!(cleared, "removing the instance clears the palette");
+    }
+
+    /// Leaf detail renders the single hovered field; Full (Alt)
+    /// renders the root-to-leaf chain joined with " > " with the tree
+    /// decorations stripped; uncovered offsets yield nothing.
+    #[test]
+    fn breadcrumb_line_leaf_and_full() {
+        let tree = fixture_tree();
+        let source = MemorySource::new((0u8..32).collect::<Vec<_>>());
+        let fmts = TemplateValueFormats::default();
+
+        let leaf = breadcrumb_line(&tree, &source, 5, false, &fmts).unwrap();
+        assert!(leaf.contains("len"), "leaf line names the hovered field, got {leaf:?}");
+        assert!(!leaf.contains(" > "), "leaf detail is a single segment, got {leaf:?}");
+
+        let full = breadcrumb_line(&tree, &source, 5, true, &fmts).unwrap();
+        assert!(full.contains("hdr") && full.contains("len"), "full detail chains root to leaf, got {full:?}");
+        assert!(full.contains(" > "));
+        assert!(!full.contains('\u{2514}'), "tree decorations are stripped, got {full:?}");
+
+        // Byte 16 sits in `name` (u8[4] at 14): the compact line is
+        // the per-element row decoded from the source.
+        let elem = breadcrumb_line(&tree, &source, 16, false, &fmts).unwrap();
+        assert!(elem.contains("name[2]"), "scalar arrays render the element under the cursor, got {elem:?}");
+
+        assert_eq!(breadcrumb_line(&tree, &source, 30, false, &fmts), None, "no field covers byte 30");
     }
 
     #[test]
