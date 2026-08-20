@@ -172,7 +172,12 @@ pub enum RunTemplateError {
 /// is `Some`, the runtime only sees that slice (offset 0 there maps
 /// to `range.start()` of the real file); when `None`, the template
 /// binds against the whole file. Preflight failures land as a
-/// diagnostics-only instance plus an error toast.
+/// diagnostics-only instance plus an error toast. Returns the id the
+/// run (or error instance) was allocated under, so a restore can map
+/// its persisted active index back onto live instances. `None` only
+/// on the defensive whole-file range failure below, which cannot
+/// fire (`ByteRange::new` accepts any `start <= end`, and `0 <= len`
+/// always holds -- an empty source yields the valid range `0..0`).
 pub fn run_template(
     panel: &mut FilePanel,
     path: PathBuf,
@@ -180,26 +185,24 @@ pub fn run_template(
     restore: RestoreContext,
     window: &mut Window,
     cx: &mut Context<FilePanel>,
-) {
+) -> Option<TemplateInstanceId> {
     let tpl_name = display_name_for(&path);
     let source = panel.pane().read(cx).editor().source().clone();
     let source_len = source.len().get();
     let bound_range = match range {
         Some(r) => r,
         // 0..len over an existing source is always a valid range.
-        None => match ByteRange::new(ByteOffset::new(0), ByteOffset::new(source_len)) {
-            Ok(r) => r,
-            Err(_) => return,
-        },
+        None => ByteRange::new(ByteOffset::new(0), ByteOffset::new(source_len)).ok()?,
     };
     match prepare(&path, bound_range, source_len, cx) {
         Ok(prepared) => {
-            spawn_run(panel, path, tpl_name, prepared, bound_range, source, source_len, restore, window, cx);
+            Some(spawn_run(panel, path, tpl_name, prepared, bound_range, source, source_len, restore, window, cx))
         }
         Err(err) => {
             let message = error_message(&err);
-            record_error_instance(panel, &path, &tpl_name, bound_range, message.clone(), cx);
+            let id = record_error_instance(panel, &path, &tpl_name, bound_range, message.clone(), cx);
             window.push_notification(Notification::error(message), cx);
+            Some(id)
         }
     }
 }
@@ -254,7 +257,7 @@ fn spawn_run(
     restore: RestoreContext,
     window: &mut Window,
     cx: &mut Context<FilePanel>,
-) {
+) -> TemplateInstanceId {
     let PreparedRun { runtime, template_source } = prepared;
     // Hash the expanded source the worker is about to consume: that
     // is the content the resulting node indices reflect, so it's the
@@ -330,6 +333,7 @@ fn spawn_run(
     // instance's tints/palette must not linger while it computes.
     panel.sync_pane_overlays(cx);
     cx.notify();
+    instance_id
 }
 
 /// Background half of a run: parse, re-anchor spans to the bound
@@ -362,7 +366,7 @@ fn record_error_instance(
     range: ByteRange,
     message: String,
     cx: &mut Context<FilePanel>,
-) {
+) -> TemplateInstanceId {
     let instance_id = panel.fresh_template_instance_id();
     panel.upsert_template_instance(TemplateInstance {
         id: instance_id,
@@ -379,6 +383,7 @@ fn record_error_instance(
     // tints/palette so the hex view matches the now-active state.
     panel.sync_pane_overlays(cx);
     cx.notify();
+    instance_id
 }
 
 fn error_message(err: &RunTemplateError) -> String {

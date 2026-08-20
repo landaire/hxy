@@ -59,6 +59,7 @@ use super::search_bar::SearchBar;
 use super::template_view::TemplateOffsetJump;
 use super::template_view::TemplateView;
 use crate::templates::FieldJump;
+use crate::templates::RestoreContext;
 use crate::templates::TemplateRunHandle;
 use crate::templates::rgba_to_hsla;
 use crate::workspace::CloseSearch;
@@ -106,6 +107,11 @@ pub struct FilePanel {
     /// Whether the per-file template panel section under the pane is
     /// shown. Off until a run starts.
     pub(crate) template_panel_visible: bool,
+    /// One-shot guard for the "Run <template>?" suggestion toast:
+    /// set when the offer is made so this tab is never nagged again
+    /// (the notification widget has no dismissal hook, so declining
+    /// and ignoring are indistinguishable). Not persisted.
+    pub(crate) template_suggestion_declined: bool,
     /// The template results panel rendered under the pane. Always
     /// constructed; only mounted while [`Self::template_panel_visible`]
     /// and at least one instance (or run) exists.
@@ -143,6 +149,7 @@ impl FilePanel {
             next_template_instance_id: 1,
             last_template_path: None,
             template_panel_visible: false,
+            template_suggestion_declined: false,
             template_view,
             _template_subs: template_subs,
             last_modified_ranges: Vec::new(),
@@ -208,6 +215,40 @@ impl FilePanel {
         let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
         let mut panel = Self::new(source, path, window, cx);
         panel.detected_handler = handler;
+        let restore = persisted_templates_from_info(info);
+        if !restore.templates.is_empty() {
+            // Fire after construction completes: the runner needs the
+            // live entity for its background task, and its error path
+            // toasts synchronously -- during a boot restore the Root
+            // notification layer is not installed yet (see
+            // `Workspace::build_initial`'s deferred toasts).
+            cx.defer_in(window, move |this, window, cx| {
+                let ids: Vec<Option<TemplateInstanceId>> = restore
+                    .templates
+                    .into_iter()
+                    .map(|t| {
+                        crate::templates::run_template(
+                            this,
+                            t.source_path,
+                            Some(t.range),
+                            RestoreContext { expected_fingerprint: t.fingerprint, overrides: t.overrides },
+                            window,
+                            cx,
+                        )
+                    })
+                    .collect();
+                // The runner leaves the most recently queued instance
+                // active; override with the persisted choice so the
+                // panel comes back on the same tab (egui parity).
+                if let Some(id) = restore.active_idx.and_then(|idx| ids.get(idx).copied().flatten()) {
+                    this.active_template = Some(id);
+                }
+                this.template_panel_visible = restore.panel_visible;
+                this.sync_template_rows(cx);
+                this.sync_pane_overlays(cx);
+                cx.notify();
+            });
+        }
         panel
     }
 
@@ -768,6 +809,99 @@ fn path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     value.get("path").and_then(|p| p.as_str()).map(PathBuf::from)
 }
 
+/// One persisted template run, parsed back out of the dump payload.
+struct PersistedTemplate {
+    source_path: PathBuf,
+    range: ByteRange,
+    fingerprint: Option<[u8; 32]>,
+    overrides: std::collections::HashMap<u32, hxy_core::color::Rgba>,
+}
+
+/// The template section of a persisted `FilePanel` payload.
+struct PersistedTemplates {
+    templates: Vec<PersistedTemplate>,
+    active_idx: Option<usize>,
+    panel_visible: bool,
+}
+
+/// Parse the persisted template runs out of a `FilePanel` payload.
+/// Pre-template dumps have no `templates` key and parse to an empty
+/// list; corrupt entries are warned about and skipped so one bad
+/// record doesn't drop the tab's remaining templates.
+fn persisted_templates_from_info(info: &PanelInfo) -> PersistedTemplates {
+    let empty = PersistedTemplates { templates: Vec::new(), active_idx: None, panel_visible: false };
+    let PanelInfo::Panel(value) = info else { return empty };
+    let Some(items) = value.get("templates").and_then(|t| t.as_array()) else { return empty };
+    let mut templates = Vec::with_capacity(items.len());
+    let mut skipped = false;
+    for item in items {
+        match persisted_template_from_json(item) {
+            Some(template) => templates.push(template),
+            None => {
+                tracing::warn!(?item, "restore: corrupt persisted template entry; skipping");
+                skipped = true;
+            }
+        }
+    }
+    // Schema default: the panel is hidden until a run starts, so a
+    // missing key means hidden.
+    let panel_visible = value.get("template_panel_visible").and_then(|v| v.as_bool()).unwrap_or(false);
+    // The persisted index counts every dumped entry; once any entry is
+    // skipped it no longer maps onto the surviving list, so drop it
+    // rather than activate the wrong instance.
+    let active_idx =
+        if skipped { None } else { value.get("active_template_idx").and_then(|v| v.as_u64()).map(|v| v as usize) };
+    PersistedTemplates { templates, active_idx, panel_visible }
+}
+
+fn persisted_template_from_json(item: &serde_json::Value) -> Option<PersistedTemplate> {
+    let source_path = PathBuf::from(item.get("source_path")?.as_str()?);
+    let range = item.get("range")?.as_array()?;
+    let start = range.first()?.as_u64()?;
+    let end = range.get(1)?.as_u64()?;
+    let range = ByteRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()?;
+    // `null` fingerprint is a valid record (error-only instance or a
+    // pre-fingerprint dump); a malformed hex string is not.
+    let fingerprint = match item.get("fingerprint") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(fingerprint_from_hex(value.as_str()?)?),
+    };
+    let mut overrides = std::collections::HashMap::new();
+    if let Some(map) = item.get("overrides").and_then(|o| o.as_object()) {
+        for (key, value) in map {
+            let idx: u32 = key.parse().ok()?;
+            let parts = value.as_array()?;
+            if parts.len() != 4 {
+                return None;
+            }
+            let byte = |i: usize| parts[i].as_u64().and_then(|v| u8::try_from(v).ok());
+            overrides.insert(idx, hxy_core::color::Rgba::rgba(byte(0)?, byte(1)?, byte(2)?, byte(3)?));
+        }
+    }
+    Some(PersistedTemplate { source_path, range, fingerprint, overrides })
+}
+
+/// Lowercase hex of a template-source fingerprint for the dump JSON.
+fn hex_fingerprint(fingerprint: &[u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(64);
+    for byte in fingerprint {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+fn fingerprint_from_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
 /// The panel base name shown on its tab: the file's leaf name, falling
 /// back to the full path when it has none, or the untitled placeholder
 /// when the panel has no path.
@@ -811,11 +945,41 @@ impl Panel for FilePanel {
         !self.is_dirty(cx)
     }
 
-    /// Persist the backing path so the tab can be re-opened next launch.
+    /// Persist the backing path plus the completed template runs
+    /// (source path, bound range, source fingerprint, color
+    /// overrides) so the tab -- and its templates -- can be
+    /// re-established next launch.
     fn dump(&self, _cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
         let path = self.path.as_ref().map(|p| p.to_string_lossy().into_owned());
-        state.info = PanelInfo::panel(serde_json::json!({ "path": path }));
+        let templates: Vec<serde_json::Value> = self
+            .templates
+            .iter()
+            .map(|t| {
+                // JSON object keys are strings; sort the override
+                // indices so the dump is byte-stable across saves.
+                let mut overrides = serde_json::Map::new();
+                let mut idxs: Vec<u32> = t.state.node_color_overrides.keys().copied().collect();
+                idxs.sort_unstable();
+                for idx in idxs {
+                    let c = t.state.node_color_overrides[&idx];
+                    overrides.insert(idx.to_string(), serde_json::json!([c.r, c.g, c.b, c.a]));
+                }
+                serde_json::json!({
+                    "source_path": t.source_path.to_string_lossy(),
+                    "range": [t.range.start().get(), t.range.end().get()],
+                    "fingerprint": t.source_fingerprint.map(|f| hex_fingerprint(&f)),
+                    "overrides": overrides,
+                })
+            })
+            .collect();
+        let active_template_idx = self.active_template.and_then(|id| self.templates.iter().position(|t| t.id == id));
+        state.info = PanelInfo::panel(serde_json::json!({
+            "path": path,
+            "templates": templates,
+            "active_template_idx": active_template_idx,
+            "template_panel_visible": self.template_panel_visible,
+        }));
         state
     }
 }
@@ -966,6 +1130,96 @@ mod tests {
         assert!(range_contains(&ranges, 8));
         assert!(!range_contains(&ranges, 9));
         assert!(!range_contains(&[], 0));
+    }
+
+    #[test]
+    fn fingerprint_hex_round_trips() {
+        let mut fingerprint = [0u8; 32];
+        for (i, slot) in fingerprint.iter_mut().enumerate() {
+            *slot = i as u8;
+        }
+        let hex = hex_fingerprint(&fingerprint);
+        assert_eq!(hex.len(), 64);
+        assert_eq!(fingerprint_from_hex(&hex), Some(fingerprint));
+        assert_eq!(fingerprint_from_hex("zz"), None);
+        assert_eq!(fingerprint_from_hex(&hex[..60]), None, "truncated hex is rejected");
+    }
+
+    /// Dump -> restore round trip: the restored panel re-fires each
+    /// persisted template against the re-read bytes, carries the
+    /// color overrides through the fingerprint match, and comes back
+    /// with the persisted active tab and panel visibility.
+    #[gpui::test]
+    fn template_dump_restore_round_trip_reruns_with_overrides(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::panels::register(cx);
+            cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("t.bin");
+        std::fs::write(&data_path, 0xAABBCCDDu32.to_le_bytes()).unwrap();
+        let template_path = dir.path().join("one.bt");
+        std::fs::write(&template_path, "LittleEndian();\nuint32 a;\n").unwrap();
+
+        // First session: open, run the template, pick a color.
+        let window = cx.add_window(|window, cx| {
+            let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(std::fs::read(&data_path).unwrap()));
+            let panel = cx.new(|cx| FilePanel::new(source, Some(data_path.clone()), window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                crate::templates::run_template(
+                    panel,
+                    template_path.clone(),
+                    None,
+                    RestoreContext::default(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        vcx.run_until_parked();
+        let picked = hxy_core::color::Rgba::rgb(9, 8, 7);
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.apply_template_event(
+                    &TemplateEvent::SetColor { idx: TemplateNodeIdx(0), color: picked },
+                    window,
+                    cx,
+                );
+            });
+        });
+        let info = panel.read_with(vcx, |panel, cx| panel.dump(cx).info);
+
+        // Second session: restore from the dump payload.
+        let window2 = vcx.add_window(|window, cx| {
+            let panel = cx.new(|cx| FilePanel::restore(&info, window, cx));
+            gpui_component::Root::new(panel, window, cx)
+        });
+        let restored =
+            window2.root(vcx).unwrap().read_with(vcx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
+        let vcx2 = gpui::VisualTestContext::from_window(*window2, vcx).into_mut();
+        vcx2.run_until_parked();
+
+        restored.read_with(vcx2, |panel, _| {
+            assert_eq!(panel.templates.len(), 1, "the persisted run re-fired");
+            let instance = &panel.templates[0];
+            assert_eq!(instance.source_path, template_path);
+            assert!(instance.state.parsed.is_some(), "restored run completed");
+            assert_eq!(
+                instance.state.node_color_overrides.get(&0),
+                Some(&picked),
+                "matching fingerprint preserves the color override"
+            );
+            assert_eq!(panel.active_template, Some(instance.id), "persisted active tab restored");
+            assert!(panel.template_panel_visible, "persisted visibility restored");
+            assert!(panel.templates_running.is_empty());
+        });
     }
 
     /// A restored zip-backed tab re-runs VFS-handler detection on the

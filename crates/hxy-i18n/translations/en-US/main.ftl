@@ -706,6 +706,7 @@ gpui-template-install-missing = { $path } references "{ $target }" but it couldn
 gpui-template-install-failed = Install { $path } failed: { $error }
 gpui-template-uninstalled = Deleted { $name }.
 gpui-template-uninstall-failed = Delete { $name } failed: { $error }
+gpui-template-suggest-body = Run { $name }?
 
 # gpui template results panel (rendered below the hex pane; the egui
 # panel hardcodes these strings in English)

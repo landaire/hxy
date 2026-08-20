@@ -1303,6 +1303,7 @@ impl Workspace {
                 let panel = cx.new(|cx| FilePanel::new(source, Some(path.clone()), window, cx));
                 panel.update(cx, |panel, _cx| panel.set_detected_handler(handler));
                 self.add_file_panel(panel.clone(), window, cx);
+                self.suggest_template_for(&panel, window, cx);
                 self.maybe_stage_restore(panel, &path, window, cx);
                 Ok(())
             }
@@ -2232,6 +2233,73 @@ impl Workspace {
     pub(crate) fn jump_template_field(&mut self, jump: FieldJump, cx: &mut Context<Self>) {
         let Some(file) = self.reference_active_file(cx) else { return };
         file.update(cx, |panel, cx| panel.jump_to_template_field(jump, cx));
+    }
+
+    /// After a successful open: if the library recognises the file's
+    /// extension or magic and no template has run on the tab yet,
+    /// offer a one-shot "Run <name>?" toast with a Run action button
+    /// (ports egui's `suggest_templates_for` prompt). The offer is
+    /// recorded on the panel so the tab is never nagged twice; the
+    /// notification widget has no dismissal hook, so dismissing and
+    /// ignoring both count as declining (the closest mirror of the
+    /// egui prompt's semantics the widget allows). Not persisted.
+    fn suggest_template_for(&mut self, panel: &Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
+        // Only harnesses run without the library global (`main`
+        // installs it at startup); no library, no suggestions.
+        let Some(library) = cx.try_global::<crate::templates::TemplateLibraryGlobal>() else { return };
+        {
+            let panel = panel.read(cx);
+            if panel.template_suggestion_declined || !panel.templates.is_empty() || !panel.templates_running.is_empty()
+            {
+                return;
+            }
+        }
+        let extension =
+            panel.read(cx).path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
+        let source = panel.read(cx).pane().read(cx).editor().source().clone();
+        let window_len = source.len().get().min(hxy_templates::library::DETECTION_WINDOW as u64);
+        // A read miss only costs magic detection; extension matching
+        // still applies (mirrors egui).
+        let head_bytes = match ByteRange::new(ByteOffset::new(0), ByteOffset::new(window_len)) {
+            Ok(range) if window_len > 0 => source.read(range).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let Some(entry) = library.0.suggest(extension.as_deref(), &head_bytes) else { return };
+        let template_path = entry.path.clone();
+        let template_name = entry.name.clone();
+        panel.update(cx, |panel, _cx| panel.template_suggestion_declined = true);
+        let weak = panel.downgrade();
+        // Boot-time opens run before the Root notification layer is
+        // installed; defer like `build_initial`'s other toasts.
+        window.defer(cx, move |window, cx| {
+            let note = Notification::info(hxy_i18n::t_args("gpui-template-suggest-body", &[("name", &template_name)]))
+                .title(hxy_i18n::t("toast-template-group-title"))
+                // A prompt, not a status blip: stays until the user runs
+                // or dismisses it (the egui prompt lingers ~30 s).
+                .autohide(false)
+                .action(move |_, _, cx| {
+                    let weak = weak.clone();
+                    let template_path = template_path.clone();
+                    Button::new("run-suggested-template").label(hxy_i18n::t("toast-template-run")).on_click(
+                        cx.listener(move |this: &mut Notification, _, window, cx| {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update(cx, |panel, cx| {
+                                    run_template(
+                                        panel,
+                                        template_path.clone(),
+                                        None,
+                                        RestoreContext::default(),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                            this.dismiss(window, cx);
+                        }),
+                    )
+                });
+            window.push_notification(note, cx);
+        });
     }
 
     /// The reference file's [`HexPane`] (see `reference_active_file`'s
@@ -4011,6 +4079,50 @@ mod tests {
                 .unwrap();
             assert_eq!(byte0[0], 0x00, "undo reverted to the on-disk byte");
         });
+    }
+
+    /// Opening a file the template library recognises raises exactly
+    /// one "Run <name>?" suggestion toast (the recognised file's, not
+    /// the unrecognised sibling's), and records the offer on the panel
+    /// so it is never re-raised.
+    #[gpui::test]
+    fn open_suggests_a_matching_template_once(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("png.bt"), "// ID Bytes: 89 50 4E 47\nuint32 a;\n").unwrap();
+        cx.update(|cx| {
+            cx.set_global(crate::templates::TemplateLibraryGlobal(hxy_templates::library::TemplateLibrary::load_from(
+                Some(dir.path()),
+            )));
+        });
+        let png = temp_file(&dir, "pic.png", &[0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]);
+        let plain = temp_file(&dir, "plain.xyz", &[0u8; 8]);
+
+        let (window, ws) = open_workspace_with_root(cx, vec![png.clone(), plain.clone()], None);
+        cx.run_until_parked();
+
+        let count = cx.update_window(window.into(), |_, window, cx| window.notifications(cx).len()).unwrap();
+        assert_eq!(count, 1, "one suggestion toast for the recognised file only");
+
+        let panels = cx.update(|cx| cx.global::<OpenFilePanels>().0.clone());
+        let declined_by_path: Vec<(Option<PathBuf>, bool)> = panels
+            .iter()
+            .map(|p| {
+                cx.read(|cx| {
+                    let p = p.read(cx);
+                    (p.path().map(Path::to_path_buf), p.template_suggestion_declined)
+                })
+            })
+            .collect();
+        assert!(
+            declined_by_path.contains(&(Some(png), true)),
+            "the offer is recorded on the matched panel: {declined_by_path:?}"
+        );
+        assert!(
+            declined_by_path.contains(&(Some(plain), false)),
+            "the unmatched panel was never offered: {declined_by_path:?}"
+        );
+        drop(ws);
     }
 
     /// A Clean restore whose on-disk bytes no longer match the sidecar's
