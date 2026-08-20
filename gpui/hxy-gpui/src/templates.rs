@@ -49,6 +49,33 @@ pub struct TemplateRuntimes(pub Vec<Arc<dyn TemplateRuntime>>);
 
 impl Global for TemplateRuntimes {}
 
+/// The auto-detected template library (user templates directory plus
+/// the fetched ImHex-Patterns corpus), loaded at startup and
+/// refreshed after install / uninstall / pattern fetch. The palette
+/// ranks its entries against the active file.
+pub struct TemplateLibraryGlobal(pub hxy_templates::library::TemplateLibrary);
+
+impl Global for TemplateLibraryGlobal {}
+
+/// Scan the default template directories into a fresh library global.
+pub fn load_library() -> TemplateLibraryGlobal {
+    TemplateLibraryGlobal(hxy_templates::library::TemplateLibrary::load_default())
+}
+
+/// Re-scan the template directories after something changed on disk
+/// (install, uninstall, pattern fetch).
+pub fn refresh_library(cx: &mut App) {
+    cx.set_global(load_library());
+}
+
+/// Direction of a template field jump (palette "Jump to next/previous
+/// template field").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldJump {
+    Next,
+    Prev,
+}
+
 impl TemplateRuntimes {
     /// First runtime claiming `ext` (case-insensitive). Ports the
     /// egui app's `template_runtime_for`.

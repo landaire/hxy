@@ -15,6 +15,7 @@ use hxy_core::Selection;
 
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
+use crate::templates::FieldJump;
 use crate::workspace::Workspace;
 
 /// Route `action` into the workspace. The palette is already closed and
@@ -65,6 +66,12 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| pane.set_columns(count, cx));
         }
+        PaletteAction::RunTemplate { path, range } => ws.run_template_on_active(path, range, window, cx),
+        PaletteAction::RunTemplateDialog => ws.run_template_dialog(window, cx),
+        PaletteAction::InstallTemplate => ws.install_template_dialog(window, cx),
+        PaletteAction::UninstallTemplate(path) => ws.uninstall_template(&path, window, cx),
+        PaletteAction::JumpNextField => ws.jump_template_field(FieldJump::Next, cx),
+        PaletteAction::JumpPrevField => ws.jump_template_field(FieldJump::Prev, cx),
         PaletteAction::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         PaletteAction::CopySelection(format) => {
             let Some(pane) = ws.active_pane(cx) else { return };

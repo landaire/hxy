@@ -696,6 +696,17 @@ gpui-template-parse-failed = Parse failed: { $error }
 gpui-template-execute-failed = Execute failed: { $error }
 gpui-template-diagnostic-error = { $template }: { $message }
 
+# gpui template library management (palette cascades)
+gpui-palette-run-template-browse = Run template from file...
+gpui-template-filter-any = Binary templates
+gpui-template-filter-bt = 010 Editor binary template
+gpui-template-install-no-dir = The user templates directory could not be resolved.
+gpui-template-install-summary = Installed { $copied } template file(s); { $existing } already present.
+gpui-template-install-missing = { $path } references "{ $target }" but it couldn't be resolved.
+gpui-template-install-failed = Install { $path } failed: { $error }
+gpui-template-uninstalled = Deleted { $name }.
+gpui-template-uninstall-failed = Delete { $name } failed: { $error }
+
 # gpui template results panel (rendered below the hex pane; the egui
 # panel hardcodes these strings in English)
 template-panel-title = Template

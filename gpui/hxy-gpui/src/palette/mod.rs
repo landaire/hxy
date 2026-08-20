@@ -56,6 +56,9 @@ use crate::palette::modes::PaletteContext;
 use crate::palette::modes::PaletteMode;
 use crate::palette::modes::Shortcuts;
 use crate::palette::modes::build_entries;
+use crate::palette::modes::build_templates_mode_entries;
+use crate::palette::modes::build_uninstall_entries;
+use crate::templates::TemplateLibraryGlobal;
 use crate::workspace::OpenFile;
 use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
@@ -255,6 +258,9 @@ impl Palette {
         let entries = match self.mode {
             PaletteMode::CompareSideA => self.build_compare_entries(CompareSide::A, cx),
             PaletteMode::CompareSideB => self.build_compare_entries(CompareSide::B, cx),
+            PaletteMode::Templates => self.build_template_entries(TemplateScope::WholeFile, cx),
+            PaletteMode::TemplatesAtSelection => self.build_template_entries(TemplateScope::Selection, cx),
+            PaletteMode::UninstallTemplate => build_uninstall_mode_entries(),
             _ => build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window)),
         };
         let filtered = if self.mode.bypasses_filter(&self.state.query) {
@@ -293,6 +299,32 @@ impl Palette {
         }
         out.push(Entry::new(hxy_i18n::t("compare-picker-browse"), PaletteAction::CompareBrowse(side)));
         out
+    }
+
+    /// The Run-Template rows for the current cascade: library entries
+    /// ranked against the active file, bound to the whole file or to
+    /// the live selection. An at-selection cascade whose selection
+    /// vanished renders empty rather than degrading to whole-file
+    /// runs (mirrors the egui Templates mode).
+    fn build_template_entries(&self, scope: TemplateScope, cx: &App) -> Vec<Entry<PaletteAction>> {
+        let range = match scope {
+            TemplateScope::WholeFile => None,
+            TemplateScope::Selection => {
+                let selection = self.context(cx).selection.and_then(|(start, end)| {
+                    hxy_core::ByteRange::new(hxy_core::ByteOffset::new(start), hxy_core::ByteOffset::new(end)).ok()
+                });
+                match selection {
+                    Some(range) => Some(range),
+                    None => return Vec::new(),
+                }
+            }
+        };
+        let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
+        let (extension, head_bytes) = ws.read(cx).template_palette_seed(cx);
+        // Installed at startup by `main`; only a harness that never
+        // set it lands here, and an empty list is the right render.
+        let Some(library) = cx.try_global::<TemplateLibraryGlobal>() else { return Vec::new() };
+        build_templates_mode_entries(&library.0, extension.as_deref(), &head_bytes, range)
     }
 
     fn pick_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -350,6 +382,23 @@ impl Palette {
             }
         }
     }
+}
+
+/// Which byte scope a template cascade binds its picks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemplateScope {
+    WholeFile,
+    Selection,
+}
+
+/// Rows for the uninstall cascade: the template sources currently on
+/// disk in the user templates directory. An unresolvable data dir
+/// means nothing is installed there, so the list renders empty.
+fn build_uninstall_mode_entries() -> Vec<Entry<PaletteAction>> {
+    let installed = hxy_templates::user_templates_dir()
+        .map(|dir| hxy_templates::library::list_installed_templates(&dir))
+        .unwrap_or_default();
+    build_uninstall_entries(&installed)
 }
 
 /// The highest-precedence binding for `action`, unparsed to an ASCII
@@ -755,6 +804,45 @@ mod tests {
         let clip = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(clip.as_deref(), Some("4"), "the decimal row copies the evaluated value");
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "copying closes the palette");
+    }
+
+    /// End-to-end template cascade: pick "Run Template...", fuzzy-pick
+    /// a library template ranked against the open file, and the run
+    /// lands on the active file panel.
+    #[gpui::test]
+    fn templates_cascade_runs_a_library_template(cx: &mut TestAppContext) {
+        setup(cx);
+        let tpl_dir = tempfile::tempdir().unwrap();
+        std::fs::write(tpl_dir.path().join("quad.bt"), "// File Mask: *.bin\nLittleEndian();\nuint32 a;\n").unwrap();
+        cx.update(|cx| {
+            cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
+            cx.set_global(TemplateLibraryGlobal(hxy_templates::library::TemplateLibrary::load_from(Some(
+                tpl_dir.path(),
+            ))));
+        });
+        let (ws, cx) = build(cx, 8);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "run template", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Templates, "cascaded into the template list");
+
+        // The `.bin` file mask ranks quad.bt at the top; pick it.
+        type_query(&pal, "quad", cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking closes the palette");
+        let file = cx.update(|_window, cx| {
+            cx.global::<crate::panels::strings::OpenFilePanels>().0.first().cloned().expect("one open file")
+        });
+        file.read_with(cx, |panel, _| {
+            assert_eq!(panel.templates.len(), 1, "the pick ran the template");
+            assert!(panel.templates[0].source_path.ends_with("quad.bt"));
+            assert!(panel.templates[0].state.parsed.is_some(), "run completed successfully");
+            assert!(panel.template_panel_visible);
+        });
     }
 
     /// End-to-end compare cascade: pick "Compare files...", choose the

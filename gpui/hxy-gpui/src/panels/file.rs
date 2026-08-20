@@ -58,6 +58,7 @@ use hxy_view_gpui::HexPane;
 use super::search_bar::SearchBar;
 use super::template_view::TemplateOffsetJump;
 use super::template_view::TemplateView;
+use crate::templates::FieldJump;
 use crate::templates::TemplateRunHandle;
 use crate::templates::rgba_to_hsla;
 use crate::workspace::CloseSearch;
@@ -488,6 +489,46 @@ impl FilePanel {
             }));
             pane.editor_mut().set_scroll_to_byte(ByteOffset::new(offset));
             pane.sync_pending_scroll(cx);
+        });
+    }
+
+    /// Move the caret to the next / previous template field boundary
+    /// relative to the current cursor, wrapping around at either end.
+    /// No-op when no template is active or it produced no fields.
+    /// Uses the active instance's boundaries, so switching template
+    /// tabs changes which fields the jump traverses.
+    pub(crate) fn jump_to_template_field(&mut self, jump: FieldJump, cx: &mut Context<Self>) {
+        let target = {
+            let Some(template) = self.active_template() else { return };
+            let boundaries = &template.state.leaf_boundaries;
+            if boundaries.is_empty() {
+                return;
+            }
+            // No caret yet: treat the jump as starting from offset 0
+            // (egui parity).
+            let cursor = self.pane.read(cx).editor().selection().map(|s| s.cursor.get()).unwrap_or(0);
+            match jump {
+                FieldJump::Next => {
+                    let idx = boundaries.partition_point(|(offset, _)| offset.get() <= cursor);
+                    // Past the last field: wrap to the first.
+                    boundaries.get(idx).or_else(|| boundaries.first())
+                }
+                FieldJump::Prev => {
+                    let idx = boundaries.partition_point(|(offset, _)| offset.get() < cursor);
+                    // Before the first field: wrap to the last.
+                    if idx == 0 { boundaries.last() } else { boundaries.get(idx - 1) }
+                }
+            }
+            .map(|(offset, _)| *offset)
+        };
+        let Some(target) = target else { return };
+        self.pane.update(cx, |pane, cx| {
+            pane.editor_mut().set_selection(Some(Selection::caret(target)));
+            if !pane.editor().is_offset_visible(target) {
+                pane.editor_mut().set_scroll_to_byte(target);
+            }
+            pane.sync_pending_scroll(cx);
+            cx.notify();
         });
     }
 

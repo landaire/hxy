@@ -10,12 +10,16 @@
 //! through [`hxy_calculator`] with a [`NullResolver`] (template field
 //! paths arrive in M4).
 
+use std::path::PathBuf;
+
 use hxy_calculator::NullResolver;
+use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
 use hxy_panels::goto::ParseError;
 use hxy_panels::goto::parse_count_expr;
 use hxy_panels::goto::parse_offset_expr;
 use hxy_panels::goto::parse_range_expr;
+use hxy_templates::library::TemplateLibrary;
 use palette_core::Entry;
 
 /// The palette's cascade mode. `Main` is the root command list; the
@@ -36,6 +40,19 @@ pub enum PaletteMode {
     SelectFromOffset,
     SelectRange,
     SetColumns,
+    /// Second-level cascade shown after the user picks `Run Template...`
+    /// from the Main list. Registered templates + install / uninstall /
+    /// browse entries. Each pick binds against the whole file. Entries
+    /// are built by the overlay (they read the library global and the
+    /// active file's head bytes), via [`build_templates_mode_entries`].
+    Templates,
+    /// Sibling cascade for `Run Template at Selection...`: the same
+    /// template list, but each pick binds against the selection the
+    /// Main entry advertised. Only reachable when a selection exists.
+    TemplatesAtSelection,
+    /// Third-level cascade listing installed templates to delete.
+    /// Reached from `Main` via "Uninstall template...".
+    UninstallTemplate,
     /// First step of the palette-driven compare: pick the A side from
     /// the open files or a disk browse. Entries are built by the overlay
     /// (they depend on the live open-file list), not [`build_entries`].
@@ -57,6 +74,9 @@ impl PaletteMode {
             | PaletteMode::SelectFromOffset
             | PaletteMode::SelectRange
             | PaletteMode::SetColumns
+            | PaletteMode::Templates
+            | PaletteMode::TemplatesAtSelection
+            | PaletteMode::UninstallTemplate
             | PaletteMode::CompareSideA
             | PaletteMode::CompareSideB => Some(PaletteMode::Main),
         }
@@ -72,9 +92,13 @@ impl PaletteMode {
                 let q = query.trim_start();
                 q.starts_with('@') || q.starts_with('=')
             }
-            // Compare picks are a fuzzy-filtered file list, not a single
-            // dynamic argument row.
-            PaletteMode::CompareSideA | PaletteMode::CompareSideB => false,
+            // Compare picks and the template lists are fuzzy-filtered
+            // lists, not single dynamic argument rows.
+            PaletteMode::CompareSideA
+            | PaletteMode::CompareSideB
+            | PaletteMode::Templates
+            | PaletteMode::TemplatesAtSelection
+            | PaletteMode::UninstallTemplate => false,
             _ => true,
         }
     }
@@ -88,6 +112,9 @@ impl PaletteMode {
             PaletteMode::SelectFromOffset => "palette-hint-select-from-offset",
             PaletteMode::SelectRange => "palette-hint-select-range",
             PaletteMode::SetColumns => "palette-hint-set-columns-local",
+            PaletteMode::Templates => "palette-hint-templates",
+            PaletteMode::TemplatesAtSelection => "palette-hint-templates-at-selection",
+            PaletteMode::UninstallTemplate => "palette-hint-uninstall",
             PaletteMode::CompareSideA => "palette-hint-compare-side-a",
             PaletteMode::CompareSideB => "palette-hint-compare-side-b",
         }
@@ -161,6 +188,27 @@ pub enum PaletteAction {
     },
     /// Open a file dialog to pick this side from disk.
     CompareBrowse(CompareSide),
+    /// Run the template at `path` against the active file: the whole
+    /// file when `range` is `None`, the given slice otherwise (baked
+    /// from the selection when the entry was built).
+    RunTemplate {
+        path: PathBuf,
+        range: Option<ByteRange>,
+    },
+    /// Pick a template source from disk with a file dialog and run it
+    /// against the whole active file.
+    RunTemplateDialog,
+    /// Pick a `.bt` from disk and copy it (plus its `#include`
+    /// closure) into the user templates directory.
+    InstallTemplate,
+    /// Delete an installed template source file.
+    UninstallTemplate(PathBuf),
+    /// Move the caret to the next template field boundary after the
+    /// cursor, wrapping to the first field past the end.
+    JumpNextField,
+    /// Move the caret to the previous template field boundary before
+    /// the cursor, wrapping to the last field at the start.
+    JumpPrevField,
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -179,6 +227,10 @@ pub struct PaletteContext {
     /// The active file has a detected VFS handler, so "Browse VFS" would
     /// mount it rather than no-op.
     pub can_browse_vfs: bool,
+    /// Number of leaf fields on the active file's active template
+    /// instance. Zero when no template has run (or it produced no
+    /// fields); the jump next/prev field entries gate on this.
+    pub template_field_count: usize,
 }
 
 /// Resolved keybinding hints for the Main-list commands that mirror a
@@ -212,11 +264,72 @@ pub fn build_entries(
         | PaletteMode::SelectFromOffset
         | PaletteMode::SelectRange
         | PaletteMode::SetColumns => build_arg_entries(&mut out, mode, query.trim(), ctx),
-        // Compare picks depend on the live open-file list, which the
-        // pure builders don't have; the overlay builds those rows.
-        PaletteMode::CompareSideA | PaletteMode::CompareSideB => {}
+        // Compare picks and the template lists depend on live app
+        // state (open files, the library global, the active file's
+        // head bytes), which the pure builders don't have; the
+        // overlay builds those rows.
+        PaletteMode::CompareSideA
+        | PaletteMode::CompareSideB
+        | PaletteMode::Templates
+        | PaletteMode::TemplatesAtSelection
+        | PaletteMode::UninstallTemplate => {}
     }
     out
+}
+
+/// Rows for the [`PaletteMode::Templates`] /
+/// [`PaletteMode::TemplatesAtSelection`] cascades: every library
+/// template ranked against the active file, best matches first, each
+/// bound to `range` (`None` = whole file). The whole-file list also
+/// carries the run-from-disk / install / uninstall management rows
+/// (mirrors the egui Templates mode).
+pub fn build_templates_mode_entries(
+    library: &TemplateLibrary,
+    extension: Option<&str>,
+    head_bytes: &[u8],
+    range: Option<ByteRange>,
+) -> Vec<Entry<PaletteAction>> {
+    let mut out = Vec::new();
+    for entry in library.rank_entries(extension, head_bytes) {
+        out.push(
+            Entry::new(
+                hxy_i18n::t_args("palette-run-template-fmt", &[("name", &entry.name)]),
+                PaletteAction::RunTemplate { path: entry.path.clone(), range },
+            )
+            .with_subtitle(entry.path.display().to_string()),
+        );
+    }
+    if range.is_none() {
+        out.push(Entry::new(hxy_i18n::t("gpui-palette-run-template-browse"), PaletteAction::RunTemplateDialog));
+        out.push(
+            Entry::new(hxy_i18n::t("palette-install-template"), PaletteAction::InstallTemplate)
+                .with_subtitle(hxy_i18n::t("palette-install-template-subtitle")),
+        );
+        out.push(Entry::new(
+            hxy_i18n::t("palette-uninstall-template"),
+            PaletteAction::SwitchMode(PaletteMode::UninstallTemplate),
+        ));
+    }
+    out
+}
+
+/// Rows for the [`PaletteMode::UninstallTemplate`] cascade: one
+/// delete row per installed template source file.
+pub fn build_uninstall_entries(installed: &[PathBuf]) -> Vec<Entry<PaletteAction>> {
+    installed
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            Entry::new(
+                hxy_i18n::t_args("palette-delete-template-fmt", &[("name", &name)]),
+                PaletteAction::UninstallTemplate(path.clone()),
+            )
+            .with_subtitle(path.display().to_string())
+        })
+        .collect()
 }
 
 fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: PaletteContext, shortcuts: &Shortcuts) {
@@ -292,6 +405,41 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
         browse_vfs = browse_vfs.with_subtitle(hxy_i18n::t("gpui-palette-browse-vfs-unavailable"));
     }
     out.push(browse_vfs);
+
+    out.push(
+        Entry::new(hxy_i18n::t("palette-run-template-entry"), PaletteAction::SwitchMode(PaletteMode::Templates))
+            .with_disabled(!ctx.has_active_file),
+    );
+    // Mirrors egui: the at-selection cascade is only offered while a
+    // selection exists (its subtitle advertises the bound range), not
+    // rendered disabled.
+    if let Some((start, end)) = ctx.selection {
+        out.push(
+            Entry::new(
+                hxy_i18n::t("palette-run-template-at-selection-entry"),
+                PaletteAction::SwitchMode(PaletteMode::TemplatesAtSelection),
+            )
+            .with_subtitle(hxy_i18n::t_args(
+                "palette-run-template-at-selection-subtitle",
+                &[("start", &format!("{start:#x}")), ("end", &format!("{end:#x}"))],
+            )),
+        );
+    }
+    out.push(Entry::new(
+        hxy_i18n::t("palette-uninstall-template"),
+        PaletteAction::SwitchMode(PaletteMode::UninstallTemplate),
+    ));
+    let has_fields = ctx.template_field_count > 0;
+    for (key, action) in [
+        ("palette-jump-next-field", PaletteAction::JumpNextField),
+        ("palette-jump-prev-field", PaletteAction::JumpPrevField),
+    ] {
+        let mut entry = Entry::new(hxy_i18n::t(key), action).with_disabled(!ctx.has_active_file || !has_fields);
+        if !has_fields {
+            entry = entry.with_subtitle(hxy_i18n::t("palette-jump-field-no-template"));
+        }
+        out.push(entry);
+    }
 
     out.push(
         Entry::new(hxy_i18n::t("palette-go-to-offset-entry"), PaletteAction::SwitchMode(PaletteMode::GoToOffset))
@@ -477,7 +625,12 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
             Err(e) => push_invalid(out, query, &e.to_string()),
         },
         // Not arg modes: `build_entries` never routes them here.
-        PaletteMode::Main | PaletteMode::CompareSideA | PaletteMode::CompareSideB => {}
+        PaletteMode::Main
+        | PaletteMode::Templates
+        | PaletteMode::TemplatesAtSelection
+        | PaletteMode::UninstallTemplate
+        | PaletteMode::CompareSideA
+        | PaletteMode::CompareSideB => {}
     }
 }
 
@@ -509,6 +662,7 @@ mod tests {
             selection: None,
             vim_on: false,
             can_browse_vfs: true,
+            template_field_count: 0,
         }
     }
 
@@ -538,11 +692,17 @@ mod tests {
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumns)));
         // Every row enabled when a file is active (copy needs a
-        // selection, so those two are the exception).
+        // selection and the field jumps need a template run, so those
+        // four are the exceptions).
         let disabled: Vec<_> = entries.iter().filter(|e| e.disabled).map(|e| e.data.clone()).collect();
         assert_eq!(
             disabled,
-            vec![PaletteAction::CopySelection(CopyFormat::Hex), PaletteAction::CopySelection(CopyFormat::Bytes),]
+            vec![
+                PaletteAction::JumpNextField,
+                PaletteAction::JumpPrevField,
+                PaletteAction::CopySelection(CopyFormat::Hex),
+                PaletteAction::CopySelection(CopyFormat::Bytes),
+            ]
         );
     }
 
@@ -672,5 +832,93 @@ mod tests {
         assert!(PaletteMode::Main.bypasses_filter("@0x10"));
         assert!(PaletteMode::Main.bypasses_filter("=2+2"));
         assert!(!PaletteMode::Main.bypasses_filter("open"));
+        assert!(!PaletteMode::Templates.bypasses_filter("png"));
+        assert!(!PaletteMode::UninstallTemplate.bypasses_filter("png"));
+    }
+
+    #[test]
+    fn template_modes_cascade_from_main() {
+        assert_eq!(PaletteMode::Templates.parent(), Some(PaletteMode::Main));
+        assert_eq!(PaletteMode::TemplatesAtSelection.parent(), Some(PaletteMode::Main));
+        assert_eq!(PaletteMode::UninstallTemplate.parent(), Some(PaletteMode::Main));
+    }
+
+    #[test]
+    fn main_list_offers_template_cascades_and_field_jumps() {
+        let entries = build_entries(PaletteMode::Main, "", active_ctx(), &Shortcuts::default());
+        let data = actions(&entries);
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::Templates)));
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::UninstallTemplate)));
+        // No selection: the at-selection cascade is omitted, not disabled.
+        assert!(!data.contains(&PaletteAction::SwitchMode(PaletteMode::TemplatesAtSelection)));
+        // No template run: the jump entries are present but disabled.
+        let next = entries.iter().find(|e| e.data == PaletteAction::JumpNextField).unwrap();
+        assert!(next.disabled);
+        assert!(next.subtitle.is_some(), "explains why it is disabled");
+
+        let mut ctx = active_ctx();
+        ctx.selection = Some((4, 8));
+        ctx.template_field_count = 3;
+        let entries = build_entries(PaletteMode::Main, "", ctx, &Shortcuts::default());
+        let data = actions(&entries);
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::TemplatesAtSelection)));
+        let next = entries.iter().find(|e| e.data == PaletteAction::JumpNextField).unwrap();
+        assert!(!next.disabled, "field jumps enable once a template has fields");
+    }
+
+    /// Build a library of two templates in a temp dir: one that
+    /// magic-matches PNG heads, one for ZIP extensions.
+    fn library_fixture() -> (tempfile::TempDir, TemplateLibrary) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("png.bt"), "// ID Bytes: 89 50 4E 47\nstruct P { int x; };\n").unwrap();
+        std::fs::write(dir.path().join("zip.bt"), "// File Mask: *.zip\nstruct Z { int x; };\n").unwrap();
+        let library = TemplateLibrary::load_from(Some(dir.path()));
+        (dir, library)
+    }
+
+    #[test]
+    fn templates_mode_ranks_matches_first_and_adds_management_rows() {
+        let (_dir, library) = library_fixture();
+        let entries = build_templates_mode_entries(&library, None, &[0x89, 0x50, 0x4E, 0x47], None);
+        // Magic hit floats to the top.
+        assert!(
+            matches!(&entries[0].data, PaletteAction::RunTemplate { path, range: None } if path.ends_with("png.bt"))
+        );
+        assert!(
+            matches!(&entries[1].data, PaletteAction::RunTemplate { path, range: None } if path.ends_with("zip.bt"))
+        );
+        let tail = actions(&entries[2..]);
+        assert_eq!(
+            tail,
+            vec![
+                PaletteAction::RunTemplateDialog,
+                PaletteAction::InstallTemplate,
+                PaletteAction::SwitchMode(PaletteMode::UninstallTemplate),
+            ]
+        );
+    }
+
+    #[test]
+    fn templates_at_selection_binds_the_range_and_drops_management_rows() {
+        let (_dir, library) = library_fixture();
+        let range = ByteRange::new(hxy_core::ByteOffset::new(4), hxy_core::ByteOffset::new(8)).unwrap();
+        let entries = build_templates_mode_entries(&library, Some("zip"), &[], Some(range));
+        assert_eq!(entries.len(), 2, "only run rows in the at-selection cascade");
+        assert!(matches!(&entries[0].data, PaletteAction::RunTemplate { path, range: Some(r) }
+            if path.ends_with("zip.bt") && *r == range));
+    }
+
+    #[test]
+    fn uninstall_entries_list_installed_templates() {
+        let installed = vec![PathBuf::from("/tmp/templates/png.bt"), PathBuf::from("/tmp/templates/zip.hexpat")];
+        let entries = build_uninstall_entries(&installed);
+        assert_eq!(
+            actions(&entries),
+            vec![
+                PaletteAction::UninstallTemplate(installed[0].clone()),
+                PaletteAction::UninstallTemplate(installed[1].clone()),
+            ]
+        );
+        assert!(entries[0].title.contains("png.bt"));
     }
 }

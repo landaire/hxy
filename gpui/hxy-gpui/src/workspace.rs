@@ -50,6 +50,7 @@ use gpui_component::v_flex;
 use gpui_dock_picker::DockPicker;
 use gpui_dock_picker::PickTarget;
 use hxy_core::ByteOffset;
+use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
@@ -101,6 +102,9 @@ use crate::status::status_offset_text;
 use crate::status::status_open_error_text;
 use crate::status::status_vim_mode_text;
 use crate::status::window_title_text;
+use crate::templates::FieldJump;
+use crate::templates::RestoreContext;
+use crate::templates::run_template;
 use crate::watch::ReloadDecision;
 
 actions!(
@@ -2075,6 +2079,9 @@ impl Workspace {
             (range.start().get(), range.end().get())
         });
         let can_browse_vfs = file.read(cx).detected_handler().is_some();
+        // 0 = no template run (or a run with no fields); the jump
+        // entries gate on this.
+        let template_field_count = file.read(cx).active_template().map(|t| t.state.leaf_boundaries.len()).unwrap_or(0);
         PaletteContext {
             has_active_file: true,
             cursor,
@@ -2082,7 +2089,149 @@ impl Workspace {
             selection,
             vim_on: matches!(editor.input_mode(), InputMode::Vim),
             can_browse_vfs,
+            template_field_count,
         }
+    }
+
+    /// Extension + head bytes of the reference file, for ranking the
+    /// palette's template entries against its content (ports egui's
+    /// `template_palette_context`). Empty when no file is focused.
+    pub(crate) fn template_palette_seed(&self, cx: &App) -> (Option<String>, Vec<u8>) {
+        let Some(file) = self.reference_active_file(cx) else { return (None, Vec::new()) };
+        let extension =
+            file.read(cx).path().and_then(|p| p.extension()).and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
+        let source = file.read(cx).pane().read(cx).editor().source().clone();
+        let window = source.len().get().min(hxy_templates::library::DETECTION_WINDOW as u64);
+        // A read miss here only costs magic-byte ranking; fall through
+        // to the library's default ordering (mirrors egui).
+        let head_bytes = match ByteRange::new(ByteOffset::new(0), ByteOffset::new(window)) {
+            Ok(range) if window > 0 => source.read(range).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        (extension, head_bytes)
+    }
+
+    /// Run the template at `path` against the reference file (whole
+    /// file, or `range` when the pick was selection-bound).
+    pub(crate) fn run_template_on_active(
+        &mut self,
+        path: PathBuf,
+        range: Option<ByteRange>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        file.update(cx, |panel, cx| run_template(panel, path, range, RestoreContext::default(), window, cx));
+    }
+
+    /// "Run template from file...": pick a template source from disk
+    /// and run it against the whole reference file.
+    pub(crate) fn run_template_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter(hxy_i18n::t("gpui-template-filter-any"), &["bt", "hexpat", "pat"])
+                .pick_file()
+                .await;
+            let Some(handle) = picked else { return };
+            let path = handle.path().to_path_buf();
+            let _ = this.update_in(cx, |ws, window, cx| ws.run_template_on_active(path, None, window, cx));
+        })
+        .detach();
+    }
+
+    /// "Install template...": pick a `.bt` from disk and copy it (plus
+    /// its `#include` closure) into the user templates directory, then
+    /// refresh the library so the new entries rank immediately.
+    pub(crate) fn install_template_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter(hxy_i18n::t("gpui-template-filter-bt"), &["bt"])
+                .pick_file()
+                .await;
+            let Some(handle) = picked else { return };
+            let src = handle.path().to_path_buf();
+            let _ = this.update_in(cx, |ws, window, cx| ws.finish_template_install(src, window, cx));
+        })
+        .detach();
+    }
+
+    fn finish_template_install(&mut self, src: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = hxy_templates::user_templates_dir() else {
+            window.push_notification(Notification::error(hxy_i18n::t("gpui-template-install-no-dir")), cx);
+            return;
+        };
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            window.push_notification(
+                Notification::error(hxy_i18n::t_args(
+                    "gpui-template-install-failed",
+                    &[("path", &dir.display().to_string()), ("error", &err.to_string())],
+                )),
+                cx,
+            );
+            return;
+        }
+        let report = hxy_templates::library::install_template_with_deps(&src, &dir);
+        // One summary toast; per-file problems get their own warning
+        // so a partially-broken include closure is visible (ports the
+        // egui console log lines onto notifications).
+        window.push_notification(
+            Notification::info(hxy_i18n::t_args(
+                "gpui-template-install-summary",
+                &[("copied", &report.copied.len().to_string()), ("existing", &report.existing.len().to_string())],
+            )),
+            cx,
+        );
+        for (referrer, target) in &report.missing {
+            window.push_notification(
+                Notification::warning(hxy_i18n::t_args(
+                    "gpui-template-install-missing",
+                    &[("path", &referrer.display().to_string()), ("target", target)],
+                )),
+                cx,
+            );
+        }
+        for (path, error) in &report.errors {
+            window.push_notification(
+                Notification::error(hxy_i18n::t_args(
+                    "gpui-template-install-failed",
+                    &[("path", &path.display().to_string()), ("error", error)],
+                )),
+                cx,
+            );
+        }
+        crate::templates::refresh_library(cx);
+    }
+
+    /// Delete an installed template source file and refresh the
+    /// library (palette uninstall cascade pick).
+    pub(crate) fn uninstall_template(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let name =
+            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                window.push_notification(
+                    Notification::info(hxy_i18n::t_args("gpui-template-uninstalled", &[("name", &name)])),
+                    cx,
+                );
+                crate::templates::refresh_library(cx);
+            }
+            Err(err) => {
+                window.push_notification(
+                    Notification::error(hxy_i18n::t_args(
+                        "gpui-template-uninstall-failed",
+                        &[("name", &name), ("error", &err.to_string())],
+                    )),
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// Move the reference file's caret to the next / previous template
+    /// field boundary (palette jump entries).
+    pub(crate) fn jump_template_field(&mut self, jump: FieldJump, cx: &mut Context<Self>) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        file.update(cx, |panel, cx| panel.jump_to_template_field(jump, cx));
     }
 
     /// The reference file's [`HexPane`] (see `reference_active_file`'s
