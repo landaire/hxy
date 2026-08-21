@@ -140,19 +140,12 @@ crossbeam-channel = "0.5"
 # `read_text` helper is `cfg(not(target_arch = "wasm32"))`-gated.
 arboard = { version = "3.6.1", default-features = false }
 
+# The Apple Event / NSServices open-with FFI lives in
+# hxy-ipc::macos_open; `objc2` stays here for the native menu bar in
+# `menu.rs`.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.19"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = [
-    "NSAppleEventDescriptor",
-    "NSAppleEventManager",
-    "NSArray",
-    "NSObject",
-    "NSString",
-    "NSURL",
-    "objc2-core-services",
-] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSPasteboard"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }

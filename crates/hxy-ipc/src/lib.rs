@@ -6,6 +6,8 @@
 //! ([`cli::Cli`]) here.
 
 pub mod cli;
+#[cfg(target_os = "macos")]
+pub mod macos_open;
 pub mod socket;
 
 /// Executable name surfaced by clap's generated `--help` / `--version`
