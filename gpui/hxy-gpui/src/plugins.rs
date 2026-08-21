@@ -47,8 +47,7 @@ use crate::workspace::Workspace;
 
 /// The user's persisted per-plugin permission decisions. Loaded at
 /// startup from the shared database and mutated through [`set_grant`].
-// Field read by the consent UI (M4c Task 5) via `current_grants`.
-pub struct PluginGrantsGlobal(#[allow(dead_code)] pub PluginGrants);
+pub struct PluginGrantsGlobal(pub PluginGrants);
 
 impl Global for PluginGrantsGlobal {}
 
@@ -89,8 +88,6 @@ pub fn init(cx: &mut App) {
 /// Rebuild [`PluginHandlersGlobal`] from the current grants and the
 /// on-disk plugin directory. Runs after a grant change or a rescan so
 /// the linker reflects the current consent set.
-// Called by the consent UI / rescan action (M4c Task 5).
-#[allow(dead_code)]
 pub fn reload_plugins(cx: &mut App) {
     let grants = current_grants(cx);
     let store = state_store(cx);
@@ -102,8 +99,6 @@ pub fn reload_plugins(cx: &mut App) {
 /// database, and rebuild the handler registry so the new grants take
 /// effect. A disk-write failure is logged, not fatal: the in-memory
 /// grants still apply for this session.
-// Called by the consent toggles (M4c Task 5).
-#[allow(dead_code)]
 pub fn set_grant(cx: &mut App, key: PluginKey, grants: PermissionGrants) {
     let mut all = current_grants(cx);
     all.set(key, grants);
@@ -115,8 +110,6 @@ pub fn set_grant(cx: &mut App, key: PluginKey, grants: PermissionGrants) {
 /// Clear a plugin's persisted state blob (the Plugins panel's "wipe
 /// stored state" action). Missing store or backend error is logged,
 /// not fatal.
-// Called by the "wipe stored state" button (M4c Task 5).
-#[allow(dead_code)]
 pub fn wipe_plugin_state(cx: &App, plugin_name: &str) {
     let Some(store) = state_store(cx) else {
         tracing::warn!(plugin = plugin_name, "wipe plugin state -- no persistence store");
@@ -130,8 +123,6 @@ pub fn wipe_plugin_state(cx: &App, plugin_name: &str) {
 /// The live grants, or the empty baseline before [`init`] installs the
 /// global (only unit-test harnesses that skip startup hit that path,
 /// and empty is the correct first-boot state).
-// Reached only through the grant-mutation path (M4c Task 5).
-#[allow(dead_code)]
 fn current_grants(cx: &App) -> PluginGrants {
     cx.try_global::<PluginGrantsGlobal>().map(|g| g.0.clone()).unwrap_or_default()
 }
@@ -168,8 +159,6 @@ fn load_grants(cx: &App) -> PluginGrants {
 
 /// Persist `grants` to the shared database. Logged-not-fatal on write
 /// failure or when no handle exists (a persistence-less session).
-// Reached through `set_grant` (M4c Task 5); exercised now by tests.
-#[allow(dead_code)]
 fn persist_grants(cx: &App, grants: &PluginGrants) {
     let Some(handle) = handle(cx) else {
         return;
@@ -763,6 +752,37 @@ mod tests {
             .expect("reload")
             .expect("grants stored");
         assert!(reread.has_record(&key), "a second handle reads the same grant");
+    }
+
+    /// The consent-toggle path: `set_grant` records a decision, persists
+    /// it to the shared database, and the live `PluginGrantsGlobal`
+    /// reflects it -- what the plugins panel's per-permission switch does
+    /// on click. An independent connection confirms the write hit disk.
+    #[gpui::test]
+    fn set_grant_persists_and_updates_the_global(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        install_persist(cx, dir.path());
+
+        let key = PluginKey::from_bytes("demo", "0.1.0", b"\0asm\x01\x00\x00\x00");
+        let grants = PermissionGrants { persist: true, commands: true, network: vec!["host:1".into()] };
+
+        cx.update(|cx| set_grant(cx, key.clone(), grants.clone()));
+
+        cx.update(|cx| {
+            let live = current_grants(cx);
+            assert!(live.has_record(&key), "the live global records the new decision");
+            assert_eq!(live.get(&key), grants);
+        });
+
+        let rt = runtime();
+        let reread = rt
+            .block_on(async {
+                let pool = open_db_in(dir.path()).await?;
+                hxy_settings::persist::load_plugin_grants(&pool).await
+            })
+            .expect("reload")
+            .expect("grants stored");
+        assert_eq!(reread.get(&key), grants, "set_grant reached the shared database");
     }
 
     /// With no persist handle installed, `load_grants` yields the empty

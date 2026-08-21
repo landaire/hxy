@@ -754,3 +754,25 @@ gpui-plugin-op-no-outcome = Plugin { $plugin } could not complete the command.
 gpui-plugin-mount-failed = Mounting from { $plugin } failed: { $error }
 gpui-plugin-mount-untitled = Plugin mount
 gpui-plugin-mount-retry = Retry
+
+# Plugins management panel (M4c)
+gpui-palette-show-plugins = Show plugins
+plugin-intro = Drop compiled WASM components into these directories to load them at startup.
+plugin-permissions-header = Permissions
+plugin-permissions-blurb = Plugins request the host capabilities they need; you grant or revoke them here.
+plugin-version = v{ $version }
+plugin-perm-persist = Persist (remember per-plugin state across sessions)
+plugin-perm-commands = Commands (contribute entries to the command palette)
+plugin-perm-network-header = Network: outbound TCP allowed for these patterns:
+plugin-wipe-state = Wipe stored state
+plugin-vfs-handlers = VFS handlers
+plugin-vfs-handlers-blurb = Mount byte sources as a browseable VFS tree.
+plugin-template-runtimes = Template runtimes
+plugin-template-runtimes-blurb = Execute binary templates (e.g. 010 Editor .bt) against a data source.
+plugin-no-data-dir = Could not resolve the user data directory on this system.
+plugin-none-installed = No plugins installed.
+plugin-install = Install...
+plugin-rescan = Rescan
+plugin-delete = Delete
+plugin-open-in-file-manager = Open
+plugin-wasm-filter = WASM component

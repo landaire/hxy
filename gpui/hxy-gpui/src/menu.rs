@@ -37,6 +37,7 @@ use gpui::actions;
 use crate::workspace::OpenChecksums;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
+use crate::workspace::OpenPlugins;
 use crate::workspace::OpenSettings;
 use crate::workspace::OpenSnapshots;
 use crate::workspace::OpenStrings;
@@ -129,6 +130,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("gpui-menu-snapshots"), OpenSnapshots),
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("tab-settings"), OpenSettings),
+                MenuItem::action(hxy_i18n::t("tab-plugins"), OpenPlugins),
             ],
         },
     ]
@@ -158,8 +160,8 @@ mod tests {
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
         assert_eq!(
             item_count(3),
-            12,
-            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings"
+            13,
+            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings, Plugins"
         );
     }
 }

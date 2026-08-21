@@ -35,6 +35,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::OpenVisualizer => ws.open_visualizer_for_active_file(window, cx),
         PaletteAction::OpenChecksums => ws.open_checksums_for_active_file(window, cx),
         PaletteAction::OpenSettings => ws.open_settings(window, cx),
+        PaletteAction::OpenPlugins => ws.open_plugins(window, cx),
         PaletteAction::BrowseVfs => ws.browse_active_file_as_workspace(window, cx),
         PaletteAction::GoToOffset(target) => {
             let Some(pane) = ws.active_pane(cx) else { return };

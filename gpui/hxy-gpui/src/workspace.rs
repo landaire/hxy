@@ -85,6 +85,7 @@ use crate::panels::ComparePanel;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
+use crate::panels::FetchImhexPatternsRequested;
 use crate::panels::FilePanel;
 use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::GlobalSearchPanel;
@@ -92,7 +93,9 @@ use crate::panels::INSPECTOR_PANEL_NAME;
 use crate::panels::InspectorPanel;
 use crate::panels::OpenRecentRequested;
 use crate::panels::OpenVisualizerRequested;
+use crate::panels::PLUGINS_PANEL_NAME;
 use crate::panels::PluginMountIdentity;
+use crate::panels::PluginsPanel;
 use crate::panels::SETTINGS_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::SettingsPanel;
@@ -143,6 +146,7 @@ actions!(
         OpenEntropy,
         OpenChecksums,
         OpenSettings,
+        OpenPlugins,
         TakeSnapshot,
         OpenSnapshots
     ]
@@ -389,6 +393,14 @@ pub struct Workspace {
     /// contract as `global_search_panel`: liveness is confirmed
     /// against the dock dump before reuse, see `open_settings_panel`.
     settings_panel: Option<Entity<SettingsPanel>>,
+    /// The live `PluginsPanel`, if one is open. Same singleton contract
+    /// as `settings_panel`; liveness is confirmed against the dock dump
+    /// before reuse (`open_plugins_panel`).
+    plugins_panel: Option<Entity<PluginsPanel>>,
+    /// Kept alive so the plugins panel's `FetchImhexPatternsRequested`
+    /// events keep reaching `on_fetch_imhex_patterns_requested`.
+    /// Replaced (dropping the old one) each time a fresh panel is built.
+    _plugins_sub: Option<Subscription>,
     /// Live plugin VFS mounts, one record per open host tab. Tracks the
     /// `(plugin_name, token)` identity so a re-invoked mount focuses its
     /// existing tab instead of opening a duplicate, and holds a weak
@@ -521,6 +533,8 @@ impl Workspace {
             global_search_panel: None,
             _global_search_sub: None,
             settings_panel: None,
+            plugins_panel: None,
+            _plugins_sub: None,
             plugin_mounts: Vec::new(),
             next_mount_id: 0,
             layout_path,
@@ -629,6 +643,14 @@ impl Workspace {
             let mut restored_settings = Vec::new();
             collect_settings_entities(self.dock.read(cx).items(), &mut restored_settings);
             self.settings_panel = restored_settings.into_iter().next();
+            // The plugins tab needs its fetch-patterns subscription
+            // re-established so a restored tab's button still works.
+            let mut restored_plugins = Vec::new();
+            collect_plugins_entities(self.dock.read(cx).items(), &mut restored_plugins);
+            if let Some(panel) = restored_plugins.into_iter().next() {
+                self._plugins_sub = Some(cx.subscribe_in(&panel, window, Self::on_fetch_imhex_patterns_requested));
+                self.plugins_panel = Some(panel);
+            }
             if !pruned.is_empty() {
                 // Deferred like the load-failure toast above: `Root`
                 // is not installed yet, so `push_notification` would
@@ -1266,6 +1288,65 @@ impl Workspace {
         self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
     }
 
+    fn on_open_plugins(&mut self, _: &OpenPlugins, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_plugins(window, cx);
+    }
+
+    /// Open (or focus an existing) plugins tab. Singleton like
+    /// `open_settings`: focus the live tab if present, else push a fresh
+    /// one into the center and subscribe to its fetch-patterns events.
+    pub(crate) fn open_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.open_plugins_panel(cx) {
+            self.focus_plugins_tab(panel, window, cx);
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let panel = cx.new(|cx| PluginsPanel::new(window, cx));
+        self._plugins_sub = Some(cx.subscribe_in(&panel, window, Self::on_fetch_imhex_patterns_requested));
+        self.plugins_panel = Some(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// The live `PluginsPanel` if its tab is still open, else `None`.
+    /// Mirrors `open_settings_panel`.
+    fn open_plugins_panel(&self, cx: &App) -> Option<Entity<PluginsPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_plugins(&dump.center) {
+            return None;
+        }
+        self.plugins_panel.clone()
+    }
+
+    /// Bring an already-open plugins tab to the foreground. Mirrors
+    /// `focus_settings_tab`.
+    fn focus_plugins_tab(&mut self, panel: Entity<PluginsPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        if active_plugins_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        self.resync_center_if_stale(window, cx);
+        let Some(panel) = self.plugins_panel.clone() else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// Drive the ImHex-patterns download when the plugins panel asks for
+    /// it; the workspace owns the in-flight task (`fetch_imhex_patterns`
+    /// dedups a second concurrent request).
+    fn on_fetch_imhex_patterns_requested(
+        &mut self,
+        _panel: &Entity<PluginsPanel>,
+        _event: &FetchImhexPatternsRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.fetch_imhex_patterns(window, cx);
+    }
+
     /// The open files that can seed a compare pick: every live center
     /// `FilePanel` that has a path, as `(leaf name, path)`. Read straight
     /// off the live dock tree so a closed file never lingers in the list.
@@ -1594,6 +1675,13 @@ impl Workspace {
         let mut live_settings = Vec::new();
         collect_settings_entities(self.dock.read(cx).items(), &mut live_settings);
         self.settings_panel = live_settings.into_iter().next();
+        let mut live_plugins = Vec::new();
+        collect_plugins_entities(self.dock.read(cx).items(), &mut live_plugins);
+        self.plugins_panel = live_plugins.into_iter().next();
+        self._plugins_sub = self
+            .plugins_panel
+            .as_ref()
+            .map(|panel| cx.subscribe_in(panel, window, Self::on_fetch_imhex_patterns_requested));
         self.focus_pending = true;
     }
 
@@ -3381,6 +3469,7 @@ impl Workspace {
                 || count_workspace_host_panels(&state.center) > 0
                 || count_global_search_panels(&state.center) > 0
                 || count_settings_panels(&state.center) > 0
+                || count_plugins_panels(&state.center) > 0
         };
 
         if !has_content {
@@ -3706,6 +3795,11 @@ fn count_global_search_panels(state: &PanelState) -> usize {
 fn count_settings_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == SETTINGS_PANEL_NAME);
     here + state.children.iter().map(count_settings_panels).sum::<usize>()
+}
+
+fn count_plugins_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == PLUGINS_PANEL_NAME);
+    here + state.children.iter().map(count_plugins_panels).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -4086,6 +4180,12 @@ fn dump_has_settings(state: &PanelState) -> bool {
     state.panel_name == SETTINGS_PANEL_NAME || state.children.iter().any(dump_has_settings)
 }
 
+/// Whether the dock contains a plugins tab. Same singleton shape as
+/// `dump_has_settings`.
+fn dump_has_plugins(state: &PanelState) -> bool {
+    state.panel_name == PLUGINS_PANEL_NAME || state.children.iter().any(dump_has_plugins)
+}
+
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
@@ -4369,6 +4469,7 @@ fn is_known_panel_name(name: &str) -> bool {
             | VISUALIZER_PANEL_NAME
             | GLOBAL_SEARCH_PANEL_NAME
             | SETTINGS_PANEL_NAME
+            | PLUGINS_PANEL_NAME
             | WORKSPACE_HOST_PANEL_NAME
     )
 }
@@ -4416,6 +4517,40 @@ fn active_settings_panel(item: &DockItem, cx: &App) -> Option<Entity<SettingsPan
         }
         DockItem::Split { items, .. } => items.iter().find_map(|item| active_settings_panel(item, cx)),
         DockItem::Panel { view, .. } => view.view().downcast::<SettingsPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
+/// Collect the live `PluginsPanel` entities from a `DockItem` tree (at
+/// most one -- singleton). Mirrors `collect_settings_entities`.
+fn collect_plugins_entities(item: &DockItem, out: &mut Vec<Entity<PluginsPanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_plugins_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(plugins) = panel.view().downcast::<PluginsPanel>() {
+                    out.push(plugins);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(plugins) = view.view().downcast::<PluginsPanel>() {
+                out.push(plugins);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
+/// The `PluginsPanel` backing the active tab, if the active tab is the
+/// plugins tab. Mirrors `active_settings_panel`.
+fn active_plugins_panel(item: &DockItem, cx: &App) -> Option<Entity<PluginsPanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<PluginsPanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_plugins_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<PluginsPanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
 }
@@ -4520,6 +4655,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_entropy))
             .on_action(cx.listener(Self::on_open_checksums))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_open_plugins))
             .on_action(cx.listener(Self::on_take_snapshot))
             .on_action(cx.listener(Self::on_open_snapshots))
             .on_action(cx.listener(Self::on_open_palette))
@@ -4657,6 +4793,30 @@ mod tests {
 
     fn settings_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
         window.read_with(cx, |ws, cx| count_settings_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    fn plugins_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        window.read_with(cx, |ws, cx| count_plugins_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    /// `open_plugins` is a singleton, mirroring `open_settings`: the first
+    /// call adds one tab, a second focuses the existing panel (same
+    /// entity) instead of building another.
+    #[gpui::test]
+    fn open_plugins_focuses_the_existing_singleton(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Vec::new(), None);
+
+        window.update(cx, |ws, window, cx| ws.open_plugins(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(plugins_tab_count(window, cx), 1, "first open adds the tab");
+        let first = window.read_with(cx, |ws, _| ws.plugins_panel.clone()).unwrap().expect("singleton handle tracked");
+
+        window.update(cx, |ws, window, cx| ws.open_plugins(window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(plugins_tab_count(window, cx), 1, "second open focuses instead of duplicating");
+        let second = window.read_with(cx, |ws, _| ws.plugins_panel.clone()).unwrap().expect("singleton handle kept");
+        assert_eq!(first.entity_id(), second.entity_id(), "the same panel entity is reused");
     }
 
     /// `open_settings` is a singleton: the first call adds one tab, a

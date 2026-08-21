@@ -68,6 +68,13 @@ pub fn refresh_library(cx: &mut App) {
     cx.set_global(load_library());
 }
 
+/// Rebuild the template-runtime registry after a runtime component was
+/// installed or deleted (the plugins panel's template-runtimes
+/// section). Failures are logged inside [`load_runtimes`], never fatal.
+pub fn refresh_runtimes(cx: &mut App) {
+    cx.set_global(load_runtimes());
+}
+
 /// Direction of a template field jump (palette "Jump to next/previous
 /// template field").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

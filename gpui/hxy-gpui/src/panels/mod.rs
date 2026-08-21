@@ -18,6 +18,7 @@ pub mod entropy;
 mod file;
 pub mod global_search;
 pub mod inspector;
+pub mod plugins_view;
 mod search_bar;
 pub mod settings_view;
 pub mod strings;
@@ -40,6 +41,9 @@ pub use global_search::GLOBAL_SEARCH_PANEL_NAME;
 pub use global_search::GlobalSearchPanel;
 pub use inspector::INSPECTOR_PANEL_NAME;
 pub use inspector::InspectorPanel;
+pub use plugins_view::FetchImhexPatternsRequested;
+pub use plugins_view::PLUGINS_PANEL_NAME;
+pub use plugins_view::PluginsPanel;
 pub use settings_view::SETTINGS_PANEL_NAME;
 pub use settings_view::SettingsPanel;
 pub use strings::STRINGS_PANEL_NAME;
@@ -84,6 +88,11 @@ pub fn register(cx: &mut App) {
     // global and carries no per-instance state worth persisting.
     register_panel(cx, SETTINGS_PANEL_NAME, |_dock, _state, _info, window, cx| {
         Box::new(cx.new(|cx| SettingsPanel::new(window, cx))) as Box<dyn PanelView>
+    });
+    // Plugins restores fresh: the panel reads the live handler registry
+    // and settings globals, carrying no per-instance state.
+    register_panel(cx, PLUGINS_PANEL_NAME, |_dock, _state, _info, window, cx| {
+        Box::new(cx.new(|cx| PluginsPanel::new(window, cx))) as Box<dyn PanelView>
     });
     // Global search restores as a fresh, empty panel -- egui likewise
     // persists only the `SearchResults` tab marker, not the query
@@ -132,6 +141,7 @@ mod tests {
                     VISUALIZER_PANEL_NAME,
                     GLOBAL_SEARCH_PANEL_NAME,
                     SETTINGS_PANEL_NAME,
+                    PLUGINS_PANEL_NAME,
                     WORKSPACE_HOST_PANEL_NAME,
                 ] {
                     let state = PanelState {

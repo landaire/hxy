@@ -181,6 +181,9 @@ pub enum PaletteAction {
     /// Open (or focus) the settings tab. Workspace-scoped like
     /// [`Self::ToggleGlobalSearch`], never gated on `has_active_file`.
     OpenSettings,
+    /// Open (or focus) the plugins tab. Workspace-scoped like
+    /// [`Self::OpenSettings`], never gated on `has_active_file`.
+    OpenPlugins,
     /// Open (or focus) the visualizer panel for the active file. Only
     /// offered while a template field carries a visualize attribute
     /// (`PaletteContext::visualizer_target_count`), mirroring egui's
@@ -516,6 +519,10 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     }
     out.push(open_settings);
 
+    // Workspace-scoped like settings; egui opens the plugins tab from a
+    // menu with no shortcut, so no keybinding hint is surfaced here.
+    out.push(Entry::new(hxy_i18n::t("gpui-palette-show-plugins"), PaletteAction::OpenPlugins));
+
     out.push(
         Entry::new(hxy_i18n::t("palette-strings-whole-file"), PaletteAction::OpenStrings)
             .with_subtitle(hxy_i18n::t("palette-strings-whole-file-subtitle"))
@@ -850,6 +857,7 @@ mod tests {
         assert!(data.contains(&PaletteAction::OpenEntropy));
         assert!(data.contains(&PaletteAction::OpenChecksums));
         assert!(data.contains(&PaletteAction::OpenSettings));
+        assert!(data.contains(&PaletteAction::OpenPlugins));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumns)));
         // Every row enabled when a file is active (copy needs a
