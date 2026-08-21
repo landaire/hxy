@@ -130,4 +130,42 @@ mod tests {
             pool.close().await;
         });
     }
+
+    /// Cross-frontend consistency: the egui and gpui apps each open
+    /// their own pool on the same `hxy.db`. Settings written through
+    /// one process's `SaveSink` must read back through a second,
+    /// independently opened handle on the same directory (both pools
+    /// live simultaneously, WAL mode, max_connections = 1 each).
+    #[test]
+    fn settings_written_by_one_handle_read_by_another() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer_rt =
+            std::sync::Arc::new(tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime"));
+        let reader_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+
+        let writer_pool = writer_rt.block_on(open_db_in(dir.path())).expect("open writer db");
+        let reader_pool = reader_rt.block_on(open_db_in(dir.path())).expect("open reader db");
+
+        let sink = crate::persist::SaveSink::new(writer_pool, writer_rt);
+        let settings = AppSettings {
+            hex_columns: hxy_core::ColumnCount::new(24).expect("valid columns"),
+            file_poll_all: true,
+            ..AppSettings::default()
+        };
+        sink.save_app_settings(&settings).expect("save through sink");
+
+        let loaded = reader_rt.block_on(load_app_settings(&reader_pool)).expect("load through second handle");
+        assert_eq!(loaded, Some(settings));
+
+        // And the reverse direction: the second handle writes, the
+        // sink's pool reads.
+        let mut updated = loaded.expect("present");
+        updated.file_poll_interval_ms = 9000;
+        reader_rt.block_on(store_app_settings(&reader_pool, &updated)).expect("store through second handle");
+        let seen = sink.block_on(load_app_settings(sink.pool())).expect("load through sink pool");
+        assert_eq!(seen, Some(updated));
+
+        reader_rt.block_on(async { reader_pool.close().await });
+        sink.close();
+    }
 }
