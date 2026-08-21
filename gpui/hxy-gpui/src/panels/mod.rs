@@ -19,6 +19,7 @@ mod file;
 pub mod global_search;
 pub mod inspector;
 mod search_bar;
+pub mod settings_view;
 pub mod strings;
 pub mod template_view;
 pub mod vfs_tree;
@@ -39,6 +40,8 @@ pub use global_search::GLOBAL_SEARCH_PANEL_NAME;
 pub use global_search::GlobalSearchPanel;
 pub use inspector::INSPECTOR_PANEL_NAME;
 pub use inspector::InspectorPanel;
+pub use settings_view::SETTINGS_PANEL_NAME;
+pub use settings_view::SettingsPanel;
 pub use strings::STRINGS_PANEL_NAME;
 pub use strings::StringsPanel;
 pub use visualizer::VISUALIZER_PANEL_NAME;
@@ -75,6 +78,11 @@ pub fn register(cx: &mut App) {
     });
     register_panel(cx, VISUALIZER_PANEL_NAME, |_dock, _state, info, window, cx| {
         Box::new(cx.new(|cx| VisualizerPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    });
+    // Settings restores fresh: the panel reads the live settings
+    // global and carries no per-instance state worth persisting.
+    register_panel(cx, SETTINGS_PANEL_NAME, |_dock, _state, _info, window, cx| {
+        Box::new(cx.new(|cx| SettingsPanel::new(window, cx))) as Box<dyn PanelView>
     });
     // Global search restores as a fresh, empty panel -- egui likewise
     // persists only the `SearchResults` tab marker, not the query
@@ -122,6 +130,7 @@ mod tests {
                     COMPARE_PANEL_NAME,
                     VISUALIZER_PANEL_NAME,
                     GLOBAL_SEARCH_PANEL_NAME,
+                    SETTINGS_PANEL_NAME,
                     WORKSPACE_HOST_PANEL_NAME,
                 ] {
                     let state = PanelState {

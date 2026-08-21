@@ -24,8 +24,10 @@
 //!
 //! Parity source: `crates/hxy/src/menu.rs:28-58` (egui's `MenuAction`).
 //! Ships a subset -- no New/Paste (not implemented in the gpui port yet)
-//! and no Console/Plugins/Settings (egui-only features). Save / Save As /
-//! Reopen Closed Tab landed with the M3 save + dirty-close work.
+//! and no Console/Plugins (egui-only features). Save / Save As /
+//! Reopen Closed Tab landed with the M3 save + dirty-close work;
+//! Settings (open-or-focus, Cmd+Comma like egui's Toggle Settings)
+//! landed with M4e.
 
 use gpui::App;
 use gpui::Menu;
@@ -35,6 +37,7 @@ use gpui::actions;
 use crate::workspace::OpenChecksums;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
+use crate::workspace::OpenSettings;
 use crate::workspace::OpenSnapshots;
 use crate::workspace::OpenStrings;
 use crate::workspace::ReopenClosedTab;
@@ -124,6 +127,8 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("gpui-menu-take-snapshot"), TakeSnapshot),
                 MenuItem::action(hxy_i18n::t("gpui-menu-snapshots"), OpenSnapshots),
+                MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("tab-settings"), OpenSettings),
             ],
         },
     ]
@@ -153,8 +158,8 @@ mod tests {
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
         assert_eq!(
             item_count(3),
-            10,
-            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots"
+            12,
+            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings"
         );
     }
 }

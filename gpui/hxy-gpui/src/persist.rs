@@ -18,6 +18,7 @@ use crate::panels::COMPARE_PANEL_NAME;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
+use crate::panels::SETTINGS_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::VISUALIZER_PANEL_NAME;
 use crate::panels::WELCOME_PANEL_NAME;
@@ -251,7 +252,8 @@ enum PanelKind {
     /// mount with a warning (see `WorkspaceHostPanel::restore`).
     WorkspaceHost,
     /// A workspace-scoped singleton with no owning-file reference to
-    /// validate (the global search tab) -- always restorable verbatim.
+    /// validate (the global search and settings tabs) -- always
+    /// restorable verbatim.
     /// Without an explicit arm here, a leaf falls into the generic
     /// container-recursion branch below, which always reports zero
     /// surviving children for a childless leaf and drops it
@@ -272,7 +274,7 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         VISUALIZER_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "visualizer panel" }),
         COMPARE_PANEL_NAME => Some(PanelKind::Compare),
         WORKSPACE_HOST_PANEL_NAME => Some(PanelKind::WorkspaceHost),
-        GLOBAL_SEARCH_PANEL_NAME => Some(PanelKind::AlwaysKeep),
+        GLOBAL_SEARCH_PANEL_NAME | SETTINGS_PANEL_NAME => Some(PanelKind::AlwaysKeep),
         _ => None,
     }
 }
@@ -482,6 +484,34 @@ mod tests {
             children: Vec::new(),
             info: PanelInfo::panel(serde_json::json!({ "parent_path": archive.to_string_lossy() })),
         }
+    }
+
+    fn settings_panel() -> PanelState {
+        PanelState {
+            panel_name: SETTINGS_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::Panel(serde_json::Value::Null),
+        }
+    }
+
+    /// A childless settings leaf survives pruning unconditionally --
+    /// like global search it is a workspace-scoped singleton with no
+    /// owning-file path to validate (`PanelKind::AlwaysKeep`).
+    #[test]
+    fn settings_panel_always_survives_pruning() {
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![settings_panel()]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![SETTINGS_PANEL_NAME]);
+        assert!(pruned.is_empty());
     }
 
     /// A workspace host whose archive still reads survives; one whose

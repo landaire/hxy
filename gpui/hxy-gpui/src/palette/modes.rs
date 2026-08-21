@@ -159,6 +159,9 @@ pub enum PaletteAction {
     /// Open (or focus) the checksums panel for the active file, hashing
     /// the whole file under the panel's own auto-run rule.
     OpenChecksums,
+    /// Open (or focus) the settings tab. Workspace-scoped like
+    /// [`Self::ToggleGlobalSearch`], never gated on `has_active_file`.
+    OpenSettings,
     /// Open (or focus) the visualizer panel for the active file. Only
     /// offered while a template field carries a visualize attribute
     /// (`PaletteContext::visualizer_target_count`), mirroring egui's
@@ -254,6 +257,7 @@ pub struct Shortcuts {
     pub toggle_vim: Option<String>,
     pub toggle_inspector: Option<String>,
     pub toggle_global_search: Option<String>,
+    pub open_settings: Option<String>,
 }
 
 /// Ceiling for the palette's column-count input, matching the egui
@@ -390,6 +394,14 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
         toggle_global_search = toggle_global_search.with_shortcut(hint.clone());
     }
     out.push(toggle_global_search);
+
+    // Always the "show" label (egui flips to "Close Settings" when the
+    // tab is open; the gpui action open-or-focuses instead of toggling).
+    let mut open_settings = Entry::new(hxy_i18n::t("palette-tool-show-settings"), PaletteAction::OpenSettings);
+    if let Some(hint) = &shortcuts.open_settings {
+        open_settings = open_settings.with_shortcut(hint.clone());
+    }
+    out.push(open_settings);
 
     out.push(
         Entry::new(hxy_i18n::t("palette-strings-whole-file"), PaletteAction::OpenStrings)
@@ -716,6 +728,7 @@ mod tests {
         assert!(data.contains(&PaletteAction::OpenStrings));
         assert!(data.contains(&PaletteAction::OpenEntropy));
         assert!(data.contains(&PaletteAction::OpenChecksums));
+        assert!(data.contains(&PaletteAction::OpenSettings));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumns)));
         // Every row enabled when a file is active (copy needs a

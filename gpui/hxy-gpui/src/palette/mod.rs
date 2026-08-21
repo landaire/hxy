@@ -60,6 +60,7 @@ use crate::palette::modes::build_templates_mode_entries;
 use crate::palette::modes::build_uninstall_entries;
 use crate::templates::TemplateLibraryGlobal;
 use crate::workspace::OpenFile;
+use crate::workspace::OpenSettings;
 use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
@@ -252,6 +253,7 @@ impl Palette {
             toggle_vim: shortcut_for(window, &ToggleVim),
             toggle_inspector: shortcut_for(window, &ToggleInspector),
             toggle_global_search: shortcut_for(window, &ToggleGlobalSearch),
+            open_settings: shortcut_for(window, &OpenSettings),
         }
     }
 
