@@ -15,6 +15,8 @@ use hxy_core::Selection;
 
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
+use crate::plugins::PluginOp;
+use crate::plugins::find_handler;
 use crate::templates::FieldJump;
 use crate::workspace::Workspace;
 
@@ -75,6 +77,17 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::JumpNextField => ws.jump_template_field(FieldJump::Next, cx),
         PaletteAction::JumpPrevField => ws.jump_template_field(FieldJump::Prev, cx),
         PaletteAction::FetchImhexPatterns => ws.fetch_imhex_patterns(window, cx),
+        // Resolve the handler by name (a rescan may have dropped it since
+        // the row was built) and drive the call off-thread. The outcome
+        // re-enters the palette (cascade / prompt) or closes it (done).
+        PaletteAction::InvokePluginCommand { plugin_name, command_id } => match find_handler(cx, &plugin_name) {
+            Some(plugin) => ws.spawn_plugin_op(PluginOp::Invoke { plugin, command_id }, window, cx),
+            None => tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin invoke target missing"),
+        },
+        PaletteAction::RespondToPlugin { plugin_name, command_id, answer } => match find_handler(cx, &plugin_name) {
+            Some(plugin) => ws.spawn_plugin_op(PluginOp::Respond { plugin, command_id, answer }, window, cx),
+            None => tracing::warn!(plugin = %plugin_name, command = %command_id, "plugin respond target missing"),
+        },
         PaletteAction::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         PaletteAction::CopySelection(format) => {
             let Some(pane) = ws.active_pane(cx) else { return };

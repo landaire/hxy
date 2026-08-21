@@ -55,10 +55,16 @@ use crate::palette::modes::CompareSide;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::palette::modes::PaletteMode;
+use crate::palette::modes::PluginCascadeState;
+use crate::palette::modes::PluginPromptState;
 use crate::palette::modes::Shortcuts;
 use crate::palette::modes::build_entries;
+use crate::palette::modes::build_plugin_cascade_entries;
+use crate::palette::modes::build_plugin_main_entries;
+use crate::palette::modes::build_plugin_prompt_entry;
 use crate::palette::modes::build_templates_mode_entries;
 use crate::palette::modes::build_uninstall_entries;
+use crate::plugins::PluginHandlersGlobal;
 use crate::templates::TemplateLibraryGlobal;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenSettings;
@@ -66,6 +72,7 @@ use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 use crate::workspace::Workspace;
+use hxy_vfs::VfsHandler;
 
 gpui::actions!(hxy_gpui_palette, [PaletteUp, PaletteDown, PaletteDismiss]);
 
@@ -92,6 +99,14 @@ pub struct Palette {
     /// the `CompareSideB` pick that spawns the tab. Cleared on close and
     /// whenever the cascade leaves the B step.
     compare_a: Option<(std::path::PathBuf, bool)>,
+    /// The plugin sub-menu backing [`PaletteMode::PluginCascade`]. Set by
+    /// [`enter_plugin_cascade`](Self::enter_plugin_cascade), cleared on any
+    /// other mode transition and on close.
+    plugin_cascade: Option<PluginCascadeState>,
+    /// The pending question backing [`PaletteMode::PluginPrompt`]. Set by
+    /// [`enter_plugin_prompt`](Self::enter_plugin_prompt), cleared like
+    /// `plugin_cascade`.
+    plugin_prompt: Option<PluginPromptState>,
 }
 
 impl Palette {
@@ -107,6 +122,8 @@ impl Palette {
             _input_sub: input_sub,
             restore_focus: None,
             compare_a: None,
+            plugin_cascade: None,
+            plugin_prompt: None,
         }
     }
 
@@ -127,6 +144,67 @@ impl Palette {
         self.enter_mode(PaletteMode::CompareSideB, window, cx);
     }
 
+    /// Open (or switch) the palette into the plugin sub-menu a completed
+    /// invoke produced (egui `enter_plugin_cascade`). Reached from the
+    /// workspace's outcome dispatch, so `restore` is only stashed when the
+    /// palette was closed at the time (a fresh open); an already-open
+    /// palette keeps the focus it captured on its first open.
+    pub(crate) fn enter_plugin_cascade(
+        &mut self,
+        plugin_name: String,
+        commands: Vec<hxy_plugin_host::PluginCommand>,
+        restore: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.open {
+            self.restore_focus = restore;
+        }
+        // `enter_mode` clears both plugin buffers, so set the cascade
+        // after it (mirrors egui, where `enter_plugin_cascade` bypasses
+        // the state-clearing `open_at`).
+        self.enter_mode(PaletteMode::PluginCascade, window, cx);
+        self.plugin_cascade = Some(PluginCascadeState { plugin_name, commands });
+        cx.notify();
+    }
+
+    /// Open (or switch) the palette into an argument-style prompt for a
+    /// plugin's pending question (egui `enter_plugin_prompt`). The plugin's
+    /// `title` becomes the input hint and `default_value` pre-fills the
+    /// answer; submitting routes back through `respond_to_prompt` on the
+    /// same `(plugin_name, command_id)`.
+    pub(crate) fn enter_plugin_prompt(
+        &mut self,
+        prompt: PluginPromptState,
+        default_value: Option<String>,
+        restore: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.open {
+            self.restore_focus = restore;
+        }
+        self.enter_mode(PaletteMode::PluginPrompt, window, cx);
+        // The plugin's question is the real hint; prefill any default so an
+        // "edit existing value" flow starts from it.
+        let title = prompt.title.clone();
+        let prefill = default_value.unwrap_or_default();
+        self.plugin_prompt = Some(prompt);
+        self.state.query = prefill.clone();
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(title, window, cx);
+            input.set_value(prefill, window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Close the palette from outside the overlay (the workspace's `Done`
+    /// outcome dispatch). Idempotent -- a plugin command picked from the
+    /// Main list already closed the palette before its op ran.
+    pub(crate) fn close_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(window, cx);
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.state.open
     }
@@ -134,6 +212,25 @@ impl Palette {
     #[cfg(test)]
     pub(crate) fn mode(&self) -> PaletteMode {
         self.mode
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query(&self) -> String {
+        self.state.query.clone()
+    }
+
+    /// The `(plugin, command labels)` of the active cascade, for tests.
+    #[cfg(test)]
+    pub(crate) fn plugin_cascade_labels(&self) -> Option<(String, Vec<String>)> {
+        self.plugin_cascade
+            .as_ref()
+            .map(|c| (c.plugin_name.clone(), c.commands.iter().map(|cmd| cmd.label.clone()).collect()))
+    }
+
+    /// The `(plugin, command id, title)` of the active prompt, for tests.
+    #[cfg(test)]
+    pub(crate) fn plugin_prompt_state(&self) -> Option<(String, String, String)> {
+        self.plugin_prompt.as_ref().map(|p| (p.plugin_name.clone(), p.command_id.clone(), p.title.clone()))
     }
 
     #[cfg(test)]
@@ -178,6 +275,11 @@ impl Palette {
         if mode != PaletteMode::CompareSideB {
             self.compare_a = None;
         }
+        // Plugin buffers only live inside their own mode; any transition
+        // drops them. `enter_plugin_cascade` / `enter_plugin_prompt` set
+        // theirs after calling this (egui `open_at` parity).
+        self.plugin_cascade = None;
+        self.plugin_prompt = None;
         self.mode = mode;
         self.state.open();
         let placeholder = hxy_i18n::t(mode.hint_key());
@@ -192,6 +294,8 @@ impl Palette {
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.close();
         self.compare_a = None;
+        self.plugin_cascade = None;
+        self.plugin_prompt = None;
         if let Some(handle) = self.restore_focus.take() {
             window.focus(&handle);
         }
@@ -263,14 +367,22 @@ impl Palette {
     /// filters by title against the query.
     fn build(&self, window: &Window, cx: &App) -> (Vec<Entry<PaletteAction>>, Vec<MatchResult>) {
         let ctx = self.context(cx);
-        let entries = match self.mode {
+        let mut entries = match self.mode {
             PaletteMode::CompareSideA => self.build_compare_entries(CompareSide::A, cx),
             PaletteMode::CompareSideB => self.build_compare_entries(CompareSide::B, cx),
             PaletteMode::Templates => self.build_template_entries(TemplateScope::WholeFile, cx),
             PaletteMode::TemplatesAtSelection => self.build_template_entries(TemplateScope::Selection, cx),
             PaletteMode::UninstallTemplate => build_uninstall_mode_entries(),
+            PaletteMode::PluginCascade => self.plugin_cascade_rows(),
+            PaletteMode::PluginPrompt => self.plugin_prompt_rows(),
             _ => build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window)),
         };
+        // Loaded plugins append their commands to the Main list (egui
+        // entries.rs:1081). Skipped under the `@` / `=` calculator
+        // prefixes, which replace the whole list with a single row.
+        if self.mode == PaletteMode::Main && !self.mode.bypasses_filter(&self.state.query) {
+            entries.extend(self.plugin_main_rows(cx));
+        }
         let filtered = if self.mode.bypasses_filter(&self.state.query) {
             (0..entries.len()).map(|index| MatchResult { index, match_indices: Vec::new() }).collect()
         } else {
@@ -333,6 +445,32 @@ impl Palette {
         // set it lands here, and an empty list is the right render.
         let Some(library) = cx.try_global::<TemplateLibraryGlobal>() else { return Vec::new() };
         build_templates_mode_entries(&library.0, extension.as_deref(), &head_bytes, range)
+    }
+
+    /// Main-list rows for every loaded plugin's advertised commands.
+    /// Reads the live [`PluginHandlersGlobal`]; `list_commands` returns
+    /// empty for a plugin without the `commands` grant, so an ungranted
+    /// plugin adds nothing.
+    fn plugin_main_rows(&self, cx: &App) -> Vec<Entry<PaletteAction>> {
+        let Some(handlers) = cx.try_global::<PluginHandlersGlobal>() else { return Vec::new() };
+        let grouped: Vec<(String, Vec<hxy_plugin_host::PluginCommand>)> =
+            handlers.0.iter().map(|h| (h.name().to_owned(), h.list_commands())).collect();
+        build_plugin_main_entries(&grouped)
+    }
+
+    /// Rows for the active plugin cascade, or empty when none is set (the
+    /// mode is only entered with a populated buffer, so empty is inert).
+    fn plugin_cascade_rows(&self) -> Vec<Entry<PaletteAction>> {
+        self.plugin_cascade
+            .as_ref()
+            .map(|c| build_plugin_cascade_entries(&c.plugin_name, &c.commands))
+            .unwrap_or_default()
+    }
+
+    /// The single answer row for the active plugin prompt, baking the
+    /// current query as the answer; empty when no prompt is set.
+    fn plugin_prompt_rows(&self) -> Vec<Entry<PaletteAction>> {
+        self.plugin_prompt.as_ref().map(|p| build_plugin_prompt_entry(p, &self.state.query)).unwrap_or_default()
     }
 
     fn pick_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -596,10 +734,20 @@ impl Focusable for Palette {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use gpui::TestAppContext;
     use gpui::VisualTestContext;
     use hxy_core::ByteOffset;
     use hxy_core::Selection;
+    use hxy_plugin_host::InMemoryStateStore;
+    use hxy_plugin_host::PermissionGrants;
+    use hxy_plugin_host::PluginGrants;
+    use hxy_plugin_host::PluginHandler;
+    use hxy_plugin_host::PluginKey;
+    use hxy_plugin_host::StateStore;
 
     use super::*;
     use crate::workspace::Workspace;
@@ -876,6 +1024,123 @@ mod tests {
             assert!(panel.templates[0].state.parsed.is_some(), "run completed successfully");
             assert!(panel.template_panel_visible);
         });
+    }
+
+    /// The prebuilt commands+state fixture component, or `None` when a
+    /// fresh checkout has not built it yet (keeps `cargo test` green).
+    fn statecmd_fixture() -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/test-statecmd/target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm");
+        path.exists().then_some(path)
+    }
+
+    /// Stage the fixture wasm + a permissive sidecar manifest, load a
+    /// single granted handler, and install it as the live
+    /// [`PluginHandlersGlobal`] so the palette lists its commands.
+    fn install_fixture_plugin(cx: &mut VisualTestContext, fixture: &Path) {
+        let bytes = std::fs::read(fixture).expect("read fixture");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("test-statecmd.wasm"), &bytes).expect("stage wasm");
+        std::fs::write(
+            dir.path().join("test-statecmd.hxy.toml"),
+            "[plugin]\nname = \"test-statecmd\"\nversion = \"0.1.0\"\n\n[permissions]\npersist = true\ncommands = true\n",
+        )
+        .expect("stage manifest");
+        let mut grants = PluginGrants::default();
+        let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
+        grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
+        let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+        let handlers: Vec<Arc<PluginHandler>> =
+            hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store))
+                .expect("load fixture plugin")
+                .into_iter()
+                .map(Arc::new)
+                .collect();
+        assert!(!handlers.is_empty(), "fixture handler loaded");
+        // Keep the tempdir alive: the handler mmaps its component from disk.
+        std::mem::forget(dir);
+        cx.update(|_, cx| cx.set_global(PluginHandlersGlobal(handlers)));
+    }
+
+    /// A loaded plugin's Main-list commands appear (prefixed with the
+    /// plugin name); picking a `Done` command closes the palette.
+    #[gpui::test]
+    fn plugin_command_lists_and_done_closes(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        install_fixture_plugin(cx, &fixture);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "Done outcome", cx);
+        // The plugin row is the only match for that query.
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main);
+
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "a Done-outcome command closes the palette");
+    }
+
+    /// Invoking a command that returns `Cascade` re-enters the palette in
+    /// `PluginCascade` mode listing the returned sub-commands.
+    #[gpui::test]
+    fn plugin_cascade_command_reenters_cascade_mode(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        install_fixture_plugin(cx, &fixture);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "Cascade outcome", cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        assert!(pal.read_with(cx, |p, _| p.is_open()), "a Cascade outcome keeps the palette open");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::PluginCascade);
+        let (name, labels) = pal.read_with(cx, |p, _| p.plugin_cascade_labels()).expect("cascade state set");
+        assert_eq!(name, "test-statecmd");
+        assert_eq!(labels.len(), 2, "the two child commands populate the cascade");
+        assert!(labels[0].starts_with("Child A"), "got {labels:?}");
+
+        // Escape pops the cascade back to Main.
+        cx.simulate_keystrokes("escape");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main);
+        assert!(pal.read_with(cx, |p, _| p.plugin_cascade_labels()).is_none(), "leaving the mode clears the buffer");
+    }
+
+    /// Invoking a command that returns `Prompt` re-enters the palette in
+    /// `PluginPrompt` mode with the plugin's default answer pre-filled and
+    /// its title carried for the reply routing.
+    #[gpui::test]
+    fn plugin_prompt_command_reenters_prompt_mode_prefilled(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        install_fixture_plugin(cx, &fixture);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "Prompt outcome", cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::PluginPrompt);
+        let (name, command_id, title) = pal.read_with(cx, |p, _| p.plugin_prompt_state()).expect("prompt state set");
+        assert_eq!(name, "test-statecmd");
+        assert_eq!(command_id, "prompt", "the reply reuses the originating command id");
+        assert_eq!(title, "Token name");
+        assert!(pal.read_with(cx, |p, _| p.query()).starts_with("default-"), "the default value pre-fills the input");
     }
 
     /// End-to-end compare cascade: pick "Compare files...", choose the

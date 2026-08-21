@@ -52,10 +52,17 @@ impl Global for PluginGrantsGlobal {}
 
 /// Every successfully loaded plugin handler. Rebuilt by
 /// [`reload_plugins`] after a grant change or a user-requested rescan.
-// Field read by the op runner (M4c Task 2) and palette (Task 3).
-pub struct PluginHandlersGlobal(#[allow(dead_code)] pub Vec<Arc<PluginHandler>>);
+pub struct PluginHandlersGlobal(pub Vec<Arc<PluginHandler>>);
 
 impl Global for PluginHandlersGlobal {}
+
+/// Resolve a loaded handler by plugin name, or `None` when the registry
+/// has no such plugin (a palette row left stale by a rescan). Cheap
+/// linear scan -- the loaded set is small.
+pub(crate) fn find_handler(cx: &App, name: &str) -> Option<Arc<PluginHandler>> {
+    let handlers = cx.try_global::<PluginHandlersGlobal>()?;
+    handlers.0.iter().find(|h| h.name() == name).cloned()
+}
 
 /// Directory holding user-installed `hxy:vfs` plugin components
 /// (`<data_dir>/hxy/plugins`). Shared with the egui app so a plugin
@@ -211,7 +218,6 @@ fn load_handlers_in(dir: &Path, grants: &PluginGrants, store: Option<Arc<dyn Sta
 /// through an entity update rather than a per-frame channel drain.
 // Constructed by the palette (M4c Task 3) and, for `MountByToken`, by
 // this runner's own `Mount` dispatch.
-#[allow(dead_code)]
 pub enum PluginOp {
     /// Run `invoke_command(command_id)`.
     Invoke { plugin: Arc<PluginHandler>, command_id: String },
@@ -363,9 +369,9 @@ impl Workspace {
     /// panic (see `PluginHandler::{invoke_command, respond_to_prompt,
     /// mount_by_token}`), so the background future always resolves and
     /// the op reaches completion rather than hanging on a "started" log.
-    // Entry point wired into the palette in M4c Task 3; also re-entered
-    // by `dispatch_outcome`'s `Mount` arm below.
-    #[allow(dead_code)]
+    // Entry point wired into the palette by the `InvokePluginCommand` /
+    // `RespondToPlugin` dispatch; also re-entered by `dispatch_outcome`'s
+    // `Mount` arm below.
     pub fn spawn_plugin_op(&mut self, op: PluginOp, window: &mut Window, cx: &mut Context<Self>) {
         let log = OpLog { plugin_name: op.plugin_name(), label: op.label(), started: Instant::now() };
         log_op_started(self, &log, window, cx);
@@ -430,43 +436,38 @@ impl Workspace {
     }
 
     /// Route an invoke/respond outcome to its side effect. Mirrors
-    /// egui's `dispatch_plugin_outcome`; the palette (Done/Cascade/
-    /// Prompt) and mount-tab (Mount) arms are downstream milestones and
-    /// are left as clearly marked extension points -- deliberately no
-    /// half-built palette or tab code here.
+    /// egui's `dispatch_plugin_outcome`: Done closes the palette, Cascade
+    /// opens a sub-menu, Prompt opens an argument-style prompt, Mount
+    /// spawns the token materialization (Task 4 installs its tab).
     fn dispatch_outcome(
         &mut self,
         plugin: Arc<PluginHandler>,
-        // Parked for Task 3: the prompt arm answers via a `Respond` op
-        // reusing this command id, and re-enters the palette from `log`.
-        _command_id: String,
+        // The prompt arm answers via a `Respond` op reusing this id, so
+        // the plugin can correlate the answer against its own state.
+        command_id: String,
         outcome: Option<InvokeOutcome>,
         _log: &OpLog,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // The route is recorded inside each arm (not from `route_for`
-        // before the match) so the tests prove which arm actually ran,
-        // and the guard survives Tasks 3/4 filling the arms with behavior.
+        // before the match) so the tests prove which arm actually ran.
         match outcome {
             // Done, or a trapped / grant-denied None.
             Some(InvokeOutcome::Done) | None => {
                 #[cfg(test)]
                 record_test_route(cx, OutcomeRoute::Done);
-                // Task 3: close the command palette.
+                self.close_palette(window, cx);
             }
-            Some(InvokeOutcome::Cascade(_commands)) => {
+            Some(InvokeOutcome::Cascade(commands)) => {
                 #[cfg(test)]
                 record_test_route(cx, OutcomeRoute::Cascade);
-                // Task 3: open a `PluginCascade` palette mode over the
-                // returned commands (egui `enter_plugin_cascade`).
+                self.enter_plugin_cascade(plugin.name().to_owned(), commands, window, cx);
             }
-            Some(InvokeOutcome::Prompt(_request)) => {
+            Some(InvokeOutcome::Prompt(request)) => {
                 #[cfg(test)]
                 record_test_route(cx, OutcomeRoute::Prompt);
-                // Task 3: open a `PluginPrompt` palette mode seeded with
-                // the request, answering via a `Respond` op that reuses
-                // `command_id` (egui `enter_plugin_prompt`).
+                self.enter_plugin_prompt(plugin.name().to_owned(), command_id, request, window, cx);
             }
             Some(InvokeOutcome::Mount(request)) => {
                 #[cfg(test)]

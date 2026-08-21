@@ -19,6 +19,7 @@ use hxy_panels::goto::ParseError;
 use hxy_panels::goto::parse_count_expr;
 use hxy_panels::goto::parse_offset_expr;
 use hxy_panels::goto::parse_range_expr;
+use hxy_plugin_host::PluginCommand;
 use hxy_templates::library::TemplateLibrary;
 use palette_core::Entry;
 
@@ -60,6 +61,15 @@ pub enum PaletteMode {
     /// Pick the B side; the chosen A rides on the overlay's cascade
     /// state until this pick spawns the compare tab.
     CompareSideB,
+    /// Sub-menu a plugin returned from an invoke (`InvokeOutcome::Cascade`).
+    /// The commands ride on the overlay's `plugin_cascade` state; each
+    /// pick re-invokes on the same plugin (egui `enter_plugin_cascade`).
+    PluginCascade,
+    /// Argument-style prompt a plugin raised (`InvokeOutcome::Prompt`).
+    /// The typed answer routes back through `respond_to_prompt` on the
+    /// originating (plugin, command id) held in `plugin_prompt` state
+    /// (egui `enter_plugin_prompt`).
+    PluginPrompt,
 }
 
 impl PaletteMode {
@@ -78,7 +88,9 @@ impl PaletteMode {
             | PaletteMode::TemplatesAtSelection
             | PaletteMode::UninstallTemplate
             | PaletteMode::CompareSideA
-            | PaletteMode::CompareSideB => Some(PaletteMode::Main),
+            | PaletteMode::CompareSideB
+            | PaletteMode::PluginCascade
+            | PaletteMode::PluginPrompt => Some(PaletteMode::Main),
         }
     }
 
@@ -92,13 +104,16 @@ impl PaletteMode {
                 let q = query.trim_start();
                 q.starts_with('@') || q.starts_with('=')
             }
-            // Compare picks and the template lists are fuzzy-filtered
-            // lists, not single dynamic argument rows.
+            // Compare picks, the template lists, and a plugin cascade are
+            // fuzzy-filtered lists, not single dynamic argument rows. The
+            // plugin prompt (like the arg modes) falls through to `true`:
+            // its one answer row must never be filtered away.
             PaletteMode::CompareSideA
             | PaletteMode::CompareSideB
             | PaletteMode::Templates
             | PaletteMode::TemplatesAtSelection
-            | PaletteMode::UninstallTemplate => false,
+            | PaletteMode::UninstallTemplate
+            | PaletteMode::PluginCascade => false,
             _ => true,
         }
     }
@@ -117,6 +132,10 @@ impl PaletteMode {
             PaletteMode::UninstallTemplate => "palette-hint-uninstall",
             PaletteMode::CompareSideA => "palette-hint-compare-side-a",
             PaletteMode::CompareSideB => "palette-hint-compare-side-b",
+            PaletteMode::PluginCascade => "palette-hint-plugin-cascade",
+            // Default hint; the overlay overrides it with the plugin's
+            // own prompt title, which is the actual question asked.
+            PaletteMode::PluginPrompt => "palette-hint-plugin-prompt",
         }
     }
 }
@@ -220,6 +239,21 @@ pub enum PaletteAction {
     /// Download the upstream WerWolv/ImHex-Patterns corpus into the
     /// shared install directory so hundreds more formats auto-detect.
     FetchImhexPatterns,
+    /// Invoke a plugin command. The handler is resolved by name at
+    /// dispatch; a missing handler logs and is otherwise inert. The
+    /// invoke runs off-thread and its outcome may cascade or prompt.
+    InvokePluginCommand {
+        plugin_name: String,
+        command_id: String,
+    },
+    /// Answer a plugin's [`InvokeOutcome::Prompt`](hxy_plugin_host::InvokeOutcome):
+    /// route `answer` back through `respond_to_prompt` on the same
+    /// (plugin, command id) the prompt carried.
+    RespondToPlugin {
+        plugin_name: String,
+        command_id: String,
+        answer: String,
+    },
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -289,7 +323,9 @@ pub fn build_entries(
         | PaletteMode::CompareSideB
         | PaletteMode::Templates
         | PaletteMode::TemplatesAtSelection
-        | PaletteMode::UninstallTemplate => {}
+        | PaletteMode::UninstallTemplate
+        | PaletteMode::PluginCascade
+        | PaletteMode::PluginPrompt => {}
     }
     out
 }
@@ -347,6 +383,83 @@ pub fn build_uninstall_entries(installed: &[PathBuf]) -> Vec<Entry<PaletteAction
             .with_subtitle(path.display().to_string())
         })
         .collect()
+}
+
+/// The plugin sub-menu backing [`PaletteMode::PluginCascade`]: the
+/// plugin whose invoke produced it plus the commands it returned, held
+/// so the cascade renders without re-asking the plugin every frame
+/// (egui `PluginCascadeState`).
+#[derive(Clone)]
+pub struct PluginCascadeState {
+    pub plugin_name: String,
+    pub commands: Vec<PluginCommand>,
+}
+
+/// The pending question backing [`PaletteMode::PluginPrompt`]: which
+/// (plugin, command id) to answer via `respond_to_prompt` and the
+/// title shown as the input hint (egui `PluginPromptState`).
+#[derive(Clone)]
+pub struct PluginPromptState {
+    pub plugin_name: String,
+    pub command_id: String,
+    pub title: String,
+}
+
+/// Main-list rows contributed by loaded plugins: one per command each
+/// handler advertises, labeled `"{plugin}: {label}"` and bound to
+/// [`PaletteAction::InvokePluginCommand`]. `plugins` pairs each plugin
+/// name with its `list_commands()` result (empty without the `commands`
+/// grant, so an ungranted plugin adds nothing -- egui parity). Label
+/// and subtitle are plugin-authored and pass through untranslated.
+pub fn build_plugin_main_entries(plugins: &[(String, Vec<PluginCommand>)]) -> Vec<Entry<PaletteAction>> {
+    let mut out = Vec::new();
+    for (plugin_name, commands) in plugins {
+        for cmd in commands {
+            out.push(plugin_command_entry(plugin_name, cmd, true));
+        }
+    }
+    out
+}
+
+/// Rows for [`PaletteMode::PluginCascade`]: the plugin's returned
+/// sub-commands. Unprefixed labels -- the cascade already scopes to one
+/// plugin -- each re-invoking on that same plugin.
+pub fn build_plugin_cascade_entries(plugin_name: &str, commands: &[PluginCommand]) -> Vec<Entry<PaletteAction>> {
+    commands.iter().map(|cmd| plugin_command_entry(plugin_name, cmd, false)).collect()
+}
+
+/// The single answer row for [`PaletteMode::PluginPrompt`]: submitting
+/// it sends the current `query` back to the plugin. An empty query
+/// shows a placeholder label but still submits (some plugins accept an
+/// empty answer -- egui parity); the prompt title rides as subtitle.
+pub fn build_plugin_prompt_entry(prompt: &PluginPromptState, query: &str) -> Vec<Entry<PaletteAction>> {
+    let answer = query.to_owned();
+    let label = if answer.is_empty() { hxy_i18n::t("palette-plugin-prompt-empty") } else { answer.clone() };
+    vec![
+        Entry::new(
+            label,
+            PaletteAction::RespondToPlugin {
+                plugin_name: prompt.plugin_name.clone(),
+                command_id: prompt.command_id.clone(),
+                answer,
+            },
+        )
+        .with_subtitle(prompt.title.clone()),
+    ]
+}
+
+/// One plugin-command row. `prefixed` picks the Main-list label
+/// (`"{plugin}: {label}"`) over the cascade label (bare `label`).
+fn plugin_command_entry(plugin_name: &str, cmd: &PluginCommand, prefixed: bool) -> Entry<PaletteAction> {
+    let title = if prefixed { format!("{plugin_name}: {}", cmd.label) } else { cmd.label.clone() };
+    let mut entry = Entry::new(
+        title,
+        PaletteAction::InvokePluginCommand { plugin_name: plugin_name.to_owned(), command_id: cmd.id.clone() },
+    );
+    if let Some(subtitle) = &cmd.subtitle {
+        entry = entry.with_subtitle(subtitle.clone());
+    }
+    entry
 }
 
 fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: PaletteContext, shortcuts: &Shortcuts) {
@@ -668,7 +781,9 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
         | PaletteMode::TemplatesAtSelection
         | PaletteMode::UninstallTemplate
         | PaletteMode::CompareSideA
-        | PaletteMode::CompareSideB => {}
+        | PaletteMode::CompareSideB
+        | PaletteMode::PluginCascade
+        | PaletteMode::PluginPrompt => {}
     }
 }
 
@@ -987,5 +1102,90 @@ mod tests {
             ]
         );
         assert!(entries[0].title.contains("png.bt"));
+    }
+
+    fn cmd(id: &str, label: &str, subtitle: Option<&str>) -> PluginCommand {
+        PluginCommand {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            subtitle: subtitle.map(str::to_owned),
+            icon: None,
+            has_children: false,
+        }
+    }
+
+    #[test]
+    fn plugin_modes_cascade_from_main() {
+        assert_eq!(PaletteMode::PluginCascade.parent(), Some(PaletteMode::Main));
+        assert_eq!(PaletteMode::PluginPrompt.parent(), Some(PaletteMode::Main));
+        // The cascade is a fuzzy list; the prompt is a single dynamic row.
+        assert!(!PaletteMode::PluginCascade.bypasses_filter("con"));
+        assert!(PaletteMode::PluginPrompt.bypasses_filter("anything"));
+    }
+
+    #[test]
+    fn plugin_main_entries_prefix_the_plugin_name_and_bind_the_command() {
+        let plugins = vec![(
+            "xeedee".to_owned(),
+            vec![cmd("connect", "Connect", Some("open a session")), cmd("list", "List mounts", None)],
+        )];
+        let entries = build_plugin_main_entries(&plugins);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "xeedee: Connect");
+        assert_eq!(entries[0].subtitle.as_deref(), Some("open a session"));
+        assert_eq!(
+            entries[0].data,
+            PaletteAction::InvokePluginCommand { plugin_name: "xeedee".into(), command_id: "connect".into() }
+        );
+        assert_eq!(entries[1].title, "xeedee: List mounts");
+        assert!(entries[1].subtitle.is_none());
+    }
+
+    #[test]
+    fn plugin_main_entries_empty_without_commands() {
+        assert!(build_plugin_main_entries(&[]).is_empty());
+        assert!(build_plugin_main_entries(&[("p".to_owned(), vec![])]).is_empty());
+    }
+
+    #[test]
+    fn plugin_cascade_entries_drop_the_prefix_and_reinvoke_on_the_plugin() {
+        let cmds = vec![cmd("a", "Alpha", None), cmd("b", "Beta", Some("second"))];
+        let entries = build_plugin_cascade_entries("demo", &cmds);
+        assert_eq!(entries[0].title, "Alpha", "cascade rows are unprefixed");
+        assert_eq!(
+            entries[1].data,
+            PaletteAction::InvokePluginCommand { plugin_name: "demo".into(), command_id: "b".into() }
+        );
+        assert_eq!(entries[1].subtitle.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn plugin_prompt_entry_bakes_the_answer_and_shows_the_title() {
+        let state =
+            PluginPromptState { plugin_name: "demo".into(), command_id: "prompt".into(), title: "Token name".into() };
+        let filled = build_plugin_prompt_entry(&state, "session-1");
+        assert_eq!(filled.len(), 1);
+        assert_eq!(filled[0].title, "session-1");
+        assert_eq!(filled[0].subtitle.as_deref(), Some("Token name"));
+        assert_eq!(
+            filled[0].data,
+            PaletteAction::RespondToPlugin {
+                plugin_name: "demo".into(),
+                command_id: "prompt".into(),
+                answer: "session-1".into(),
+            }
+        );
+
+        // Empty query: placeholder label, empty answer, still one row.
+        let empty = build_plugin_prompt_entry(&state, "");
+        assert_ne!(empty[0].title, "", "empty answer shows a placeholder label");
+        assert_eq!(
+            empty[0].data,
+            PaletteAction::RespondToPlugin {
+                plugin_name: "demo".into(),
+                command_id: "prompt".into(),
+                answer: String::new(),
+            }
+        );
     }
 }

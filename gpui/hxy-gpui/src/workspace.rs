@@ -1321,6 +1321,45 @@ impl Workspace {
         .detach();
     }
 
+    /// Re-enter the palette into the sub-menu a plugin invoke produced
+    /// (the outcome dispatch's `Cascade` arm). The plugin command that
+    /// triggered it already closed the palette, so `window.focused` is the
+    /// grid -- the right restore target once the cascade closes.
+    pub(crate) fn enter_plugin_cascade(
+        &mut self,
+        plugin_name: String,
+        commands: Vec<hxy_plugin_host::PluginCommand>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let restore = window.focused(cx);
+        self.palette.update(cx, |palette, cx| palette.enter_plugin_cascade(plugin_name, commands, restore, window, cx));
+    }
+
+    /// Re-enter the palette into an argument-style prompt for a plugin's
+    /// pending question (the dispatch's `Prompt` arm). The answer routes
+    /// back through `respond_to_prompt` on the same `command_id`.
+    pub(crate) fn enter_plugin_prompt(
+        &mut self,
+        plugin_name: String,
+        command_id: String,
+        request: hxy_plugin_host::PromptRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let restore = window.focused(cx);
+        let prompt = crate::palette::modes::PluginPromptState { plugin_name, command_id, title: request.title };
+        self.palette.update(cx, |palette, cx| {
+            palette.enter_plugin_prompt(prompt, request.default_value, restore, window, cx);
+        });
+    }
+
+    /// Close the palette from the outcome dispatch's `Done` arm. Idempotent
+    /// -- a Main-list plugin pick already closed it before its op ran.
+    pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette.update(cx, |palette, cx| palette.close_external(window, cx));
+    }
+
     /// Add a file tab to the center dock, making it active (the dock
     /// focuses the new tab's pane itself when the active tab changes).
     fn add_file_panel(&mut self, panel: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
