@@ -158,3 +158,82 @@ interaction-level tests.
 - No GPUI pixel-snapshot testing: OS screenshots instead.
 - First build of the zed dependency tree is heavy (build time, lockfile
   growth).
+
+## Known deviations from the egui app (as of M4)
+
+The port reached functional + feature equivalence; these are the honest,
+deliberate differences. The full row-by-row audit is
+`docs/superpowers/plans/2026-08-20-m4f-parity-matrix.md` (parity 78,
+deviation 24, gap 14). Each deviation below is one line: what, then why.
+
+Settings (recorded in `gpui/hxy-gpui/src/settings.rs` module doc):
+
+- `zoom_factor` not applied: gpui-component has no clean global scale knob and
+  rem scaling would miss the custom-painted mono hex grid.
+- `check_for_updates` not applied: no update checker exists in either frontend
+  (a placeholder in egui too).
+- `language` unapplied: dead in egui as well (no UI, never applied).
+- `byte_cache_limit_mib` not applied: gpui opens whole files into
+  `MemorySource` and constructs no `hxy_core::ByteCache`.
+- `imhex_patterns` fetch state: tracked by the palette flow directly; the
+  shared blob round-trips untouched.
+- Global `hex_columns` change clobbers a palette-set per-pane column count:
+  the gpui pane has no per-tab `hex_columns_override` slot yet.
+- Nested (workspace-host) file panes read settings at construction only: live
+  changes reach top-level and compare panes (matching the M3 nested-dock scope).
+- `address_separator_enabled/_char` not honored (`hxy-view-gpui/paint.rs`): the
+  grouped-address formatter lives in the egui-only hxy-view, not shared code.
+
+Rendering / theme:
+
+- Selection tint reads as a translucent wash, not egui's opaque fill
+  (`theme.rs`): gpui-component clamps selection alpha to ~0.3.
+- No violet active-tab outline (`theme.rs`): gpui-component has no per-tab
+  border theme key; inactive tabs are dimmed by text color instead.
+- Platform default mono font, not an embedded one (`theme.rs`): the egui app
+  embeds its own; gpui uses `mono_font_family`.
+- Texture visualizers render with the default bilinear filter and no
+  scroll-at-native-size (`panels/visualizer.rs`): gpui 0.2.2's `img()` has no
+  NEAREST sampler or native-size scroll affordance.
+- ChunkEntropy X axis shows hex-offset ticks without captions
+  (`panels/visualizer.rs`): matches the shell's EntropyPanel chart rather than
+  egui's decimal ticks and axis labels.
+
+Behavior / surface:
+
+- Console does not autoscroll to a fresh entry (`panels/console_view.rs`):
+  entries render oldest-first, newest at the bottom; the user scrolls to it.
+- Plugin command palette rows carry a leading puzzle-piece icon token
+  (`palette/modes.rs`, `assets.rs`) rather than an inline glyph as in egui.
+- Native menu items are always enabled (`menu.rs`): every handler is bound on
+  the root div, so `is_action_available` always reports available; handlers
+  no-op gracefully. egui greys items per frame.
+- Global-search results sort by insertion, not egui's `FileId`-ascending order
+  (`panels/global_search.rs`): gpui has no orderable file id.
+- Status bar omits egui's click-to-toggle offset base, copyable hover-value
+  readout, click-to-copy value labels, tab-focus chip, and click-to-toggle
+  watch chip (`status.rs`): file name, offset/selection, vim mode, dirty
+  marker, and the lock toggle are ported; the rest are small egui affordances
+  not re-created.
+- Per-target copy commands (caret offset/address, selection range/length, file
+  length) collapse into the palette `CopySelection` formats plus menu copy
+  bytes/hex; caret- and file-length copies are not individually exposed.
+- Watch prefs, global column count, plugin uninstall, and dock split/merge/
+  move-tab verbs live on their panels / native docking rather than as palette
+  commands.
+
+Not ported (gaps):
+
+- macOS NSServices right-click "Open in hxy": needs a real app bundle with an
+  Info.plist NSServices declaration; gpui runs unbundled. Double-click /
+  Apple-Events open-with IS covered via gpui-native `on_open_urls`.
+- New / scratch buffer (`Untitled N`) and Paste / Paste as hex: no anonymous
+  in-memory source and no clipboard splice-at-caret path in the gpui editor yet.
+- `Memory` byte-cache debug panel: nothing constructs a `ByteCache` to inspect.
+- Palette `Recent` / `QuickOpen` recents modes, `SetVirtualBase`, and an
+  explicit reload command: recents live on the Welcome panel; virtual-base
+  labeling and reload have no palette surface yet.
+
+The wasm/web target and pixel-faithful cloning remain explicit non-goals (see
+Goal). The `wat` crate resolving to different versions across the two lockfiles
+is a build-infra item tracked at the milestone gate, not a feature deviation.
