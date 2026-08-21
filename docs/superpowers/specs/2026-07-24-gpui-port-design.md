@@ -127,7 +127,10 @@ review, commit); this spec governs all of them.
   brand theme JSON, six-class byte palette, embedded icon assets), M4c
   (plugins/mounts, done; plan 2026-08-20-m4c-gpui-plugins-mounts.md;
   grants shared via hxy.db, palette commands, VFS mounts, plugins panel),
-  then M4d (IPC), M4f (console/i18n sweep/final audit).
+  M4d (single-instance IPC + CLI open + macOS open-with, done; plan
+  2026-08-20-m4d-gpui-ipc.md; shared hxy-ipc crate, gpui-native
+  on_open_urls; NSServices right-click provider not ported), then M4f
+  (console tab, i18n sweep incl. gpui system-locale init, final audit).
 - M4: template runner (010/ImHex), visualizers (they are driven by
   template visualize attributes and have no data source before templates
   exist), plugins and mounts, IPC single-instance, settings persistence,
