@@ -22,10 +22,14 @@
 //! - `imhex_patterns`: fetch state is tracked by the palette flow
 //!   directly (M4a); the shared blob round-trips untouched.
 //!
-//! Known live-apply deviation: a global `hex_columns` change applies
-//! to every open pane, clobbering a palette-set per-pane column count
-//! (egui keeps a per-tab `hex_columns_override` that survives; the
-//! gpui pane has no override slot yet).
+//! Known live-apply deviations:
+//! - a global `hex_columns` change applies to every open pane,
+//!   clobbering a palette-set per-pane column count (egui keeps a
+//!   per-tab `hex_columns_override` that survives; the gpui pane has
+//!   no override slot yet).
+//! - workspace-host nested file panes pick settings up at
+//!   construction only; live changes reach top-level and compare
+//!   panes (matching the nested docks' M3 scope).
 
 use std::sync::Arc;
 
@@ -60,14 +64,14 @@ pub enum SettingsLoadFailure {
     StoreUnavailable,
     /// The database opened but the stored blob would not decode: the
     /// sink is live, so the next save overwrites the stored settings.
-    Corrupt,
+    Unreadable,
 }
 
 impl SettingsLoadFailure {
     pub fn toast_key(self) -> &'static str {
         match self {
             Self::StoreUnavailable => "gpui-settings-store-unavailable",
-            Self::Corrupt => "gpui-settings-load-corrupt",
+            Self::Unreadable => "gpui-settings-load-unreadable",
         }
     }
 }
@@ -112,7 +116,7 @@ pub fn load_blocking() -> SettingsBoot {
         Ok(loaded) => (loaded.unwrap_or_default(), None),
         Err(err) => {
             tracing::warn!(%err, "load app settings -- using defaults");
-            (AppSettings::default(), Some(SettingsLoadFailure::Corrupt))
+            (AppSettings::default(), Some(SettingsLoadFailure::Unreadable))
         }
     };
     SettingsBoot { settings, sink: Some(SaveSink::new(pool, runtime)), failure }
