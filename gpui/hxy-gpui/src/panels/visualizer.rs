@@ -1405,7 +1405,10 @@ mod tests {
                 numeric_format: hxy_core::format::NumericFormat::Always(hxy_core::format::NumericBase::Decimal),
                 ..crate::settings::AppSettings::default()
             };
-            crate::settings::init(cx, crate::settings::SettingsBoot { settings, sink: None, failure: None });
+            crate::settings::init(
+                cx,
+                crate::settings::SettingsBoot { settings, sink: None, persist: None, failure: None },
+            );
         });
         let (panel, file, cx) = build(cx);
         let table = scalar_node("tbl", (0, 12), Some("table"));

@@ -33,6 +33,11 @@ palette-core = { workspace = true }
 # adds no new transitive deps.
 rust-embed = "8"
 serde_json = "1"
+# Names the shared `SqlitePool` type held by `settings::PersistHandle`
+# so the plugin layer can reuse the same pool + runtime hxy-settings
+# opened. Version/features track hxy-settings so the pool types unify;
+# already in the tree transitively, so this adds no build cost.
+sqlx = { version = "0.8", default-features = false, features = ["sqlite"] }
 thiserror = "2"
 # Builds the runtime handed to hxy-settings' `SaveSink`, which blocks
 # on it for its SQLite writes.

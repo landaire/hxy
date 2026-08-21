@@ -706,7 +706,10 @@ mod tests {
     #[gpui::test]
     fn byte_highlight_mode_row_flips_the_global(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            crate::settings::init(cx, SettingsBoot { settings: AppSettings::default(), sink: None, failure: None });
+            crate::settings::init(
+                cx,
+                SettingsBoot { settings: AppSettings::default(), sink: None, persist: None, failure: None },
+            );
         });
         cx.update(|cx| {
             assert_eq!(crate::settings::settings(cx).byte_highlight_mode, ByteHighlightMode::Background);
@@ -736,6 +739,7 @@ mod tests {
                 SettingsBoot {
                     settings: AppSettings::default(),
                     sink: Some(SaveSink::new(pool, rt.clone())),
+                    persist: None,
                     failure: None,
                 },
             );

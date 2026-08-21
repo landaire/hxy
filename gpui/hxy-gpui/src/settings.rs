@@ -46,6 +46,8 @@ use hxy_settings::ByteHighlightMode;
 use hxy_settings::ByteHighlightScheme;
 use hxy_settings::persist::SaveSink;
 use hxy_view_gpui::PaneHighlight;
+use sqlx::SqlitePool;
+use tokio::runtime::Runtime;
 
 use crate::templates::rgba_to_hsla;
 
@@ -61,6 +63,24 @@ impl Global for SettingsGlobal {}
 pub struct SettingsSink(pub Option<SaveSink>);
 
 impl Global for SettingsSink {}
+
+/// The shared SQLite pool and its tokio runtime, cloned wherever a
+/// subsystem needs the database directly. The settings [`SaveSink`]
+/// holds its own clones; this handle lets the plugin layer (grants +
+/// per-plugin state) reuse the SAME pool and runtime rather than
+/// opening a second connection to `hxy.db`.
+#[derive(Clone)]
+pub struct PersistHandle {
+    pub pool: SqlitePool,
+    pub runtime: Arc<Runtime>,
+}
+
+/// Global wrapper for the shared [`PersistHandle`]. `None` when the
+/// settings database failed to open at startup: dependent subsystems
+/// (plugins) then run without persistence, degrading like the sink.
+pub struct PersistHandleGlobal(pub Option<PersistHandle>);
+
+impl Global for PersistHandleGlobal {}
 
 /// How the startup load degraded, if it did. Drives which warning
 /// toast the shell shows once the notification layer exists.
@@ -87,6 +107,7 @@ impl SettingsLoadFailure {
 pub struct SettingsBoot {
     pub settings: AppSettings,
     pub sink: Option<SaveSink>,
+    pub persist: Option<PersistHandle>,
     pub failure: Option<SettingsLoadFailure>,
 }
 
@@ -102,6 +123,7 @@ pub fn load_blocking() -> SettingsBoot {
             return SettingsBoot {
                 settings: AppSettings::default(),
                 sink: None,
+                persist: None,
                 failure: Some(SettingsLoadFailure::StoreUnavailable),
             };
         }
@@ -113,6 +135,7 @@ pub fn load_blocking() -> SettingsBoot {
             return SettingsBoot {
                 settings: AppSettings::default(),
                 sink: None,
+                persist: None,
                 failure: Some(SettingsLoadFailure::StoreUnavailable),
             };
         }
@@ -126,7 +149,8 @@ pub fn load_blocking() -> SettingsBoot {
             (AppSettings::default(), Some(SettingsLoadFailure::Unreadable))
         }
     };
-    SettingsBoot { settings, sink: Some(SaveSink::new(pool, runtime)), failure }
+    let persist = PersistHandle { pool: pool.clone(), runtime: runtime.clone() };
+    SettingsBoot { settings, sink: Some(SaveSink::new(pool, runtime)), persist: Some(persist), failure }
 }
 
 /// Install the boot result as the app globals. Call once at startup,
@@ -134,6 +158,7 @@ pub fn load_blocking() -> SettingsBoot {
 pub fn init(cx: &mut App, boot: SettingsBoot) {
     cx.set_global(SettingsGlobal(boot.settings));
     cx.set_global(SettingsSink(boot.sink));
+    cx.set_global(PersistHandleGlobal(boot.persist));
 }
 
 /// A snapshot of the current settings. Defaults when the global was
@@ -242,7 +267,12 @@ mod tests {
         cx.update(|cx| {
             init(
                 cx,
-                SettingsBoot { settings: AppSettings::default(), sink: Some(SaveSink::new(pool, rt)), failure: None },
+                SettingsBoot {
+                    settings: AppSettings::default(),
+                    sink: Some(SaveSink::new(pool, rt)),
+                    persist: None,
+                    failure: None,
+                },
             );
         });
     }
@@ -281,7 +311,9 @@ mod tests {
         struct Probe {
             seen: Vec<u32>,
         }
-        cx.update(|cx| init(cx, SettingsBoot { settings: AppSettings::default(), sink: None, failure: None }));
+        cx.update(|cx| {
+            init(cx, SettingsBoot { settings: AppSettings::default(), sink: None, persist: None, failure: None })
+        });
         let probe = cx.update(|cx| {
             gpui::AppContext::new(cx, |cx: &mut gpui::Context<Probe>| {
                 cx.observe_global::<SettingsGlobal>(|probe, cx| {
