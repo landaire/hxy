@@ -10758,16 +10758,12 @@ cargo.rust_library(
             deps = [
                 ":muda-0.19",
                 ":objc2-0.6",
-                ":objc2-app-kit-0.3",
-                ":objc2-foundation-0.3",
             ],
         ),
         "macos-x86_64": dict(
             deps = [
                 ":muda-0.19",
                 ":objc2-0.6",
-                ":objc2-app-kit-0.3",
-                ":objc2-foundation-0.3",
             ],
         ),
     },
@@ -10861,16 +10857,12 @@ cargo.rust_binary(
             deps = [
                 ":muda-0.19",
                 ":objc2-0.6",
-                ":objc2-app-kit-0.3",
-                ":objc2-foundation-0.3",
             ],
         ),
         "macos-x86_64": dict(
             deps = [
                 ":muda-0.19",
                 ":objc2-0.6",
-                ":objc2-app-kit-0.3",
-                ":objc2-foundation-0.3",
             ],
         ),
     },
@@ -11228,6 +11220,7 @@ cargo.rust_library(
     srcs = [
         "crates/hxy-ipc/src/cli.rs",
         "crates/hxy-ipc/src/lib.rs",
+        "crates/hxy-ipc/src/macos_open.rs",
         "crates/hxy-ipc/src/socket.rs",
     ],
     crate = "hxy_ipc",
@@ -11249,6 +11242,22 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_MINOR": "5",
         "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
+    },
+    platform = {
+        "macos-arm64": dict(
+            deps = [
+                ":objc2-0.6",
+                ":objc2-app-kit-0.3",
+                ":objc2-foundation-0.3",
+            ],
+        ),
+        "macos-x86_64": dict(
+            deps = [
+                ":objc2-0.6",
+                ":objc2-app-kit-0.3",
+                ":objc2-foundation-0.3",
+            ],
+        ),
     },
     visibility = [],
     deps = [
