@@ -446,10 +446,10 @@ pub struct Workspace {
     /// The file-watch reconcile-and-drain loop. Held so dropping the
     /// workspace cancels it; never read otherwise.
     _watch_poll_task: Option<Task<()>>,
-    /// The single-instance IPC drain loop (forwarded second-instance and
-    /// macOS open-with paths). Held so dropping the workspace ends it;
-    /// never read otherwise. `None` until `start_ipc` runs, and stays
-    /// `None` off macOS when the socket failed to bind (nothing to drain).
+    /// The single-instance IPC drain loop (forwarded second-instance
+    /// socket paths and macOS `on_open_urls` "Open With" paths). Held so
+    /// dropping the workspace ends it; never read otherwise. `None` until
+    /// `start_ipc` runs.
     _ipc_poll_task: Option<Task<()>>,
     _appearance_subscription: Subscription,
     /// Fires [`Self::on_settings_changed`] whenever `update_settings`
@@ -1730,26 +1730,22 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Wire the single-instance IPC receiver into a `Timer` poll loop that
-    /// drains forwarded path batches (and, on macOS, the Apple-Event /
-    /// NSServices buffer) into `open_external_paths`. Mirrors
+    /// Wire the single-instance IPC receivers into a `Timer` poll loop that
+    /// drains forwarded path batches into `open_external_paths`. Mirrors
     /// `spawn_watch_poll`: the loop ends when the workspace entity drops.
     ///
-    /// `receiver` is `None` when the socket failed to bind. On macOS the
-    /// loop still runs to drain the Apple-Event buffer (which `install`
-    /// fills regardless of the socket); off macOS a missing receiver means
-    /// nothing to drain, so the idle timer is skipped.
+    /// `receiver` (the forwarding socket) is `None` when the socket failed
+    /// to bind. `open_urls` carries macOS "Open With" paths from gpui's
+    /// native `on_open_urls` callback and is always present, so the loop
+    /// always runs.
     pub fn start_ipc(
         &mut self,
         receiver: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+        open_urls: std::sync::mpsc::Receiver<Vec<PathBuf>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        #[cfg(not(target_os = "macos"))]
-        if receiver.is_none() {
-            return;
-        }
-        self._ipc_poll_task = Some(spawn_ipc_poll(receiver, window, cx));
+        self._ipc_poll_task = Some(spawn_ipc_poll(receiver, open_urls, window, cx));
     }
 
     /// Shared open logic: focus an already-open tab for `path` instead
@@ -4012,21 +4008,20 @@ fn spawn_watch_poll(window: &mut Window, cx: &mut Context<Workspace>) -> Task<()
     })
 }
 
-/// Poll cadence for draining forwarded-open batches. The std mpsc
-/// `Receiver` and the macOS Apple-Event buffer are both non-blocking
+/// Poll cadence for draining forwarded-open batches. Both the forwarding
+/// socket receiver and the `on_open_urls` receiver are non-blocking mpsc
 /// sources, so a tick period trades latency for idle cost. 250ms keeps a
 /// forwarded open feeling immediate without a per-frame drain (egui gets
-/// its latency from the frame loop; this is the executor equivalent). The
-/// wake callback in `hxy_ipc::macos_open` is left unset -- this loop
-/// drains that buffer every tick regardless, so a nudge buys nothing.
+/// its latency from the frame loop; this is the executor equivalent).
 const IPC_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Drain the IPC receiver (and macOS open-with buffer) on a Timer cadence,
-/// opening each forwarded batch in the running workspace. Structured like
-/// `spawn_watch_poll`: the `update_in` returning `Err` (entity dropped)
-/// ends the loop.
+/// Drain both IPC receivers (forwarding socket and macOS `on_open_urls`)
+/// on a Timer cadence, opening each forwarded batch in the running
+/// workspace. Structured like `spawn_watch_poll`: the `update_in`
+/// returning `Err` (entity dropped) ends the loop.
 fn spawn_ipc_poll(
     receiver: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    open_urls: std::sync::mpsc::Receiver<Vec<PathBuf>>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<()> {
@@ -4039,8 +4034,7 @@ fn spawn_ipc_poll(
                     paths.extend(batch);
                 }
             }
-            #[cfg(target_os = "macos")]
-            for batch in hxy_ipc::macos_open::drain_pending_paths() {
+            while let Ok(batch) = open_urls.try_recv() {
                 paths.extend(batch);
             }
             // Always update to detect a dropped workspace and end the loop;

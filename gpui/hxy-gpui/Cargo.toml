@@ -30,6 +30,10 @@ hxy-view-gpui = { workspace = true }
 image = { version = "0.25", default-features = false }
 jiff = { workspace = true }
 palette-core = { workspace = true }
+# Decodes `file://` URL bytes handed to gpui's `on_open_urls` (macOS
+# "Open With"). Already in the tree transitively, so this adds no build
+# cost.
+percent-encoding = "2"
 # Embeds assets/icons; already in the dep tree via gpui_util, so this
 # adds no new transitive deps.
 rust-embed = "8"

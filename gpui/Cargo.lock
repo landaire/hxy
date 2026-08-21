@@ -3508,6 +3508,7 @@ dependencies = [
  "jiff",
  "notify 8.2.0",
  "palette-core",
+ "percent-encoding",
  "rfd",
  "rust-embed",
  "serde_json",

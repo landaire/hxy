@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use gpui::App;
@@ -26,14 +27,18 @@ mod workspace;
 
 use workspace::Workspace;
 
-fn main() -> ExitCode {
-    // macOS Finder "Open With" / right-click "Open in hxy": register the
-    // Apple-Event / NSServices handlers BEFORE `Application::run` starts
-    // AppKit, or a cold-start open-with document crashes the delegate
-    // state machine mid-dispatch (see `hxy_ipc::macos_open::install`).
-    #[cfg(target_os = "macos")]
-    hxy_ipc::macos_open::install();
+/// Turn a platform "open URLs" string (as delivered to gpui's
+/// `on_open_urls`) into a filesystem path. macOS hands over `file://`
+/// URLs with percent-encoded bytes; a non-file URL has no path to open,
+/// so it is skipped. Decoded bytes that are not valid UTF-8 are dropped
+/// rather than guessed, since a mangled path can only open the wrong file.
+fn parse_file_url(url: &str) -> Option<PathBuf> {
+    let encoded = url.strip_prefix("file://")?;
+    let decoded = percent_encoding::percent_decode_str(encoded).decode_utf8().ok()?;
+    Some(PathBuf::from(decoded.into_owned()))
+}
 
+fn main() -> ExitCode {
     // Full file-open UX also covers cmd-o (workspace.rs); every CLI path
     // argument opens the same way at startup (read, dedup, error-toast
     // on failure -- see `Workspace::build_initial`), so all of them open
@@ -56,7 +61,21 @@ fn main() -> ExitCode {
     let boot = settings::load_blocking();
     let settings_failure = boot.failure;
 
-    gpui::Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
+    // macOS Finder "Open With" delivery. gpui owns the NSApplication and
+    // dispatches `application:openURLs:` into this callback, which must be
+    // registered on the `Application` before `run` starts AppKit. The
+    // callback has no `cx` (it can fire before the window exists), so it
+    // forwards parsed paths through a channel the workspace poll loop
+    // drains (mirroring the socket receiver).
+    let (open_urls_tx, open_urls_receiver) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+    let app = gpui::Application::new().with_assets(assets::Assets);
+    app.on_open_urls(move |urls| {
+        let paths: Vec<PathBuf> = urls.iter().filter_map(|url| parse_file_url(url)).collect();
+        if !paths.is_empty() {
+            let _ = open_urls_tx.send(paths);
+        }
+    });
+    app.run(move |cx: &mut App| {
         // Bind the single-instance socket and hand the workspace a receiver
         // of forwarded path batches. A bind failure (stale lock, perms)
         // leaves the app running without accepting forwarded opens.
@@ -104,13 +123,12 @@ fn main() -> ExitCode {
                 // all Task 2 needs -- no modal surfaces yet (toasts are
                 // Task 6).
                 let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, layout_path, window, cx));
-                // Route forwarded second-instance / macOS open-with paths
-                // into this running workspace via an executor poll loop. The
-                // receiver is `None` when the socket failed to bind; on
-                // macOS the loop still drains the Apple-Event buffer, so it
-                // must not be gated on the socket (mirrors egui, which
-                // drains that buffer every frame regardless).
-                workspace.update(cx, |ws, cx| ws.start_ipc(ipc_receiver, window, cx));
+                // Route forwarded second-instance paths (socket) and macOS
+                // "Open With" paths (gpui `on_open_urls`) into this running
+                // workspace via an executor poll loop. The socket receiver is
+                // `None` when the socket failed to bind; the open-urls
+                // receiver is always present.
+                workspace.update(cx, |ws, cx| ws.start_ipc(ipc_receiver, open_urls_receiver, window, cx));
                 if let Some(failure) = settings_failure {
                     // Deferred like the boot-restore toasts in
                     // `Workspace::build_initial`: the Root notification
@@ -128,4 +146,25 @@ fn main() -> ExitCode {
         cx.activate(true);
     });
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_file_url;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_percent_encoded_file_url() {
+        assert_eq!(parse_file_url("file:///tmp/a%20b.bin"), Some(PathBuf::from("/tmp/a b.bin")));
+    }
+
+    #[test]
+    fn parses_plain_file_url() {
+        assert_eq!(parse_file_url("file:///tmp/plain.bin"), Some(PathBuf::from("/tmp/plain.bin")));
+    }
+
+    #[test]
+    fn skips_non_file_url() {
+        assert_eq!(parse_file_url("https://example.com/x.bin"), None);
+    }
 }
