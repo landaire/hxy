@@ -90,7 +90,6 @@ hxy-calculator = { workspace = true }
 hxy-panels = { workspace = true }
 suture = { workspace = true, features = ["serde", "blake3"] }
 base64 = { workspace = true }
-rkyv = { version = "0.8.18", default-features = false, features = ["alloc", "bytecheck"] }
 egui-toast = "0.22.0"
 fskit = { workspace = true }
 egui_plot = "0.37"
@@ -130,10 +129,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 hxy-plugin-host = { workspace = true }
 hxy-templates = { workspace = true }
+hxy-ipc = { workspace = true }
 dirs = "6"
 tempfile = "3"
-clap = { version = "4.6.6", features = ["derive"] }
-interprocess = "2.4.3"
 notify = "8"
 notify-debouncer-full = "0.7"
 crossbeam-channel = "0.5"

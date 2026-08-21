@@ -15,6 +15,7 @@ members = [
     "crates/hxy-panels",
     "crates/hxy-settings",
     "crates/hxy-templates",
+    "crates/hxy-ipc",
     "crates/egui-palette",
     "crates/palette-core",
     "crates/egui_minimap",
@@ -48,6 +49,7 @@ hxy-calculator = { path = "crates/hxy-calculator", version = "0.5.0" }
 hxy-panels = { path = "crates/hxy-panels", version = "0.5.0" }
 hxy-settings = { path = "crates/hxy-settings", version = "0.5.0" }
 hxy-templates = { path = "crates/hxy-templates", version = "0.5.0" }
+hxy-ipc = { path = "crates/hxy-ipc", version = "0.5.0" }
 egui-palette = { path = "crates/egui-palette", version = "0.7.0" }
 palette-core = { path = "crates/palette-core", version = "0.5.0" }
 egui_minimap = { path = "crates/egui_minimap", version = "0.5.0" }

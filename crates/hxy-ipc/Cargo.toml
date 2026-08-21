@@ -1,0 +1,27 @@
+[package]
+name = "hxy-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Framework-neutral single-instance IPC socket protocol and CLI parsing for hxy"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+tracing = { workspace = true }
+
+# Single-instance forwarding: one GenericNamespaced socket name maps
+# to an abstract socket on Linux, a /tmp file on macOS, and a named
+# pipe on Windows. Desktop-only; this crate is not part of the wasm
+# graph (crates/hxy gates its dependency behind not(wasm32)).
+interprocess = "2.4.3"
+
+# Typed, length-prefixed wire format for the forwarded-open payload.
+rkyv = { version = "0.8.18", default-features = false, features = ["alloc", "bytecheck"] }
+
+# CLI: positional file paths only.
+clap = { version = "4.6.6", features = ["derive"] }
