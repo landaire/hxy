@@ -28,6 +28,7 @@ use gpui::prelude::*;
 use gpui_component::WindowExt;
 use gpui_component::notification::Notification;
 use hxy_plugin_host::InvokeOutcome;
+use hxy_plugin_host::MountByTokenError;
 use hxy_plugin_host::PermissionGrants;
 use hxy_plugin_host::PluginGrants;
 use hxy_plugin_host::PluginHandler;
@@ -39,6 +40,7 @@ use hxy_settings::persist::store_plugin_grants;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::VfsHandler;
 
+use crate::panels::PluginMountIdentity;
 use crate::settings::PersistHandle;
 use crate::settings::PersistHandleGlobal;
 use crate::workspace::Workspace;
@@ -340,10 +342,9 @@ struct OpLog {
 }
 
 /// The plugin-side identity of a materialized mount: which plugin, the
-/// opaque token it round-trips, and the tab title it chose. Task 4
-/// turns this plus the resolved [`MountedVfs`] into a workspace-host
-/// tab.
-#[allow(dead_code)]
+/// opaque token it round-trips, and the tab title it chose. Turned, with
+/// the resolved [`MountedVfs`], into a workspace-host tab by
+/// [`Workspace::finish_mount`].
 struct MountRequestCtx {
     plugin: Arc<PluginHandler>,
     token: String,
@@ -402,11 +403,10 @@ impl Workspace {
                 let worker = plugin.clone();
                 let tok = token.clone();
                 cx.spawn_in(window, async move |this, cx| {
-                    // The egui runner also flattened `MountByTokenError`
-                    // to its message; the retry-label affordance is M4c
-                    // Task 4 (retry_failed_mount).
-                    let result =
-                        cx.background_spawn(async move { worker.mount_by_token(&tok).map_err(|e| e.message) }).await;
+                    // The full `MountByTokenError` is preserved (not
+                    // flattened to its message) so `finish_mount` can read
+                    // `retry_label` to decide whether to offer a retry.
+                    let result = cx.background_spawn(async move { worker.mount_by_token(&tok) }).await;
                     let _ = this.update_in(cx, |this, window, cx| {
                         let mount = MountRequestCtx { plugin, token, title };
                         this.finish_mount(mount, result, &log, window, cx);
@@ -483,14 +483,16 @@ impl Workspace {
         }
     }
 
-    /// Apply a completed `mount-by-token`: install the tab on success
-    /// (Task 4) or surface the failure. Mirrors egui's `MountReady`
-    /// dispatch (`install_mount_tab` on `Ok`, `console_log(Error)` on
-    /// `Err`).
+    /// Apply a completed `mount-by-token`: install the workspace-host tab
+    /// on success, or surface the failure. Mirrors egui's `MountReady`
+    /// dispatch (`install_mount_tab` on `Ok`, a failed-mount affordance on
+    /// `Err`). A recoverable failure (the plugin supplied a `retry_label`)
+    /// gets an error toast with a Retry button; a structural one gets a
+    /// plain error toast.
     fn finish_mount(
         &mut self,
         mount: MountRequestCtx,
-        result: Result<MountedVfs, String>,
+        result: Result<MountedVfs, MountByTokenError>,
         log: &OpLog,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -500,14 +502,23 @@ impl Workspace {
                 log_op_completed(self, log, true, window, cx);
                 #[cfg(test)]
                 record_test_mount(cx);
-                // Task 4: install `resolved` (bound to `mount.plugin`) as
-                // a workspace-host tab carrying `mount.token`/`mount.title`
-                // -- egui `install_mount_tab`.
-                let _ = (mount, resolved);
+                let identity = PluginMountIdentity {
+                    plugin_name: mount.plugin.name().to_owned(),
+                    token: mount.token,
+                    title: mount.title,
+                };
+                self.install_plugin_mount_tab(resolved, identity, window, cx);
             }
-            Err(error) => {
-                log_mount_failed(self, log, &error, window, cx);
-            }
+            Err(error) => match error.retry_label {
+                // A recoverable failure: an error toast carrying a Retry
+                // button that re-spawns the same `MountByToken` op.
+                Some(_) => {
+                    self.mount_failed_with_retry(mount.plugin, mount.token, mount.title, error.message, window, cx)
+                }
+                // A structural failure (host trap): no retry affordance,
+                // since retrying without changing anything will not help.
+                None => log_mount_failed(self, log, &error.message, window, cx),
+            },
         }
     }
 }
@@ -616,6 +627,7 @@ mod tests {
     use tokio::runtime::Runtime;
 
     use super::*;
+    use crate::panels::WORKSPACE_HOST_PANEL_NAME;
     use crate::settings::PersistHandle;
     use crate::settings::PersistHandleGlobal;
 
@@ -909,5 +921,118 @@ mod tests {
         });
         assert_eq!(routes, vec![OutcomeRoute::Prompt, OutcomeRoute::Mount], "respond reaches the mount arm");
         assert_eq!(mounts, 1, "the chained mount-by-token op ran and succeeded");
+    }
+
+    /// A synthetic empty read-only mount, so the install / dedup paths can
+    /// be driven without a live plugin (mirrors `workspace_host::empty_mount`).
+    fn fake_mount() -> MountedVfs {
+        MountedVfs {
+            fs: Box::new(hxy_vfs::vfs::MemoryFS::new()),
+            capabilities: hxy_vfs::VfsCapabilities::READ_ONLY,
+            writer: None,
+            virtual_base: None,
+        }
+    }
+
+    fn identity(token: &str) -> PluginMountIdentity {
+        PluginMountIdentity { plugin_name: "demo".into(), token: token.into(), title: format!("Mount {token}") }
+    }
+
+    fn host_tab_count(cx: &mut VisualTestContext, workspace: &Entity<Workspace>) -> usize {
+        workspace.read_with(cx, |ws, cx| {
+            ws.center_panel_names(cx).iter().filter(|name| name.as_str() == WORKSPACE_HOST_PANEL_NAME).count()
+        })
+    }
+
+    /// Invoking the fixture's `mount` command chains through the runner
+    /// (invoke -> Mount -> MountByToken) and installs a workspace-host tab
+    /// bound to the plugin VFS, recorded in the mount registry.
+    #[gpui::test]
+    fn mount_command_opens_a_workspace_host_tab(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup_workspace(cx);
+        let (window, workspace) = open_workspace(cx);
+        let plugin = load_statecmd(&fixture);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.spawn_plugin_op(PluginOp::Invoke { plugin, command_id: "mount".into() }, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(host_tab_count(cx, &workspace), 1, "a workspace-host tab was installed for the plugin mount");
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.plugin_mount_ids().len(), 1, "one live mount is registered"));
+    }
+
+    /// Installing the same `(plugin, token)` twice focuses the existing
+    /// tab instead of opening a duplicate; a different token opens a
+    /// second, distinct mount.
+    #[gpui::test]
+    fn install_dedups_same_plugin_token(cx: &mut TestAppContext) {
+        setup_workspace(cx);
+        let (window, workspace) = open_workspace(cx);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.install_plugin_mount_tab(fake_mount(), identity("tok-a"), window, cx);
+        });
+        cx.run_until_parked();
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.install_plugin_mount_tab(fake_mount(), identity("tok-a"), window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(host_tab_count(cx, &workspace), 1, "re-mounting the same token does not duplicate the tab");
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.plugin_mount_ids().len(), 1, "still a single registry record"));
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.install_plugin_mount_tab(fake_mount(), identity("tok-b"), window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(host_tab_count(cx, &workspace), 2, "a different token opens a second mount tab");
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.plugin_mount_ids().len(), 2, "two live registry records"));
+    }
+
+    /// A recoverable mount failure surfaces a retry affordance (an error
+    /// toast) and installs no tab; re-running the `MountByToken` op -- what
+    /// the toast's Retry button does -- then succeeds and installs the tab.
+    #[gpui::test]
+    fn failed_mount_surfaces_retry_then_recovers(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup_workspace(cx);
+        let (window, workspace) = open_workspace(cx);
+        let plugin = load_statecmd(&fixture);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        let retry_plugin = plugin.clone();
+        workspace.update_in(cx, |ws, window, cx| {
+            let mount = MountRequestCtx { plugin: retry_plugin, token: "tok".into(), title: "Demo".into() };
+            let err = MountByTokenError { message: "console offline".into(), retry_label: Some("Reconnect".into()) };
+            let log = OpLog { plugin_name: "demo".into(), label: "mount tok".into(), started: Instant::now() };
+            ws.finish_mount(mount, Err(err), &log, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 1, "the failure surfaces a retry toast");
+        assert_eq!(host_tab_count(cx, &workspace), 0, "a failed mount installs no tab");
+
+        // The Retry button re-spawns this exact op; the fixture's
+        // mount-by-token always succeeds, so the tab now installs.
+        workspace.update_in(cx, |ws, window, cx| {
+            let op = PluginOp::MountByToken { plugin, token: "tok".into(), title: "Demo".into() };
+            ws.spawn_plugin_op(op, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(host_tab_count(cx, &workspace), 1, "the retry installed the workspace-host tab");
+        workspace
+            .read_with(cx, |ws, _| assert_eq!(ws.plugin_mount_ids().len(), 1, "the recovered mount is registered"));
     }
 }

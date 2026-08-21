@@ -59,6 +59,9 @@ use hxy_core::MemorySource;
 use hxy_core::Selection;
 use hxy_editor::EditMode;
 use hxy_editor::InputMode;
+use hxy_plugin_host::PluginHandler;
+use hxy_vfs::MountedVfs;
+use hxy_vfs::VfsHandler;
 use hxy_view_gpui::HexPane;
 
 use crate::assets::HxyIcon;
@@ -89,6 +92,7 @@ use crate::panels::INSPECTOR_PANEL_NAME;
 use crate::panels::InspectorPanel;
 use crate::panels::OpenRecentRequested;
 use crate::panels::OpenVisualizerRequested;
+use crate::panels::PluginMountIdentity;
 use crate::panels::SETTINGS_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::SettingsPanel;
@@ -106,6 +110,7 @@ use crate::panels::inspector::ActiveHexPane;
 use crate::panels::strings::OpenFilePanels;
 use crate::panels::strings::StringsJumped;
 use crate::persist;
+use crate::plugins::PluginOp;
 use crate::settings::AppSettings;
 use crate::settings::SettingsGlobal;
 use crate::settings::update_settings;
@@ -251,6 +256,34 @@ pub fn init_keybindings(cx: &mut App) {
     crate::panels::template_view::init_keybindings(cx);
 }
 
+/// Stable identity of one live plugin VFS mount in the workspace
+/// registry. A monotonic `u64` (never reused) so a closed-and-reopened
+/// mount never aliases a prior one. Mirrors egui's `MountId`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MountId(u64);
+
+impl MountId {
+    fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+/// One live plugin mount tracked by the workspace: its stable id, the
+/// `(plugin_name, token)` identity used to dedup a re-invoke, and a weak
+/// handle to the host tab so a user-closed tab drops out of the registry
+/// on the next install pass (the same lazy-prune contract as `open_files`).
+struct PluginMountRecord {
+    id: MountId,
+    plugin_name: String,
+    token: String,
+    host: WeakEntity<WorkspaceHostPanel>,
+}
+
+/// Notification-id namespace for the retry-mount toast, so repeated
+/// failures of one mount replace rather than stack (see
+/// [`Workspace::mount_failed_with_retry`]).
+struct MountRetryToast;
+
 pub struct Workspace {
     dock: Entity<DockArea>,
     /// The welcome placeholder while it occupies the center; `None`
@@ -356,6 +389,14 @@ pub struct Workspace {
     /// contract as `global_search_panel`: liveness is confirmed
     /// against the dock dump before reuse, see `open_settings_panel`.
     settings_panel: Option<Entity<SettingsPanel>>,
+    /// Live plugin VFS mounts, one record per open host tab. Tracks the
+    /// `(plugin_name, token)` identity so a re-invoked mount focuses its
+    /// existing tab instead of opening a duplicate, and holds a weak
+    /// handle so a closed tab is pruned lazily on the next install.
+    plugin_mounts: Vec<PluginMountRecord>,
+    /// Monotonic source for [`MountId`]s; never decremented so ids stay
+    /// unique across a closed-and-reopened mount.
+    next_mount_id: u64,
     layout_path: Option<PathBuf>,
     /// The in-flight debounced save; dropping it (on the next event)
     /// cancels the pending write.
@@ -480,6 +521,8 @@ impl Workspace {
             global_search_panel: None,
             _global_search_sub: None,
             settings_panel: None,
+            plugin_mounts: Vec::new(),
+            next_mount_id: 0,
             layout_path,
             save_debounce: None,
             patterns_fetch: None,
@@ -1482,10 +1525,24 @@ impl Workspace {
                 reusable.insert(path, Arc::new(file.clone()));
             }
         }
+        // Live plugin-mount hosts, keyed by the same `(plugin_name, token)`
+        // identity dedup uses: unlike an archive host (rebuilt by
+        // re-mounting from its path), a plugin mount cannot be rebuilt from
+        // its dump (the token is a live session, not a re-drivable path).
+        // Reusing the live entity keeps the mount's VFS -- and this
+        // workspace's `plugin_mounts` weak handle -- intact across a
+        // drag-split resync.
+        let mut reusable_mounts: HashMap<(String, String), Arc<dyn PanelView>> = HashMap::new();
+        for record in &self.plugin_mounts {
+            if let Some(host) = record.host.upgrade() {
+                reusable_mounts.insert((record.plugin_name.clone(), record.token.clone()), Arc::new(host));
+            }
+        }
         let welcome = self.welcome.clone();
         let weak = self.dock.downgrade();
         self.dock.update(cx, |dock, cx| {
-            let center = rebuild_item(&state.center, &mut reusable, welcome.as_ref(), &weak, window, cx);
+            let center =
+                rebuild_item(&state.center, &mut reusable, &reusable_mounts, welcome.as_ref(), &weak, window, cx);
             dock.set_center(center, window, cx);
         });
         // The rebuilt cache is accurate: refresh every registry from
@@ -2860,6 +2917,113 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Install a resolved plugin `MountedVfs` as a workspace-host tab
+    /// bound to that plugin VFS, reusing the M3 nested-dock host. Mirrors
+    /// egui's `install_mount_tab`: a re-invoke of the same
+    /// `(plugin, token)` focuses the existing tab instead of duplicating
+    /// it, and the mount is tracked in [`Self::plugin_mounts`] so close /
+    /// dedup stay coherent. Reached from the plugin op runner's
+    /// `finish_mount` (this crate's `plugins` module).
+    pub(crate) fn install_plugin_mount_tab(
+        &mut self,
+        mount: MountedVfs,
+        identity: PluginMountIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Drop records whose host tab the user has since closed.
+        self.plugin_mounts.retain(|record| record.host.upgrade().is_some());
+
+        // Dedup: a second mount of the same plugin + token does not open a
+        // duplicate tab (egui dedups on `TabSource::PluginMount` equality).
+        // The existing tab is left in place; re-focusing a background mount
+        // is not attempted here (0.5.1 has no "activate tab", and the
+        // remove+re-add workaround is unreliable when the mount is the sole
+        // center tab).
+        if self
+            .plugin_mounts
+            .iter()
+            .any(|record| record.plugin_name == identity.plugin_name && record.token == identity.token)
+        {
+            return;
+        }
+
+        self.resync_center_if_stale(window, cx);
+        let id = MountId::new(self.next_mount_id);
+        self.next_mount_id += 1;
+        let outer = self.dock.downgrade();
+        let host =
+            cx.new(|cx| WorkspaceHostPanel::new_plugin_mount(outer, Arc::new(mount), identity.clone(), window, cx));
+        self.plugin_mounts.push(PluginMountRecord {
+            id,
+            plugin_name: identity.plugin_name,
+            token: identity.token,
+            host: host.downgrade(),
+        });
+        if let Some(record) = self.plugin_mounts.last() {
+            // Mirrors egui's `install_mount_tab` install log.
+            tracing::info!(plugin = %record.plugin_name, id = record.id.0, "plugin mount tab installed");
+        }
+        let view: Arc<dyn PanelView> = Arc::new(host);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        cx.notify();
+    }
+
+    /// Surface a recoverable `mount-by-token` failure as an error toast
+    /// carrying a Retry button. Clicking it re-spawns the `MountByToken`
+    /// op with the same plugin + token, so a transient failure (a console
+    /// briefly offline, etc.) can be recovered without re-driving the
+    /// whole palette command. The typed replacement for egui's failed-mount
+    /// placeholder tab + temp-data retry queue. Only called when the
+    /// plugin marked the failure retryable (a `retry_label`); a structural
+    /// failure gets a plain error toast instead.
+    pub(crate) fn mount_failed_with_retry(
+        &mut self,
+        plugin: Arc<PluginHandler>,
+        token: String,
+        title: String,
+        message: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        tracing::error!(plugin = plugin.name(), "mount failed: {message}");
+        let text = hxy_i18n::t_args("gpui-plugin-mount-failed", &[("plugin", plugin.name()), ("error", &message)]);
+        // Stable id per mount identity so a repeated failure of the same
+        // mount replaces its toast rather than stacking a new undismissable
+        // one (gpui-component replaces a notification pushed with the same
+        // id). A successful retry still leaves the last failure toast up
+        // until the user dismisses it -- 0.5.1 exposes no dismiss-by-id.
+        let toast_id = SharedString::from(format!("hxy-plugin-mount-retry-{}-{token}", plugin.name()));
+        let weak = cx.entity().downgrade();
+        // The toast stays until dismissed so the Retry button is reachable
+        // (an autohiding toast would vanish before the user could click it).
+        let notification =
+            Notification::error(text).id1::<MountRetryToast>(toast_id).autohide(false).action(move |_, _, _| {
+                let weak = weak.clone();
+                let plugin = plugin.clone();
+                let token = token.clone();
+                let title = title.clone();
+                Button::new("plugin-mount-retry").label(hxy_i18n::t("gpui-plugin-mount-retry")).on_click(
+                    move |_, window, cx| {
+                        let plugin = plugin.clone();
+                        let token = token.clone();
+                        let title = title.clone();
+                        let _ = weak.update(cx, |workspace, cx| {
+                            workspace.spawn_plugin_op(PluginOp::MountByToken { plugin, token, title }, window, cx);
+                        });
+                    },
+                )
+            });
+        window.push_notification(notification, cx);
+    }
+
+    /// The ids of every live plugin mount, for tests asserting dedup /
+    /// close behavior.
+    #[cfg(test)]
+    pub(crate) fn plugin_mount_ids(&self) -> Vec<MountId> {
+        self.plugin_mounts.iter().filter(|record| record.host.upgrade().is_some()).map(|record| record.id).collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn palette(&self) -> Entity<Palette> {
         self.palette.clone()
@@ -3592,6 +3756,7 @@ fn count_panel_state_tab_leaves(state: &PanelState) -> usize {
 fn rebuild_item(
     state: &PanelState,
     reusable: &mut HashMap<PathBuf, Arc<dyn PanelView>>,
+    reusable_mounts: &HashMap<(String, String), Arc<dyn PanelView>>,
     welcome: Option<&Entity<WelcomePanel>>,
     dock_area: &gpui::WeakEntity<DockArea>,
     window: &mut Window,
@@ -3602,7 +3767,7 @@ fn rebuild_item(
             let items: Vec<DockItem> = state
                 .children
                 .iter()
-                .map(|child| rebuild_item(child, reusable, welcome, dock_area, window, cx))
+                .map(|child| rebuild_item(child, reusable, reusable_mounts, welcome, dock_area, window, cx))
                 .collect();
             let axis = if *axis == 0 { Axis::Horizontal } else { Axis::Vertical };
             let sizes: Vec<Option<gpui::Pixels>> = sizes.iter().map(|size| Some(*size)).collect();
@@ -3612,14 +3777,14 @@ fn rebuild_item(
             let panels: Vec<Arc<dyn PanelView>> = state
                 .children
                 .iter()
-                .map(|leaf| resolve_leaf(leaf, reusable, welcome, dock_area, window, cx))
+                .map(|leaf| resolve_leaf(leaf, reusable, reusable_mounts, welcome, dock_area, window, cx))
                 .collect();
             let count = panels.len();
             let item = DockItem::tabs(panels, dock_area, window, cx);
             if count > 0 { item.active_index((*active_index).min(count - 1)) } else { item }
         }
         PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => {
-            let panel = resolve_leaf(state, reusable, welcome, dock_area, window, cx);
+            let panel = resolve_leaf(state, reusable, reusable_mounts, welcome, dock_area, window, cx);
             DockItem::tabs(vec![panel], dock_area, window, cx)
         }
     }
@@ -3644,6 +3809,7 @@ fn rebuild_item(
 fn resolve_leaf(
     leaf: &PanelState,
     reusable: &mut HashMap<PathBuf, Arc<dyn PanelView>>,
+    reusable_mounts: &HashMap<(String, String), Arc<dyn PanelView>>,
     welcome: Option<&Entity<WelcomePanel>>,
     dock_area: &gpui::WeakEntity<DockArea>,
     window: &mut Window,
@@ -3655,12 +3821,33 @@ fn resolve_leaf(
     {
         return panel;
     }
+    // A live plugin-mount host is reused by its `(plugin_name, token)`
+    // identity: rebuilding it via `WorkspaceHostPanel::restore` would drop
+    // its live VFS to an empty mount (the token is not re-drivable offline).
+    if leaf.panel_name == WORKSPACE_HOST_PANEL_NAME
+        && let Some(key) = workspace_host_mount_key(&leaf.info)
+        && let Some(panel) = reusable_mounts.get(&key)
+    {
+        return panel.clone();
+    }
     if leaf.panel_name == WELCOME_PANEL_NAME
         && let Some(welcome) = welcome
     {
         return Arc::new(welcome.clone());
     }
     Arc::from(PanelRegistry::build_panel(&leaf.panel_name, dock_area.clone(), leaf, &leaf.info, window, cx))
+}
+
+/// A workspace-host leaf's plugin-mount identity (`plugin_mount`'s
+/// `plugin_name` + `token`), if its dump is a plugin mount rather than an
+/// on-disk archive. The pair matches the dedup / registry key so reuse and
+/// dedup never disagree on identity.
+fn workspace_host_mount_key(info: &PanelInfo) -> Option<(String, String)> {
+    let PanelInfo::Panel(value) = info else { return None };
+    let mount = value.get("plugin_mount")?;
+    let plugin_name = mount.get("plugin_name")?.as_str()?.to_owned();
+    let token = mount.get("token")?.as_str()?.to_owned();
+    Some((plugin_name, token))
 }
 
 /// Spawn the file-watch reconcile-and-drain loop: a fixed-cadence
@@ -4383,6 +4570,22 @@ mod tests {
     use hxy_core::Selection;
 
     use super::*;
+
+    /// The resync-reuse key read from a host's dump must be the same
+    /// `(plugin_name, token)` identity dedup uses, so reuse and dedup never
+    /// disagree (a token-only key could alias two plugins' mounts and
+    /// silently rebuild one as an empty mount). An archive host has no
+    /// plugin-mount marker and yields `None` (it rebuilds from its path).
+    #[test]
+    fn workspace_host_mount_key_matches_the_dedup_identity() {
+        let plugin_mount = PanelInfo::panel(serde_json::json!({
+            "plugin_mount": { "plugin_name": "demo", "token": "tok-1", "title": "Demo" },
+        }));
+        assert_eq!(workspace_host_mount_key(&plugin_mount), Some(("demo".to_string(), "tok-1".to_string())));
+
+        let archive = PanelInfo::panel(serde_json::json!({ "parent_path": "/tmp/a.zip" }));
+        assert_eq!(workspace_host_mount_key(&archive), None, "an archive host is rebuilt from its path, not reused");
+    }
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {

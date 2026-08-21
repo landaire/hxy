@@ -85,6 +85,19 @@ use crate::assets::HxyIcon;
 /// Stable identifier for layout (de)serialization; must never change.
 pub const WORKSPACE_HOST_PANEL_NAME: &str = "WorkspaceHostPanel";
 
+/// Identity of a plugin-provided VFS mount, when a host wraps one
+/// instead of an on-disk archive. Mirrors egui's `TabSource::PluginMount`
+/// (plugin name + opaque token + plugin-chosen title). Drives the tab
+/// title and marks the dumped layout as a non-restorable plugin mount:
+/// the token is a live session handle, so these are pruned on restart
+/// rather than re-driven (see `persist::panel_kind`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginMountIdentity {
+    pub plugin_name: String,
+    pub token: String,
+    pub title: String,
+}
+
 /// The app-wide VFS handler set (zip today, wasm plugins later), stashed
 /// as a gpui global so both the open flow's `detect` and a layout
 /// restore's re-mount reach the same handlers.
@@ -140,9 +153,12 @@ pub struct WorkspaceHostPanel {
     tree: Entity<VfsTreePanel>,
     mount: Arc<MountedVfs>,
     /// Filesystem path of the mounted archive, for the restore re-mount.
-    /// `None` for a mount with no on-disk origin (none today; kept for
-    /// the M4 plugin-mount and nested-VFS cases).
+    /// `None` for a mount with no on-disk origin (a plugin mount, or a
+    /// nested-VFS case).
     parent_path: Option<PathBuf>,
+    /// Set when this host wraps a plugin VFS instead of an on-disk
+    /// archive. Supplies the tab title and marks the dump non-restorable.
+    plugin_mount: Option<PluginMountIdentity>,
     entries: Vec<EntryTab>,
     /// Entity ids of panels this host legitimately owns in its inner
     /// center (its entries). The drag guard treats any other center
@@ -168,6 +184,22 @@ impl WorkspaceHostPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         Self::build(outer, mount, parent_path, Default::default(), window, cx)
+    }
+
+    /// Build a host over a plugin-provided `mount`. `identity` carries
+    /// the plugin name, its opaque mount token, and the tab title the
+    /// plugin chose. Unlike an archive host there is no on-disk path, so
+    /// this host is not restored across restart (see `dump`).
+    pub fn new_plugin_mount(
+        outer: WeakEntity<DockArea>,
+        mount: Arc<MountedVfs>,
+        identity: PluginMountIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut host = Self::build(outer, mount, None, Default::default(), window, cx);
+        host.plugin_mount = Some(identity);
+        host
     }
 
     /// Rebuild from persisted `PanelInfo`: re-mount the archive from its
@@ -253,6 +285,7 @@ impl WorkspaceHostPanel {
             tree,
             mount,
             parent_path,
+            plugin_mount: None,
             entries: Vec::new(),
             owned,
             needs_guard: false,
@@ -373,6 +406,22 @@ impl WorkspaceHostPanel {
         ejected
     }
 
+    /// The tab title: the plugin-chosen title for a plugin mount (a
+    /// localized fallback when the plugin left it empty), otherwise the
+    /// archive's file name, falling back to a localized "Workspace".
+    /// The plugin's title text is plugin-authored and passes through
+    /// untranslated (parity with plugin command labels).
+    fn title_text(&self) -> String {
+        if let Some(identity) = &self.plugin_mount {
+            return if identity.title.is_empty() {
+                hxy_i18n::t("gpui-plugin-mount-untitled")
+            } else {
+                identity.title.clone()
+            };
+        }
+        self.parent_path.as_ref().map(|p| display_name(p)).unwrap_or_else(|| hxy_i18n::t("gpui-workspace-tab-untitled"))
+    }
+
     /// The inner dock area, for tests inspecting the nested layout.
     #[cfg(test)]
     pub fn inner_dock(&self) -> &Entity<DockArea> {
@@ -420,25 +469,19 @@ impl Panel for WorkspaceHostPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self
-            .parent_path
-            .as_ref()
-            .map(|p| display_name(p))
-            .unwrap_or_else(|| hxy_i18n::t("gpui-workspace-tab-untitled"));
         // House prefix mirrors egui's workspace-root icon (inner entry
         // tabs stay unprefixed). Shows only in single-panel title-bar
         // mode -- the multi-tab TabBar renders `tab_name` text, which
         // has no icon slot (gpui-component 0.5.1).
-        h_flex().gap_1().items_center().child(Icon::new(HxyIcon::House).small()).child(SharedString::from(text))
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(Icon::new(HxyIcon::House).small())
+            .child(SharedString::from(self.title_text()))
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        let text = self
-            .parent_path
-            .as_ref()
-            .map(|p| display_name(p))
-            .unwrap_or_else(|| hxy_i18n::t("gpui-workspace-tab-untitled"));
-        Some(SharedString::from(text))
+        Some(SharedString::from(self.title_text()))
     }
 
     /// Refuse to close the host tab while any inner entry tab is dirty, so
@@ -457,6 +500,20 @@ impl Panel for WorkspaceHostPanel {
     /// the host owns every byte of it (see the verdict's exercise (b)).
     fn dump(&self, cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
+        // A plugin mount is a live session (its token is not re-drivable
+        // offline), so the dump records only a marker; `persist::prune_for_restore`
+        // drops it before load rather than re-mounting -- the documented
+        // "plugin mounts do not survive restart" choice.
+        if let Some(identity) = &self.plugin_mount {
+            state.info = PanelInfo::panel(serde_json::json!({
+                "plugin_mount": {
+                    "plugin_name": identity.plugin_name,
+                    "token": identity.token,
+                    "title": identity.title,
+                },
+            }));
+            return state;
+        }
         let expanded: Vec<String> = self.tree.read(cx).expanded().iter().cloned().collect();
         // Only persist entries whose tab is still open (a closed one's
         // weak handle no longer upgrades), so a closed entry does not come

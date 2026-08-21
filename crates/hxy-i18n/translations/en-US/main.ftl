@@ -752,3 +752,5 @@ template-swatch-tooltip-override = Click to edit, shift-click to reset
 # Plugin operations (M4c)
 gpui-plugin-op-no-outcome = Plugin { $plugin } could not complete the command.
 gpui-plugin-mount-failed = Mounting from { $plugin } failed: { $error }
+gpui-plugin-mount-untitled = Plugin mount
+gpui-plugin-mount-retry = Retry

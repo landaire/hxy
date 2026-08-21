@@ -314,6 +314,14 @@ fn keep(panel: &mut PanelState, surviving_files: &HashSet<PathBuf>, pruned: &mut
                 }
             }
         }
+        Some(PanelKind::WorkspaceHost) if workspace_is_plugin_mount(&panel.info) => {
+            // A plugin mount's token is a live session handle, not a
+            // re-drivable path, so it is intentionally not restored
+            // (see `WorkspaceHostPanel::dump`). Dropped silently: it is
+            // our own tab, not a lost file or a foreign/incompatible leaf.
+            tracing::debug!("restore: dropping plugin mount tab (not restorable)");
+            false
+        }
         Some(PanelKind::WorkspaceHost) => match workspace_parent_path(&panel.info) {
             Some(path) if path_is_readable(&path) => true,
             Some(path) => {
@@ -395,6 +403,13 @@ fn file_path(info: &PanelInfo) -> Option<PathBuf> {
 fn workspace_parent_path(info: &PanelInfo) -> Option<PathBuf> {
     let PanelInfo::Panel(value) = info else { return None };
     value.get("parent_path").and_then(|p| p.as_str()).map(PathBuf::from)
+}
+
+/// Whether a workspace host's dump is a plugin mount (carries a
+/// `plugin_mount` marker) rather than an on-disk archive.
+fn workspace_is_plugin_mount(info: &PanelInfo) -> bool {
+    let PanelInfo::Panel(value) = info else { return false };
+    value.get("plugin_mount").is_some()
 }
 
 /// One compare side's recorded path (`a_path` / `b_path`), if present.
@@ -537,6 +552,40 @@ mod tests {
         let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
         assert_eq!(names, vec![WORKSPACE_HOST_PANEL_NAME], "only the host with a readable archive survives");
         assert_eq!(pruned.dropped_files, vec![missing], "the missing archive is reported for a warning toast");
+    }
+
+    fn plugin_mount_host_panel() -> PanelState {
+        PanelState {
+            panel_name: WORKSPACE_HOST_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({
+                "plugin_mount": { "plugin_name": "demo", "token": "tok", "title": "Demo mount" },
+            })),
+        }
+    }
+
+    /// A plugin-mount host tab is always pruned before restore (its token
+    /// is a live session handle, not a re-drivable path) without being
+    /// reported as a dropped file or an incompatible tab.
+    #[test]
+    fn plugin_mount_host_is_dropped_on_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("present.zip");
+        std::fs::write(&archive, b"anything").unwrap();
+
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![plugin_mount_host_panel(), workspace_host_panel(&archive)]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![WORKSPACE_HOST_PANEL_NAME], "the plugin mount is dropped; the archive host survives");
+        assert!(pruned.is_empty(), "a dropped plugin mount is neither a lost file nor an incompatible tab");
     }
 
     fn tabs(children: Vec<PanelState>) -> PanelState {

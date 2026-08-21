@@ -49,6 +49,7 @@ pub use visualizer::VisualizerPanel;
 pub use welcome::OpenRecentRequested;
 pub use welcome::WELCOME_PANEL_NAME;
 pub use welcome::WelcomePanel;
+pub use workspace_host::PluginMountIdentity;
 pub use workspace_host::WORKSPACE_HOST_PANEL_NAME;
 pub use workspace_host::WorkspaceHostPanel;
 
