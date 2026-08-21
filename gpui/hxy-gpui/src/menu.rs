@@ -23,11 +23,11 @@
 //! (no active file, empty undo stack, no selection, ...).
 //!
 //! Parity source: `crates/hxy/src/menu.rs:28-58` (egui's `MenuAction`).
-//! Ships a subset -- no New/Paste (not implemented in the gpui port yet)
-//! and no Console/Plugins (egui-only features). Save / Save As /
-//! Reopen Closed Tab landed with the M3 save + dirty-close work;
-//! Settings (open-or-focus, Cmd+Comma like egui's Toggle Settings)
-//! landed with M4e.
+//! Ships a subset -- no New/Paste (not implemented in the gpui port
+//! yet). Save / Save As / Reopen Closed Tab landed with the M3 save +
+//! dirty-close work; Settings (open-or-focus, Cmd+Comma like egui's
+//! Toggle Settings) landed with M4e; Plugins and Console (both
+//! open-or-focus) landed with M4.
 
 use gpui::App;
 use gpui::Menu;
@@ -35,6 +35,7 @@ use gpui::MenuItem;
 use gpui::actions;
 
 use crate::workspace::OpenChecksums;
+use crate::workspace::OpenConsole;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenPlugins;
@@ -131,6 +132,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("tab-settings"), OpenSettings),
                 MenuItem::action(hxy_i18n::t("tab-plugins"), OpenPlugins),
+                MenuItem::action(hxy_i18n::t("tab-console"), OpenConsole),
             ],
         },
     ]
@@ -160,8 +162,8 @@ mod tests {
         assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
         assert_eq!(
             item_count(3),
-            13,
-            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings, Plugins"
+            14,
+            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings, Plugins, Console"
         );
     }
 }

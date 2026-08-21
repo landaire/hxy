@@ -40,7 +40,10 @@ use hxy_templates::state::new_state_from;
 use hxy_templates::user_template_plugins_dir;
 use hxy_templates::user_templates_dir;
 
+use crate::console::ConsoleLogRecord;
+use crate::console::ConsoleSeverity;
 use crate::panels::FilePanel;
+use crate::panels::TemplateConsoleLog;
 
 /// Every loaded template runtime. User-installed WASM components sit
 /// ahead of the builtins so a user component can override a builtin
@@ -292,8 +295,19 @@ fn spawn_run(
         let outcome = cx.background_spawn(async move { execute(runtime, bound_source, &template_source, base) }).await;
         let _ = this.update_in(cx, |this, window, cx| {
             this.templates_running.retain(|h| h.id != instance_id);
+            let context = console_context(this, &display_name);
+            let mut records: Vec<ConsoleLogRecord> = Vec::new();
             let (fingerprint, state, error_toasts) = match outcome {
                 Ok((parsed, tree)) => {
+                    // Every diagnostic reaches the console; only errors
+                    // also toast (mirrors egui's console + toast split).
+                    for d in &tree.diagnostics {
+                        records.push(ConsoleLogRecord {
+                            severity: console_severity(d.severity),
+                            context: context.clone(),
+                            message: d.message.clone(),
+                        });
+                    }
                     let toasts: Vec<String> = tree
                         .diagnostics
                         .iter()
@@ -307,7 +321,14 @@ fn spawn_run(
                         .collect();
                     (source_fingerprint, new_state_from(parsed, tree, overrides), toasts)
                 }
-                Err(message) => (None, error_state(message.clone()), vec![message]),
+                Err(message) => {
+                    records.push(ConsoleLogRecord {
+                        severity: ConsoleSeverity::Error,
+                        context: context.clone(),
+                        message: message.clone(),
+                    });
+                    (None, error_state(message.clone()), vec![message])
+                }
             };
             this.upsert_template_instance(TemplateInstance {
                 id: instance_id,
@@ -319,6 +340,9 @@ fn spawn_run(
             });
             for text in error_toasts {
                 window.push_notification(Notification::error(text), cx);
+            }
+            if !records.is_empty() {
+                cx.emit(TemplateConsoleLog(records));
             }
             this.sync_template_rows(cx);
             // A hover band from the previously active instance must
@@ -380,6 +404,11 @@ fn record_error_instance(
     cx: &mut Context<FilePanel>,
 ) -> TemplateInstanceId {
     let instance_id = panel.fresh_template_instance_id();
+    cx.emit(TemplateConsoleLog(vec![ConsoleLogRecord {
+        severity: ConsoleSeverity::Error,
+        context: console_context(panel, display_name),
+        message: message.clone(),
+    }]));
     panel.upsert_template_instance(TemplateInstance {
         id: instance_id,
         source_path: path.to_path_buf(),
@@ -423,6 +452,25 @@ fn error_message(err: &RunTemplateError) -> String {
 /// to the full path when it has none.
 fn display_name_for(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+}
+
+/// Console `context` for a template run: `<data-file> / <template>`,
+/// falling back to just the template name for an untitled buffer.
+/// Mirrors the egui `ConsoleEntry.context` convention.
+fn console_context(panel: &FilePanel, template: &str) -> String {
+    match panel.path().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()) {
+        Some(data) => format!("{data} / {template}"),
+        None => template.to_owned(),
+    }
+}
+
+/// Map a template diagnostic severity onto the console severity.
+fn console_severity(severity: Severity) -> ConsoleSeverity {
+    match severity {
+        Severity::Error => ConsoleSeverity::Error,
+        Severity::Warning => ConsoleSeverity::Warning,
+        Severity::Info => ConsoleSeverity::Info,
+    }
 }
 
 #[cfg(test)]
@@ -650,5 +698,24 @@ mod tests {
             assert!(panel.templates[0].state.parsed.is_none());
             assert_eq!(panel.templates[0].state.tree.diagnostics.len(), 1);
         });
+    }
+
+    /// Each template diagnostic severity maps onto the matching console
+    /// severity that `on_template_console_log` forwards.
+    #[test]
+    fn console_severity_maps_every_diagnostic_severity() {
+        assert_eq!(console_severity(Severity::Error), ConsoleSeverity::Error);
+        assert_eq!(console_severity(Severity::Warning), ConsoleSeverity::Warning);
+        assert_eq!(console_severity(Severity::Info), ConsoleSeverity::Info);
+    }
+
+    /// A `MemorySource`-backed panel has no on-disk path, so the console
+    /// context is just the template name (no `<data> / <template>` prefix).
+    #[gpui::test]
+    fn console_context_without_a_data_path_is_the_template_name(cx: &mut TestAppContext) {
+        setup(cx);
+        let (panel, cx) = build(cx, vec![0u8; 4]);
+        let ctx = panel.read_with(cx, |panel, _| console_context(panel, "pair.bt"));
+        assert_eq!(ctx, "pair.bt");
     }
 }

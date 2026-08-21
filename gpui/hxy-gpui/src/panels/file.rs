@@ -90,6 +90,15 @@ pub struct OpenVisualizerRequested(pub VisualizerKey);
 
 impl EventEmitter<OpenVisualizerRequested> for FilePanel {}
 
+/// A template run produced diagnostics (or failed) and the workspace
+/// should record them on the Console tab. Emitted by the template
+/// runner's completion; the workspace forwards each record through
+/// `Workspace::console_log`, which timestamps it and auto-opens the tab
+/// on an `Error` (`crate::templates`).
+pub struct TemplateConsoleLog(pub Vec<crate::console::ConsoleLogRecord>);
+
+impl EventEmitter<TemplateConsoleLog> for FilePanel {}
+
 pub struct FilePanel {
     pane: Entity<HexPane>,
     path: Option<PathBuf>,

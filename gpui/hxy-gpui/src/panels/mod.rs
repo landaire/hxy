@@ -14,6 +14,7 @@ use gpui_component::dock::register_panel;
 
 pub mod checksums;
 pub mod compare;
+pub mod console_view;
 pub mod entropy;
 mod file;
 pub mod global_search;
@@ -32,11 +33,14 @@ pub use checksums::CHECKSUMS_PANEL_NAME;
 pub use checksums::ChecksumsPanel;
 pub use compare::COMPARE_PANEL_NAME;
 pub use compare::ComparePanel;
+pub use console_view::CONSOLE_PANEL_NAME;
+pub use console_view::ConsolePanel;
 pub use entropy::ENTROPY_PANEL_NAME;
 pub use entropy::EntropyPanel;
 pub use file::FILE_PANEL_NAME;
 pub use file::FilePanel;
 pub use file::OpenVisualizerRequested;
+pub use file::TemplateConsoleLog;
 pub use global_search::GLOBAL_SEARCH_PANEL_NAME;
 pub use global_search::GlobalSearchPanel;
 pub use inspector::INSPECTOR_PANEL_NAME;
@@ -94,6 +98,11 @@ pub fn register(cx: &mut App) {
     register_panel(cx, PLUGINS_PANEL_NAME, |_dock, _state, _info, window, cx| {
         Box::new(cx.new(|cx| PluginsPanel::new(window, cx))) as Box<dyn PanelView>
     });
+    // Console restores fresh: it renders the live console-log global and
+    // carries no per-instance state worth persisting.
+    register_panel(cx, CONSOLE_PANEL_NAME, |_dock, _state, _info, _window, cx| {
+        Box::new(cx.new(ConsolePanel::new)) as Box<dyn PanelView>
+    });
     // Global search restores as a fresh, empty panel -- egui likewise
     // persists only the `SearchResults` tab marker, not the query
     // (`crates/hxy/src/tabs/persisted_dock.rs`'s `PersistedTab::SearchResults`).
@@ -132,6 +141,7 @@ mod tests {
                 let weak = cx.entity().downgrade();
                 for name in [
                     FILE_PANEL_NAME,
+                    CONSOLE_PANEL_NAME,
                     WELCOME_PANEL_NAME,
                     INSPECTOR_PANEL_NAME,
                     STRINGS_PANEL_NAME,

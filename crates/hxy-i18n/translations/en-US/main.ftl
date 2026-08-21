@@ -755,6 +755,9 @@ gpui-plugin-mount-failed = Mounting from { $plugin } failed: { $error }
 gpui-plugin-mount-untitled = Plugin mount
 gpui-plugin-mount-retry = Retry
 
+# Console tab (M4f)
+gpui-palette-show-console = Show console
+
 # Plugins management panel (M4c)
 gpui-palette-show-plugins = Show plugins
 plugin-intro = Drop compiled WASM components into these directories to load them at startup.

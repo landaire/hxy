@@ -40,6 +40,7 @@ use hxy_settings::persist::store_plugin_grants;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::VfsHandler;
 
+use crate::console::ConsoleSeverity;
 use crate::panels::PluginMountIdentity;
 use crate::settings::PersistHandle;
 use crate::settings::PersistHandleGlobal;
@@ -279,27 +280,15 @@ pub fn route_for(outcome: &Option<InvokeOutcome>) -> OutcomeRoute {
     }
 }
 
-/// Severity of a plugin activity-log entry. Local to the gpui shell for
-/// M4c; M4f folds this and the egui frontend's identical
-/// `ConsoleSeverity` into one shared type when the Console tab lands.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConsoleSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
 /// Activity-log sink for plugin operations: the runner reports op
-/// start, completion, and failure through it. For M4c [`Workspace`]
-/// traces every entry and raises a toast for `Warning`/`Error`; M4f
-/// swaps in a Console-tab sink without touching the runner (this seam
-/// is why the runner never names a concrete sink).
+/// start, completion, and failure through it. [`Workspace`] traces
+/// every entry, pushes it onto the Console tab buffer, and raises a
+/// toast for `Warning`/`Error`; the runner never names a concrete sink,
+/// so the seam stays testable with a capturing sink.
 ///
 /// Unlike egui's `Logger` (which owns a `VecDeque`), the gpui sink
 /// takes `window`/`cx`: a toast is a window-scoped side effect, so a
 /// bare `&mut self` cannot raise one.
-#[allow(dead_code)]
 pub trait PluginConsole {
     fn log(&mut self, severity: ConsoleSeverity, context: String, message: String, window: &mut Window, cx: &mut App);
 }
@@ -311,13 +300,16 @@ impl PluginConsole for Workspace {
             ConsoleSeverity::Info => tracing::info!(context, "{message}"),
             ConsoleSeverity::Warning => {
                 tracing::warn!(context, "{message}");
-                window.push_notification(Notification::warning(message), cx);
+                window.push_notification(Notification::warning(message.clone()), cx);
             }
             ConsoleSeverity::Error => {
                 tracing::error!(context, "{message}");
-                window.push_notification(Notification::error(message), cx);
+                window.push_notification(Notification::error(message.clone()), cx);
             }
         }
+        // Record every severity on the Console tab; an Error also
+        // auto-opens it (mirrors egui `console_log`).
+        self.console_log(severity, context, message, window, cx);
     }
 }
 
@@ -1054,5 +1046,38 @@ mod tests {
         assert_eq!(host_tab_count(cx, &workspace), 1, "the retry installed the workspace-host tab");
         workspace
             .read_with(cx, |ws, _| assert_eq!(ws.plugin_mount_ids().len(), 1, "the recovered mount is registered"));
+    }
+
+    /// A structural mount failure (no retry label) routes through the
+    /// `PluginConsole` seam and lands an `Error` on the Console tab
+    /// buffer (published as `ConsoleLogGlobal`) carrying the plugin's own
+    /// error text -- proving plugin diagnostics now reach the console.
+    #[gpui::test]
+    fn structural_mount_failure_lands_a_console_error(cx: &mut TestAppContext) {
+        let Some(fixture) = statecmd_fixture() else {
+            eprintln!("skipping: test-statecmd fixture not built");
+            return;
+        };
+        setup_workspace(cx);
+        let (window, workspace) = open_workspace(cx);
+        let plugin = load_statecmd(&fixture);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        workspace.update_in(cx, |ws, window, cx| {
+            let mount = MountRequestCtx { plugin, token: "tok".into(), title: "Demo".into() };
+            // No retry label -> the structural-failure path (log_mount_failed).
+            let err = MountByTokenError { message: "host trap".into(), retry_label: None };
+            let log = OpLog { plugin_name: "demo".into(), label: "mount tok".into(), started: Instant::now() };
+            ws.finish_mount(mount, Err(err), &log, window, cx);
+        });
+        cx.run_until_parked();
+
+        let entries = cx.update(|_, cx| cx.global::<crate::console::ConsoleLogGlobal>().0.clone());
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.severity == crate::console::ConsoleSeverity::Error && e.message.contains("host trap")),
+            "the structural mount failure is recorded as a console error",
+        );
     }
 }

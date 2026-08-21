@@ -15,6 +15,7 @@ use gpui_component::dock::PanelState;
 
 use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::COMPARE_PANEL_NAME;
+use crate::panels::CONSOLE_PANEL_NAME;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::FILE_PANEL_NAME;
 use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
@@ -275,7 +276,9 @@ fn panel_kind(name: &str) -> Option<PanelKind> {
         VISUALIZER_PANEL_NAME => Some(PanelKind::OwningPathLeaf { log_label: "visualizer panel" }),
         COMPARE_PANEL_NAME => Some(PanelKind::Compare),
         WORKSPACE_HOST_PANEL_NAME => Some(PanelKind::WorkspaceHost),
-        GLOBAL_SEARCH_PANEL_NAME | SETTINGS_PANEL_NAME | PLUGINS_PANEL_NAME => Some(PanelKind::AlwaysKeep),
+        GLOBAL_SEARCH_PANEL_NAME | SETTINGS_PANEL_NAME | PLUGINS_PANEL_NAME | CONSOLE_PANEL_NAME => {
+            Some(PanelKind::AlwaysKeep)
+        }
         _ => None,
     }
 }
@@ -516,6 +519,34 @@ mod tests {
             children: Vec::new(),
             info: PanelInfo::Panel(serde_json::Value::Null),
         }
+    }
+
+    fn console_panel() -> PanelState {
+        PanelState {
+            panel_name: CONSOLE_PANEL_NAME.to_string(),
+            children: Vec::new(),
+            info: PanelInfo::Panel(serde_json::Value::Null),
+        }
+    }
+
+    /// The console tab is a workspace-scoped singleton like settings and
+    /// plugins: `PanelKind::AlwaysKeep`, so a childless leaf survives
+    /// pruning rather than falling into the drop-a-childless-leaf branch.
+    #[test]
+    fn console_panel_always_survives_pruning() {
+        let mut state = DockAreaState {
+            version: None,
+            center: tabs(vec![console_panel()]),
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let pruned = prune_for_restore(&mut state);
+
+        let names: Vec<&str> = state.center.children.iter().map(|p| p.panel_name.as_str()).collect();
+        assert_eq!(names, vec![CONSOLE_PANEL_NAME]);
+        assert!(pruned.is_empty());
     }
 
     /// The plugins tab is a workspace-scoped singleton like settings:

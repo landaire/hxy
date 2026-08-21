@@ -12,6 +12,7 @@ use gpui_component::Root;
 use gpui_component::WindowExt;
 
 mod assets;
+mod console;
 mod menu;
 mod palette;
 mod panels;

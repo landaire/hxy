@@ -6,6 +6,7 @@
 //! persistence.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,6 +66,10 @@ use hxy_vfs::VfsHandler;
 use hxy_view_gpui::HexPane;
 
 use crate::assets::HxyIcon;
+use crate::console::CONSOLE_CAPACITY;
+use crate::console::ConsoleEntry;
+use crate::console::ConsoleLogGlobal;
+use crate::console::ConsoleSeverity;
 use crate::menu::CloseTab;
 use crate::menu::CopyBytes;
 use crate::menu::CopyHex;
@@ -80,8 +85,10 @@ use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::COMPARE_PANEL_NAME;
+use crate::panels::CONSOLE_PANEL_NAME;
 use crate::panels::ChecksumsPanel;
 use crate::panels::ComparePanel;
+use crate::panels::ConsolePanel;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
@@ -100,6 +107,7 @@ use crate::panels::SETTINGS_PANEL_NAME;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::SettingsPanel;
 use crate::panels::StringsPanel;
+use crate::panels::TemplateConsoleLog;
 use crate::panels::VISUALIZER_PANEL_NAME;
 use crate::panels::VisualizerPanel;
 use crate::panels::WELCOME_PANEL_NAME;
@@ -147,6 +155,7 @@ actions!(
         OpenChecksums,
         OpenSettings,
         OpenPlugins,
+        OpenConsole,
         TakeSnapshot,
         OpenSnapshots
     ]
@@ -379,6 +388,20 @@ pub struct Workspace {
     /// `strings_panel_subs`: never pruned individually, replaced
     /// wholesale whenever `open_files` is rebuilt.
     file_visualizer_subs: Vec<Subscription>,
+    /// One [`TemplateConsoleLog`] subscription per entry in `open_files`,
+    /// so a template run's diagnostics reach `on_template_console_log`
+    /// and land on the Console tab. Same wholesale-replace lifecycle as
+    /// `file_visualizer_subs`.
+    file_console_subs: Vec<Subscription>,
+    /// The Console tab's capacity-bounded log buffer, app-global rather
+    /// than per-file. `console_log` appends here, evicts past
+    /// [`CONSOLE_CAPACITY`], and republishes it as [`ConsoleLogGlobal`]
+    /// for the panel to read. Mirrors the egui `HxyApp::console`.
+    console: VecDeque<ConsoleEntry>,
+    /// The live `ConsolePanel`, if one is open. Singleton like
+    /// `settings_panel`; liveness is confirmed against the dock dump
+    /// before reuse (`live_console_panel`).
+    console_panel: Option<Entity<ConsolePanel>>,
     /// The live `GlobalSearchPanel`, if the user has opened one this
     /// session. A true singleton (unlike the per-file registries above):
     /// there is at most one at a time. May point at a closed/stale
@@ -535,6 +558,9 @@ impl Workspace {
             checksums_panels: Vec::new(),
             visualizer_panels: Vec::new(),
             file_visualizer_subs: Vec::new(),
+            file_console_subs: Vec::new(),
+            console: VecDeque::new(),
+            console_panel: None,
             global_search_panel: None,
             _global_search_sub: None,
             settings_panel: None,
@@ -649,6 +675,11 @@ impl Workspace {
             let mut restored_settings = Vec::new();
             collect_settings_entities(self.dock.read(cx).items(), &mut restored_settings);
             self.settings_panel = restored_settings.into_iter().next();
+            // Same singleton recovery for the console tab (no
+            // subscription: the panel reads the console-log global).
+            let mut restored_console = Vec::new();
+            collect_console_entities(self.dock.read(cx).items(), &mut restored_console);
+            self.console_panel = restored_console.into_iter().next();
             // The plugins tab needs its fetch-patterns subscription
             // re-established so a restored tab's button still works.
             let mut restored_plugins = Vec::new();
@@ -1353,6 +1384,103 @@ impl Workspace {
         self.fetch_imhex_patterns(window, cx);
     }
 
+    /// Append a message to the Console tab. Caps the buffer at
+    /// [`CONSOLE_CAPACITY`] (oldest evicted first) and republishes it as
+    /// [`ConsoleLogGlobal`] so the panel re-renders. An `Error` also
+    /// auto-opens the Console tab, mirroring the egui `console_log`.
+    ///
+    /// Takes a bare `&mut App` (not `Context<Self>`) so the plugin
+    /// runner's [`PluginConsole`](crate::plugins::PluginConsole) seam,
+    /// which erases the workspace context, can reach it.
+    pub fn console_log(
+        &mut self,
+        severity: ConsoleSeverity,
+        context: String,
+        message: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        while self.console.len() >= CONSOLE_CAPACITY {
+            self.console.pop_front();
+        }
+        self.console.push_back(ConsoleEntry { timestamp: jiff::Timestamp::now(), severity, context, message });
+        cx.set_global(ConsoleLogGlobal(self.console.iter().cloned().collect()));
+        if severity == ConsoleSeverity::Error {
+            self.show_console(window, cx);
+        }
+    }
+
+    /// Forward a file panel's template diagnostics to the Console tab.
+    /// Subscribed per open file alongside the visualizer events; running
+    /// here (rather than inside the file panel) gives `console_log` the
+    /// workspace context it needs to auto-open the tab on an `Error`.
+    fn on_template_console_log(
+        &mut self,
+        _panel: &Entity<FilePanel>,
+        event: &TemplateConsoleLog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for record in &event.0 {
+            self.console_log(record.severity, record.context.clone(), record.message.clone(), window, cx);
+        }
+    }
+
+    fn on_open_console(&mut self, _: &OpenConsole, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_console(window, cx);
+    }
+
+    /// Open (or focus an existing) Console tab. Singleton like
+    /// `open_settings`; the menu and palette entry points open-or-focus
+    /// rather than toggling closed (the same deliberate deviation from
+    /// egui's `toggle_console` that settings and plugins already make).
+    pub(crate) fn open_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
+        self.show_console(window, cx);
+    }
+
+    /// The open-or-focus core, callable with a bare `&mut App` so the
+    /// `Error` auto-open in [`Self::console_log`] can reach it. The
+    /// menu/palette path runs [`Self::resync_center_if_stale`] first (in
+    /// [`Self::open_console`]); the auto-open path skips it -- the
+    /// dump-presence scan still prevents a duplicate tab.
+    fn show_console(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(panel) = self.live_console_panel(cx) {
+            self.focus_console_tab(panel, window, cx);
+            return;
+        }
+        let panel = cx.new(ConsolePanel::new);
+        self.console_panel = Some(panel.clone());
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
+    /// The live `ConsolePanel` if its tab is still open, else `None`.
+    /// Mirrors `open_settings_panel`.
+    fn live_console_panel(&self, cx: &App) -> Option<Entity<ConsolePanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        if !dump_has_console(&dump.center) {
+            return None;
+        }
+        self.console_panel.clone()
+    }
+
+    /// Bring an already-open Console tab to the foreground. Mirrors
+    /// `focus_settings_tab` (minus the resync, which the `&mut App`
+    /// auto-open path cannot run and the menu path already did).
+    fn focus_console_tab(&mut self, panel: Entity<ConsolePanel>, window: &mut Window, cx: &mut App) {
+        if active_console_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+            == Some(panel.entity_id())
+        {
+            window.focus(&panel.read(cx).focus_handle(cx));
+            return;
+        }
+        let Some(panel) = self.console_panel.clone() else { return };
+        let view: Arc<dyn PanelView> = Arc::new(panel);
+        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+    }
+
     /// The open files that can seed a compare pick: every live center
     /// `FilePanel` that has a path, as `(leaf name, path)`. Read straight
     /// off the live dock tree so a closed file never lingers in the list.
@@ -1516,18 +1644,22 @@ impl Workspace {
         self.open_files.push(panel.clone());
         if !already_tracked {
             self.file_visualizer_subs.push(cx.subscribe_in(panel, window, Self::on_open_visualizer_request));
+            self.file_console_subs.push(cx.subscribe_in(panel, window, Self::on_template_console_log));
         }
     }
 
-    /// Rebuild the [`OpenVisualizerRequested`] subscriptions for the
-    /// current `open_files` set. Called wherever that registry is
-    /// replaced wholesale (boot restore, center-cache rebuild); the
-    /// old subscriptions target dead entities and are dropped.
+    /// Rebuild the per-file event subscriptions ([`OpenVisualizerRequested`]
+    /// and [`TemplateConsoleLog`]) for the current `open_files` set.
+    /// Called wherever that registry is replaced wholesale (boot restore,
+    /// center-cache rebuild); the old subscriptions target dead entities
+    /// and are dropped.
     fn resubscribe_file_visualizer_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.file_visualizer_subs.clear();
+        self.file_console_subs.clear();
         let files = self.open_files.clone();
         for file in &files {
             self.file_visualizer_subs.push(cx.subscribe_in(file, window, Self::on_open_visualizer_request));
+            self.file_console_subs.push(cx.subscribe_in(file, window, Self::on_template_console_log));
         }
     }
 
@@ -1681,6 +1813,9 @@ impl Workspace {
         let mut live_settings = Vec::new();
         collect_settings_entities(self.dock.read(cx).items(), &mut live_settings);
         self.settings_panel = live_settings.into_iter().next();
+        let mut live_console = Vec::new();
+        collect_console_entities(self.dock.read(cx).items(), &mut live_console);
+        self.console_panel = live_console.into_iter().next();
         let mut live_plugins = Vec::new();
         collect_plugins_entities(self.dock.read(cx).items(), &mut live_plugins);
         self.plugins_panel = live_plugins.into_iter().next();
@@ -3123,6 +3258,9 @@ impl Workspace {
     ) {
         tracing::error!(plugin = plugin.name(), "mount failed: {message}");
         let text = hxy_i18n::t_args("gpui-plugin-mount-failed", &[("plugin", plugin.name()), ("error", &message)]);
+        // Record the recoverable failure on the Console tab too, so both
+        // mount-failure paths (this and `log_mount_failed`) reach it.
+        self.console_log(ConsoleSeverity::Error, format!("plugin/{}", plugin.name()), text.clone(), window, cx);
         // Stable id per mount identity so a repeated failure of the same
         // mount replaces its toast rather than stacking a new undismissable
         // one (gpui-component replaces a notification pushed with the same
@@ -3517,6 +3655,7 @@ impl Workspace {
                 || count_global_search_panels(&state.center) > 0
                 || count_settings_panels(&state.center) > 0
                 || count_plugins_panels(&state.center) > 0
+                || count_console_panels(&state.center) > 0
         };
 
         if !has_content {
@@ -3847,6 +3986,14 @@ fn count_settings_panels(state: &PanelState) -> usize {
 fn count_plugins_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == PLUGINS_PANEL_NAME);
     here + state.children.iter().map(count_plugins_panels).sum::<usize>()
+}
+
+/// Total console panels anywhere under `state` (0 or 1 -- singleton,
+/// same contract as `count_settings_panels`). A console tab counts as
+/// center content, so an empty-workspace welcome rebuild never wipes it.
+fn count_console_panels(state: &PanelState) -> usize {
+    let here = usize::from(state.panel_name == CONSOLE_PANEL_NAME);
+    here + state.children.iter().map(count_console_panels).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -4271,6 +4418,12 @@ fn dump_has_plugins(state: &PanelState) -> bool {
     state.panel_name == PLUGINS_PANEL_NAME || state.children.iter().any(dump_has_plugins)
 }
 
+/// Whether the dock contains a console tab. Same singleton shape as
+/// `dump_has_settings`.
+fn dump_has_console(state: &PanelState) -> bool {
+    state.panel_name == CONSOLE_PANEL_NAME || state.children.iter().any(dump_has_console)
+}
+
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
     match info {
         PanelInfo::Panel(value) => value.get("path").and_then(|path| path.as_str()).map(PathBuf::from),
@@ -4555,6 +4708,7 @@ fn is_known_panel_name(name: &str) -> bool {
             | GLOBAL_SEARCH_PANEL_NAME
             | SETTINGS_PANEL_NAME
             | PLUGINS_PANEL_NAME
+            | CONSOLE_PANEL_NAME
             | WORKSPACE_HOST_PANEL_NAME
     )
 }
@@ -4636,6 +4790,40 @@ fn active_plugins_panel(item: &DockItem, cx: &App) -> Option<Entity<PluginsPanel
         }
         DockItem::Split { items, .. } => items.iter().find_map(|item| active_plugins_panel(item, cx)),
         DockItem::Panel { view, .. } => view.view().downcast::<PluginsPanel>().ok(),
+        DockItem::Tiles { .. } => None,
+    }
+}
+
+/// Collect the live `ConsolePanel` entities from a `DockItem` tree (at
+/// most one -- singleton). Mirrors `collect_settings_entities`.
+fn collect_console_entities(item: &DockItem, out: &mut Vec<Entity<ConsolePanel>>) {
+    match item {
+        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_console_entities(item, out)),
+        DockItem::Tabs { items, .. } => {
+            for panel in items {
+                if let Ok(console) = panel.view().downcast::<ConsolePanel>() {
+                    out.push(console);
+                }
+            }
+        }
+        DockItem::Panel { view, .. } => {
+            if let Ok(console) = view.view().downcast::<ConsolePanel>() {
+                out.push(console);
+            }
+        }
+        DockItem::Tiles { .. } => {}
+    }
+}
+
+/// The `ConsolePanel` backing the active tab, if the active tab is the
+/// console tab. Mirrors `active_settings_panel`.
+fn active_console_panel(item: &DockItem, cx: &App) -> Option<Entity<ConsolePanel>> {
+    match item {
+        DockItem::Tabs { view, .. } => {
+            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<ConsolePanel>().ok())
+        }
+        DockItem::Split { items, .. } => items.iter().find_map(|item| active_console_panel(item, cx)),
+        DockItem::Panel { view, .. } => view.view().downcast::<ConsolePanel>().ok(),
         DockItem::Tiles { .. } => None,
     }
 }
@@ -4741,6 +4929,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_checksums))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_open_plugins))
+            .on_action(cx.listener(Self::on_open_console))
             .on_action(cx.listener(Self::on_take_snapshot))
             .on_action(cx.listener(Self::on_open_snapshots))
             .on_action(cx.listener(Self::on_open_palette))
@@ -4783,6 +4972,7 @@ impl Render for Workspace {
 mod tests {
     use gpui::AppContext as _;
     use gpui::TestAppContext;
+    use gpui::VisualTestContext;
     use gpui::WindowHandle;
     use hxy_core::ByteOffset;
     use hxy_core::ByteRange;
@@ -4882,6 +5072,83 @@ mod tests {
 
     fn plugins_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
         window.read_with(cx, |ws, cx| count_plugins_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+    }
+
+    fn console_tab_count(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+        workspace.read_with(cx, |ws, cx| count_console_panels(&ws.dock.read(cx).dump(cx).center))
+    }
+
+    /// `open_console` is a singleton like `open_settings`: the first call
+    /// adds one tab, a second focuses the existing panel (same entity)
+    /// instead of building another.
+    #[gpui::test]
+    fn open_console_focuses_the_existing_singleton(cx: &mut TestAppContext) {
+        setup(cx);
+        let (window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        workspace.update_in(cx, |ws, window, cx| ws.open_console(window, cx));
+        cx.run_until_parked();
+        assert_eq!(console_tab_count(&workspace, cx), 1, "first open adds the tab");
+        let first = workspace.read_with(cx, |ws, _| ws.console_panel.clone()).expect("singleton handle tracked");
+
+        workspace.update_in(cx, |ws, window, cx| ws.open_console(window, cx));
+        cx.run_until_parked();
+        assert_eq!(console_tab_count(&workspace, cx), 1, "second open focuses instead of duplicating");
+        let second = workspace.read_with(cx, |ws, _| ws.console_panel.clone()).expect("singleton handle kept");
+        assert_eq!(first.entity_id(), second.entity_id(), "the same panel entity is reused");
+    }
+
+    /// `console_log` appends an entry, publishes it on the read-view
+    /// global, and auto-opens the Console tab on an `Error` (mirrors the
+    /// egui `console_log`); an `Info` records without opening the tab.
+    #[gpui::test]
+    fn console_log_appends_and_auto_opens_on_error(cx: &mut TestAppContext) {
+        setup(cx);
+        let (window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.console_log(ConsoleSeverity::Info, "plugin/demo".into(), "started".into(), window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.console.len(), 1, "the info entry is recorded"));
+        assert_eq!(console_tab_count(&workspace, cx), 0, "info does not auto-open the console");
+        let published = cx.update(|_, cx| cx.global::<ConsoleLogGlobal>().0.len());
+        assert_eq!(published, 1, "the read-view global mirrors the buffer");
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.console_log(ConsoleSeverity::Error, "plugin/demo".into(), "boom".into(), window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.console.len(), 2));
+        assert_eq!(console_tab_count(&workspace, cx), 1, "an error auto-opens the console tab");
+    }
+
+    /// The buffer is bounded: pushing `CONSOLE_CAPACITY + N` entries
+    /// keeps the newest `CONSOLE_CAPACITY` and evicts the oldest first.
+    #[gpui::test]
+    fn console_log_evicts_oldest_past_capacity(cx: &mut TestAppContext) {
+        setup(cx);
+        let (window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        let overflow = 5;
+        workspace.update_in(cx, |ws, window, cx| {
+            for i in 0..(CONSOLE_CAPACITY + overflow) {
+                ws.console_log(ConsoleSeverity::Info, "seq".into(), i.to_string(), window, cx);
+            }
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.console.len(), CONSOLE_CAPACITY, "the buffer is capped at capacity");
+            assert_eq!(ws.console.front().unwrap().message, overflow.to_string(), "the oldest entries were evicted");
+            assert_eq!(
+                ws.console.back().unwrap().message,
+                (CONSOLE_CAPACITY + overflow - 1).to_string(),
+                "the newest entry is retained",
+            );
+        });
     }
 
     /// `open_plugins` is a singleton, mirroring `open_settings`: the first
