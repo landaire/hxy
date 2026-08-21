@@ -11,6 +11,7 @@ use gpui::size;
 use gpui_component::Root;
 use gpui_component::WindowExt;
 
+mod assets;
 mod menu;
 mod palette;
 mod panels;
@@ -37,7 +38,7 @@ fn main() -> ExitCode {
     let boot = settings::load_blocking();
     let settings_failure = boot.failure;
 
-    gpui::Application::new().run(move |cx: &mut App| {
+    gpui::Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         gpui_component::init(cx);
         settings::init(cx, boot);
         panels::register(cx);

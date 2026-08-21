@@ -3383,6 +3383,7 @@ dependencies = [
  "notify 8.2.0",
  "palette-core",
  "rfd",
+ "rust-embed",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
