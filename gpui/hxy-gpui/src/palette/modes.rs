@@ -461,7 +461,8 @@ fn plugin_command_entry(plugin_name: &str, cmd: &PluginCommand, prefixed: bool) 
     let mut entry = Entry::new(
         title,
         PaletteAction::InvokePluginCommand { plugin_name: plugin_name.to_owned(), command_id: cmd.id.clone() },
-    );
+    )
+    .with_icon(ICON_PLUGIN);
     if let Some(subtitle) = &cmd.subtitle {
         entry = entry.with_subtitle(subtitle.clone());
     }
@@ -805,6 +806,14 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
 /// to a rendered icon; kept a plain string so this module stays free
 /// of UI-framework types.
 pub const ICON_WARNING: &str = "warning";
+
+/// Semantic icon token for plugin-contributed command rows. The overlay
+/// maps it to a puzzle-piece glyph, mirroring the egui palette's
+/// `icon::PUZZLE_PIECE` on plugin commands. A plugin-supplied
+/// `PluginCommand::icon` (a phosphor codepoint) is not carried through:
+/// the gpui icon set is a fixed vendored asset enum, so every plugin
+/// command shows the puzzle-piece fallback rather than a custom glyph.
+pub const ICON_PLUGIN: &str = "plugin";
 
 /// Push a disabled "Invalid: {reason}" row bound to [`PaletteAction::NoOp`].
 fn push_invalid(out: &mut Vec<Entry<PaletteAction>>, query: &str, reason: &str) {
@@ -1155,6 +1164,9 @@ mod tests {
         );
         assert_eq!(entries[1].title, "xeedee: List mounts");
         assert!(entries[1].subtitle.is_none());
+        // Both rows carry the puzzle-piece token (egui's PUZZLE_PIECE).
+        assert_eq!(entries[0].icon.as_deref(), Some(ICON_PLUGIN));
+        assert_eq!(entries[1].icon.as_deref(), Some(ICON_PLUGIN));
     }
 
     #[test]
@@ -1173,6 +1185,8 @@ mod tests {
             PaletteAction::InvokePluginCommand { plugin_name: "demo".into(), command_id: "b".into() }
         );
         assert_eq!(entries[1].subtitle.as_deref(), Some("second"));
+        // Cascade rows carry the puzzle-piece token like the Main list.
+        assert_eq!(entries[0].icon.as_deref(), Some(ICON_PLUGIN));
     }
 
     #[test]

@@ -51,6 +51,7 @@ use palette_core::Normalization;
 use palette_core::State;
 use palette_core::filter_and_sort;
 
+use crate::assets::HxyIcon;
 use crate::palette::modes::CompareSide;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
@@ -668,11 +669,18 @@ impl Palette {
         let title = highlighted_title(&entry.title, match_indices, title_color, hit_color, entry.disabled);
 
         let mut left = h_flex().gap_2().items_center();
-        // Entries carry semantic icon tokens (see `modes::ICON_WARNING`)
-        // rather than asset paths, mirroring egui's WARNING glyph on
-        // invalid rows.
-        if entry.icon.as_deref() == Some(modes::ICON_WARNING) {
-            left = left.child(Icon::new(IconName::TriangleAlert).small().text_color(title_color));
+        // Entries carry semantic icon tokens (see `modes::ICON_WARNING`,
+        // `modes::ICON_PLUGIN`) rather than asset paths, mirroring egui's
+        // WARNING glyph on invalid rows and its puzzle-piece on plugin
+        // commands.
+        match entry.icon.as_deref() {
+            Some(modes::ICON_WARNING) => {
+                left = left.child(Icon::new(IconName::TriangleAlert).small().text_color(title_color));
+            }
+            Some(modes::ICON_PLUGIN) => {
+                left = left.child(Icon::new(HxyIcon::PuzzlePiece).small().text_color(title_color));
+            }
+            _ => {}
         }
         left = left.child(title);
         if let Some(subtitle) = &entry.subtitle {
