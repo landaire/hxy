@@ -124,8 +124,10 @@ review, commit); this spec governs all of them.
   2026-08-20-m4b-gpui-visualizers.md), M4e (settings, done; plan
   2026-08-20-m4e-gpui-settings.md; shared hxy.db with the egui app),
   M4g (theme + icon parity, done; plan 2026-08-20-m4g-gpui-theme-icons.md;
-  brand theme JSON, six-class byte palette, embedded icon assets), then
-  M4c (plugins/mounts), M4d (IPC), M4f (console/i18n sweep/final audit).
+  brand theme JSON, six-class byte palette, embedded icon assets), M4c
+  (plugins/mounts, done; plan 2026-08-20-m4c-gpui-plugins-mounts.md;
+  grants shared via hxy.db, palette commands, VFS mounts, plugins panel),
+  then M4d (IPC), M4f (console/i18n sweep/final audit).
 - M4: template runner (010/ImHex), visualizers (they are driven by
   template visualize attributes and have no data source before templates
   exist), plugins and mounts, IPC single-instance, settings persistence,
