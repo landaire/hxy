@@ -23,9 +23,11 @@ use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::RowSlot;
+use hxy_core::byte_palette::ValueHighlight;
 use hxy_view_gpui::ByteStyleOverride;
 use hxy_view_gpui::FrameInfo;
 use hxy_view_gpui::HexPane;
+use hxy_view_gpui::PaneHighlight;
 
 fn source() -> Arc<dyn HexSource> {
     // Sequential bytes so styler-offset assertions can distinguish cells.
@@ -141,16 +143,40 @@ fn hover_span_paints(cx: &mut TestAppContext) {
     let _ = frame(cx, &pane);
 }
 
-/// Installing a custom byte-value palette paints without panic (the
-/// per-glyph color resolution is unit-tested in paint.rs; this smokes
-/// the full pass with a palette in the snapshot).
+/// Installing a `Text`-mode highlight palette paints without panic
+/// (the per-glyph color resolution is unit-tested in paint.rs; this
+/// smokes the full pass with a palette in the snapshot).
 #[gpui::test]
-fn value_palette_paints(cx: &mut TestAppContext) {
+fn text_highlight_paints(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, cx| {
-        p.set_value_palette(Some(Arc::new([hsla(0.1, 0.5, 0.5, 1.0); 256])), cx);
+        p.set_highlight(
+            Some(PaneHighlight { mode: ValueHighlight::Text, table: Arc::new([hsla(0.1, 0.5, 0.5, 1.0); 256]) }),
+            cx,
+        );
+    });
+    let _ = frame(cx, &pane);
+}
+
+/// A `Background`-mode highlight drives the cell-fill pass (palette
+/// fills plus contrast glyphs) without panic, with a selection and a
+/// hover span present so the skip rules run too.
+#[gpui::test]
+fn background_highlight_paints_cell_fills(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
+    focus(cx, &pane);
+    let span = ByteRange::new(ByteOffset::new(4), ByteOffset::new(12)).unwrap();
+    pane.update(cx, |p, cx| {
+        p.editor_mut()
+            .set_selection(Some(hxy_core::Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(2) }));
+        p.set_hover_span(Some(span), cx);
+        p.set_highlight(
+            Some(PaneHighlight { mode: ValueHighlight::Background, table: Arc::new([hsla(0.6, 0.5, 0.3, 1.0); 256]) }),
+            cx,
+        );
     });
     let _ = frame(cx, &pane);
 }

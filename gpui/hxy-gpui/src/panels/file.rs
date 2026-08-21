@@ -39,6 +39,7 @@ use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
+use hxy_core::byte_palette::ValueHighlight;
 use hxy_templates::format::format_template_copy;
 use hxy_templates::format::format_template_struct;
 use hxy_templates::state::TemplateEvent;
@@ -55,6 +56,7 @@ use hxy_templates::visualize::VisualizerKey;
 use hxy_vfs::VfsHandler;
 use hxy_view_gpui::ByteStyleOverride;
 use hxy_view_gpui::HexPane;
+use hxy_view_gpui::PaneHighlight;
 
 use super::search_bar::SearchBar;
 use super::template_view::TemplateOffsetJump;
@@ -772,27 +774,31 @@ impl FilePanel {
                 });
                 let fields = (state.show_colors && !state.leaf_boundaries.is_empty()).then(|| FieldTints {
                     boundaries: state.leaf_boundaries.clone(),
-                    colors: state.leaf_colors.iter().map(|&c| template_tint(c)).collect(),
+                    colors: state.leaf_colors.iter().map(|&c| rgba_to_hsla(c)).collect(),
                 });
                 let palette = state.byte_palette_override.as_deref().map(|table| Arc::new(table.map(rgba_to_hsla)));
                 (hover, fields, palette)
             }
             None => (None, None, None),
         };
-        // A template-supplied palette wins for the run's duration
-        // (egui parity: hex_body.rs prefers the override); otherwise
-        // the user's byte-highlight settings decide. Recomputed here
+        // A template-supplied palette wins for the run's duration and
+        // paints in the user's highlight mode even with highlighting
+        // toggled off (egui `render_hex_body` parity); otherwise the
+        // user's byte-highlight settings decide. Recomputed here
         // rather than cached so a theme flip re-derives the right
-        // gradient (`Workspace::render` re-syncs on appearance change).
-        let palette = palette
-            .or_else(|| crate::settings::value_palette(&crate::settings::settings(cx), cx.theme().mode.is_dark()));
+        // tables (`Workspace::render` re-syncs on appearance change).
+        let settings = crate::settings::settings(cx);
+        let mode = crate::settings::view_mode(settings.byte_highlight_mode);
+        let highlight = palette
+            .map(|table| PaneHighlight { mode, table })
+            .or_else(|| crate::settings::highlight_palette(&settings, cx.theme().mode.is_dark()));
         let modified = self.pane.read(cx).editor().modified_ranges();
         self.last_modified_ranges = modified.clone();
-        let styler = build_template_styler(modified, fields);
+        let styler = build_template_styler(modified, fields, mode);
         self.pane.update(cx, |pane, cx| {
             pane.set_hover_span(hover, cx);
             pane.set_byte_styler(styler, cx);
-            pane.set_value_palette(palette, cx);
+            pane.set_highlight(highlight, cx);
         });
     }
 
@@ -851,25 +857,27 @@ fn read_all_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
 /// alpha multiply; over the theme background the difference is minor.
 const TEMPLATE_TINT_ALPHA: f32 = 0.45;
 
-/// A template field color prepared for the styler: converted to
-/// [`Hsla`] and softened to the tint opacity.
-fn template_tint(color: hxy_core::color::Rgba) -> Hsla {
-    let mut tint = rgba_to_hsla(color);
-    tint.a *= TEMPLATE_TINT_ALPHA;
-    tint
+/// A template field color softened to the background-tint opacity.
+fn template_tint(color: Hsla) -> Hsla {
+    Hsla { a: color.a * TEMPLATE_TINT_ALPHA, ..color }
 }
 
-/// Foreground tint for patched bytes, mirroring egui's
-/// `MODIFIED_BYTE_FG` (`crates/hxy/src/view/hex_body.rs`). The gpui
-/// pane colors glyphs by byte class, so the patched marker rides the
-/// glyph exactly as egui's default (background-highlight) mode does.
+/// Background tint for patched bytes when the highlight mode paints
+/// glyphs (shared `MODIFIED_BYTE_BG`; premultiplied, un-multiplied on
+/// the way into gpui's straight-alpha rendering).
+fn modified_byte_bg() -> Hsla {
+    rgba_to_hsla(hxy_core::byte_palette::MODIFIED_BYTE_BG)
+}
+
+/// Foreground tint for patched bytes when the base highlight owns the
+/// cell fill (shared `MODIFIED_BYTE_FG`).
 fn modified_byte_fg() -> Hsla {
-    Hsla::from(gpui::Rgba { r: 1.0, g: f32::from(0x5Au8) / 255.0, b: f32::from(0x4Au8) / 255.0, a: 1.0 })
+    rgba_to_hsla(hxy_core::byte_palette::MODIFIED_BYTE_FG)
 }
 
-/// Sorted field spans plus their tints, one color per span, both
-/// aligned by index (the shape `TemplateState::leaf_boundaries` /
-/// `leaf_colors` carry).
+/// Sorted field spans plus their colors (raw, not yet softened), one
+/// per span, both aligned by index (the shape
+/// `TemplateState::leaf_boundaries` / `leaf_colors` carry).
 struct FieldTints {
     boundaries: Vec<(ByteOffset, hxy_core::ByteLen)>,
     colors: Vec<Hsla>,
@@ -877,21 +885,31 @@ struct FieldTints {
 
 /// Compose the pane's per-byte styler: patched bytes keep their marker
 /// (the user is editing them right now, the template color can wait),
-/// otherwise the field covering the byte supplies a background tint.
+/// otherwise the field covering the byte supplies a tint. `mode` picks
+/// the egui pairing (`render_hex_body`'s styler wiring): when glyphs carry
+/// the highlight (`Text`), the patch marker is a background fill and
+/// field colors tint the glyphs; when the cell fill owns the highlight
+/// (`Background`, also the highlight-off default), the patch marker
+/// rides the glyph and field colors become softened background tints.
 /// `None` when there is nothing to style, keeping the pane on its
 /// zero-cost default path. `modified` is the sorted, non-overlapping
 /// `(start, end)` list from `HexEditor::modified_ranges`.
 fn build_template_styler(
     modified: Vec<(u64, u64)>,
     fields: Option<FieldTints>,
+    mode: ValueHighlight,
 ) -> Option<Box<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send>> {
     if modified.is_empty() && fields.is_none() {
         return None;
     }
+    let modified_style = match mode {
+        ValueHighlight::Text => ByteStyleOverride { bg: Some(modified_byte_bg()), fg: None },
+        ValueHighlight::Background => ByteStyleOverride { bg: None, fg: Some(modified_byte_fg()) },
+    };
     Some(Box::new(move |_byte, offset| {
         let b = offset.get();
         if range_contains(&modified, b) {
-            return ByteStyleOverride { bg: None, fg: Some(modified_byte_fg()) };
+            return modified_style;
         }
         let Some(fields) = fields.as_ref() else {
             return ByteStyleOverride::default();
@@ -904,7 +922,11 @@ fn build_template_styler(
         if b >= start.get().saturating_add(len.get()) {
             return ByteStyleOverride::default();
         }
-        ByteStyleOverride { bg: Some(fields.colors[idx - 1]), fg: None }
+        let color = fields.colors[idx - 1];
+        match mode {
+            ValueHighlight::Text => ByteStyleOverride { bg: None, fg: Some(color) },
+            ValueHighlight::Background => ByteStyleOverride { bg: Some(template_tint(color)), fg: None },
+        }
     }))
 }
 
@@ -1213,27 +1235,47 @@ mod tests {
     }
 
     /// Styler precedence, egui parity (`hex_body.rs`): a patched byte
-    /// keeps its foreground mark and never receives the field tint; an
-    /// untouched byte inside a field gets the background tint; bytes
+    /// keeps its marker and never receives the field tint; an
+    /// untouched byte inside a field gets the field tint; bytes
     /// outside every field stay default; nothing to style means no
-    /// styler at all.
+    /// styler at all. In `Background` mode (the default) the patch
+    /// marker is the shared red foreground and fields are softened
+    /// background tints.
     #[test]
     fn template_styler_patches_win_over_field_tints() {
-        let tint_a = template_tint(hxy_core::color::Rgba::rgb(200, 40, 40));
-        let tint_b = template_tint(hxy_core::color::Rgba::rgb(40, 200, 40));
+        let color_a = rgba_to_hsla(hxy_core::color::Rgba::rgb(200, 40, 40));
+        let color_b = rgba_to_hsla(hxy_core::color::Rgba::rgb(40, 200, 40));
         let span = |start: u64, len: u64| (ByteOffset::new(start), hxy_core::ByteLen::new(len));
-        let fields = FieldTints { boundaries: vec![span(0, 4), span(4, 4)], colors: vec![tint_a, tint_b] };
-        let styler = build_template_styler(vec![(2, 3)], Some(fields)).expect("styler");
+        let fields = FieldTints { boundaries: vec![span(0, 4), span(4, 4)], colors: vec![color_a, color_b] };
+        let styler = build_template_styler(vec![(2, 3)], Some(fields), ValueHighlight::Background).expect("styler");
 
         assert_eq!(styler(0, ByteOffset::new(2)), ByteStyleOverride { bg: None, fg: Some(modified_byte_fg()) });
-        assert_eq!(styler(0, ByteOffset::new(1)), ByteStyleOverride { bg: Some(tint_a), fg: None });
-        assert_eq!(styler(0, ByteOffset::new(3)), ByteStyleOverride { bg: Some(tint_a), fg: None });
-        assert_eq!(styler(0, ByteOffset::new(7)), ByteStyleOverride { bg: Some(tint_b), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(1)), ByteStyleOverride { bg: Some(template_tint(color_a)), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(3)), ByteStyleOverride { bg: Some(template_tint(color_a)), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(7)), ByteStyleOverride { bg: Some(template_tint(color_b)), fg: None });
         assert_eq!(styler(0, ByteOffset::new(8)), ByteStyleOverride::default(), "past the last field");
 
-        let marks_only = build_template_styler(vec![(2, 3)], None).expect("patch marks without tints");
+        let marks_only =
+            build_template_styler(vec![(2, 3)], None, ValueHighlight::Background).expect("marks without tints");
         assert_eq!(marks_only(0, ByteOffset::new(1)), ByteStyleOverride::default());
-        assert!(build_template_styler(Vec::new(), None).is_none(), "nothing to style installs no styler");
+        assert!(
+            build_template_styler(Vec::new(), None, ValueHighlight::Background).is_none(),
+            "nothing to style installs no styler"
+        );
+    }
+
+    /// `Text` mode flips the egui pairing: the glyphs carry the field
+    /// colors, so the patch marker becomes the shared red background
+    /// fill and field colors tint the glyphs at full strength.
+    #[test]
+    fn text_mode_swaps_patch_marker_and_field_tint_channels() {
+        let color_a = rgba_to_hsla(hxy_core::color::Rgba::rgb(200, 40, 40));
+        let span = |start: u64, len: u64| (ByteOffset::new(start), hxy_core::ByteLen::new(len));
+        let fields = FieldTints { boundaries: vec![span(0, 4)], colors: vec![color_a] };
+        let styler = build_template_styler(vec![(2, 3)], Some(fields), ValueHighlight::Text).expect("styler");
+
+        assert_eq!(styler(0, ByteOffset::new(2)), ByteStyleOverride { bg: Some(modified_byte_bg()), fg: None });
+        assert_eq!(styler(0, ByteOffset::new(1)), ByteStyleOverride { bg: None, fg: Some(color_a) });
     }
 
     #[test]

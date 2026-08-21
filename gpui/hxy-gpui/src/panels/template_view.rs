@@ -1518,8 +1518,10 @@ mod tests {
     }
 
     /// A tree-supplied byte palette lands on the pane as the custom
-    /// value palette (0xAARRGGBB unpacked per byte value) and clears
-    /// when the instance goes away.
+    /// highlight table (0xAARRGGBB unpacked per byte value) in the
+    /// user's highlight mode; removing the instance falls back to the
+    /// settings-derived palette (default settings: Class scheme,
+    /// Background mode) rather than the custom entries.
     #[gpui::test]
     fn palette_override_installs_and_clears(cx: &mut TestAppContext) {
         setup(cx);
@@ -1528,13 +1530,21 @@ mod tests {
         tree.byte_palette = Some(vec![0xFF336699u32; 256]);
         let id = install_tree(&panel, cx, tree);
 
-        let installed = panel.read_with(cx, |panel, cx| panel.pane().read(cx).value_palette().map(|table| table[0x41]));
+        let installed = panel.read_with(cx, |panel, cx| panel.pane().read(cx).highlight().map(|hl| hl.table[0x41]));
         let expected = rgba_to_hsla(hxy_core::color::Rgba::from_argb_u32(0xFF336699));
         assert_eq!(installed, Some(expected), "palette entry converted through rgba_to_hsla");
 
         apply(&panel, cx, TemplateEvent::RemoveInstance(id));
-        let cleared = panel.read_with(cx, |panel, cx| panel.pane().read(cx).value_palette().is_none());
-        assert!(cleared, "removing the instance clears the palette");
+        let (fallback, expected_fallback) = panel.read_with(cx, |panel, cx| {
+            let fallback = panel.pane().read(cx).highlight().cloned();
+            let expected = crate::settings::highlight_palette(
+                &crate::settings::settings(cx),
+                gpui_component::ActiveTheme::theme(cx).mode.is_dark(),
+            );
+            (fallback, expected)
+        });
+        assert_eq!(fallback, expected_fallback, "removal falls back to the settings-derived palette");
+        assert_ne!(fallback.map(|hl| hl.table[0x41]), Some(expected), "custom entry no longer installed");
     }
 
     /// Leaf detail renders the single hovered field; Full (Alt)

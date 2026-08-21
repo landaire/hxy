@@ -6373,6 +6373,55 @@ mod tests {
         assert_eq!(checksums_tab_count(window, cx), 1, "no duplicate tab");
     }
 
+    /// Flipping the byte-highlight scheme (or toggling highlighting
+    /// off) in the settings global live-swaps every open pane's
+    /// palette through `on_settings_changed` -> `sync_byte_palettes`.
+    #[gpui::test]
+    fn settings_scheme_switch_swaps_byte_palettes_live(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
+        let window = open_workspace(cx, Vec::new(), None);
+        window_open(window, &f1, cx);
+        cx.run_until_parked();
+        let panel = window.read_with(cx, |ws, _| ws.open_files.first().cloned()).unwrap().expect("open file");
+        let dark = window.read_with(cx, |_ws, cx| cx.theme().mode.is_dark()).unwrap();
+        let pane_highlight = |cx: &mut TestAppContext| {
+            window.read_with(cx, |_ws, cx| panel.read(cx).pane().read(cx).highlight().cloned()).unwrap()
+        };
+
+        let defaults = crate::settings::AppSettings::default();
+        assert_eq!(
+            pane_highlight(cx),
+            crate::settings::highlight_palette(&defaults, dark),
+            "boot installs the settings-derived palette (Class scheme by default)"
+        );
+
+        window
+            .update(cx, |_ws, _window, cx| {
+                crate::settings::update_settings(cx, |s| {
+                    s.byte_highlight_scheme = hxy_settings::ByteHighlightScheme::Value;
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let value_settings = crate::settings::AppSettings {
+            byte_highlight_scheme: hxy_settings::ByteHighlightScheme::Value,
+            ..crate::settings::AppSettings::default()
+        };
+        let swapped = pane_highlight(cx);
+        assert_eq!(swapped, crate::settings::highlight_palette(&value_settings, dark), "scheme flip swaps live");
+        assert_ne!(swapped, crate::settings::highlight_palette(&defaults, dark), "the palettes actually differ");
+
+        window
+            .update(cx, |_ws, _window, cx| {
+                crate::settings::update_settings(cx, |s| s.byte_value_highlight = false);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(pane_highlight(cx), None, "highlight off clears the palette (plain foreground glyphs)");
+    }
+
     /// Hovering a strings-panel row paints a hover band on the owning
     /// pane; closing the tab with the pointer still "resting" there
     /// must clear it (`StringsPanel::on_removed`) -- otherwise the hex

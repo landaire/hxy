@@ -40,6 +40,8 @@ use crate::CellMetrics;
 use crate::FrameInfo;
 use crate::GridGeometry;
 use crate::HexPane;
+use crate::PaneHighlight;
+use hxy_core::byte_palette::ValueHighlight;
 
 /// Left / top inset of the grid inside the pane bounds.
 const PAD_X: f32 = 8.0;
@@ -98,8 +100,8 @@ pub(crate) struct GridSnapshot {
     pub hover_span: Option<ByteRange>,
     /// Per-byte color override consulted in the paint loop.
     pub byte_styler: Option<crate::ByteStyler>,
-    /// Custom byte-value glyph palette, indexed by byte value.
-    pub value_palette: Option<Arc<[Hsla; 256]>>,
+    /// The byte-value highlight: palette table plus paint mode.
+    pub highlight: Option<PaneHighlight>,
     /// Whether the right-edge minimap strip is painted this frame.
     pub show_minimap: bool,
     /// Byte-class colors when true; grayscale gradient when false.
@@ -215,6 +217,7 @@ fn paint_grid(
             snap.columns,
             &snap.colors,
             snap.minimap_colored,
+            snap.highlight.as_ref().map(|h| h.table.as_ref()),
             minimap_bounds,
             row_count,
             first_visible_row,
@@ -288,7 +291,7 @@ fn paint_grid(
             };
             paint_hover_band(&ctx, snap.hover_span, snap.colors.hover, window);
             paint_selection_bands(&ctx, selected, snap.colors.selection, window);
-            paint_styler_tints(&ctx, snap, window);
+            paint_cell_fills(&ctx, snap, window);
             paint_cursor_cell(&ctx, snap, cursor, window);
             paint_row_text(&ctx, snap, &mono, window, app);
             paint_nibble_caret(&ctx, snap, cursor, window);
@@ -567,10 +570,8 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
     for (c, &byte) in ctx.bytes.iter().enumerate().take(ctx.cols as usize) {
         let col = c as u16;
         let offset = ByteOffset::new(ctx.row_start + c as u64);
-        // Styler foreground overrides the byte-class color (egui
-        // lib.rs:1400-1418: `fg_override` wins over the palette).
-        let fg_override = snap.byte_styler.as_ref().and_then(|f| f(byte, offset).fg);
-        let color = fg_override.unwrap_or_else(|| glyph_color(snap.value_palette.as_deref(), byte, &snap.colors));
+        let style = snap.byte_styler.as_ref().map(|f| f(byte, offset)).unwrap_or_default();
+        let color = glyph_color(style, snap.highlight.as_ref(), byte, &snap.colors);
 
         let hex = format!("{byte:02X}");
         paint_line(mono, &hex, snap.mono_size, color, point(ctx.origin_x + g.hex_x(col), ctx.row_y), window, app);
@@ -586,21 +587,28 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
     }
 }
 
-/// Byte-styler background pass: fills each cell whose styler returns a
-/// `bg`. Runs after the selection / hover bands but before the cursor
-/// emphasis and glyphs, so the styler tint sits under the cursor fill
-/// (brief: styler consulted before selection/cursor emphasis). Cells
-/// the selection or hover band already covers are skipped so those
-/// bands stay authoritative, matching egui hxy-view (lib.rs:1404-1409).
-fn paint_styler_tints(ctx: &RowCtx, snap: &GridSnapshot, window: &mut Window) {
-    let Some(styler) = snap.byte_styler.as_ref() else { return };
+/// Cell-fill pass: fills each cell whose styler returns a `bg`, or --
+/// in `Background` highlight mode -- whose palette supplies a class /
+/// value fill (a styler `bg` wins per cell, as in egui's
+/// `paint_row_backs_and_glyphs`). Runs
+/// after the selection / hover bands but before the cursor emphasis
+/// and glyphs, so the fill sits under the cursor. Cells the selection
+/// or hover band already covers are skipped so those bands stay
+/// authoritative, matching egui hxy-view's tint-skip rule.
+fn paint_cell_fills(ctx: &RowCtx, snap: &GridSnapshot, window: &mut Window) {
+    let bg_table = snap.highlight.as_ref().filter(|h| h.mode == ValueHighlight::Background).map(|h| &h.table);
+    if snap.byte_styler.is_none() && bg_table.is_none() {
+        return;
+    }
     let selected = snap.selection.map(|s| s.range());
     let mut cells: Vec<(u16, Hsla)> = Vec::with_capacity(ctx.bytes.len().min(ctx.cols as usize));
     for (c, &byte) in ctx.bytes.iter().enumerate().take(ctx.cols as usize) {
         let offset = ByteOffset::new(ctx.row_start + c as u64);
         let is_sel = selected.is_some_and(|r| r.contains(offset));
         let is_hovered = snap.hover_span.is_some_and(|r| r.contains(offset));
-        if let Some(bg) = styler(byte, offset).bg.filter(|_| !is_sel && !is_hovered) {
+        let styler_bg = snap.byte_styler.as_ref().and_then(|f| f(byte, offset).bg);
+        let bg = styler_bg.or_else(|| bg_table.map(|t| t[byte as usize]));
+        if let Some(bg) = bg.filter(|_| !is_sel && !is_hovered) {
             cells.push((c as u16, bg));
         }
     }
@@ -666,29 +674,73 @@ fn run(len: usize, color: Hsla, mono: &Font) -> TextRun {
     TextRun { len, font: mono.clone(), color, background_color: None, underline: None, strikethrough: None }
 }
 
-/// Glyph color for a byte: the custom value palette when one is
-/// installed (egui hxy-view's `HighlightPalette::Custom`, applied to
-/// both the hex and ascii glyphs), otherwise the byte-class color.
-fn glyph_color(palette: Option<&[Hsla; 256]>, byte: u8, colors: &PaintColors) -> Hsla {
-    match palette {
-        Some(table) => table[byte as usize],
-        None => byte_color(byte, colors),
+/// Per-cell fill and glyph colors from the installed highlight, before
+/// styler overrides. Mirrors egui hxy-view's palette resolution
+/// (lib.rs `paint_row_backs_and_glyphs`): `Background` mode fills the
+/// cell with `table[byte]` and contrast-adjusts the glyph, `Text` mode
+/// tints the glyph, no highlight paints the plain theme foreground.
+fn palette_cell(highlight: Option<&PaneHighlight>, byte: u8, colors: &PaintColors) -> (Option<Hsla>, Hsla) {
+    match highlight {
+        Some(hl) => {
+            let color = hl.table[byte as usize];
+            match hl.mode {
+                ValueHighlight::Background => (Some(color), contrast_text_color(color, colors.foreground)),
+                ValueHighlight::Text => (None, color),
+            }
+        }
+        None => (None, colors.foreground),
     }
 }
 
-fn byte_color(byte: u8, colors: &PaintColors) -> Hsla {
-    if byte == 0 {
-        colors.muted
-    } else if is_printable(byte) {
-        colors.foreground
-    } else {
-        colors.accent
+/// Glyph color precedence, egui parity (`paint_row_backs_and_glyphs`,
+/// minus the selection recolor): a styler `fg` wins; else any cell
+/// fill (styler `bg` over the palette fill) gets a contrast-adjusted
+/// glyph; else the palette's glyph color.
+fn glyph_color(
+    style: crate::ByteStyleOverride,
+    highlight: Option<&PaneHighlight>,
+    byte: u8,
+    colors: &PaintColors,
+) -> Hsla {
+    let (palette_bg, palette_fg) = palette_cell(highlight, byte, colors);
+    if let Some(fg) = style.fg {
+        return fg;
+    }
+    match style.bg.or(palette_bg) {
+        Some(bg) => contrast_text_color(bg, colors.foreground),
+        None => palette_fg,
     }
 }
 
-/// Shared with [`crate::minimap`]'s byte-class averaging so the strip
-/// and the grid draw the same printable-ascii boundary.
-pub(crate) fn is_printable(byte: u8) -> bool {
+/// Thin gpui wrapper over the shared luminance-interp helper
+/// (`hxy_core::byte_palette::contrast_text_color`). Converts the
+/// straight-alpha [`Hsla`] into the premultiplied byte form the shared
+/// fn expects, so translucent tints (template field colors) weigh in
+/// at their composited-over-dark brightness exactly as egui's
+/// premultiplied `Color32` values do.
+fn contrast_text_color(bg: Hsla, default_fg: Hsla) -> Hsla {
+    let rgba = gpui::Rgba::from(bg);
+    let a = (rgba.a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if a == 0 {
+        return default_fg;
+    }
+    let premul = |v: f32| ((v * rgba.a).clamp(0.0, 1.0) * 255.0).round() as u8;
+    // The default-fg fallback inside the shared fn is unreachable:
+    // the transparent case returned above.
+    let grey = hxy_core::byte_palette::contrast_text_color(
+        hxy_core::color::Rgba::rgba(premul(rgba.r), premul(rgba.g), premul(rgba.b), a),
+        hxy_core::color::Rgba::TRANSPARENT,
+    );
+    Hsla::from(gpui::Rgba {
+        r: f32::from(grey.r) / 255.0,
+        g: f32::from(grey.g) / 255.0,
+        b: f32::from(grey.b) / 255.0,
+        a: 1.0,
+    })
+}
+
+/// Printable-ascii boundary for the ascii pane's glyph substitution.
+fn is_printable(byte: u8) -> bool {
     (0x20..=0x7e).contains(&byte)
 }
 
@@ -773,11 +825,8 @@ mod tests {
         assert!(hex_right < g.ascii_x(0), "hex run right edge must stop before the ascii pane");
     }
 
-    /// A custom value palette drives the glyph color for its byte
-    /// value; without one, the byte-class colors stay in charge.
-    #[test]
-    fn glyph_color_prefers_the_value_palette() {
-        let colors = PaintColors {
+    fn paint_colors() -> PaintColors {
+        PaintColors {
             foreground: color(0.2),
             muted: color(0.3),
             accent: color(0.4),
@@ -785,14 +834,77 @@ mod tests {
             hover: color(0.6),
             background: color(0.7),
             dark: true,
-        };
+        }
+    }
+
+    fn highlight(mode: ValueHighlight, table: [Hsla; 256]) -> PaneHighlight {
+        PaneHighlight { mode, table: Arc::new(table) }
+    }
+
+    fn grey(v: u8) -> Hsla {
+        Hsla::from(gpui::Rgba { r: f32::from(v) / 255.0, g: f32::from(v) / 255.0, b: f32::from(v) / 255.0, a: 1.0 })
+    }
+
+    /// `Text` mode tints the glyph with the palette entry for the byte
+    /// value; no highlight paints the plain theme foreground for every
+    /// byte (egui's highlight-off look).
+    #[test]
+    fn text_mode_tints_glyphs_and_no_highlight_is_plain_foreground() {
+        let colors = paint_colors();
         let mut table = [color(0.0); 256];
         table[0x41] = color(0.9);
-        assert_eq!(glyph_color(Some(&table), 0x41, &colors), color(0.9));
-        assert_eq!(glyph_color(Some(&table), 0x00, &colors), color(0.0), "palette indexes by byte value");
-        assert_eq!(glyph_color(None, 0x00, &colors), colors.muted);
-        assert_eq!(glyph_color(None, b'A', &colors), colors.foreground);
-        assert_eq!(glyph_color(None, 0xFF, &colors), colors.accent);
+        let hl = highlight(ValueHighlight::Text, table);
+        assert_eq!(palette_cell(Some(&hl), 0x41, &colors), (None, color(0.9)));
+        assert_eq!(palette_cell(Some(&hl), 0x00, &colors), (None, color(0.0)), "palette indexes by byte value");
+        for byte in [0x00, b'A', 0xFF] {
+            assert_eq!(palette_cell(None, byte, &colors), (None, colors.foreground));
+        }
+    }
+
+    /// `Background` mode fills the cell with the palette entry and
+    /// contrast-adjusts the glyph: near-white over a dark fill, dark
+    /// grey over a bright one (shared `contrast_text_color` ramp).
+    #[test]
+    fn background_mode_fills_cell_and_contrasts_glyph() {
+        let colors = paint_colors();
+        let dark_fill = grey(0);
+        let bright_fill = grey(255);
+        let mut table = [dark_fill; 256];
+        table[0x41] = bright_fill;
+        let hl = highlight(ValueHighlight::Background, table);
+        assert_eq!(palette_cell(Some(&hl), 0x00, &colors), (Some(dark_fill), grey(240)));
+        assert_eq!(palette_cell(Some(&hl), 0x41, &colors), (Some(bright_fill), grey(30)));
+    }
+
+    /// Glyph precedence, egui parity: a styler `fg` wins outright; a
+    /// styler `bg` forces a contrast glyph even in `Text` mode; with
+    /// neither, the palette decision stands.
+    #[test]
+    fn styler_overrides_win_over_the_palette() {
+        let colors = paint_colors();
+        let table = [color(0.9); 256];
+        let hl = highlight(ValueHighlight::Text, table);
+        let fg_override = crate::ByteStyleOverride { bg: None, fg: Some(color(0.8)) };
+        assert_eq!(glyph_color(fg_override, Some(&hl), 0x41, &colors), color(0.8));
+        let bg_override = crate::ByteStyleOverride { bg: Some(grey(0)), fg: None };
+        assert_eq!(glyph_color(bg_override, Some(&hl), 0x41, &colors), grey(240), "styler bg contrasts the glyph");
+        assert_eq!(glyph_color(crate::ByteStyleOverride::default(), Some(&hl), 0x41, &colors), color(0.9));
+        assert_eq!(glyph_color(crate::ByteStyleOverride::default(), None, 0x41, &colors), colors.foreground);
+    }
+
+    /// The contrast wrapper premultiplies translucent tints before the
+    /// luminance test, matching egui's premultiplied `Color32` path: a
+    /// half-transparent bright tint reads as mid-dark and gets the
+    /// near-white glyph, and a transparent bg returns the default.
+    #[test]
+    fn contrast_wrapper_premultiplies_translucent_tints() {
+        let default_fg = color(0.2);
+        assert_eq!(contrast_text_color(gpui::hsla(0.0, 0.0, 0.5, 0.0), default_fg), default_fg);
+        let translucent_white = gpui::hsla(0.0, 0.0, 1.0, 0.45);
+        let premul_lum = (255.0f32 * 0.45).round(); // 115
+        let t = premul_lum / 255.0;
+        let expected = (240.0 * (1.0 - t) + 30.0 * t).round() as u8;
+        assert_eq!(contrast_text_color(translucent_white, default_fg), grey(expected));
     }
 
     /// The header band spans the pane's top edge down to the first

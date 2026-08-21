@@ -36,11 +36,18 @@ use std::sync::Arc;
 use gpui::App;
 use gpui::Global;
 use gpui::Hsla;
+use hxy_core::byte_palette::BytePalette;
+use hxy_core::byte_palette::ValueGradient;
+use hxy_core::byte_palette::ValueHighlight;
 use hxy_core::format::NumericFormat;
 use hxy_core::format::TemplateValueFormats;
 pub use hxy_settings::AppSettings;
+use hxy_settings::ByteHighlightMode;
 use hxy_settings::ByteHighlightScheme;
 use hxy_settings::persist::SaveSink;
+use hxy_view_gpui::PaneHighlight;
+
+use crate::templates::rgba_to_hsla;
 
 /// The live [`AppSettings`], readable anywhere via
 /// [`settings`] and observable via `cx.observe_global::<SettingsGlobal>`.
@@ -166,31 +173,54 @@ pub fn update_settings(cx: &mut App, f: impl FnOnce(&mut AppSettings)) {
     cx.set_global(SettingsGlobal(after));
 }
 
-/// Saturation/lightness pairs for the value-scheme byte palette,
-/// ported from egui hxy-view's `ValueGradient::TEXT_DARK` /
-/// `TEXT_LIGHT`. Only the Text-mode constants apply here: the gpui
-/// pane paints glyph colors only, so `byte_highlight_mode:
-/// Background` has no background fill to drive (deviation from egui).
-const VALUE_GRADIENT_TEXT_DARK: (f32, f32) = (0.75, 0.68);
-const VALUE_GRADIENT_TEXT_LIGHT: (f32, f32) = (0.7, 0.4);
+/// The shared highlight-mode enum for the persisted setting (mirrors
+/// egui's `ByteHighlightModeExt::as_view`).
+pub fn view_mode(mode: ByteHighlightMode) -> ValueHighlight {
+    match mode {
+        ByteHighlightMode::Background => ValueHighlight::Background,
+        ByteHighlightMode::Text => ValueHighlight::Text,
+    }
+}
 
-/// The byte-value glyph palette the current settings ask for, or
-/// `None` to leave the pane's built-in byte-class colors in charge.
-/// `Some` only for the Value scheme with highlighting on: the Class
-/// scheme maps to the pane's built-in class colors, and "highlight
-/// off" also falls back to them (the gpui pane has no fully plain
-/// glyph mode -- deviation from egui).
-pub fn value_palette(settings: &AppSettings, dark: bool) -> Option<Arc<[Hsla; 256]>> {
-    if !settings.byte_value_highlight || settings.byte_highlight_scheme != ByteHighlightScheme::Value {
+/// The byte-value highlight the current settings ask for, or `None`
+/// when highlighting is off (the pane then paints every glyph in the
+/// theme foreground, egui's highlight-off look). The Class scheme
+/// takes the shared six-class tables, the Value scheme the shared HSL
+/// gradient; both pick the dark/light variant for the current theme
+/// and the background/text variant for the user's highlight mode,
+/// exactly like egui's `build_palette` (`crates/hxy/src/view/hex_body.rs`).
+pub fn highlight_palette(settings: &AppSettings, dark: bool) -> Option<PaneHighlight> {
+    if !settings.byte_value_highlight {
         return None;
     }
-    let (s, l) = if dark { VALUE_GRADIENT_TEXT_DARK } else { VALUE_GRADIENT_TEXT_LIGHT };
-    let mut table = [Hsla { h: 0.0, s, l, a: 1.0 }; 256];
-    for (byte, slot) in table.iter_mut().enumerate() {
-        // egui: hue = byte / 256 * 360 degrees; gpui Hsla hue is 0..1.
-        slot.h = byte as f32 / 256.0;
+    let mode = view_mode(settings.byte_highlight_mode);
+    let table: [Hsla; 256] = match settings.byte_highlight_scheme {
+        ByteHighlightScheme::Class => {
+            let palette = BytePalette::for_theme_and_mode(dark, mode);
+            std::array::from_fn(|byte| rgba_to_hsla(palette.color_for(byte as u8)))
+        }
+        ByteHighlightScheme::Value => {
+            let gradient = ValueGradient::for_theme_and_mode(dark, mode);
+            std::array::from_fn(|byte| rgba_to_hsla(gradient.color_for(byte as u8)))
+        }
+    };
+    Some(PaneHighlight { mode, table: Arc::new(table) })
+}
+
+/// The byte-value highlight for compare panes. The egui compare pane
+/// turns highlighting on/off and picks the mode but never installs a
+/// palette override, so hxy-view always falls back to the Class
+/// tables there and the scheme setting is ignored
+/// (`crates/hxy/src/compare/pane.rs` vs hxy-view's
+/// `for_theme_and_mode` fallback); this mirrors that.
+pub fn compare_highlight_palette(settings: &AppSettings, dark: bool) -> Option<PaneHighlight> {
+    if !settings.byte_value_highlight {
+        return None;
     }
-    Some(Arc::new(table))
+    let mode = view_mode(settings.byte_highlight_mode);
+    let palette = BytePalette::for_theme_and_mode(dark, mode);
+    let table: [Hsla; 256] = std::array::from_fn(|byte| rgba_to_hsla(palette.color_for(byte as u8)));
+    Some(PaneHighlight { mode, table: Arc::new(table) })
 }
 
 #[cfg(test)]
@@ -268,22 +298,61 @@ mod tests {
         cx.update(|cx| assert_eq!(settings(cx).file_poll_interval_ms, 777));
     }
 
+    /// Class scheme, table-driven: every (theme, mode) pair resolves
+    /// each byte class to the matching entry of the shared table, and
+    /// the pane mode rides along.
     #[test]
-    fn value_palette_only_for_value_scheme_with_highlight_on() {
+    fn class_scheme_resolves_each_class_from_the_shared_tables() {
+        let mut s = AppSettings {
+            byte_value_highlight: true,
+            byte_highlight_scheme: ByteHighlightScheme::Class,
+            ..AppSettings::default()
+        };
+        let cases = [
+            (true, ByteHighlightMode::Background, BytePalette::BG_DARK),
+            (false, ByteHighlightMode::Background, BytePalette::BG_LIGHT),
+            (true, ByteHighlightMode::Text, BytePalette::TEXT_DARK),
+            (false, ByteHighlightMode::Text, BytePalette::TEXT_LIGHT),
+        ];
+        for (dark, mode, expected) in cases {
+            s.byte_highlight_mode = mode;
+            let hl = highlight_palette(&s, dark).expect("highlight on installs a palette");
+            assert_eq!(hl.mode, view_mode(mode));
+            let class_samples = [
+                (0x00u8, expected.null),
+                (0xFF, expected.all_bits),
+                (b'\t', expected.whitespace),
+                (b'A', expected.printable),
+                (0x01, expected.control),
+                (0x80, expected.extended),
+            ];
+            for (byte, want) in class_samples {
+                assert_eq!(hl.table[byte as usize], rgba_to_hsla(want), "byte {byte:#04x} dark={dark} mode={mode:?}");
+            }
+        }
+    }
+
+    /// Value scheme: the table walks the shared HSL gradient with the
+    /// (theme, mode) parameter pair, and highlight-off installs none.
+    #[test]
+    fn value_scheme_uses_the_shared_gradient_and_off_installs_none() {
         let mut s = AppSettings {
             byte_value_highlight: true,
             byte_highlight_scheme: ByteHighlightScheme::Value,
+            byte_highlight_mode: ByteHighlightMode::Text,
             ..AppSettings::default()
         };
-        let table = value_palette(&s, true).expect("value scheme installs a palette");
-        // Hue wheel: byte 0 at hue 0, byte 128 half way around.
-        assert_eq!(table[0].h, 0.0);
-        assert!((table[128].h - 0.5).abs() < 1e-6);
+        let hl = highlight_palette(&s, true).expect("value scheme installs a palette");
+        assert_eq!(hl.mode, ValueHighlight::Text);
+        for byte in [0u8, 64, 128, 255] {
+            assert_eq!(hl.table[byte as usize], rgba_to_hsla(ValueGradient::TEXT_DARK.color_for(byte)));
+        }
+        s.byte_highlight_mode = ByteHighlightMode::Background;
+        let hl = highlight_palette(&s, false).expect("background variant");
+        assert_eq!(hl.mode, ValueHighlight::Background);
+        assert_eq!(hl.table[128], rgba_to_hsla(ValueGradient::BG_LIGHT.color_for(128)));
 
-        s.byte_highlight_scheme = ByteHighlightScheme::Class;
-        assert!(value_palette(&s, true).is_none(), "class scheme keeps the built-in colors");
-        s.byte_highlight_scheme = ByteHighlightScheme::Value;
         s.byte_value_highlight = false;
-        assert!(value_palette(&s, true).is_none(), "highlight off clears the palette");
+        assert!(highlight_palette(&s, true).is_none(), "highlight off installs no palette");
     }
 }

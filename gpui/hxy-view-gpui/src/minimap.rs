@@ -30,7 +30,6 @@ use hxy_core::ColumnCount;
 use hxy_core::HexSource;
 
 use crate::paint::PaintColors;
-use crate::paint::is_printable;
 
 /// Gap between the grid's content and the strip.
 pub(crate) const STRIP_GAP: f32 = 8.0;
@@ -46,12 +45,6 @@ const MAX_BYTES_PER_ROW: u64 = 4096;
 /// `cell_height_devices` (2 device px), tuned for flat per-row color
 /// stripes (see `Minimap::new`'s doc in crates/egui_minimap/src/lib.rs).
 const ROW_H: f32 = 2.0;
-
-/// Alpha applied to each byte-class base color when painting a strip
-/// row. Low enough that a run of one class reads as a soft tint
-/// rather than a solid block, mirroring `byte_color`'s muted/
-/// foreground/accent palette at reduced strength.
-const CLASS_ALPHA: f32 = 0.55;
 
 /// Strip background tint, painted under the row colors.
 const STRIP_BG_ALPHA: f32 = 0.06;
@@ -95,8 +88,8 @@ pub(crate) fn strip_bounds(content_bounds: Bounds<Pixels>, char_w: Pixels) -> Mi
 }
 
 /// Paints the strip's background, per-row downsampled byte colors
-/// (byte-class blend when `colored`, grayscale gradient otherwise),
-/// and the translucent viewport indicator.
+/// (the highlight palette's average when `colored`, grayscale
+/// gradient otherwise), and the translucent viewport indicator.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_minimap(
     source: &dyn HexSource,
@@ -104,6 +97,7 @@ pub(crate) fn paint_minimap(
     columns: ColumnCount,
     colors: &PaintColors,
     colored: bool,
+    palette: Option<&[Hsla; 256]>,
     strip: MinimapBounds,
     row_count: u64,
     first_visible_row: u64,
@@ -155,7 +149,11 @@ pub(crate) fn paint_minimap(
         if bytes.is_empty() {
             continue;
         }
-        let color = if colored { average_class_color(&bytes, colors) } else { average_gray_color(&bytes, colors.dark) };
+        let color = if colored {
+            average_palette_color(&bytes, palette, colors)
+        } else {
+            average_gray_color(&bytes, colors.dark)
+        };
         let y = strip.origin.y + bin_h * bin as f32;
         window.paint_quad(fill(bounds(point(strip.origin.x, y), size(strip.size.width, bin_h)), color));
     }
@@ -163,47 +161,46 @@ pub(crate) fn paint_minimap(
     paint_viewport_indicator(strip, colors, row_count, first_visible_row, rows_visible, window);
 }
 
-/// Byte-class average for one strip row: each byte votes for the zero
-/// / printable-ascii / other class (same three classes and boundary
-/// as `paint::byte_color`), and the row's fill is the vote-weighted
-/// blend of each class's low-alpha base color.
-fn average_class_color(bytes: &[u8], colors: &PaintColors) -> Hsla {
-    let mut zero = 0u32;
-    let mut printable = 0u32;
-    let mut other = 0u32;
+/// Palette average for one strip row: every byte contributes its
+/// palette color (the same class / value / custom table the grid
+/// paints, or the theme foreground when no highlight is installed --
+/// egui's minimap fallback), and the row's fill is the mean, muted by
+/// the shared minimap blend factor. egui paints per-byte cells and
+/// gamma-multiplies each by the same factor; this strip paints one
+/// flat color per row, so the blend rides the average instead.
+fn average_palette_color(bytes: &[u8], palette: Option<&[Hsla; 256]>, colors: &PaintColors) -> Hsla {
+    let Some(table) = palette else {
+        return colors.foreground.opacity(hxy_core::byte_palette::MINIMAP_CELL_BLEND);
+    };
+    let mut counts = [0u32; 256];
     for &byte in bytes {
-        if byte == 0 {
-            zero += 1;
-        } else if is_printable(byte) {
-            printable += 1;
-        } else {
-            other += 1;
-        }
+        counts[byte as usize] += 1;
     }
     let n = bytes.len() as f32;
-    let weighted = |base: Hsla, count: u32| -> Rgba {
-        let c = Rgba::from(base.opacity(CLASS_ALPHA));
+    let mut sum = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    for (value, &count) in counts.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let c = Rgba::from(table[value]);
         let w = count as f32 / n;
-        Rgba { r: c.r * w, g: c.g * w, b: c.b * w, a: c.a * w }
-    };
-    let z = weighted(colors.muted, zero);
-    let p = weighted(colors.foreground, printable);
-    let o = weighted(colors.accent, other);
-    Hsla::from(Rgba { r: z.r + p.r + o.r, g: z.g + p.g + o.g, b: z.b + p.b + o.b, a: z.a + p.a + o.a })
+        sum = Rgba { r: sum.r + c.r * w, g: sum.g + c.g * w, b: sum.b + c.b * w, a: sum.a + c.a * w };
+    }
+    Hsla::from(sum).opacity(hxy_core::byte_palette::MINIMAP_CELL_BLEND)
 }
 
 /// Grayscale fallback for one strip row: the row's mean byte value
-/// picks a gray level between the theme-tuned endpoints. Ports egui
-/// hxy-view's `grayscale_for_byte` (0x00 dark gray, 0xFF near-white),
-/// applied to the bin average since this strip paints one flat color
-/// per row rather than per-byte cells. Same alpha as the class blend
-/// so the two modes read equally muted.
+/// picks a gray level on the shared `grayscale_for_byte` ramp (0x00
+/// dark gray, 0xFF near-white), applied to the bin average since this
+/// strip paints one flat color per row rather than per-byte cells.
+/// Same blend factor as the palette average so the two modes read
+/// equally muted.
 fn average_gray_color(bytes: &[u8], dark: bool) -> Hsla {
     let sum: u64 = bytes.iter().map(|&b| u64::from(b)).sum();
-    let t = (sum as f32 / bytes.len() as f32) / 255.0;
-    let (lo, hi) = if dark { (40.0, 230.0) } else { (40.0, 220.0) };
-    let v = (lo * (1.0 - t) + hi * t) / 255.0;
-    Hsla { h: 0.0, s: 0.0, l: v, a: CLASS_ALPHA }
+    let mean = (sum as f32 / bytes.len() as f32).round().clamp(0.0, 255.0) as u8;
+    let g = hxy_core::byte_palette::grayscale_for_byte(mean, dark);
+    let l = f32::from(g.r) / 255.0;
+    Hsla { h: 0.0, s: 0.0, l, a: hxy_core::byte_palette::MINIMAP_CELL_BLEND }
 }
 
 /// Translucent quad over the strip rows spanned by the grid's current
@@ -226,4 +223,67 @@ fn paint_viewport_indicator(
     let indicator = bounds(point(strip.origin.x, top), size(strip.size.width, (bot - top).max(px(1.0))));
     window.paint_quad(fill(indicator, colors.foreground.opacity(INDICATOR_FILL_ALPHA)));
     window.paint_quad(outline(indicator, colors.foreground.opacity(INDICATOR_OUTLINE_ALPHA), BorderStyle::Solid));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn colors() -> PaintColors {
+        PaintColors {
+            foreground: gpui::hsla(0.2, 0.5, 0.5, 1.0),
+            muted: gpui::hsla(0.3, 0.5, 0.5, 1.0),
+            accent: gpui::hsla(0.4, 0.5, 0.5, 1.0),
+            selection: gpui::hsla(0.5, 0.5, 0.5, 1.0),
+            hover: gpui::hsla(0.6, 0.5, 0.5, 1.0),
+            background: gpui::hsla(0.7, 0.5, 0.5, 1.0),
+            dark: true,
+        }
+    }
+
+    const BLEND: f32 = hxy_core::byte_palette::MINIMAP_CELL_BLEND;
+
+    /// Colored mode without an installed palette falls back to the
+    /// theme foreground (egui's minimap fallback), muted by the shared
+    /// blend; a uniform palette row is that entry, equally muted.
+    #[test]
+    fn palette_average_uses_table_or_foreground_fallback() {
+        let c = colors();
+        assert_eq!(average_palette_color(&[0x00, 0x41, 0xFF], None, &c), c.foreground.opacity(BLEND));
+
+        let entry = gpui::hsla(0.25, 0.8, 0.4, 1.0);
+        let table = [entry; 256];
+        let averaged = average_palette_color(&[0x10, 0x20, 0x30], Some(&table), &c);
+        let expected = Hsla::from(Rgba::from(entry)).opacity(BLEND);
+        assert!((averaged.h - expected.h).abs() < 1e-4, "{averaged:?} vs {expected:?}");
+        assert!((averaged.l - expected.l).abs() < 1e-4);
+        assert!((averaged.a - expected.a).abs() < 1e-4);
+    }
+
+    /// A mixed row averages the per-byte palette colors by count.
+    #[test]
+    fn palette_average_weights_by_byte_count() {
+        let c = colors();
+        let mut table = [gpui::hsla(0.0, 0.0, 0.0, 1.0); 256];
+        table[0x00] = Hsla::from(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
+        table[0x01] = Hsla::from(Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 });
+        let averaged = average_palette_color(&[0x00, 0x01], Some(&table), &c);
+        let rgba = Rgba::from(Hsla { a: 1.0, ..averaged });
+        assert!((rgba.r - 0.5).abs() < 1e-3, "half red: {rgba:?}");
+        assert!((rgba.b - 0.5).abs() < 1e-3, "half blue: {rgba:?}");
+        assert!((averaged.a - BLEND).abs() < 1e-4, "blend factor applied");
+    }
+
+    /// Grayscale rows sit on the shared ramp endpoints (dark: 40..230)
+    /// at the shared blend alpha.
+    #[test]
+    fn gray_average_rides_the_shared_ramp() {
+        let low = average_gray_color(&[0x00, 0x00], true);
+        assert!((low.l - 40.0 / 255.0).abs() < 1e-4);
+        assert!((low.a - BLEND).abs() < 1e-4);
+        let high = average_gray_color(&[0xFF], true);
+        assert!((high.l - 230.0 / 255.0).abs() < 1e-4);
+        let light = average_gray_color(&[0xFF], false);
+        assert!((light.l - 220.0 / 255.0).abs() < 1e-4);
+    }
 }

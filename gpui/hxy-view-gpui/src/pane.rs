@@ -49,15 +49,26 @@ use crate::paint::hex_canvas;
 /// first frame measures the real line height.
 const FALLBACK_LINE_H: f32 = 16.0;
 
+/// The installed byte-value palette plus how it paints. Mirrors egui
+/// hxy-view's `(ValueHighlight, HighlightPalette)` pair: `Text` tints
+/// the hex/ascii glyphs with `table[byte]`, `Background` fills the
+/// cell with `table[byte]` and contrast-adjusts the glyph. The table
+/// is behind an [`Arc`] so each frame snapshot clones a cheap handle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaneHighlight {
+    pub mode: hxy_core::byte_palette::ValueHighlight,
+    pub table: Arc<[Hsla; 256]>,
+}
+
 /// Per-byte foreground / background override returned by a
 /// [`ByteStyler`]. Mirrors egui hxy-view's `ByteStyle`: a `Some` field
-/// wins over the built-in byte-class color for that cell, a `None`
-/// field falls back to the default palette decision.
+/// wins over the highlight palette for that cell, a `None` field
+/// falls back to the default palette decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ByteStyleOverride {
     /// Background tint for the cell, or `None` for no tint.
     pub bg: Option<Hsla>,
-    /// Glyph color, or `None` to keep the byte-class color.
+    /// Glyph color, or `None` to keep the palette decision.
     pub fg: Option<Hsla>,
 }
 
@@ -104,19 +115,20 @@ pub struct HexPane {
     /// a template-panel field hover). `None` when nothing is hovered.
     hover_span: Option<ByteRange>,
     /// Per-byte color override consulted in the paint loop. `None`
-    /// leaves the built-in byte-class palette in charge.
+    /// leaves the highlight palette decision in charge.
     byte_styler: Option<ByteStyler>,
-    /// Custom byte-value glyph palette, indexed by byte value. When
-    /// set, it replaces the built-in byte-class glyph colors in both
-    /// the hex and ascii panes; a styler `fg` still wins per cell.
-    /// Mirrors egui hxy-view's `HighlightPalette::Custom`.
-    value_palette: Option<Arc<[Hsla; 256]>>,
+    /// The byte-value highlight in effect: a 256-entry palette plus
+    /// the paint mode (glyph tint or cell fill). `None` paints every
+    /// glyph in the theme foreground, egui's highlight-off look. The
+    /// host derives it from the user's byte-highlight settings or a
+    /// template-supplied custom palette.
+    highlight: Option<PaneHighlight>,
     /// Whether the right-edge minimap strip is painted. Mirrors egui
     /// hxy-view's `minimap(bool)` builder flag; the host drives it
     /// from the user's settings.
     show_minimap: bool,
-    /// When the strip is shown, paint byte-class colors; off falls
-    /// back to a grayscale gradient. Mirrors egui hxy-view's
+    /// When the strip is shown, paint the highlight palette's colors;
+    /// off falls back to a grayscale gradient. Mirrors egui hxy-view's
     /// `minimap_colored`.
     minimap_colored: bool,
     /// Byte cell currently under the pointer, if any. Fed by mouse
@@ -138,7 +150,7 @@ impl HexPane {
             row_map: None,
             hover_span: None,
             byte_styler: None,
-            value_palette: None,
+            highlight: None,
             show_minimap: true,
             minimap_colored: true,
             hovered_offset: None,
@@ -176,7 +188,7 @@ impl HexPane {
         self.row_map = None;
         self.hover_span = None;
         self.byte_styler = None;
-        self.value_palette = None;
+        self.highlight = None;
         self.hovered_offset = None;
         cx.notify();
     }
@@ -230,21 +242,20 @@ impl HexPane {
         self.byte_styler.clone()
     }
 
-    /// Install (or clear) the custom byte-value glyph palette. Indexed
-    /// by byte value in the paint loop; replaces the built-in
-    /// byte-class glyph colors in both the hex and ascii panes while
-    /// set. Mirrors egui hxy-view's `HighlightPalette::Custom`, which
-    /// egui can also render as a background fill depending on the
-    /// user's highlight mode; the gpui pane has no highlight-mode
-    /// setting yet, so the palette always drives the glyph color.
-    pub fn set_value_palette(&mut self, palette: Option<Arc<[Hsla; 256]>>, cx: &mut Context<Self>) {
-        self.value_palette = palette;
+    /// Install (or clear) the byte-value highlight consulted in the
+    /// paint loop: `Text` mode tints the hex/ascii glyphs per byte,
+    /// `Background` fills each cell and contrast-adjusts the glyph.
+    /// `None` renders every glyph in the theme foreground (egui's
+    /// highlight-off look). Mirrors egui hxy-view's
+    /// `value_highlight` + `palette` pair.
+    pub fn set_highlight(&mut self, highlight: Option<PaneHighlight>, cx: &mut Context<Self>) {
+        self.highlight = highlight;
         cx.notify();
     }
 
-    /// The installed custom byte-value palette, if any.
-    pub fn value_palette(&self) -> Option<&Arc<[Hsla; 256]>> {
-        self.value_palette.as_ref()
+    /// The installed byte-value highlight, if any.
+    pub fn highlight(&self) -> Option<&PaneHighlight> {
+        self.highlight.as_ref()
     }
 
     /// Show or hide the right-edge minimap strip and repaint. Unlike
@@ -260,15 +271,15 @@ impl HexPane {
         self.show_minimap
     }
 
-    /// Toggle the strip between byte-class colors and the grayscale
-    /// gradient, then repaint. Survives `set_source` like
-    /// [`Self::set_show_minimap`].
+    /// Toggle the strip between the highlight palette's colors and
+    /// the grayscale gradient, then repaint. Survives `set_source`
+    /// like [`Self::set_show_minimap`].
     pub fn set_minimap_colored(&mut self, colored: bool, cx: &mut Context<Self>) {
         self.minimap_colored = colored;
         cx.notify();
     }
 
-    /// Whether the minimap paints byte-class colors.
+    /// Whether the minimap paints the highlight palette's colors.
     pub fn minimap_colored(&self) -> bool {
         self.minimap_colored
     }
@@ -650,7 +661,7 @@ impl Render for HexPane {
             row_map: self.row_map.clone(),
             hover_span: self.hover_span,
             byte_styler: self.byte_styler.clone(),
-            value_palette: self.value_palette.clone(),
+            highlight: self.highlight.clone(),
             show_minimap: self.show_minimap,
             minimap_colored: self.minimap_colored,
         };
@@ -713,23 +724,25 @@ mod tests {
         assert_eq!(scroll_delta_to_rows(ScrollDelta::Pixels(point(px(0.0), px(-32.0))), px(16.0)), -2.0);
     }
 
-    /// The value palette round-trips through its setter and is cleared
-    /// by `set_source` along with the other offset-keyed overlays.
+    /// The highlight round-trips through its setter and is cleared by
+    /// `set_source` along with the other overlays (the host re-derives
+    /// the settings-based highlight right after a source swap).
     #[gpui::test]
-    fn set_source_clears_value_palette_and_hover_state(cx: &mut TestAppContext) {
+    fn set_source_clears_highlight_and_hover_state(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
-        let palette = Arc::new([gpui::hsla(0.5, 0.5, 0.5, 1.0); 256]);
+        let table = Arc::new([gpui::hsla(0.5, 0.5, 0.5, 1.0); 256]);
+        let installed = PaneHighlight { mode: hxy_core::byte_palette::ValueHighlight::Text, table };
         let span = ByteRange::new(ByteOffset::new(2), ByteOffset::new(6)).unwrap();
         window
             .update(cx, |p, _, cx| {
-                p.set_value_palette(Some(palette.clone()), cx);
+                p.set_highlight(Some(installed.clone()), cx);
                 p.set_hover_span(Some(span), cx);
             })
             .unwrap();
         window
             .update(cx, |p, _, _| {
-                assert!(p.value_palette().is_some_and(|installed| Arc::ptr_eq(installed, &palette)));
+                assert_eq!(p.highlight(), Some(&installed));
                 assert_eq!(p.hover_span(), Some(span));
             })
             .unwrap();
@@ -737,7 +750,7 @@ mod tests {
         window.update(cx, |p, _, cx| p.set_source(source_64_rows(), cx)).unwrap();
         window
             .update(cx, |p, _, _| {
-                assert!(p.value_palette().is_none(), "set_source clears the value palette");
+                assert!(p.highlight().is_none(), "set_source clears the highlight");
                 assert!(p.hover_span().is_none());
                 assert!(p.hovered_offset().is_none());
                 assert!(p.byte_styler().is_none());

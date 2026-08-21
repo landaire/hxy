@@ -67,6 +67,7 @@ use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_core::Selection;
+use hxy_core::byte_palette::ValueHighlight;
 use hxy_panels::diff::DiffHunk;
 use hxy_panels::diff::DiffResult;
 use hxy_panels::diff::HunkKind;
@@ -134,6 +135,11 @@ pub struct ComparePanel {
     recomputing: bool,
     /// Paint the per-byte diff colors on both panes.
     diff_colors: bool,
+    /// The highlight mode the installed diff stylers were built for:
+    /// `Text` puts the diff color on the glyph (the palette owns the
+    /// fill there), `Background` on the cell fill. Mirrors egui's
+    /// `compare_kind_style` channel pick.
+    styler_mode: ValueHighlight,
     /// Mirror scroll between the two panes.
     sync_scroll: bool,
     /// Last vertical scroll (in rows) both panes agreed on, used to pick
@@ -179,6 +185,7 @@ impl ComparePanel {
             last_fingerprint: None,
             recomputing: false,
             diff_colors: true,
+            styler_mode: crate::settings::view_mode(crate::settings::settings(cx).byte_highlight_mode),
             sync_scroll: true,
             last_synced_scroll: 0.0,
             table,
@@ -202,6 +209,16 @@ impl ComparePanel {
     fn apply_view_settings(&mut self, cx: &mut Context<Self>) {
         let s = crate::settings::settings(cx);
         let columns_changed = self.a.read(cx).columns() != s.hex_columns;
+        // The egui compare pane turns the byte-value highlight on/off
+        // and picks the mode, but never installs a palette override,
+        // so hxy-view always falls back to the Class tables there --
+        // the scheme setting is ignored (compare/pane.rs:60-75 vs
+        // hxy-view's for_theme_and_mode fallback). Mirrored here via
+        // `compare_highlight_palette`. Derived per settings change, so
+        // a theme flip re-lands on the next settings pass rather than
+        // immediately (accepted lag for compare tabs).
+        let highlight = crate::settings::compare_highlight_palette(&s, cx.theme().mode.is_dark());
+        let mode = crate::settings::view_mode(s.byte_highlight_mode);
         for pane in [self.a.clone(), self.b.clone()] {
             pane.update(cx, |pane, cx| {
                 if pane.columns() != s.hex_columns {
@@ -213,10 +230,17 @@ impl ComparePanel {
                 if pane.minimap_colored() != s.minimap_colored {
                     pane.set_minimap_colored(s.minimap_colored, cx);
                 }
+                if pane.highlight() != highlight.as_ref() {
+                    pane.set_highlight(highlight.clone(), cx);
+                }
             });
         }
         if columns_changed {
             self.rebuild_row_maps(cx);
+        }
+        if mode != self.styler_mode {
+            self.styler_mode = mode;
+            self.apply_stylers(cx);
         }
     }
 
@@ -428,8 +452,9 @@ impl ComparePanel {
             None => (Vec::new(), Vec::new()),
         };
         let on = self.diff_colors;
-        self.a.update(cx, |p, cx| p.set_byte_styler(on.then(|| make_styler(a_ranges)), cx));
-        self.b.update(cx, |p, cx| p.set_byte_styler(on.then(|| make_styler(b_ranges)), cx));
+        let mode = self.styler_mode;
+        self.a.update(cx, |p, cx| p.set_byte_styler(on.then(|| make_styler(a_ranges, mode)), cx));
+        self.b.update(cx, |p, cx| p.set_byte_styler(on.then(|| make_styler(b_ranges, mode)), cx));
     }
 
     fn toggle_diff_colors(&mut self, cx: &mut Context<Self>) {
@@ -556,11 +581,17 @@ fn side_ranges(diff: &DiffResult, side: Side) -> Vec<(u64, u64, HunkKind)> {
         .collect()
 }
 
-/// Per-byte styler over the side's sorted ranges, tinting each cell's
-/// background by hunk kind. `partition_point` finds the last range that
-/// starts at or before the offset, mirroring egui's byte_styler
-/// (`crates/hxy/src/compare/pane.rs:88`).
-fn make_styler(ranges: Vec<(u64, u64, HunkKind)>) -> Box<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send> {
+/// Per-byte styler over the side's sorted ranges, tinting each byte by
+/// hunk kind. The diff color lands on the glyph in `Text` mode (where
+/// the highlight palette owns the cell fill) and on the cell fill
+/// otherwise, mirroring egui's `compare_kind_style`
+/// (`crates/hxy/src/compare/pane.rs`). `partition_point` finds the
+/// last range that starts at or before the offset, mirroring egui's
+/// byte_styler there.
+fn make_styler(
+    ranges: Vec<(u64, u64, HunkKind)>,
+    mode: ValueHighlight,
+) -> Box<dyn Fn(u8, ByteOffset) -> ByteStyleOverride + Send> {
     Box::new(move |_byte, offset| {
         let off = offset.get();
         let idx = ranges.partition_point(|(start, _, _)| *start <= off);
@@ -571,9 +602,10 @@ fn make_styler(ranges: Vec<(u64, u64, HunkKind)>) -> Box<dyn Fn(u8, ByteOffset) 
         if off >= end_exclusive {
             return ByteStyleOverride::default();
         }
-        match kind_color(kind) {
-            Some(bg) => ByteStyleOverride { bg: Some(bg), fg: None },
-            None => ByteStyleOverride::default(),
+        match (kind_color(kind), mode) {
+            (Some(color), ValueHighlight::Text) => ByteStyleOverride { bg: None, fg: Some(color) },
+            (Some(color), ValueHighlight::Background) => ByteStyleOverride { bg: Some(color), fg: None },
+            (None, _) => ByteStyleOverride::default(),
         }
     })
 }
@@ -854,6 +886,24 @@ mod tests {
 
     fn side(name: &str, bytes: Vec<u8>) -> CompareSideInit {
         CompareSideInit { name: name.to_string(), bytes, restore_path: None }
+    }
+
+    /// The diff color lands on the channel egui's `compare_kind_style`
+    /// picks for the highlight mode: cell fill in `Background`, glyph
+    /// in `Text` (where the palette owns the fill); equal spans and
+    /// uncovered offsets style nothing.
+    #[test]
+    fn diff_styler_channel_follows_highlight_mode() {
+        let ranges = vec![(0u64, 4u64, HunkKind::Added), (4, 8, HunkKind::Equal)];
+        let added = kind_color(HunkKind::Added).unwrap();
+
+        let bg_mode = make_styler(ranges.clone(), ValueHighlight::Background);
+        assert_eq!(bg_mode(0, ByteOffset::new(1)), ByteStyleOverride { bg: Some(added), fg: None });
+        assert_eq!(bg_mode(0, ByteOffset::new(5)), ByteStyleOverride::default(), "equal spans style nothing");
+        assert_eq!(bg_mode(0, ByteOffset::new(9)), ByteStyleOverride::default(), "past the last range");
+
+        let text_mode = make_styler(ranges, ValueHighlight::Text);
+        assert_eq!(text_mode(0, ByteOffset::new(1)), ByteStyleOverride { bg: None, fg: Some(added) });
     }
 
     /// A gap row's range label is localized rather than the hard-coded
