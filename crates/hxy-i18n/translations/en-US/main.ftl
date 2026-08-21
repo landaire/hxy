@@ -746,3 +746,7 @@ template-save-failed = Failed to save bytes to { $path }: { $error }
 template-read-bytes-failed = Failed to read the field's bytes: { $error }
 template-swatch-tooltip = Click to override color
 template-swatch-tooltip-override = Click to edit, shift-click to reset
+
+# Plugin operations (M4c)
+gpui-plugin-op-no-outcome = Plugin { $plugin } could not complete the command.
+gpui-plugin-mount-failed = Mounting from { $plugin } failed: { $error }
