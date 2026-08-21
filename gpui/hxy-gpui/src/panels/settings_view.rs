@@ -2,11 +2,10 @@
 //! settings tab (`crates/hxy/src/app/mod.rs::settings_ui`) for the
 //! fields the gpui shell applies (see `crate::settings`'s deviation
 //! ledger). Rows for fields the shell does not honor are not rendered:
-//! zoom, check-for-updates, language, byte-highlight mode
-//! (Background/Text -- the gpui pane paints glyphs only), the address
-//! separator pair, and the whole Memory section (`byte_cache_limit_mib`
-//! -- nothing here constructs a byte cache). egui's settings tab does
-//! not render `file_watch_prefs` rows either, so none appear here.
+//! zoom, check-for-updates, language, the address separator pair, and
+//! the whole Memory section (`byte_cache_limit_mib` -- nothing here
+//! constructs a byte cache). egui's settings tab does not render
+//! `file_watch_prefs` rows either, so none appear here.
 //!
 //! Every mutation routes through [`crate::settings::update_settings`],
 //! so a change persists immediately and live-applies via the
@@ -59,6 +58,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::v_flex;
 use hxy_core::ColumnCount;
 use hxy_settings::AutoReloadMode;
+use hxy_settings::ByteHighlightMode;
 use hxy_settings::ByteHighlightScheme;
 use hxy_settings::IntValueType;
 use hxy_settings::NumericBase;
@@ -524,6 +524,23 @@ impl Render for SettingsPanel {
                 hxy_i18n::t("settings-byte-highlight"),
                 toggle("settings-byte-highlight", s.byte_value_highlight, |s, v| s.byte_value_highlight = v),
             ))
+            .child(setting_row(hxy_i18n::t("settings-byte-highlight-mode"), {
+                let current = s.byte_highlight_mode;
+                h_flex()
+                    .gap_1()
+                    .child(choice_button(
+                        "settings-mode-background",
+                        hxy_i18n::t("settings-byte-highlight-background"),
+                        current == ByteHighlightMode::Background,
+                        |s| s.byte_highlight_mode = ByteHighlightMode::Background,
+                    ))
+                    .child(choice_button(
+                        "settings-mode-text",
+                        hxy_i18n::t("settings-byte-highlight-text"),
+                        current == ByteHighlightMode::Text,
+                        |s| s.byte_highlight_mode = ByteHighlightMode::Text,
+                    ))
+            }))
             .child(setting_row(hxy_i18n::t("settings-byte-highlight-scheme"), {
                 let current = s.byte_highlight_scheme;
                 h_flex()
@@ -682,6 +699,26 @@ mod tests {
         let always_slot = FormatSlot::Ty(IntValueType::U8);
         NumericSetting::Threshold(always_slot).commit(&mut s, 4096);
         assert_eq!(slot_format(&s, always_slot), NumericFormat::Always(NumericBase::Hex));
+    }
+
+    /// The highlight-mode row's choice buttons run this exact mutation
+    /// under `update_settings`; both directions flip the global.
+    #[gpui::test]
+    fn byte_highlight_mode_row_flips_the_global(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::settings::init(cx, SettingsBoot { settings: AppSettings::default(), sink: None, failure: None });
+        });
+        cx.update(|cx| {
+            assert_eq!(crate::settings::settings(cx).byte_highlight_mode, ByteHighlightMode::Background);
+        });
+        cx.update(|cx| update_settings(cx, |s| s.byte_highlight_mode = ByteHighlightMode::Text));
+        cx.update(|cx| {
+            assert_eq!(crate::settings::settings(cx).byte_highlight_mode, ByteHighlightMode::Text);
+        });
+        cx.update(|cx| update_settings(cx, |s| s.byte_highlight_mode = ByteHighlightMode::Background));
+        cx.update(|cx| {
+            assert_eq!(crate::settings::settings(cx).byte_highlight_mode, ByteHighlightMode::Background);
+        });
     }
 
     /// Driving a row's update fn (`commit` under `update_settings`, the
