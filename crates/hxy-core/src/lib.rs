@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod byte_palette;
 mod cache;
 pub mod color;
 pub mod copy;

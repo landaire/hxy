@@ -17,12 +17,21 @@ use crate::state::PersistedState;
 type FieldColorBands<'a> = (&'a [(hxy_core::ByteOffset, hxy_core::ByteLen)], Vec<egui::Color32>);
 
 /// Background tint for patched bytes when the user's highlight mode
-/// paints glyphs. Saturated red stands out against the default cell
-/// fill on both light and dark themes.
-pub const MODIFIED_BYTE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x80, 0x10, 0x10, 0xB0);
+/// paints glyphs. Shared value in `hxy_core::byte_palette`, converted
+/// to `Color32` here (both store premultiplied sRGBA bytes).
+pub const MODIFIED_BYTE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(
+    hxy_core::byte_palette::MODIFIED_BYTE_BG.r,
+    hxy_core::byte_palette::MODIFIED_BYTE_BG.g,
+    hxy_core::byte_palette::MODIFIED_BYTE_BG.b,
+    hxy_core::byte_palette::MODIFIED_BYTE_BG.a,
+);
 /// Foreground tint for patched bytes when the base highlight already
 /// owns the cell fill (background mode or highlighting disabled).
-pub const MODIFIED_BYTE_FG: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x5A, 0x4A);
+pub const MODIFIED_BYTE_FG: egui::Color32 = egui::Color32::from_rgb(
+    hxy_core::byte_palette::MODIFIED_BYTE_FG.r,
+    hxy_core::byte_palette::MODIFIED_BYTE_FG.g,
+    hxy_core::byte_palette::MODIFIED_BYTE_FG.b,
+);
 
 pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut PersistedState) -> Option<CopyKind> {
     // Inline-resolve the active template via direct field access so
