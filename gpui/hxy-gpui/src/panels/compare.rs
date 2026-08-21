@@ -91,12 +91,10 @@ const COLOR_CHANGED: u32 = 0xdca03c;
 /// Fixed height of the bottom hunk table.
 const TABLE_HEIGHT: f32 = 180.0;
 
-/// Wall-clock safety net for the Myers diff, so a pathologically large
-/// or degenerate input can't hang the worker (and pin the toolbar on
-/// "recomputing") indefinitely. Mirrors the egui app's default
-/// `RecomputeDeadline` of 2s (`crates/hxy/src/settings/mod.rs:264`); the
-/// gpui port has no per-tab deadline setting, so this is a fixed bound.
-const RECOMPUTE_DEADLINE: Duration = Duration::from_secs(2);
+// The wall-clock safety net for the Myers diff comes from the user's
+// `compare_recompute_deadline` setting (read per recompute in
+// `Self::recompute`). egui's per-tab `recompute_deadline_override`
+// has no gpui equivalent yet -- the global setting always applies.
 
 /// Which side of the compare pair a range / styler belongs to. `A` is
 /// the old side, `B` the new side (matching `similar`'s indices).
@@ -146,6 +144,10 @@ pub struct ComparePanel {
     _table_sub: Subscription,
     _a_observe: Subscription,
     _b_observe: Subscription,
+    /// Re-applies the view settings (columns, minimap flags) to both
+    /// panes when the settings global changes; egui's compare pane
+    /// reads them per frame instead.
+    _settings_observe: Subscription,
     _debounce: Option<Task<()>>,
     _recompute: Option<Task<()>>,
 }
@@ -165,6 +167,8 @@ impl ComparePanel {
 
         let a_observe = cx.observe(&a_pane, Self::on_pane_changed);
         let b_observe = cx.observe(&b_pane, Self::on_pane_changed);
+        let settings_observe =
+            cx.observe_global::<crate::settings::SettingsGlobal>(|this, cx| this.apply_view_settings(cx));
 
         let mut this = Self {
             a: a_pane,
@@ -181,11 +185,52 @@ impl ComparePanel {
             _table_sub: table_sub,
             _a_observe: a_observe,
             _b_observe: b_observe,
+            _settings_observe: settings_observe,
             _debounce: None,
             _recompute: None,
         };
+        this.apply_view_settings(cx);
         this.recompute(cx);
         this
+    }
+
+    /// Push the user's hex-view settings onto both panes (egui's
+    /// compare pane reads `state.app` per frame). Guarded per field so
+    /// unrelated settings mutations (e.g. a recents bump) do not
+    /// trigger spurious repaints; a columns change also rebuilds the
+    /// aligned row maps, which are laid out per column count.
+    fn apply_view_settings(&mut self, cx: &mut Context<Self>) {
+        let s = crate::settings::settings(cx);
+        let columns_changed = self.a.read(cx).columns() != s.hex_columns;
+        for pane in [self.a.clone(), self.b.clone()] {
+            pane.update(cx, |pane, cx| {
+                if pane.columns() != s.hex_columns {
+                    pane.set_columns(s.hex_columns, cx);
+                }
+                if pane.show_minimap() != s.show_minimap {
+                    pane.set_show_minimap(s.show_minimap, cx);
+                }
+                if pane.minimap_colored() != s.minimap_colored {
+                    pane.set_minimap_colored(s.minimap_colored, cx);
+                }
+            });
+        }
+        if columns_changed {
+            self.rebuild_row_maps(cx);
+        }
+    }
+
+    /// Recompute both panes' aligned row maps from the current diff at
+    /// the current column count. No-op until the first diff lands.
+    fn rebuild_row_maps(&mut self, cx: &mut Context<Self>) {
+        let columns = self.a.read(cx).columns().as_u64();
+        let maps = match &self.diff {
+            Some(diff) => build_row_maps(diff, columns),
+            None => return,
+        };
+        self.a.update(cx, |p, cx| p.set_row_map(Some(maps.a), cx));
+        self.b.update(cx, |p, cx| p.set_row_map(Some(maps.b), cx));
+        cx.notify();
     }
 
     /// Rebuild a disk-vs-disk compare from persisted [`PanelInfo`]. Both
@@ -325,7 +370,7 @@ impl ComparePanel {
     /// Force a fresh diff regardless of the fingerprint gate -- the
     /// toolbar Recompute button, egui parity
     /// (`crates/hxy/src/compare/tab.rs`). Lets the user re-run a diff the
-    /// [`RECOMPUTE_DEADLINE`] truncated on a prior pass. Disabled in the
+    /// recompute deadline truncated on a prior pass. Disabled in the
     /// UI while a run is in flight, matching egui's `add_enabled`.
     pub(crate) fn recompute_now(&mut self, cx: &mut Context<Self>) {
         self.recompute(cx);
@@ -340,10 +385,11 @@ impl ComparePanel {
         let a_len = a_bytes.len() as u64;
         let b_len = b_bytes.len() as u64;
         let fingerprint = (self.fingerprint(Side::A, cx), self.fingerprint(Side::B, cx));
+        let deadline = crate::settings::settings(cx).compare_recompute_deadline.as_duration();
         self.recomputing = true;
         cx.notify();
         self._recompute = Some(cx.spawn(async move |this, cx| {
-            let hunks = cx.background_spawn(async move { diff_with_deadline(&a_bytes, &b_bytes) }).await;
+            let hunks = cx.background_spawn(async move { diff_with_deadline(&a_bytes, &b_bytes, deadline) }).await;
             let diff = DiffResult { hunks, a_len, b_len };
             let _ = this.update(cx, |this, cx| this.apply_diff(diff, fingerprint, cx));
         }));
@@ -532,18 +578,19 @@ fn make_styler(ranges: Vec<(u64, u64, HunkKind)>) -> Box<dyn Fn(u8, ByteOffset) 
     })
 }
 
-/// Run the byte diff with the [`RECOMPUTE_DEADLINE`] safety net. The
-/// deadline path is unavailable on wasm (`similar` calls
+/// Run the byte diff with the user-configured deadline safety net.
+/// The deadline path is unavailable on wasm (`similar` calls
 /// `Instant::now()` internally, which panics there), so wasm runs to
 /// completion -- matching the egui app's own cfg split.
-fn diff_with_deadline(a: &[u8], b: &[u8]) -> Vec<DiffHunk> {
+fn diff_with_deadline(a: &[u8], b: &[u8], budget: Duration) -> Vec<DiffHunk> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let deadline = std::time::Instant::now() + RECOMPUTE_DEADLINE;
+        let deadline = std::time::Instant::now() + budget;
         hxy_panels::diff::diff_hunks_with_deadline(a, b, Some(deadline))
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = budget;
         hxy_panels::diff::diff_hunks(a, b)
     }
 }

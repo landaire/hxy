@@ -196,10 +196,15 @@ impl Palette {
         cx.notify();
     }
 
+    /// Escape: pop one cascade level when the user's
+    /// `palette_escape_pops_to_parent` setting is on (the default),
+    /// else close outright from any mode (egui parity). Backdrop
+    /// clicks always close regardless -- see the setting's doc.
     fn on_dismiss(&mut self, _: &PaletteDismiss, window: &mut Window, cx: &mut Context<Self>) {
+        let pops = crate::settings::settings(cx).palette_escape_pops_to_parent;
         match self.mode.parent() {
-            Some(parent) => self.enter_mode(parent, window, cx),
-            None => self.close(window, cx),
+            Some(parent) if pops => self.enter_mode(parent, window, cx),
+            _ => self.close(window, cx),
         }
     }
 
@@ -722,6 +727,24 @@ mod tests {
 
         cx.simulate_keystrokes("escape");
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "escape at Main closes the palette");
+    }
+
+    /// With `palette_escape_pops_to_parent` off, Escape from a
+    /// sub-mode closes the palette outright instead of popping.
+    #[gpui::test]
+    fn escape_closes_from_submode_when_pop_setting_is_off(cx: &mut TestAppContext) {
+        setup(cx);
+        cx.update(|cx| crate::settings::update_settings(cx, |s| s.palette_escape_pops_to_parent = false));
+        let (ws, cx) = build(cx, 32);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-shift-p");
+        type_query(&pal, "go to offset", cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
+
+        cx.simulate_keystrokes("escape");
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "escape closes outright with the setting off");
     }
 
     /// Down / Up move the selection through the list and wrap. Guards

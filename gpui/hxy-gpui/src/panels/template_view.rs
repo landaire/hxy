@@ -141,12 +141,12 @@ pub struct TemplateView {
     /// (selection unchanged): the resulting SelectRow echo must not
     /// re-fire the hex-view jump.
     suppress_select_echo: bool,
-    /// The gpui shell has no settings UI yet; these hold the shared
-    /// defaults until M4e wires real settings through.
-    numeric_format: NumericFormat,
-    value_formats: TemplateValueFormats,
     table: Entity<TableState<TemplateTableDelegate>>,
     _table_sub: Subscription,
+    /// Refreshes the table (whose cells read the numeric/value
+    /// formats from the settings global at render time) when settings
+    /// change; egui gets this for free from per-frame redraw.
+    _settings_observe: Subscription,
 }
 
 impl TemplateView {
@@ -160,6 +160,10 @@ impl TemplateView {
         let table = cx.new(|cx| TableState::new(TemplateTableDelegate::new(weak), window, cx));
         let table_sub = cx.subscribe_in(&table, window, Self::on_table_event);
         let pane_observe = cx.observe(&pane, |_, _, cx| cx.notify());
+        let settings_observe = cx.observe_global::<crate::settings::SettingsGlobal>(|this, cx| {
+            this.table.update(cx, |table, cx| table.refresh(cx));
+            cx.notify();
+        });
         Self {
             file,
             pane,
@@ -171,10 +175,9 @@ impl TemplateView {
             color_popover: None,
             hovered_row: None,
             suppress_select_echo: false,
-            numeric_format: NumericFormat::default(),
-            value_formats: TemplateValueFormats::default(),
             table,
             _table_sub: table_sub,
+            _settings_observe: settings_observe,
         }
     }
 
@@ -338,7 +341,7 @@ impl TemplateView {
                 })),
         );
         if open {
-            let numeric_format = self.numeric_format;
+            let numeric_format = crate::settings::formats(cx).0;
             for (i, diag) in diagnostics.into_iter().enumerate() {
                 let (icon, color) = match diag.severity {
                     Severity::Error => (IconName::CircleX, cx.theme().danger),
@@ -441,6 +444,7 @@ impl Render for TemplateView {
         // flips the numeric format, mirroring the egui tooltip
         // (crates/hxy/src/view/hex_body.rs).
         let alt = window.modifiers().alt;
+        let value_formats = crate::settings::formats(cx).1;
         let breadcrumb = {
             let pane_ref = self.pane.read(cx);
             pane_ref.hovered_offset().and_then(|byte| {
@@ -451,7 +455,7 @@ impl Render for TemplateView {
                     pane_ref.editor().source().as_ref(),
                     byte.get(),
                     alt,
-                    &self.value_formats,
+                    &value_formats,
                 )
             })
         };
@@ -646,14 +650,10 @@ impl TemplateTableDelegate {
         Some(self.view.upgrade()?.read(cx).rows.get(row_ix)?.clone())
     }
 
+    /// The user's numeric/value formats, straight from the settings
+    /// global (replaces the M4a `Default::default()` placeholders).
     fn formats(&self, cx: &App) -> (NumericFormat, TemplateValueFormats) {
-        match self.view.upgrade() {
-            Some(view) => {
-                let view = view.read(cx);
-                (view.numeric_format, view.value_formats)
-            }
-            None => (NumericFormat::default(), TemplateValueFormats::default()),
-        }
+        crate::settings::formats(cx)
     }
 
     fn numeric_cell(&self, value: u64, cx: &App) -> AnyElement {

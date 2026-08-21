@@ -9,12 +9,14 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
 use gpui_component::Root;
+use gpui_component::WindowExt;
 
 mod menu;
 mod palette;
 mod panels;
 mod patches;
 mod persist;
+mod settings;
 mod status;
 mod templates;
 mod watch;
@@ -29,8 +31,15 @@ fn main() -> ExitCode {
     // as tabs, not just the first.
     let initial: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
 
+    // Blocking pre-window load, like egui's `load_persistent_state`:
+    // the workspace and its panels read settings at construction, so
+    // the global must exist before the window opens.
+    let boot = settings::load_blocking();
+    let settings_failure = boot.failure;
+
     gpui::Application::new().run(move |cx: &mut App| {
         gpui_component::init(cx);
+        settings::init(cx, boot);
         panels::register(cx);
         cx.set_global(templates::load_runtimes());
         cx.set_global(templates::load_library());
@@ -58,6 +67,16 @@ fn main() -> ExitCode {
                 // all Task 2 needs -- no modal surfaces yet (toasts are
                 // Task 6).
                 let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, layout_path, window, cx));
+                if let Some(failure) = settings_failure {
+                    // Deferred like the boot-restore toasts in
+                    // `Workspace::build_initial`: the Root notification
+                    // layer does not exist until after this closure
+                    // returns.
+                    window.defer(cx, move |window, cx| {
+                        let text = hxy_i18n::t(failure.toast_key());
+                        window.push_notification(gpui_component::notification::Notification::warning(text), cx);
+                    });
+                }
                 cx.new(|cx| Root::new(workspace, window, cx))
             },
         )

@@ -154,6 +154,16 @@ pub struct FilePanel {
 impl FilePanel {
     pub fn new(source: Arc<dyn HexSource>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(|cx| HexPane::new(source, cx));
+        // New tabs pick up the persisted preferences at construction
+        // (mirrors egui, where `OpenFile::new` reads the settings);
+        // live changes are pushed by `Workspace::on_settings_changed`.
+        let boot_settings = crate::settings::settings(cx);
+        pane.update(cx, |pane, cx| {
+            pane.set_columns(boot_settings.hex_columns, cx);
+            pane.set_show_minimap(boot_settings.show_minimap, cx);
+            pane.set_minimap_colored(boot_settings.minimap_colored, cx);
+            pane.editor_mut().set_input_mode(boot_settings.input_mode);
+        });
         let search = cx.new(|cx| SearchBar::new(pane.clone(), window, cx));
         let weak = cx.entity().downgrade();
         let template_view = cx.new(|cx| TemplateView::new(weak, pane.clone(), window, cx));
@@ -162,7 +172,7 @@ impl FilePanel {
             cx.subscribe_in(&template_view, window, Self::on_template_offset_jump),
         ];
         let overlay_observe = cx.observe_in(&pane, window, Self::on_pane_notify);
-        Self {
+        let mut this = Self {
             pane,
             path,
             title_override: None,
@@ -183,7 +193,11 @@ impl FilePanel {
             template_rerun_pending: false,
             _template_rerun_task: None,
             _overlay_observe: overlay_observe,
-        }
+        };
+        // Install the settings-driven byte-value palette (if any)
+        // before the first paint.
+        this.sync_pane_overlays(cx);
+        this
     }
 
     /// Pane repainted: if an edit changed the modified-byte set the
@@ -765,6 +779,13 @@ impl FilePanel {
             }
             None => (None, None, None),
         };
+        // A template-supplied palette wins for the run's duration
+        // (egui parity: hex_body.rs prefers the override); otherwise
+        // the user's byte-highlight settings decide. Recomputed here
+        // rather than cached so a theme flip re-derives the right
+        // gradient (`Workspace::render` re-syncs on appearance change).
+        let palette = palette
+            .or_else(|| crate::settings::value_palette(&crate::settings::settings(cx), cx.theme().mode.is_dark()));
         let modified = self.pane.read(cx).editor().modified_ranges();
         self.last_modified_ranges = modified.clone();
         let styler = build_template_styler(modified, fields);

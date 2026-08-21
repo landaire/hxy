@@ -19,6 +19,7 @@ hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
 hxy-panels = { workspace = true }
 hxy-plugin-host = { workspace = true }
+hxy-settings = { workspace = true }
 hxy-templates = { workspace = true }
 hxy-vfs = { workspace = true }
 hxy-view-gpui = { workspace = true }
@@ -30,6 +31,9 @@ jiff = { workspace = true }
 palette-core = { workspace = true }
 serde_json = "1"
 thiserror = "2"
+# Builds the runtime handed to hxy-settings' `SaveSink`, which blocks
+# on it for its SQLite writes.
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 tracing = { workspace = true }
 
 # Template panel "Save bytes to file..." dialog; matches the egui

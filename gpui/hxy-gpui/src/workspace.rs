@@ -83,6 +83,7 @@ use crate::panels::GLOBAL_SEARCH_PANEL_NAME;
 use crate::panels::GlobalSearchPanel;
 use crate::panels::INSPECTOR_PANEL_NAME;
 use crate::panels::InspectorPanel;
+use crate::panels::OpenRecentRequested;
 use crate::panels::OpenVisualizerRequested;
 use crate::panels::STRINGS_PANEL_NAME;
 use crate::panels::StringsPanel;
@@ -99,6 +100,9 @@ use crate::panels::inspector::ActiveHexPane;
 use crate::panels::strings::OpenFilePanels;
 use crate::panels::strings::StringsJumped;
 use crate::persist;
+use crate::settings::AppSettings;
+use crate::settings::SettingsGlobal;
+use crate::settings::update_settings;
 use crate::status::dirty_marker;
 use crate::status::status_file_name_text;
 use crate::status::status_offset_text;
@@ -244,6 +248,9 @@ pub struct Workspace {
     /// whenever any file tab is open. Owned so it can be removed by
     /// identity when the first file opens.
     welcome: Option<Entity<WelcomePanel>>,
+    /// [`OpenRecentRequested`] subscription for the live welcome
+    /// panel; dropped alongside it.
+    welcome_sub: Option<Subscription>,
     /// The file panel backing the active center tab; drives `cmd-w` /
     /// `focus_existing_tab`'s "already active" fast path, and the
     /// close-tab dispatch. `None` whenever the active tab is not a
@@ -374,6 +381,24 @@ pub struct Workspace {
     /// workspace cancels it; never read otherwise.
     _watch_poll_task: Option<Task<()>>,
     _appearance_subscription: Subscription,
+    /// Fires [`Self::on_settings_changed`] whenever `update_settings`
+    /// republishes [`SettingsGlobal`], live-applying the mutated
+    /// fields to open panes / the watcher.
+    _settings_observe: Subscription,
+    /// The settings snapshot the last live-apply pass ran against, so
+    /// `on_settings_changed` only pushes fields that actually changed
+    /// (a recents update must not clobber a palette-set per-pane
+    /// column count, for example).
+    applied_settings: AppSettings,
+    /// Theme darkness observed by the last render, so an appearance
+    /// flip re-derives the theme-dependent byte-value palette.
+    applied_dark: Option<bool>,
+    /// The reload dialog's "always do this for this file" checkbox
+    /// state; reset every time a prompt is staged. A shared cell
+    /// rather than a plain field because the dialog builder runs
+    /// inside this workspace's own render pass, where reading the
+    /// entity would panic.
+    reload_remember: std::rc::Rc<std::cell::Cell<bool>>,
     /// The command-palette overlay. Always childed by `render`; renders
     /// an inert empty element while closed (see [`Palette`]).
     palette: Entity<Palette>,
@@ -417,9 +442,13 @@ impl Workspace {
         };
         let pane_picker = cx.new(DockPicker::new);
 
+        let settings_observe = cx.observe_global::<SettingsGlobal>(|workspace, cx| workspace.on_settings_changed(cx));
+        let boot_settings = crate::settings::settings(cx);
+
         let mut workspace = Self {
             dock,
             welcome: None,
+            welcome_sub: None,
             active_file: None,
             last_active_file: None,
             active_pane_observe: None,
@@ -449,12 +478,16 @@ impl Workspace {
             _quit_subscription: register_quit_persistence(cx),
             _watch_poll_task: None,
             _appearance_subscription: appearance_subscription,
+            _settings_observe: settings_observe,
+            applied_settings: boot_settings.clone(),
+            applied_dark: None,
+            reload_remember: std::rc::Rc::new(std::cell::Cell::new(false)),
             palette,
             pane_picker,
             #[cfg(test)]
             inspector_for_test: None,
         };
-        workspace.file_watch = match crate::watch::FileWatch::new() {
+        workspace.file_watch = match crate::watch::FileWatch::new(crate::watch::polling_prefs(&boot_settings)) {
             Ok(w) => Some(w),
             Err(e) => {
                 tracing::warn!(error = %e, "filesystem watcher unavailable; external changes will go undetected");
@@ -1430,6 +1463,9 @@ impl Workspace {
             self.focus_existing_tab(existing, window, cx);
             return Ok(());
         }
+        // Deviation from egui: `byte_cache_limit_mib` has nothing to
+        // drive here -- opens read the whole file into a
+        // `MemorySource`; no `hxy_core::ByteCache` exists in this app.
         match std::fs::read(&path) {
             Ok(bytes) => {
                 // Detect a VFS handler against the first ~4 KiB so the
@@ -1442,6 +1478,10 @@ impl Workspace {
                 self.add_file_panel(panel.clone(), window, cx);
                 self.suggest_template_for(&panel, window, cx);
                 self.maybe_stage_restore(panel, &path, window, cx);
+                // Every successful disk open lands on the welcome
+                // screen's recents (egui: `add_open_file`'s
+                // `record_recent`), persisted immediately.
+                update_settings(cx, |s| s.record_recent(path));
                 Ok(())
             }
             Err(error) => {
@@ -1489,11 +1529,17 @@ impl Workspace {
         // against the live dump before re-registering it, or a closed
         // background file stays watched and fires ghost reload prompts.
         let dump = self.dock.read(cx).dump(cx);
+        let settings = crate::settings::settings(cx);
         let live_paths: Vec<PathBuf> = self
             .open_files
             .iter()
             .filter_map(|f| f.read(cx).path().map(Path::to_path_buf))
             .filter(|path| dump_has_file_path(&dump.center, path))
+            // `Never` means "don't even watch": no notify registration,
+            // no polling cost (egui's `watch_root_for_file` skips
+            // enrolment the same way). The reconcile diff unwatches a
+            // path the moment its pref flips to Never.
+            .filter(|path| settings.auto_reload_for(path) != hxy_settings::AutoReloadMode::Never)
             .collect();
         let Some(file_watch) = self.file_watch.as_mut() else { return };
         let events = file_watch.poll(live_paths.into_iter());
@@ -1530,9 +1576,13 @@ impl Workspace {
 
     /// Route one filesystem change to every open tab backed by `path`.
     /// A removal always just toasts (mirrors egui's
-    /// `handle_external_change`: there's nothing to reload); a
-    /// modification stages a reload prompt, dropped if one is already
-    /// pending (the file stays watched, so a later change re-fires).
+    /// `handle_external_change`: there's nothing to reload). A
+    /// modification honors the effective auto-reload mode for the
+    /// path (per-file `file_watch_prefs` override, else the global
+    /// `auto_reload`, egui semantics): `Always` re-reads silently,
+    /// `Never` drops the event, `Ask` stages the reload prompt --
+    /// dropped if one is already pending (the file stays watched, so
+    /// a later change re-fires).
     fn handle_external_change(
         &mut self,
         path: PathBuf,
@@ -1549,6 +1599,12 @@ impl Workspace {
             })
             .cloned()
             .collect();
+        // Pref key is the event's path, as in egui's
+        // `handle_external_change`; for plain disk opens it equals the
+        // panel's recorded path that `poll_file_watch`'s enrolment
+        // filter checks.
+        let mode = crate::settings::settings(cx).auto_reload_for(&path);
+        let mut auto_reloaded = false;
         for file in matches {
             let display_name = leaf_name(&path);
             if matches!(kind, crate::watch::ExternalChangeKind::Removed) {
@@ -1556,13 +1612,34 @@ impl Workspace {
                 window.push_notification(Notification::warning(text), cx);
                 continue;
             }
-            if self.pending_reload.is_some() {
-                continue;
+            match mode {
+                hxy_settings::AutoReloadMode::Always => {
+                    if !crate::watch::apply_reload(&file, &path, ReloadDecision::DiscardEdits, cx) {
+                        let text = hxy_i18n::t_args("reload-prompt-failed", &[("name", &display_name)]);
+                        window.push_notification(Notification::error(text), cx);
+                        continue;
+                    }
+                    self.recompute_panels_for_path(&path, cx);
+                    file.update(cx, |panel, cx| panel.rerun_templates(window, cx));
+                    auto_reloaded = true;
+                }
+                hxy_settings::AutoReloadMode::Never => {
+                    tracing::debug!(target = %path.display(), "auto-reload set to Never; ignoring change");
+                }
+                hxy_settings::AutoReloadMode::Ask => {
+                    if self.pending_reload.is_some() {
+                        continue;
+                    }
+                    let has_unsaved = file.read(cx).pane().read(cx).editor().is_dirty();
+                    self.reload_remember.set(false);
+                    self.pending_reload =
+                        Some(crate::watch::PendingReloadPrompt { file, display_name, path: path.clone(), has_unsaved });
+                    self.open_reload_dialog(window, cx);
+                }
             }
-            let has_unsaved = file.read(cx).pane().read(cx).editor().is_dirty();
-            self.pending_reload =
-                Some(crate::watch::PendingReloadPrompt { file, display_name, path: path.clone(), has_unsaved });
-            self.open_reload_dialog(window, cx);
+        }
+        if auto_reloaded && let Some(file_watch) = self.file_watch.as_mut() {
+            file_watch.mark_synced(&path);
         }
     }
 
@@ -1575,6 +1652,7 @@ impl Workspace {
         let path_display = pending.path.display().to_string();
         let has_unsaved = pending.has_unsaved;
         let weak = cx.entity().downgrade();
+        let remember_cell = self.reload_remember.clone();
         window.open_dialog(cx, move |dialog, _window, cx| {
             let body_key =
                 if has_unsaved { "reload-prompt-body-modified-dirty" } else { "reload-prompt-body-modified-clean" };
@@ -1585,6 +1663,26 @@ impl Workspace {
             if has_unsaved {
                 body = body.child(Label::new(hxy_i18n::t("reload-prompt-warn-unsaved")).text_color(cx.theme().warning));
             }
+            // "Always do this for this file": maps the chosen button to
+            // a per-file auto-reload pref on resolve (egui's
+            // `reload-prompt-remember` checkbox). State lives in the
+            // shared cell, not the workspace entity: this builder runs
+            // inside the workspace's own render pass, where reading
+            // the entity would panic.
+            let cell_for_click = remember_cell.clone();
+            let weak_for_remember = weak.clone();
+            body = body.child(
+                gpui_component::checkbox::Checkbox::new("reload-remember")
+                    .label(hxy_i18n::t("reload-prompt-remember"))
+                    .checked(remember_cell.get())
+                    .on_click(move |checked: &bool, _window, cx| {
+                        cell_for_click.set(*checked);
+                        // Repaint so the checkbox reflects the cell.
+                        if let Some(ws) = weak_for_remember.upgrade() {
+                            ws.update(cx, |_, cx| cx.notify());
+                        }
+                    }),
+            );
             let weak_for_footer = weak.clone();
             let weak_for_cancel = weak.clone();
             let weak_for_close = weak.clone();
@@ -1635,6 +1733,23 @@ impl Workspace {
     /// recompute any analysis panels already open for the file.
     fn resolve_reload(&mut self, decision: ReloadDecision, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_reload.take() else { return };
+        if self.reload_remember.replace(false) {
+            // egui's remember mapping (`render_reload_prompt`): Reload
+            // -> Always, Ignore -> Never, Keep-edits -> clear the
+            // override so the user is asked again. An override equal
+            // to the global default is stored as None to keep
+            // `file_watch_prefs` free of redundant entries.
+            let mode = match decision {
+                ReloadDecision::DiscardEdits => Some(hxy_settings::AutoReloadMode::Always),
+                ReloadDecision::Ignore => Some(hxy_settings::AutoReloadMode::Never),
+                ReloadDecision::KeepEdits => None,
+            };
+            let path = pending.path.clone();
+            update_settings(cx, |s| {
+                let pref = mode.filter(|m| *m != s.auto_reload);
+                s.set_auto_reload_for(path, pref);
+            });
+        }
         if !matches!(decision, ReloadDecision::Ignore) {
             let ok = crate::watch::apply_reload(&pending.file, &pending.path, decision, cx);
             if !ok {
@@ -1684,6 +1799,81 @@ impl Workspace {
         for panel in visualizers {
             panel.update(cx, |p, _cx| p.set_owning_path(new.to_path_buf()));
         }
+    }
+
+    /// Live-apply whatever changed in the settings global to the open
+    /// panes and the watcher, mirroring the egui settings panel's
+    /// inline side effects. Only fields that differ from the last
+    /// applied snapshot are pushed, so unrelated mutations (e.g.
+    /// recording a recent file) never clobber per-pane state like a
+    /// palette-set column count. Nested workspace-host file panes pick
+    /// settings up at construction only (they are not in
+    /// `open_files`), matching their M3 scope.
+    fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let next = crate::settings::settings(cx);
+        let prev = std::mem::replace(&mut self.applied_settings, next.clone());
+
+        let panes: Vec<Entity<HexPane>> = self.open_files.iter().map(|f| f.read(cx).pane().clone()).collect();
+        if next.hex_columns != prev.hex_columns {
+            for pane in &panes {
+                pane.update(cx, |pane, cx| pane.set_columns(next.hex_columns, cx));
+            }
+        }
+        if next.input_mode != prev.input_mode {
+            for pane in &panes {
+                pane.update(cx, |pane, cx| {
+                    pane.editor_mut().set_input_mode(next.input_mode);
+                    cx.notify();
+                });
+            }
+        }
+        if next.show_minimap != prev.show_minimap {
+            for pane in &panes {
+                pane.update(cx, |pane, cx| pane.set_show_minimap(next.show_minimap, cx));
+            }
+        }
+        if next.minimap_colored != prev.minimap_colored {
+            for pane in &panes {
+                pane.update(cx, |pane, cx| pane.set_minimap_colored(next.minimap_colored, cx));
+            }
+        }
+        if next.byte_value_highlight != prev.byte_value_highlight
+            || next.byte_highlight_scheme != prev.byte_highlight_scheme
+            || next.byte_highlight_mode != prev.byte_highlight_mode
+        {
+            self.sync_byte_palettes(cx);
+        }
+        if (next.file_poll_interval_ms != prev.file_poll_interval_ms || next.file_poll_all != prev.file_poll_all)
+            && let Some(watch) = self.file_watch.as_mut()
+        {
+            watch.set_polling(crate::watch::polling_prefs(&next));
+        }
+        // offset_base / numeric_format / template_value_formats /
+        // compare_recompute_deadline / palette_escape_pops_to_parent /
+        // auto_reload / file_watch_prefs are read at their use sites
+        // each pass; the repaint below is enough for them.
+        cx.notify();
+    }
+
+    /// Re-derive every open file's settings/theme-dependent byte
+    /// palette (and template overlays with it).
+    fn sync_byte_palettes(&mut self, cx: &mut Context<Self>) {
+        for file in self.open_files.clone() {
+            file.update(cx, |file, cx| file.sync_pane_overlays(cx));
+        }
+    }
+
+    /// A welcome-screen recents row was clicked: open the path through
+    /// the normal flow (dedup, error toast; a fresh open also bumps
+    /// the recents list -- focusing an already-open tab does not).
+    fn on_welcome_open_recent(
+        &mut self,
+        _welcome: &Entity<WelcomePanel>,
+        event: &OpenRecentRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_path(event.0.clone(), window, cx);
     }
 
     fn recompute_panels_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -2032,22 +2222,17 @@ impl Workspace {
         self.toggle_active_vim(cx);
     }
 
-    /// Toggle the reference file's input mode between Default and Vim
-    /// (see `reference_active_file`'s doc -- FILE-SCOPED, so this
-    /// still acts on the right file with a strings tab focused).
-    /// Shared by the `cmd-alt-v` action and the palette's Toggle Vim
-    /// entry.
+    /// Flip vim mode: rotate the persisted `input_mode` setting, which
+    /// the settings observer then applies to every open editor
+    /// (mirrors egui's `toggle_vim_mode` -- the toggle and the
+    /// settings value stay in sync in both directions). Shared by the
+    /// `cmd-alt-v` action and the palette's Toggle Vim entry.
     pub(crate) fn toggle_active_vim(&mut self, cx: &mut Context<Self>) {
-        let Some(file) = self.reference_active_file(cx) else { return };
-        let pane = file.read(cx).pane().clone();
-        pane.update(cx, |pane, cx| {
-            let next = match pane.editor().input_mode() {
-                InputMode::Default => InputMode::Vim,
-                InputMode::Vim => InputMode::Default,
-            };
-            pane.editor_mut().set_input_mode(next);
-            cx.notify();
-        });
+        let next = match crate::settings::settings(cx).input_mode {
+            InputMode::Default => InputMode::Vim,
+            InputMode::Vim => InputMode::Default,
+        };
+        update_settings(cx, |s| s.input_mode = next);
     }
 
     /// `cmd-e` / Edit > Toggle Edit Mode: flip the reference file (see
@@ -2412,7 +2597,11 @@ impl Workspace {
             let _ = this.update_in(cx, |ws, window, cx| {
                 ws.patterns_fetch = None;
                 match result {
-                    Ok((_sha256, _root)) => {
+                    Ok((sha256, _root)) => {
+                        // Record the installed corpus hash so the
+                        // shared settings blob agrees with what egui's
+                        // update check expects.
+                        update_settings(cx, |s| s.imhex_patterns.installed_hash = Some(sha256));
                         crate::templates::refresh_library(cx);
                         window.push_notification(Notification::success(hxy_i18n::t("patterns-fetch-done")), cx);
                     }
@@ -2923,6 +3112,7 @@ impl Workspace {
         if !has_content {
             if self.welcome.is_none() {
                 let welcome = cx.new(WelcomePanel::new);
+                self.welcome_sub = Some(cx.subscribe_in(&welcome, window, Self::on_welcome_open_recent));
                 let view: Arc<dyn PanelView> = Arc::new(welcome.clone());
                 let weak = self.dock.downgrade();
                 self.dock.update(cx, |dock, cx| {
@@ -2944,6 +3134,7 @@ impl Workspace {
             // cache from the live tree before touching the welcome tab.
             self.resync_center_if_stale(window, cx);
             if let Some(welcome) = self.welcome.take() {
+                self.welcome_sub = None;
                 let view: Arc<dyn PanelView> = Arc::new(welcome);
                 self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
             }
@@ -3095,11 +3286,12 @@ impl Workspace {
     fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let file_label = Label::new(status_file_name_text(self.active_path(cx).as_deref()));
 
+        let offset_base = crate::settings::settings(cx).offset_base;
         let (offset, mode) = match self.reference_active_file(cx) {
             Some(file) => {
                 let file = file.read(cx);
                 let editor = file.pane().read(cx).editor();
-                let offset = status_offset_text(editor.selection());
+                let offset = status_offset_text(editor.selection(), offset_base);
                 let mut mode = String::new();
                 if matches!(editor.input_mode(), InputMode::Vim) {
                     mode.push_str(&status_vim_mode_text(editor.vim_state().mode));
@@ -3459,6 +3651,14 @@ fn snapshot_compare_button(
 fn register_quit_persistence(cx: &mut Context<Workspace>) -> Subscription {
     cx.on_app_quit(|workspace: &mut Workspace, cx: &mut Context<Workspace>| {
         workspace.persist_unsaved_on_quit(cx);
+        // Close the settings sink's pool on the way out (egui parity:
+        // its shutdown path calls `SaveSink::close`). Every write was
+        // already committed synchronously; this just checkpoints WAL.
+        if cx.has_global::<crate::settings::SettingsSink>()
+            && let Some(sink) = cx.remove_global::<crate::settings::SettingsSink>().0
+        {
+            sink.close();
+        }
         // Nothing to await -- the persistence pass is synchronous.
         async {}
     })
@@ -3509,7 +3709,13 @@ fn dismiss_restore(weak: &WeakEntity<Workspace>, window: &mut Window, cx: &mut A
 /// close routes to the same "ignore" branch as the Ignore button.
 fn dismiss_reload_as_ignore(weak: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
     if let Some(workspace) = weak.upgrade() {
-        workspace.update(cx, |workspace, cx| workspace.resolve_reload(ReloadDecision::Ignore, window, cx));
+        workspace.update(cx, |workspace, cx| {
+            // Dismissal is a non-decision: egui's Cancel branch returns
+            // before its remember mapping, so a ticked checkbox must
+            // not persist a Never pref here.
+            workspace.reload_remember.set(false);
+            workspace.resolve_reload(ReloadDecision::Ignore, window, cx);
+        });
     }
 }
 
@@ -3886,6 +4092,27 @@ impl Render for Workspace {
         if self.last_title.as_deref() != Some(title.as_str()) {
             window.set_window_title(&title);
             self.last_title = Some(title);
+        }
+
+        // The settings-driven byte-value palette is theme-dependent
+        // (dark/light gradient constants); a system appearance flip
+        // re-derives it for every open pane. Deferred out of render
+        // like `reconcile` below.
+        let dark = cx.theme().mode.is_dark();
+        if self.applied_dark != Some(dark) {
+            let first_observation = self.applied_dark.is_none();
+            self.applied_dark = Some(dark);
+            // The boot render observes the theme for the first time;
+            // panes already derived their palette against it at
+            // construction, so only later flips re-sync.
+            if !first_observation {
+                let this = cx.entity().downgrade();
+                window.defer(cx, move |_window, cx| {
+                    if let Some(this) = this.upgrade() {
+                        this.update(cx, |workspace, cx| workspace.sync_byte_palettes(cx));
+                    }
+                });
+            }
         }
 
         if self.needs_reconcile {
@@ -6569,11 +6796,19 @@ mod tests {
         .unwrap();
         assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_some()));
         assert!(cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap());
+        // Tick the remember checkbox: a dismissal (as opposed to a
+        // footer button) is a non-decision and must not persist a
+        // per-file pref from it.
+        workspace.read_with(cx, |ws, _| ws.reload_remember.set(true));
 
         cx.simulate_keystrokes(window.into(), "escape");
         cx.run_until_parked();
 
         assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_none()), "escape clears the pending prompt");
+        assert!(
+            cx.update(|cx| crate::settings::settings(cx).file_watch_prefs.is_empty()),
+            "dismissal must not persist the ticked remember checkbox"
+        );
         assert!(
             !cx.update_window(window.into(), |_, window, cx| window.has_active_dialog(cx)).unwrap(),
             "escape closes the dialog"
@@ -6946,5 +7181,145 @@ mod tests {
         let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
         assert_eq!(count, 0, "the visualizer tab closed with its file");
         assert!(window.read_with(cx, |ws, _| ws.visualizer_panels.is_empty()).unwrap());
+    }
+
+    /// A `hex_columns` settings change live-applies to every open
+    /// pane through the workspace's `SettingsGlobal` observer.
+    #[gpui::test]
+    fn settings_columns_live_apply_to_open_panes(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 64]);
+        let b = temp_file(&dir, "b.bin", &[1u8; 64]);
+        let window = open_workspace(cx, vec![a, b], None);
+
+        cx.update(|cx| update_settings(cx, |s| s.hex_columns = hxy_core::ColumnCount::new(24).unwrap()));
+        cx.run_until_parked();
+
+        let columns: Vec<u16> = window
+            .read_with(cx, |ws, cx| ws.open_files.iter().map(|f| f.read(cx).pane().read(cx).columns().get()).collect())
+            .unwrap();
+        assert_eq!(columns, vec![24, 24], "both open panes picked up the new column count");
+    }
+
+    /// A successful disk open records the path at the top of the
+    /// persisted recent-files list.
+    #[gpui::test]
+    fn open_records_recent_files(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 8]);
+        let _window = open_workspace(cx, vec![a.clone()], None);
+
+        let recents = cx.update(|cx| crate::settings::settings(cx).recent_files);
+        assert_eq!(recents.first().map(|r| r.path.clone()), Some(a));
+    }
+
+    /// The vim toggle rotates the persisted `input_mode` setting and
+    /// the observer applies it to every open editor (egui
+    /// `toggle_vim_mode` parity: toggle and setting stay in sync).
+    #[gpui::test]
+    fn toggle_vim_updates_settings_and_all_editors(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 8]);
+        let b = temp_file(&dir, "b.bin", &[0u8; 8]);
+        let window = open_workspace(cx, vec![a, b], None);
+
+        window.update(cx, |ws, _window, cx| ws.toggle_active_vim(cx)).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(cx.update(|cx| crate::settings::settings(cx).input_mode), InputMode::Vim);
+        let modes: Vec<InputMode> = window
+            .read_with(cx, |ws, cx| {
+                ws.open_files.iter().map(|f| f.read(cx).pane().read(cx).editor().input_mode()).collect()
+            })
+            .unwrap();
+        assert_eq!(modes, vec![InputMode::Vim, InputMode::Vim], "every open editor flipped");
+    }
+
+    /// Clicking a welcome-screen recents row routes through the normal
+    /// open flow and lands a file tab.
+    #[gpui::test]
+    fn welcome_recent_click_opens_the_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "recent.bin", &[7u8; 8]);
+        let (_window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
+
+        let welcome = workspace.read_with(cx, |ws, _| ws.welcome.clone().expect("welcome shown on empty workspace"));
+        cx.update(|cx| welcome.update(cx, |_, cx| cx.emit(OpenRecentRequested(a.clone()))));
+        cx.run_until_parked();
+
+        let count = workspace.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center));
+        assert_eq!(count, 1, "the recents click opened the file");
+        let active = workspace.read_with(cx, |ws, cx| ws.active_path(cx));
+        assert_eq!(active, Some(a));
+    }
+
+    /// Resolving the reload prompt with the remember checkbox ticked
+    /// persists the per-file pref (Ignore -> Never), mirroring egui's
+    /// `render_reload_prompt` mapping.
+    #[gpui::test]
+    fn resolving_with_remember_persists_the_per_file_pref(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![f1.clone()], None);
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(f1.clone(), crate::watch::ExternalChangeKind::Modified, window, cx);
+            });
+        })
+        .unwrap();
+        assert!(workspace.read_with(cx, |ws, _| ws.pending_reload.is_some()));
+        workspace.read_with(cx, |ws, _| ws.reload_remember.set(true));
+
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| ws.resolve_reload(ReloadDecision::Ignore, window, cx));
+        })
+        .unwrap();
+
+        let prefs = cx.update(|cx| crate::settings::settings(cx).file_watch_prefs);
+        assert_eq!(prefs.len(), 1);
+        assert_eq!(prefs[0].path, f1);
+        assert_eq!(prefs[0].auto_reload, hxy_settings::AutoReloadMode::Never);
+    }
+
+    /// `auto_reload: Always` applies an external modification
+    /// silently: bytes re-read, no prompt staged (egui
+    /// `handle_external_change` parity).
+    #[gpui::test]
+    fn auto_reload_always_swaps_bytes_without_a_prompt(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "watched.bin", b"aaaa");
+        let (window, workspace) = open_workspace_with_root(cx, vec![a.clone()], None);
+        cx.update(|cx| update_settings(cx, |s| s.auto_reload = hxy_settings::AutoReloadMode::Always));
+
+        std::fs::write(&a, b"bbbb").unwrap();
+        let a_for_event = a.clone();
+        cx.update_window(window.into(), |_, window, cx| {
+            workspace.update(cx, |ws, cx| {
+                ws.handle_external_change(a_for_event, crate::watch::ExternalChangeKind::Modified, window, cx)
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.pending_reload.is_none(), "no prompt in Always mode");
+            let file = ws.open_files.first().expect("file open");
+            let bytes = file
+                .read(cx)
+                .pane()
+                .read(cx)
+                .editor()
+                .source()
+                .read(ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap())
+                .unwrap();
+            assert_eq!(&*bytes, b"bbbb", "bytes were re-read from disk silently");
+        });
     }
 }

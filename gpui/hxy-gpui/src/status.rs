@@ -6,6 +6,8 @@
 use std::path::Path;
 
 use hxy_core::Selection;
+use hxy_core::format::OffsetBase;
+use hxy_core::format::format_offset;
 use hxy_editor::VimMode;
 
 /// Status-bar / title label for the currently open file: its base
@@ -37,14 +39,21 @@ pub fn window_title_text(path: Option<&Path>) -> String {
 }
 
 /// Status-bar label for the cursor offset, and the selection length
-/// when the selection is a range rather than a caret.
-pub fn status_offset_text(selection: Option<Selection>) -> String {
+/// when the selection is a range rather than a caret. `base` is the
+/// user's `offset_base` setting (egui's status bar reads the same
+/// setting; its click-to-toggle affordance is not ported here).
+pub fn status_offset_text(selection: Option<Selection>, base: OffsetBase) -> String {
     match selection {
         None => hxy_i18n::t("gpui-status-no-selection"),
-        Some(sel) if sel.is_caret() => hxy_i18n::t_args("gpui-status-offset", &[("offset", &sel.cursor.to_string())]),
+        Some(sel) if sel.is_caret() => {
+            hxy_i18n::t_args("gpui-status-offset", &[("offset", &format_offset(sel.cursor.get(), base))])
+        }
         Some(sel) => {
             let len = sel.range().len().get();
-            hxy_i18n::t_args("gpui-status-selection", &[("offset", &sel.cursor.to_string()), ("len", &len.to_string())])
+            hxy_i18n::t_args(
+                "gpui-status-selection",
+                &[("offset", &format_offset(sel.cursor.get(), base)), ("len", &len.to_string())],
+            )
         }
     }
 }
@@ -109,21 +118,29 @@ mod tests {
 
     #[test]
     fn offset_text_none_selection() {
-        assert_eq!(status_offset_text(None), hxy_i18n::t("gpui-status-no-selection"));
+        assert_eq!(status_offset_text(None, OffsetBase::Hex), hxy_i18n::t("gpui-status-no-selection"));
     }
 
     #[test]
     fn offset_text_caret_has_no_length_suffix() {
         let sel = Selection::caret(ByteOffset::new(0x2A));
-        let text = status_offset_text(Some(sel));
+        let text = status_offset_text(Some(sel), OffsetBase::Hex);
         assert!(text.contains("0x2A"));
         assert!(!text.contains("byte"));
     }
 
     #[test]
+    fn offset_text_honors_decimal_base() {
+        let sel = Selection::caret(ByteOffset::new(0x2A));
+        let text = status_offset_text(Some(sel), OffsetBase::Decimal);
+        assert!(text.contains("42"));
+        assert!(!text.contains("0x"));
+    }
+
+    #[test]
     fn offset_text_range_includes_length() {
         let sel = Selection { anchor: ByteOffset::new(0x10), cursor: ByteOffset::new(0x1F) };
-        let text = status_offset_text(Some(sel));
+        let text = status_offset_text(Some(sel), OffsetBase::Hex);
         assert!(text.contains("0x1F"));
         assert!(text.contains("16"));
     }

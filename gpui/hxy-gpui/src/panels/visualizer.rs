@@ -84,7 +84,6 @@ use gpui_component::table::Table;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableState;
 use gpui_component::v_flex;
-use hxy_core::format::NumericFormat;
 use hxy_core::format::TemplateValueFormats;
 use hxy_core::format::format_offset;
 use hxy_panels::entropy::MAX_ENTROPY;
@@ -181,6 +180,9 @@ pub struct VisualizerPanel {
     owning_path: Option<PathBuf>,
     owning_file: Option<Entity<FilePanel>>,
     _rebind_observe: Subscription,
+    /// Rebuilds the precomputed table rows (whose offset/length/value
+    /// cells bake in the settings formats) when settings change.
+    _settings_observe: Subscription,
     /// Re-syncs targets whenever the bound file panel notifies (run
     /// completion, re-run, instance removal, byte edits).
     _file_observe: Option<Subscription>,
@@ -193,10 +195,6 @@ pub struct VisualizerPanel {
     /// is `VisualizerKind::Table`.
     table_rows: Vec<VisTableRow>,
     table: Entity<TableState<VisTableDelegate>>,
-    /// The gpui shell has no settings UI yet; shared defaults until
-    /// real settings wire through (same rule as `TemplateView`).
-    numeric_format: NumericFormat,
-    value_formats: TemplateValueFormats,
 }
 
 impl VisualizerPanel {
@@ -219,6 +217,7 @@ impl VisualizerPanel {
 
     fn with_state(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rebind_observe = cx.observe_global::<OpenFilePanels>(|this, cx| this.try_bind_from_global(cx));
+        let settings_observe = cx.observe_global::<crate::settings::SettingsGlobal>(|this, cx| this.sync_from_file(cx));
         let weak = cx.entity().downgrade();
         let table = cx.new(|cx| TableState::new(VisTableDelegate::new(weak), window, cx));
         Self {
@@ -226,14 +225,13 @@ impl VisualizerPanel {
             owning_path: path,
             owning_file: None,
             _rebind_observe: rebind_observe,
+            _settings_observe: settings_observe,
             _file_observe: None,
             targets: Vec::new(),
             active: None,
             caches: HashMap::new(),
             table_rows: Vec::new(),
             table,
-            numeric_format: NumericFormat::default(),
-            value_formats: TemplateValueFormats::default(),
         }
     }
 
@@ -300,6 +298,12 @@ impl VisualizerPanel {
         self.caches.insert(key, KindCache::default());
     }
 
+    /// The formatted (offset, length) cell texts of the table rows.
+    #[cfg(test)]
+    pub(crate) fn table_row_spans_for_test(&self) -> Vec<(String, String)> {
+        self.table_rows.iter().map(|r| (r.offset.to_string(), r.length.to_string())).collect()
+    }
+
     /// Re-derive the target list from the bound file's template
     /// instances, gc caches whose node is gone, normalize the active
     /// sub-tab, and rebuild the table rows. The single sync point for
@@ -344,6 +348,10 @@ impl VisualizerPanel {
         let file = file.read(cx);
         let Some(instance) = file.templates.iter().find(|t| t.id == key.instance) else { return Vec::new() };
         let parent = key.node.0;
+        // User formats from the settings global (replaces the M4a
+        // `Default::default()` placeholders).
+        let (numeric_format, value_formats) = crate::settings::formats(cx);
+        let format_num = |value: u64| format_offset(value, numeric_format.pick(value));
         instance
             .state
             .tree
@@ -353,15 +361,11 @@ impl VisualizerPanel {
             .map(|n| VisTableRow {
                 name: SharedString::from(n.name.clone()),
                 type_label: SharedString::from(hxy_plugin_host::node_display_type(n)),
-                offset: SharedString::from(self.format_num(n.span.offset)),
-                length: SharedString::from(self.format_num(n.span.length)),
-                value: SharedString::from(format_table_value(n, &self.value_formats)),
+                offset: SharedString::from(format_num(n.span.offset)),
+                length: SharedString::from(format_num(n.span.length)),
+                value: SharedString::from(format_table_value(n, &value_formats)),
             })
             .collect()
-    }
-
-    fn format_num(&self, value: u64) -> String {
-        format_offset(value, self.numeric_format.pick(value))
     }
 
     fn render_tab_strip(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1379,6 +1383,41 @@ mod tests {
         vcx.run_until_parked();
         let file = panel.read_with(vcx, |p, _| p.owning_file_for_test().expect("bound at construction"));
         (panel, file, vcx)
+    }
+
+    /// The table kind's offset/length cells format with the user's
+    /// numeric format from the settings global, not the M4a-era
+    /// defaults.
+    #[gpui::test]
+    fn table_rows_use_settings_numeric_format(cx: &mut TestAppContext) {
+        setup(cx);
+        cx.update(|cx| {
+            let settings = crate::settings::AppSettings {
+                numeric_format: hxy_core::format::NumericFormat::Always(hxy_core::format::NumericBase::Decimal),
+                ..crate::settings::AppSettings::default()
+            };
+            crate::settings::init(cx, crate::settings::SettingsBoot { settings, sink: None, failure: None });
+        });
+        let (panel, file, cx) = build(cx);
+        let table = scalar_node("tbl", (0, 12), Some("table"));
+        let mut child = scalar_node("field", (10, 4), None);
+        child.parent = Some(0);
+        install_tree(&file, cx, tree(vec![table, child]));
+
+        let rows = panel.read_with(cx, |p, _| p.table_row_spans_for_test());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "10", "decimal per the settings global, not the 0xA default");
+        assert_eq!(rows[0].1, "4");
+
+        // Live-apply: a later format change rebuilds the rows.
+        cx.update(|_, cx| {
+            crate::settings::update_settings(cx, |s| {
+                s.numeric_format = hxy_core::format::NumericFormat::Always(hxy_core::format::NumericBase::Hex);
+            });
+        });
+        cx.run_until_parked();
+        let rows = panel.read_with(cx, |p, _| p.table_row_spans_for_test());
+        assert_eq!(rows[0].0, "0xA", "format change live-applied to the table rows");
     }
 
     /// Targets derive from the bound file's template instances: nodes

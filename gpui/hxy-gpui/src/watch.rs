@@ -68,13 +68,19 @@ pub(crate) struct FileWatch {
 }
 
 impl FileWatch {
-    pub(crate) fn new() -> notify::Result<Self> {
+    pub(crate) fn new(prefs: PollingPrefs) -> notify::Result<Self> {
         let (tx, wake_rx) = mpsc::channel();
         let wake: Wake = Arc::new(move || {
             let _ = tx.send(());
         });
-        let watcher = FileWatcher::with_prefs(wake, PollingPrefs::default())?;
+        let watcher = FileWatcher::with_prefs(wake, prefs)?;
         Ok(Self { watcher, wake_rx, watched_paths: HashSet::new() })
+    }
+
+    /// Push a new polling cadence / poll-all flag into the watcher's
+    /// worker. Called when the corresponding settings change.
+    pub(crate) fn set_polling(&mut self, prefs: PollingPrefs) {
+        self.watcher.set_polling(prefs);
     }
 
     /// Reconcile watched paths against `live` (every open `FilePanel`'s
@@ -105,6 +111,21 @@ impl FileWatch {
     pub(crate) fn watched_paths(&self) -> &HashSet<PathBuf> {
         &self.watched_paths
     }
+}
+
+/// Translate the persisted watcher settings into the live polling
+/// prefs the worker thread expects. Ports egui's
+/// `polling_prefs_from_settings` (crates/hxy/src/app/mod.rs): `0`
+/// disables polling entirely; anything else clamps to the watcher's
+/// supported interval range.
+pub(crate) fn polling_prefs(settings: &hxy_settings::AppSettings) -> PollingPrefs {
+    let interval = if settings.file_poll_interval_ms == 0 {
+        None
+    } else {
+        let dur = Duration::from_millis(u64::from(settings.file_poll_interval_ms));
+        Some(dur.clamp(PollingPrefs::MIN_INTERVAL, PollingPrefs::MAX_INTERVAL))
+    };
+    PollingPrefs { interval, poll_all: settings.file_poll_all }
 }
 
 /// Why a watched path changed. A removal always just toasts (there's
@@ -192,7 +213,7 @@ mod tests {
         let path = dir.path().join("watched.bin");
         std::fs::write(&path, b"before").unwrap();
 
-        let mut watch = FileWatch::new().unwrap();
+        let mut watch = FileWatch::new(PollingPrefs::default()).unwrap();
         // First poll: registers the path (nothing to drain yet).
         let events = watch.poll(std::iter::once(path.clone()));
         assert!(events.is_empty());
