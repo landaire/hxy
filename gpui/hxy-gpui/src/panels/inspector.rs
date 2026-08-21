@@ -44,7 +44,10 @@ use gpui::Window;
 use gpui::div;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::Icon;
+use gpui_component::IconName;
 use gpui_component::Selectable;
+use gpui_component::Sizable;
 use gpui_component::button::Button;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
@@ -308,7 +311,12 @@ impl Panel for InspectorPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t("tab-inspector"))
+        // Eye prefix mirrors egui's inspector header glyph.
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(Icon::new(IconName::Eye).small())
+            .child(SharedString::from(hxy_i18n::t("tab-inspector")))
     }
 
     /// The inspector is a persistent workspace utility toggled by

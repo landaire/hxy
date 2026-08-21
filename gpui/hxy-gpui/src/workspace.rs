@@ -33,8 +33,11 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::Icon;
+use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
+use gpui_component::button::ButtonVariants;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
 use gpui_component::dock::DockItem;
@@ -58,6 +61,7 @@ use hxy_editor::EditMode;
 use hxy_editor::InputMode;
 use hxy_view_gpui::HexPane;
 
+use crate::assets::HxyIcon;
 use crate::menu::CloseTab;
 use crate::menu::CopyBytes;
 use crate::menu::CopyHex;
@@ -3354,7 +3358,7 @@ impl Workspace {
         let file_label = Label::new(status_file_name_text(self.active_path(cx).as_deref()));
 
         let offset_base = crate::settings::settings(cx).offset_base;
-        let (offset, mode) = match self.reference_active_file(cx) {
+        let (offset, mode, lock) = match self.reference_active_file(cx) {
             Some(file) => {
                 let file = file.read(cx);
                 let editor = file.pane().read(cx).editor();
@@ -3365,9 +3369,16 @@ impl Workspace {
                     mode.push(' ');
                 }
                 mode.push_str(dirty_marker(editor.is_dirty()));
-                (offset, mode)
+                // Lock chip mirrors egui's status-bar edit-mode toggle:
+                // the tooltip describes what a click will do, not what
+                // the icon shows.
+                let lock = match editor.edit_mode() {
+                    EditMode::Readonly => (HxyIcon::Lock, hxy_i18n::t("status-lock-readonly-tooltip")),
+                    EditMode::Mutable => (HxyIcon::LockOpen, hxy_i18n::t("status-lock-mutable-tooltip")),
+                };
+                (offset, mode, Some(lock))
             }
-            None => (String::new(), String::new()),
+            None => (String::new(), String::new(), None),
         };
 
         h_flex()
@@ -3383,7 +3394,15 @@ impl Workspace {
             .text_color(cx.theme().muted_foreground)
             .child(file_label)
             .child(Label::new(offset))
-            .child(Label::new(mode))
+            .child(h_flex().items_center().gap_2().child(Label::new(mode)).when_some(lock, |row, (icon, tooltip)| {
+                row.child(
+                    Button::new("status-edit-lock").ghost().xsmall().icon(Icon::new(icon)).tooltip(tooltip).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.on_toggle_edit_mode(&ToggleEditMode, window, cx);
+                        }),
+                    ),
+                )
+            }))
     }
 }
 

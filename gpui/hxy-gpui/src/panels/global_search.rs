@@ -47,8 +47,10 @@ use gpui::div;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
+use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::Selectable;
+use gpui_component::Sizable;
 use gpui_component::button::Button;
 use gpui_component::checkbox::Checkbox;
 use gpui_component::dock::Panel;
@@ -438,7 +440,16 @@ impl Panel for GlobalSearchPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t("tab-search-results"))
+        // Search prefix mirrors egui's MAGNIFYING_GLASS. gpui-component
+        // 0.5.1 surfaces this element only in single-panel title-bar
+        // mode; beside sibling tabs the TabBar renders the plain
+        // `tab_name` text (a SharedString with no icon slot), which is
+        // also what the dock pane-picker labels rows with.
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(Icon::new(IconName::Search).small())
+            .child(SharedString::from(hxy_i18n::t("tab-search-results")))
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

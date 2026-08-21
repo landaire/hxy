@@ -58,8 +58,10 @@ use gpui::px;
 use gpui::size;
 use gpui::uniform_list;
 use gpui_component::ActiveTheme;
+use gpui_component::Icon;
 use gpui_component::PixelsExt;
 use gpui_component::Selectable;
+use gpui_component::Sizable;
 use gpui_component::button::Button;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
@@ -101,6 +103,7 @@ use hxy_templates::visualize::read_field_bytes;
 
 use super::FilePanel;
 use super::strings::OpenFilePanels;
+use crate::assets::HxyIcon;
 
 /// Stable identifier for layout (de)serialization; must never change.
 pub const VISUALIZER_PANEL_NAME: &str = "VisualizerPanel";
@@ -1232,7 +1235,13 @@ impl Panel for VisualizerPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t_args("tab-visualizer", &[("name", &tab_label(self.owning_path.as_deref()))]))
+        // Image-square prefix mirrors egui's visualizer header glyph;
+        // close lives on the dock tab itself (egui's in-header X). Shows
+        // only in single-panel title-bar mode -- the multi-tab TabBar
+        // renders `tab_name` text, which has no icon slot (0.5.1).
+        h_flex().gap_1().items_center().child(Icon::new(HxyIcon::ImageSquare).small()).child(SharedString::from(
+            hxy_i18n::t_args("tab-visualizer", &[("name", &tab_label(self.owning_path.as_deref()))]),
+        ))
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

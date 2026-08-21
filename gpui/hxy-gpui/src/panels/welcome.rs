@@ -21,6 +21,8 @@ use gpui::Window;
 use gpui::div;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::Icon;
+use gpui_component::IconName;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
 use gpui_component::dock::Panel;
@@ -119,11 +121,15 @@ impl Render for WelcomePanel {
                 .overflow_y_scroll()
                 .children(rows.into_iter().enumerate().map(|(i, (label, path))| {
                     let tooltip = path.display().to_string();
-                    Button::new(("welcome-recent", i)).ghost().compact().label(label).tooltip(tooltip).on_click(
-                        cx.listener(move |_, _, _, cx| {
+                    Button::new(("welcome-recent", i))
+                        .ghost()
+                        .compact()
+                        .icon(Icon::new(IconName::File))
+                        .label(label)
+                        .tooltip(tooltip)
+                        .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(OpenRecentRequested(path.clone()));
-                        }),
-                    )
+                        }))
                 }))
                 .into_any_element()
         };

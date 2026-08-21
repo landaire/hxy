@@ -56,6 +56,8 @@ use gpui::Subscription;
 use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
+use gpui_component::Icon;
+use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
@@ -67,6 +69,7 @@ use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
 use gpui_component::dock::PanelView;
 use gpui_component::dock::register_panel;
+use gpui_component::h_flex;
 use gpui_component::notification::Notification;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
@@ -77,6 +80,7 @@ use hxy_vfs::VfsRegistry;
 use super::FilePanel;
 use super::vfs_tree::VfsTreeEvent;
 use super::vfs_tree::VfsTreePanel;
+use crate::assets::HxyIcon;
 
 /// Stable identifier for layout (de)serialization; must never change.
 pub const WORKSPACE_HOST_PANEL_NAME: &str = "WorkspaceHostPanel";
@@ -421,7 +425,11 @@ impl Panel for WorkspaceHostPanel {
             .as_ref()
             .map(|p| display_name(p))
             .unwrap_or_else(|| hxy_i18n::t("gpui-workspace-tab-untitled"));
-        SharedString::from(text)
+        // House prefix mirrors egui's workspace-root icon (inner entry
+        // tabs stay unprefixed). Shows only in single-panel title-bar
+        // mode -- the multi-tab TabBar renders `tab_name` text, which
+        // has no icon slot (gpui-component 0.5.1).
+        h_flex().gap_1().items_center().child(Icon::new(HxyIcon::House).small()).child(SharedString::from(text))
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

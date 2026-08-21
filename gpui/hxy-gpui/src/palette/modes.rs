@@ -672,11 +672,17 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
     }
 }
 
+/// Semantic icon token for warning/invalid rows. The overlay maps it
+/// to a rendered icon; kept a plain string so this module stays free
+/// of UI-framework types.
+pub const ICON_WARNING: &str = "warning";
+
 /// Push a disabled "Invalid: {reason}" row bound to [`PaletteAction::NoOp`].
 fn push_invalid(out: &mut Vec<Entry<PaletteAction>>, query: &str, reason: &str) {
     out.push(
         Entry::new(hxy_i18n::t_args("palette-invalid-fmt", &[("reason", reason)]), PaletteAction::NoOp)
             .with_subtitle(query.to_owned())
+            .with_icon(ICON_WARNING)
             .with_disabled(true),
     );
 }
@@ -835,6 +841,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].disabled);
         assert_eq!(entries[0].data, PaletteAction::NoOp);
+        assert_eq!(entries[0].icon.as_deref(), Some(ICON_WARNING), "invalid rows carry the warning icon token");
     }
 
     #[test]

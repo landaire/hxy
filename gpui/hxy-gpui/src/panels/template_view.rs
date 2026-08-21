@@ -78,6 +78,7 @@ use hxy_templates::state::TemplateState;
 use hxy_view_gpui::HexPane;
 
 use super::FilePanel;
+use crate::assets::HxyIcon;
 use crate::templates::rgba_to_hsla;
 
 /// Key context for the results table's arrow-key bindings. Scoping
@@ -269,6 +270,7 @@ impl TemplateView {
             .px_2()
             .py_1()
             .items_center()
+            .child(Icon::new(HxyIcon::Scroll).small())
             .child(Label::new(hxy_i18n::t("template-panel-title")))
             .child(div().flex_1())
             .when_some(show_colors, |row, on| {
@@ -714,7 +716,7 @@ impl TemplateTableDelegate {
                 Button::new(("tmpl-visualize", row_ix))
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(IconName::Eye))
+                    .icon(Icon::new(HxyIcon::ImageSquare))
                     .tooltip(SharedString::from(hxy_i18n::t_args("visualizer-row-tooltip", &[("name", &name)])))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();

@@ -37,6 +37,7 @@ use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Icon;
 use gpui_component::IconName;
+use gpui_component::Sizable;
 use gpui_component::h_flex;
 use gpui_component::input::Input;
 use gpui_component::input::InputEvent;
@@ -528,7 +529,14 @@ impl Palette {
         let title_color = if entry.disabled { muted } else { base };
         let title = highlighted_title(&entry.title, match_indices, title_color, hit_color, entry.disabled);
 
-        let mut left = h_flex().gap_2().items_center().child(title);
+        let mut left = h_flex().gap_2().items_center();
+        // Entries carry semantic icon tokens (see `modes::ICON_WARNING`)
+        // rather than asset paths, mirroring egui's WARNING glyph on
+        // invalid rows.
+        if entry.icon.as_deref() == Some(modes::ICON_WARNING) {
+            left = left.child(Icon::new(IconName::TriangleAlert).small().text_color(title_color));
+        }
+        left = left.child(title);
         if let Some(subtitle) = &entry.subtitle {
             left = left.child(div().text_color(muted).text_sm().child(subtitle.clone()));
         }

@@ -29,7 +29,10 @@ impl AssetSource for Assets {
 /// sites with no lucide `IconName` equivalent. Renders through
 /// gpui-component's `Icon` via the `IconNamed` impl.
 ///
-/// Call sites are wired by the M4g Task 4 icon parity sweep.
+/// `PuzzlePiece`, `SquaresFour`, and `TreeStructure` have no gpui
+/// surface yet (plugin toasts, tab-focus chip, plugin-mount tabs);
+/// they stay vendored for the M4c/M4f surfaces that wire them --
+/// hence the dead_code allowance.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HxyIcon {
