@@ -1,7 +1,11 @@
 # GPUI port of hxy: design
 
 Date: 2026-07-24
-Status: approved (pending spec review)
+Status: implemented (M0-M4 complete as of 2026-08-21). The GPUI app
+reaches feature parity with the egui app across all subsystems; the
+remaining differences are catalogued in "Known deviations from the
+egui app (as of M4)" below. See docs/superpowers/plans/2026-08-20-m4f-parity-matrix.md
+for the full feature-by-feature matrix.
 
 ## Goal
 
@@ -129,8 +133,10 @@ review, commit); this spec governs all of them.
   grants shared via hxy.db, palette commands, VFS mounts, plugins panel),
   M4d (single-instance IPC + CLI open + macOS open-with, done; plan
   2026-08-20-m4d-gpui-ipc.md; shared hxy-ipc crate, gpui-native
-  on_open_urls; NSServices right-click provider not ported), then M4f
-  (console tab, i18n sweep incl. gpui system-locale init, final audit).
+  on_open_urls; NSServices right-click provider not ported), and M4f
+  (console tab, i18n sweep incl. gpui system-locale init, final parity
+  audit, done; plan 2026-08-20-m4f-gpui-console-i18n-audit.md). All M4
+  sub-milestones complete.
 - M4: template runner (010/ImHex), visualizers (they are driven by
   template visualize attributes and have no data source before templates
   exist), plugins and mounts, IPC single-instance, settings persistence,
