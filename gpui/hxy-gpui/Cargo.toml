@@ -17,6 +17,7 @@ hxy-calculator = { workspace = true }
 hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 hxy-i18n = { workspace = true }
+hxy-ipc = { workspace = true }
 hxy-panels = { workspace = true }
 hxy-plugin-host = { workspace = true }
 hxy-settings = { workspace = true }

@@ -446,6 +446,11 @@ pub struct Workspace {
     /// The file-watch reconcile-and-drain loop. Held so dropping the
     /// workspace cancels it; never read otherwise.
     _watch_poll_task: Option<Task<()>>,
+    /// The single-instance IPC drain loop (forwarded second-instance and
+    /// macOS open-with paths). Held so dropping the workspace ends it;
+    /// never read otherwise. `None` until `start_ipc` runs, and stays
+    /// `None` off macOS when the socket failed to bind (nothing to drain).
+    _ipc_poll_task: Option<Task<()>>,
     _appearance_subscription: Subscription,
     /// Fires [`Self::on_settings_changed`] whenever `update_settings`
     /// republishes [`SettingsGlobal`], live-applying the mutated
@@ -548,6 +553,7 @@ impl Workspace {
             restore_queue: std::collections::VecDeque::new(),
             _quit_subscription: register_quit_persistence(cx),
             _watch_poll_task: None,
+            _ipc_poll_task: None,
             _appearance_subscription: appearance_subscription,
             _settings_observe: settings_observe,
             applied_settings: boot_settings.clone(),
@@ -1699,6 +1705,51 @@ impl Workspace {
             window.push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
         }
         cx.notify();
+    }
+
+    /// Open every path handed over by a forwarded second-instance launch
+    /// or a macOS "Open With", then bring this window to the front so the
+    /// user sees the file they asked for. Each path opens through the same
+    /// `open_or_focus` disk path as `cmd-o`/CLI boot: an already-open path
+    /// focuses its tab instead of adding a duplicate. Read errors surface
+    /// as toasts, matching `open_path`.
+    pub fn open_external_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            if let Err((path, error)) = self.open_or_focus(path, window, cx) {
+                window.push_notification(Notification::error(status_open_error_text(&path, &error.to_string())), cx);
+            }
+        }
+        // Raise the window and app: the whole point of single-instance
+        // forwarding is that the file appears in the window the user
+        // already had, in front, instead of a fresh copy stealing focus.
+        window.activate_window();
+        cx.activate(true);
+        cx.notify();
+    }
+
+    /// Wire the single-instance IPC receiver into a `Timer` poll loop that
+    /// drains forwarded path batches (and, on macOS, the Apple-Event /
+    /// NSServices buffer) into `open_external_paths`. Mirrors
+    /// `spawn_watch_poll`: the loop ends when the workspace entity drops.
+    ///
+    /// `receiver` is `None` when the socket failed to bind. On macOS the
+    /// loop still runs to drain the Apple-Event buffer (which `install`
+    /// fills regardless of the socket); off macOS a missing receiver means
+    /// nothing to drain, so the idle timer is skipped.
+    pub fn start_ipc(
+        &mut self,
+        receiver: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(target_os = "macos"))]
+        if receiver.is_none() {
+            return;
+        }
+        self._ipc_poll_task = Some(spawn_ipc_poll(receiver, window, cx));
     }
 
     /// Shared open logic: focus an already-open tab for `path` instead
@@ -3961,6 +4012,46 @@ fn spawn_watch_poll(window: &mut Window, cx: &mut Context<Workspace>) -> Task<()
     })
 }
 
+/// Poll cadence for draining forwarded-open batches. The std mpsc
+/// `Receiver` and the macOS Apple-Event buffer are both non-blocking
+/// sources, so a tick period trades latency for idle cost. 250ms keeps a
+/// forwarded open feeling immediate without a per-frame drain (egui gets
+/// its latency from the frame loop; this is the executor equivalent). The
+/// wake callback in `hxy_ipc::macos_open` is left unset -- this loop
+/// drains that buffer every tick regardless, so a nudge buys nothing.
+const IPC_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Drain the IPC receiver (and macOS open-with buffer) on a Timer cadence,
+/// opening each forwarded batch in the running workspace. Structured like
+/// `spawn_watch_poll`: the `update_in` returning `Err` (entity dropped)
+/// ends the loop.
+fn spawn_ipc_poll(
+    receiver: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Task<()> {
+    cx.spawn_in(window, async move |this, cx| {
+        loop {
+            gpui::Timer::after(IPC_POLL_INTERVAL).await;
+            let mut paths: Vec<PathBuf> = Vec::new();
+            if let Some(receiver) = receiver.as_ref() {
+                while let Ok(batch) = receiver.try_recv() {
+                    paths.extend(batch);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            for batch in hxy_ipc::macos_open::drain_pending_paths() {
+                paths.extend(batch);
+            }
+            // Always update to detect a dropped workspace and end the loop;
+            // `open_external_paths` no-ops (no window raise) on an empty set.
+            if this.update_in(cx, |workspace, window, cx| workspace.open_external_paths(paths, window, cx)).is_err() {
+                return;
+            }
+        }
+    })
+}
+
 /// One button in the reload dialog's footer: clicking it resolves the
 /// pending prompt with `decision` on the workspace, then closes the
 /// dialog. A plain closure (not `cx.listener`) because the dialog's
@@ -5521,6 +5612,34 @@ mod tests {
 
         assert_eq!(file_count(window, cx), 2, "a repeated CLI path must not duplicate the tab");
         assert_eq!(active_path(window, cx), Some(f1), "the repeated path's tab must end up focused");
+    }
+
+    /// A forwarded second-instance / macOS open-with batch opens each
+    /// path as a tab through the same disk path as `cmd-o`, and an
+    /// already-open path in a later batch focuses its tab instead of
+    /// duplicating it. This is the in-process half of single-instance
+    /// forwarding; the true two-process behavior is the milestone shell
+    /// test.
+    #[gpui::test]
+    fn open_external_paths_opens_batch_and_dedups(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = temp_file(&dir, "a.bin", &[1u8; 16]);
+        let f2 = temp_file(&dir, "b.bin", &[2u8; 16]);
+        let f3 = temp_file(&dir, "c.bin", &[3u8; 16]);
+
+        let window = open_workspace(cx, Vec::new(), None);
+
+        window.update(cx, |ws, window, cx| ws.open_external_paths(vec![f1.clone(), f2.clone()], window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 2, "a forwarded batch opens one tab per path");
+
+        // A second batch re-sends an already-open path plus a new one: the
+        // open path focuses (no duplicate), the new one adds a tab.
+        window.update(cx, |ws, window, cx| ws.open_external_paths(vec![f1.clone(), f3.clone()], window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(file_count(window, cx), 3, "an already-open forwarded path must not duplicate its tab");
+        assert_eq!(active_path(window, cx), Some(f3), "the last forwarded path ends up active");
     }
 
     /// With no file open the welcome placeholder shows and focus rests

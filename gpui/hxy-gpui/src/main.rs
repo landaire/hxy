@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use gpui::App;
@@ -28,11 +27,28 @@ mod workspace;
 use workspace::Workspace;
 
 fn main() -> ExitCode {
+    // macOS Finder "Open With" / right-click "Open in hxy": register the
+    // Apple-Event / NSServices handlers BEFORE `Application::run` starts
+    // AppKit, or a cold-start open-with document crashes the delegate
+    // state machine mid-dispatch (see `hxy_ipc::macos_open::install`).
+    #[cfg(target_os = "macos")]
+    hxy_ipc::macos_open::install();
+
     // Full file-open UX also covers cmd-o (workspace.rs); every CLI path
     // argument opens the same way at startup (read, dedup, error-toast
     // on failure -- see `Workspace::build_initial`), so all of them open
-    // as tabs, not just the first.
-    let initial: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+    // as tabs, not just the first. `resolved_files` canonicalizes against
+    // the CWD and drops missing paths so a forwarded path is CWD-neutral.
+    let initial = hxy_ipc::cli::Cli::parse_args().resolved_files();
+
+    // Single-instance: if another hxy is already running, hand it the file
+    // list and exit WITHOUT opening a second window. An empty list means a
+    // bare re-launch, which starts its own window (mirrors the egui app);
+    // a failed connect is the normal "we are the first instance" path.
+    if !initial.is_empty() && hxy_ipc::socket::try_send_to_running_instance(&initial).is_ok() {
+        tracing::info!(count = initial.len(), "forwarded to running instance");
+        return ExitCode::SUCCESS;
+    }
 
     // Blocking pre-window load, like egui's `load_persistent_state`:
     // the workspace and its panels read settings at construction, so
@@ -41,6 +57,16 @@ fn main() -> ExitCode {
     let settings_failure = boot.failure;
 
     gpui::Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
+        // Bind the single-instance socket and hand the workspace a receiver
+        // of forwarded path batches. A bind failure (stale lock, perms)
+        // leaves the app running without accepting forwarded opens.
+        let ipc_receiver = match hxy_ipc::socket::start_server() {
+            Ok(rx) => Some(rx),
+            Err(e) => {
+                tracing::warn!(error = %e, "ipc: bind socket; forwarded opens disabled");
+                None
+            }
+        };
         gpui_component::init(cx);
         // Must run after gpui_component::init (Theme global) and before
         // the window's sync_system_appearance so the first paint and all
@@ -78,6 +104,13 @@ fn main() -> ExitCode {
                 // all Task 2 needs -- no modal surfaces yet (toasts are
                 // Task 6).
                 let workspace = cx.new(|cx| Workspace::new(initial, appearance_subscription, layout_path, window, cx));
+                // Route forwarded second-instance / macOS open-with paths
+                // into this running workspace via an executor poll loop. The
+                // receiver is `None` when the socket failed to bind; on
+                // macOS the loop still drains the Apple-Event buffer, so it
+                // must not be gated on the socket (mirrors egui, which
+                // drains that buffer every frame regardless).
+                workspace.update(cx, |ws, cx| ws.start_ipc(ipc_receiver, window, cx));
                 if let Some(failure) = settings_failure {
                     // Deferred like the boot-restore toasts in
                     // `Workspace::build_initial`: the Root notification
