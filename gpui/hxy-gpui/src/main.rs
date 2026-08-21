@@ -17,6 +17,7 @@ mod palette;
 mod panels;
 mod patches;
 mod persist;
+mod plugins;
 mod settings;
 mod status;
 mod templates;
@@ -46,6 +47,10 @@ fn main() -> ExitCode {
         // later appearance toggles use the hxy theme pair.
         theme::init(cx);
         settings::init(cx, boot);
+        // Reads the shared persist handle settings just installed, so
+        // it must follow settings::init and precede the window (panels
+        // and the palette read the plugin globals).
+        plugins::init(cx);
         panels::register(cx);
         cx.set_global(templates::load_runtimes());
         cx.set_global(templates::load_library());
