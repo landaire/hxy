@@ -40,6 +40,12 @@ fn parse_file_url(url: &str) -> Option<PathBuf> {
 }
 
 fn main() -> ExitCode {
+    // Follow the OS language before any localized string can be emitted,
+    // matching the egui app's startup (crates/hxy/src/main.rs). en-US is
+    // the only bundled locale today, so runtime text is unchanged; the
+    // call is what lets a future locale take effect.
+    hxy_i18n::init_from_system_locale();
+
     // Full file-open UX also covers cmd-o (workspace.rs); every CLI path
     // argument opens the same way at startup (read, dedup, error-toast
     // on failure -- see `Workspace::build_initial`), so all of them open
@@ -167,5 +173,15 @@ mod tests {
     #[test]
     fn skips_non_file_url() {
         assert_eq!(parse_file_url("https://example.com/x.bin"), None);
+    }
+
+    /// `main` calls this at startup so the gpui app follows the OS
+    /// language like the egui app. Referencing it here means a rename or
+    /// signature change breaks the build rather than silently dropping
+    /// the language selection; the returned locale is en-US in this build.
+    #[test]
+    fn system_locale_init_is_wired() {
+        let picked = hxy_i18n::init_from_system_locale();
+        assert_eq!(picked.language.as_str(), "en");
     }
 }
