@@ -11034,6 +11034,7 @@ alias(
 cargo.rust_library(
     name = "hxy-core-0.5",
     srcs = [
+        "crates/hxy-core/src/byte_palette.rs",
         "crates/hxy-core/src/cache.rs",
         "crates/hxy-core/src/color.rs",
         "crates/hxy-core/src/copy.rs",
