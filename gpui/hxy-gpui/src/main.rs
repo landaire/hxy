@@ -20,6 +20,7 @@ mod persist;
 mod settings;
 mod status;
 mod templates;
+mod theme;
 mod watch;
 mod workspace;
 
@@ -40,6 +41,10 @@ fn main() -> ExitCode {
 
     gpui::Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         gpui_component::init(cx);
+        // Must run after gpui_component::init (Theme global) and before
+        // the window's sync_system_appearance so the first paint and all
+        // later appearance toggles use the hxy theme pair.
+        theme::init(cx);
         settings::init(cx, boot);
         panels::register(cx);
         cx.set_global(templates::load_runtimes());
