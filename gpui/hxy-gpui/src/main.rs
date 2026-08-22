@@ -14,6 +14,7 @@ use gpui_component::WindowExt;
 mod assets;
 mod console;
 mod menu;
+mod os_color;
 mod palette;
 mod panels;
 mod patches;
@@ -116,8 +117,10 @@ fn main() -> ExitCode {
             WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
             move |window, cx| {
                 gpui_component::Theme::sync_system_appearance(Some(window), cx);
+                os_color::sync(cx);
                 let appearance_subscription = window.observe_window_appearance(|window, cx| {
                     gpui_component::Theme::sync_system_appearance(Some(window), cx);
+                    os_color::sync(cx);
                 });
                 // Initial keyboard focus (active pane if a file loaded,
                 // otherwise the workspace itself so cmd-o stays

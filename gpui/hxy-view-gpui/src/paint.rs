@@ -775,6 +775,15 @@ impl PaintColors {
             dark: theme.mode.is_dark(),
         }
     }
+
+    /// Overrides the selection color (e.g. with an OS-derived one),
+    /// re-deriving the hover tint from it so the secondary band stays
+    /// consistent with the primary selection band.
+    pub(crate) fn with_selection(mut self, selection: Hsla) -> Self {
+        self.selection = selection;
+        self.hover = selection.opacity(HOVER_TINT_ALPHA);
+        self
+    }
 }
 
 #[cfg(test)]

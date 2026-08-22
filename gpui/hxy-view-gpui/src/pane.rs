@@ -49,6 +49,18 @@ use crate::paint::hex_canvas;
 /// first frame measures the real line height.
 const FALLBACK_LINE_H: f32 = 16.0;
 
+/// Process-wide OS-derived byte-selection color. The app shell owns the
+/// platform FFI that reads the native selection color and installs this
+/// global; [`HexPane::render`] reads it to override the theme selection
+/// so the hex selection band matches the OS. `None` (non-macOS, or
+/// before the shell sets it) leaves the theme's own selection color in
+/// place. Re-installed on appearance change, since the OS selection
+/// color resolves differently in light and dark mode.
+#[derive(Clone, Copy, Default)]
+pub struct OsSelectionColor(pub Option<Hsla>);
+
+impl gpui::Global for OsSelectionColor {}
+
 /// The installed byte-value palette plus how it paints. Mirrors egui
 /// hxy-view's `(ValueHighlight, HighlightPalette)` pair: `Text` tints
 /// the hex/ascii glyphs with `table[byte]`, `Background` fills the
@@ -648,6 +660,10 @@ impl Focusable for HexPane {
 
 impl Render for HexPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut colors = PaintColors::from_theme(cx.theme());
+        if let Some(os_selection) = cx.try_global::<OsSelectionColor>().and_then(|g| g.0) {
+            colors = colors.with_selection(os_selection);
+        }
         let snap = GridSnapshot {
             source: self.editor.source().clone(),
             selection: self.editor.selection(),
@@ -655,7 +671,7 @@ impl Render for HexPane {
             nibble: self.editor.nibble(),
             columns: self.columns,
             scroll_rows: self.scroll_rows,
-            colors: PaintColors::from_theme(cx.theme()),
+            colors,
             mono_family: cx.theme().mono_font_family.clone(),
             mono_size: cx.theme().mono_font_size,
             row_map: self.row_map.clone(),

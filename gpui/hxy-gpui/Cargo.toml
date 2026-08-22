@@ -10,8 +10,7 @@ description = "GPUI port of the hxy hex editor"
 publish = false
 
 [dependencies]
-gpui = { workspace = true }
-gpui-component = { workspace = true }
+gpui = { workspace = true }gpui-component = { workspace = true }
 gpui_dock_picker = { workspace = true }
 hxy-calculator = { workspace = true }
 hxy-core = { workspace = true }
@@ -57,7 +56,15 @@ rfd = "0.17.2"
 # constructors return it); pinned to the same version hxy-panels uses.
 notify = "8"
 
+# Reads the native macOS selection color (NSColor.selectedTextBackgroundColor)
+# for the hex selection band. Both crates are already in the tree
+# transitively via gpui, so this adds no new build cost; versions track
+# gpui 0.2.2's objc2 stack so the types unify.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSColor", "NSColorSpace"] }
+
 [dev-dependencies]
-gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 zip = { version = "8.5.1", default-features = false }

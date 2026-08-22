@@ -14,4 +14,5 @@ pub use pane::ByteStyleOverride;
 pub use pane::ByteStyler;
 pub use pane::FrameInfo;
 pub use pane::HexPane;
+pub use pane::OsSelectionColor;
 pub use pane::PaneHighlight;
