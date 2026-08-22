@@ -49,8 +49,12 @@ const ROW_H: f32 = 2.0;
 /// Strip background tint, painted under the row colors.
 const STRIP_BG_ALPHA: f32 = 0.06;
 
-const INDICATOR_FILL_ALPHA: f32 = 0.18;
-const INDICATOR_OUTLINE_ALPHA: f32 = 0.55;
+/// Fill wash over the visible slice. Kept low so the downsampled row
+/// colors underneath still read through the accent tint.
+const INDICATOR_FILL_ALPHA: f32 = 0.14;
+/// Width of the solid accent bar on the indicator's inner edge, the
+/// strongest readable cue (mirrors egui_minimap's left bracket).
+const INDICATOR_BRACKET_W: f32 = 3.0;
 
 /// Bounds of the minimap strip, latched once per frame alongside the
 /// rest of [`crate::FrameInfo`]. A plain origin/size pair rather than
@@ -203,9 +207,12 @@ fn average_gray_color(bytes: &[u8], dark: bool) -> Hsla {
     Hsla { h: 0.0, s: 0.0, l, a: hxy_core::byte_palette::MINIMAP_CELL_BLEND }
 }
 
-/// Translucent quad over the strip rows spanned by the grid's current
-/// viewport, mirroring `egui_minimap`'s indicator (`Minimap::show`,
-/// crates/egui_minimap/src/lib.rs): filled band plus a full outline.
+/// Marks the strip rows spanned by the grid's current viewport, in the
+/// theme accent: an accent wash, a crisp accent outline, and a solid
+/// accent bar on the inner edge. The accent (vs the old low-alpha
+/// foreground wash) and the bar make the visible slice legible over the
+/// downsampled row colors. Mirrors `egui_minimap`'s indicator plus its
+/// left bracket (`Minimap::show`, crates/egui_minimap/src/lib.rs).
 fn paint_viewport_indicator(
     strip: MinimapBounds,
     colors: &PaintColors,
@@ -221,8 +228,10 @@ fn paint_viewport_indicator(
     let top = strip.origin.y + px(strip_h * top_frac);
     let bot = strip.origin.y + px(strip_h * bot_frac);
     let indicator = bounds(point(strip.origin.x, top), size(strip.size.width, (bot - top).max(px(1.0))));
-    window.paint_quad(fill(indicator, colors.foreground.opacity(INDICATOR_FILL_ALPHA)));
-    window.paint_quad(outline(indicator, colors.foreground.opacity(INDICATOR_OUTLINE_ALPHA), BorderStyle::Solid));
+    window.paint_quad(fill(indicator, colors.accent.opacity(INDICATOR_FILL_ALPHA)));
+    window.paint_quad(outline(indicator, colors.accent, BorderStyle::Solid));
+    let bracket = bounds(indicator.origin, size(px(INDICATOR_BRACKET_W).min(indicator.size.width), indicator.size.height));
+    window.paint_quad(fill(bracket, colors.accent));
 }
 
 #[cfg(test)]
