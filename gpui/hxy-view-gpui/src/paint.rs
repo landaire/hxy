@@ -16,6 +16,7 @@ use gpui::Hsla;
 use gpui::Pixels;
 use gpui::Point;
 use gpui::Styled;
+use gpui::TextAlign;
 use gpui::TextRun;
 use gpui::Window;
 use gpui::bounds;
@@ -591,7 +592,7 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
 
     if !ascii.is_empty() {
         let shaped = window.text_system().shape_line(ascii.into(), snap.mono_size, &ascii_runs, None);
-        let _ = shaped.paint(point(ctx.origin_x + g.ascii_x(0), ctx.row_y), ctx.line_h(), window, app);
+        let _ = shaped.paint(point(ctx.origin_x + g.ascii_x(0), ctx.row_y), ctx.line_h(), TextAlign::Left, None, window, app);
     }
 }
 
@@ -680,7 +681,7 @@ fn paint_line(
 ) {
     let runs = [run(text.len(), color, mono)];
     let shaped = window.text_system().shape_line(text.to_string().into(), size, &runs, None);
-    let _ = shaped.paint(origin, window.line_height(), window, app);
+    let _ = shaped.paint(origin, window.line_height(), TextAlign::Left, None, window, app);
 }
 
 fn run(len: usize, color: Hsla, mono: &Font) -> TextRun {

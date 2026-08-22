@@ -51,6 +51,7 @@ use gpui_component::Disableable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::checkbox::Checkbox;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -497,11 +498,27 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
-impl Panel for ChecksumsPanel {
+impl BasePanel for ChecksumsPanel {
     fn panel_name(&self) -> &'static str {
         CHECKSUMS_PANEL_NAME
     }
 
+    /// Persist the owning path, selected algorithms, and range
+    /// verbatim -- see the module doc for why this diverges from
+    /// strings/entropy's "backfill fresh on rebind" rule.
+    fn dump(&self, _cx: &App) -> PanelState {
+        let mut state = PanelState::new(self.panel_name());
+        state.info = PanelInfo::panel(serde_json::json!({
+            "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "algorithms": self.config.algorithms.iter().map(|&alg| algorithm_key(alg)).collect::<Vec<_>>(),
+            "range_start": self.config.range.start().get(),
+            "range_end": self.config.range.end().get(),
+        }));
+        state
+    }
+}
+
+impl Panel for ChecksumsPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(hxy_i18n::t_args("tab-checksums", &[("name", &tab_label(self.owning_path.as_deref()))]))
     }
@@ -511,20 +528,6 @@ impl Panel for ChecksumsPanel {
             "tab-checksums",
             &[("name", &tab_label(self.owning_path.as_deref()))],
         )))
-    }
-
-    /// Persist the owning path, selected algorithms, and range
-    /// verbatim -- see the module doc for why this diverges from
-    /// strings/entropy's "backfill fresh on rebind" rule.
-    fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
-        state.info = PanelInfo::panel(serde_json::json!({
-            "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            "algorithms": self.config.algorithms.iter().map(|&alg| algorithm_key(alg)).collect::<Vec<_>>(),
-            "range_start": self.config.range.start().get(),
-            "range_end": self.config.range.end().get(),
-        }));
-        state
     }
 }
 

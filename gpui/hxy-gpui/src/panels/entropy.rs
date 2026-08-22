@@ -61,8 +61,8 @@ use gpui::px;
 use gpui::size;
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
-use gpui_component::PixelsExt;
 use gpui_component::button::Button;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -364,17 +364,9 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
-impl Panel for EntropyPanel {
+impl BasePanel for EntropyPanel {
     fn panel_name(&self) -> &'static str {
         ENTROPY_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t_args("tab-entropy", &[("name", &tab_label(self.owning_path.as_deref()))]))
-    }
-
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(hxy_i18n::t_args("tab-entropy", &[("name", &tab_label(self.owning_path.as_deref()))])))
     }
 
     /// Persist the owning path only. The computed points, mean/max, and
@@ -383,11 +375,21 @@ impl Panel for EntropyPanel {
     /// round-tripping verbatim -- same rule `StringsPanel::dump`
     /// documents for its scan range.
     fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         state.info = PanelInfo::panel(serde_json::json!({
             "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
         }));
         state
+    }
+}
+
+impl Panel for EntropyPanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(hxy_i18n::t_args("tab-entropy", &[("name", &tab_label(self.owning_path.as_deref()))]))
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(hxy_i18n::t_args("tab-entropy", &[("name", &tab_label(self.owning_path.as_deref()))])))
     }
 }
 

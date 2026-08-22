@@ -10,18 +10,31 @@ license = "MIT OR Apache-2.0"
 authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
 
-# gpui-component 0.5.2 is not published to crates.io (crates.io index tops
-# out at 0.5.1; 0.5.2 is only the git workspace's in-progress version
-# string). Pinning 0.5.1, the latest actually-published release and what
-# rusthex (the reference consumer) uses.
+# gpui-component points at the local fork (`~/src/gpui-component`), whose
+# 0.5.2 dock rewrite (pure-data `PaneTree`/`DockLayout`, nestable side
+# docks, per-tab close) is what the app now targets. The fork is not on
+# crates.io, so this is a path dep during fork development; swap to the
+# pushed git fork once it lands upstream. A relative path keeps the
+# reference off any one machine's absolute layout (assumes the fork sits
+# at `~/src/gpui-component` alongside `~/dev/hxy`).
+#
+# The fork's `gpui-component` resolves `gpui` from zed git (it depends on
+# git-only zed crates like `gpui_platform`/`gpui_macros` that never ship
+# to crates.io), so the app must resolve the SAME git `gpui` or the two
+# `gpui` instances are distinct crates and won't interoperate. Hence the
+# git rev below matches the fork's `Cargo.lock`.
 # `runtime_shaders`: gpui's default macOS build ahead-of-time-compiles its
 # Metal shaders via `xcrun metal`, which ships with full Xcode.app, not
 # Xcode Command Line Tools (all that's installed here). This feature makes
 # gpui stitch/compile shaders at runtime instead, so the build doesn't need
-# the `metal` binary at all.
+# the `metal` binary at all. At this zed rev the feature lives on
+# `gpui_platform` (not `gpui`), so it is enabled via a direct
+# `gpui_platform` dep that hxy-gpui pulls in; Cargo feature unification
+# then turns it on for the single `gpui_platform` the whole graph shares.
 [workspace.dependencies]
-gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
-gpui-component = "=0.5.1"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5", features = ["runtime_shaders"] }
+gpui-component = { path = "../../../src/gpui-component/crates/ui" }
 gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.5.0" }
 hxy-core = { path = "../crates/hxy-core", version = "0.5.0" }

@@ -49,6 +49,7 @@ use gpui_component::IconName;
 use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::Button;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -305,18 +306,9 @@ fn state_from_info(info: &PanelInfo) -> InspectorState {
     state
 }
 
-impl Panel for InspectorPanel {
+impl BasePanel for InspectorPanel {
     fn panel_name(&self) -> &'static str {
         INSPECTOR_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // Eye prefix mirrors egui's inspector header glyph.
-        h_flex()
-            .gap_1()
-            .items_center()
-            .child(Icon::new(IconName::Eye).small())
-            .child(SharedString::from(hxy_i18n::t("tab-inspector")))
     }
 
     /// The inspector is a persistent workspace utility toggled by
@@ -331,12 +323,23 @@ impl Panel for InspectorPanel {
     /// the same decoding settings. Open/closed state is the dock's own
     /// concern (`DockState::open`), not this panel's.
     fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         state.info = PanelInfo::panel(serde_json::json!({
             "endian": endian_key(self.state.endian),
             "radix": radix_key(self.state.radix),
         }));
         state
+    }
+}
+
+impl Panel for InspectorPanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Eye prefix mirrors egui's inspector header glyph.
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(Icon::new(IconName::Eye).small())
+            .child(SharedString::from(hxy_i18n::t("tab-inspector")))
     }
 }
 
@@ -401,7 +404,7 @@ mod tests {
 
         cx.update(|window, cx| {
             let handle = pane.read(cx).focus_handle(cx);
-            window.focus(&handle);
+            window.focus(&handle, cx);
         });
         cx.run_until_parked();
 

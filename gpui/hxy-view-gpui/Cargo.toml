@@ -17,4 +17,4 @@ hxy-editor = { workspace = true, features = ["editor"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-gpui = { version = "=0.2.2", features = ["runtime_shaders", "test-support"] }
+gpui = { workspace = true, features = ["test-support"] }

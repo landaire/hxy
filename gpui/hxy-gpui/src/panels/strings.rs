@@ -2,7 +2,7 @@
 //!
 //! Extraction itself lives entirely in `hxy_panels::strings` (shared
 //! with the egui front end); this module only owns the config
-//! widgets, the results [`Table`], background dispatch, and the
+//! widgets, the results [`DataTable`], background dispatch, and the
 //! jump/hover wiring onto the owning file's [`HexPane`].
 //!
 //! The panel is a per-file center-dock tab, like the egui app's
@@ -51,6 +51,7 @@ use gpui_component::Disableable;
 use gpui_component::Selectable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -63,7 +64,7 @@ use gpui_component::label::Label;
 use gpui_component::notification::Notification;
 use gpui_component::table::Column;
 use gpui_component::table::ColumnSort;
-use gpui_component::table::Table;
+use gpui_component::table::DataTable;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableEvent;
 use gpui_component::table::TableState;
@@ -637,24 +638,16 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
-impl Panel for StringsPanel {
+impl BasePanel for StringsPanel {
     fn panel_name(&self) -> &'static str {
         STRINGS_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t_args("tab-strings", &[("name", &tab_label(self.owning_path.as_deref()))]))
-    }
-
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(hxy_i18n::t_args("tab-strings", &[("name", &tab_label(self.owning_path.as_deref()))])))
     }
 
     /// Persist the owning path plus encoding/min_length; the scan
     /// range is data-dependent (tied to file length) and re-backfills
     /// to "whole file" on rebind instead of round-tripping verbatim.
     fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         state.info = PanelInfo::panel(serde_json::json!({
             "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "encoding": encoding_key(self.config.encoding),
@@ -666,14 +659,24 @@ impl Panel for StringsPanel {
     /// Clear the owning pane's hover band on removal, however the tab
     /// closed (the workspace's own close paths, or the tab bar's own
     /// close button, which bypasses the workspace entirely) --
-    /// `gpui_component::dock::Panel::on_removed` fires unconditionally
-    /// from `TabPanel::remove_panel`'s `detach_panel`, so this is the
-    /// one place that reliably catches all of them. Without it, a
-    /// pointer left resting on a row when the tab closes leaves a
-    /// stale hover band on a hex view with nothing left to clear it
-    /// (only `HexPane::set_source` resets `hover_span`).
+    /// `gpui_component::dock::BasePanel::on_removed` fires unconditionally
+    /// from the tab group's `detach_panel`, so this is the one place
+    /// that reliably catches all of them. Without it, a pointer left
+    /// resting on a row when the tab closes leaves a stale hover band
+    /// on a hex view with nothing left to clear it (only
+    /// `HexPane::set_source` resets `hover_span`).
     fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.set_hover(None, cx);
+    }
+}
+
+impl Panel for StringsPanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(hxy_i18n::t_args("tab-strings", &[("name", &tab_label(self.owning_path.as_deref()))]))
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(hxy_i18n::t_args("tab-strings", &[("name", &tab_label(self.owning_path.as_deref()))])))
     }
 }
 
@@ -708,7 +711,7 @@ impl Render for StringsPanel {
         }
         root.child(self.render_toolbar(cx))
             .child(self.render_summary(cx))
-            .child(div().flex_1().min_h_0().child(Table::new(&self.table)))
+            .child(div().flex_1().min_h_0().child(DataTable::new(&self.table)))
     }
 }
 
@@ -746,8 +749,8 @@ impl TableDelegate for StringsTableDelegate {
         self.panel.upgrade().map(|p| p.read(cx).visible.len()).unwrap_or(0)
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     /// Translate the table's built-in header-click cycle into a

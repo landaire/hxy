@@ -76,7 +76,7 @@ fn main() -> ExitCode {
     // forwards parsed paths through a channel the workspace poll loop
     // drains (mirroring the socket receiver).
     let (open_urls_tx, open_urls_receiver) = std::sync::mpsc::channel::<Vec<PathBuf>>();
-    let app = gpui::Application::new().with_assets(assets::Assets);
+    let app = gpui_platform::application().with_assets(assets::Assets);
     app.on_open_urls(move |urls| {
         let paths: Vec<PathBuf> = urls.iter().filter_map(|url| parse_file_url(url)).collect();
         if !paths.is_empty() {

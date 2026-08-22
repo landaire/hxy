@@ -46,6 +46,7 @@ use gpui_component::Selectable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::checkbox::Checkbox;
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::h_flex;
 use gpui_component::input::Input;
 use gpui_component::input::InputEvent;
@@ -152,7 +153,7 @@ impl SearchBar {
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.open = false;
         let handle = self.pane.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
@@ -180,8 +181,8 @@ impl SearchBar {
             // `secondary` is cmd/ctrl-Enter, not shift-Enter: 0.5.1's
             // `InputState` only distinguishes those two, so Prev rides
             // the secondary-Enter binding rather than egui's shift-Enter.
-            InputEvent::PressEnter { secondary: false } => self.next_match(window, cx),
-            InputEvent::PressEnter { secondary: true } => self.prev_match(window, cx),
+            InputEvent::PressEnter { secondary: false, .. } => self.next_match(window, cx),
+            InputEvent::PressEnter { secondary: true, .. } => self.prev_match(window, cx),
             InputEvent::Focus | InputEvent::Blur => {}
         }
     }
@@ -487,7 +488,7 @@ impl SearchBar {
                     "search-replace-prompt-body",
                     &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
                 )))
-                .confirm()
+                .button_props(DialogButtonProps::default().show_cancel(true))
                 .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.state.splice_prompt_acked = true;
@@ -520,7 +521,7 @@ impl SearchBar {
                     "search-replace-prompt-body",
                     &[("find-len", &find_len.to_string()), ("repl-len", &replace_len.to_string())],
                 )))
-                .confirm()
+                .button_props(DialogButtonProps::default().show_cancel(true))
                 .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.state.splice_prompt_acked = true;
@@ -551,7 +552,7 @@ impl SearchBar {
                     "search-replace-all-confirm-body",
                     &[("count", &count.to_string())],
                 )))
-                .confirm()
+                .button_props(DialogButtonProps::default().show_cancel(true))
                 .on_ok(move |_, window, cx| {
                     this.update(cx, |bar, cx| {
                         bar.continue_replace_all(matches.clone(), find_len, replace_len, window, cx)
@@ -822,7 +823,12 @@ mod tests {
     fn set_query(bar: &Entity<SearchBar>, text: &str, cx: &mut gpui::VisualTestContext) {
         cx.update(|window, cx| {
             bar.update(cx, |bar, cx| {
-                bar.query_input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+                bar.query_input.update(cx, |input, cx| {
+                    input.set_value(text.to_string(), window, cx);
+                    // 0.5.2 `set_value` is silent (suppresses events); emit the
+                    // `Change` a real edit would so the bar syncs `state.pattern`.
+                    cx.emit(InputEvent::Change);
+                });
             });
         });
         cx.run_until_parked();
@@ -831,7 +837,10 @@ mod tests {
     fn set_replace(bar: &Entity<SearchBar>, text: &str, cx: &mut gpui::VisualTestContext) {
         cx.update(|window, cx| {
             bar.update(cx, |bar, cx| {
-                bar.replace_input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+                bar.replace_input.update(cx, |input, cx| {
+                    input.set_value(text.to_string(), window, cx);
+                    cx.emit(InputEvent::Change);
+                });
             });
         });
         cx.run_until_parked();

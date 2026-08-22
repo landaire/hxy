@@ -25,6 +25,7 @@ use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::v_flex;
@@ -81,19 +82,21 @@ pub(crate) fn recent_rows(recents: &[RecentFile]) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-impl Panel for WelcomePanel {
+impl BasePanel for WelcomePanel {
     fn panel_name(&self) -> &'static str {
         WELCOME_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(hxy_i18n::t("gpui-welcome-title"))
     }
 
     /// The welcome tab is managed by the workspace, not the user, so it
     /// carries no close affordance.
     fn closable(&self, _cx: &App) -> bool {
         false
+    }
+}
+
+impl Panel for WelcomePanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(hxy_i18n::t("gpui-welcome-title"))
     }
 }
 

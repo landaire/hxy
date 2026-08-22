@@ -59,10 +59,10 @@ use gpui::size;
 use gpui::uniform_list;
 use gpui_component::ActiveTheme;
 use gpui_component::Icon;
-use gpui_component::PixelsExt;
 use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::Button;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -82,7 +82,7 @@ use gpui_component::plot::scale::ScaleLinear;
 use gpui_component::plot::shape::Bar;
 use gpui_component::plot::shape::Line;
 use gpui_component::table::Column;
-use gpui_component::table::Table;
+use gpui_component::table::DataTable;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableState;
 use gpui_component::v_flex;
@@ -830,7 +830,7 @@ impl VisualizerPanel {
         v_flex()
             .size_full()
             .child(self.info_label(info, cx))
-            .child(div().flex_1().min_h_0().p_2().child(Table::new(&self.table)))
+            .child(div().flex_1().min_h_0().p_2().child(DataTable::new(&self.table)))
             .into_any_element()
     }
 
@@ -1103,10 +1103,10 @@ impl Plot for VisualizerChart {
                 Bar::new()
                     .data(points.iter().copied())
                     .band_width(band)
-                    .x(move |p: &(f64, f64)| x.tick(&p.0).map(|t| t - band / 2.0))
-                    .y0(move |_: &(f64, f64)| baseline)
-                    .y1(move |p: &(f64, f64)| y.tick(&p.1))
-                    .fill(move |_: &(f64, f64)| color)
+                    .cross(move |p: &(f64, f64)| x.tick(&p.0).map(|t| t - band / 2.0))
+                    .base(move |_: &(f64, f64)| baseline)
+                    .value(move |p: &(f64, f64)| y.tick(&p.1))
+                    .fill(move |_: &(f64, f64), _, _| color)
                     .paint(&chart_bounds, window, cx);
             }
             ChartSeries::Scatter(points) => {
@@ -1201,8 +1201,8 @@ impl TableDelegate for VisTableDelegate {
         self.panel.upgrade().map(|p| p.read(cx).table_rows.len()).unwrap_or(0)
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     fn render_td(
@@ -1229,11 +1229,26 @@ impl TableDelegate for VisTableDelegate {
     }
 }
 
-impl Panel for VisualizerPanel {
+impl BasePanel for VisualizerPanel {
     fn panel_name(&self) -> &'static str {
         VISUALIZER_PANEL_NAME
     }
 
+    /// Persist the owning path only. Targets and the active sub-tab
+    /// derive from the file's template instances, which the owning
+    /// `FilePanel` re-fires on restore; instance ids are not stable
+    /// across sessions, so the active key is recomputed, not
+    /// round-tripped (mirrors egui persisting only `visualizer_open`).
+    fn dump(&self, _cx: &App) -> PanelState {
+        let mut state = PanelState::new(self.panel_name());
+        state.info = PanelInfo::panel(serde_json::json!({
+            "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        }));
+        state
+    }
+}
+
+impl Panel for VisualizerPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // Image-square prefix mirrors egui's visualizer header glyph;
         // close lives on the dock tab itself (egui's in-header X). Shows
@@ -1249,19 +1264,6 @@ impl Panel for VisualizerPanel {
             "tab-visualizer",
             &[("name", &tab_label(self.owning_path.as_deref()))],
         )))
-    }
-
-    /// Persist the owning path only. Targets and the active sub-tab
-    /// derive from the file's template instances, which the owning
-    /// `FilePanel` re-fires on restore; instance ids are not stable
-    /// across sessions, so the active key is recomputed, not
-    /// round-tripped (mirrors egui persisting only `visualizer_open`).
-    fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
-        state.info = PanelInfo::panel(serde_json::json!({
-            "path": self.owning_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
-        }));
-        state
     }
 }
 

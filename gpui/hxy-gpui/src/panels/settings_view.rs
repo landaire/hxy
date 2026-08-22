@@ -44,6 +44,7 @@ use gpui_component::IconName;
 use gpui_component::Selectable;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::h_flex;
@@ -466,11 +467,13 @@ fn section_heading(text: String, cx: &App) -> impl IntoElement {
     div().mt_2().pb_1().border_b_1().border_color(cx.theme().border).font_weight(gpui::FontWeight::SEMIBOLD).child(text)
 }
 
-impl Panel for SettingsPanel {
+impl BasePanel for SettingsPanel {
     fn panel_name(&self) -> &'static str {
         SETTINGS_PANEL_NAME
     }
+}
 
+impl Panel for SettingsPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(hxy_i18n::t("tab-settings"))
     }

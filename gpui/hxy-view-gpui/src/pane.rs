@@ -440,7 +440,7 @@ impl HexPane {
         if self.in_minimap_strip(event.position.x) {
             self.minimap_scrubbing = true;
             self.scrub_minimap(event.position.y);
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
             cx.notify();
             return;
         }
@@ -461,7 +461,7 @@ impl HexPane {
         // drag that follows continues from there rather than the click.
         self.drag_anchor = Some(anchor);
         self.apply_pending_scroll(pending_scroll, pending_scroll_to_byte);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 

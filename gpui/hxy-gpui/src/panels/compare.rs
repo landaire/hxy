@@ -50,6 +50,7 @@ use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::Selectable;
 use gpui_component::button::Button;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -57,7 +58,7 @@ use gpui_component::dock::PanelState;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::table::Column;
-use gpui_component::table::Table;
+use gpui_component::table::DataTable;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableEvent;
 use gpui_component::table::TableState;
@@ -711,17 +712,9 @@ pub(crate) fn leaf_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
-impl Panel for ComparePanel {
+impl BasePanel for ComparePanel {
     fn panel_name(&self) -> &'static str {
         COMPARE_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(compare_title(&self.a_meta.name, &self.b_meta.name))
-    }
-
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(compare_title(&self.a_meta.name, &self.b_meta.name)))
     }
 
     /// Persist a disk-restorable compare (both sides have a path);
@@ -729,7 +722,7 @@ impl Panel for ComparePanel {
     /// `crate::persist::prune_for_restore` drops the tab (mirrors the
     /// egui app dropping open-file-side compares on restore).
     fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         state.info = PanelInfo::panel(serde_json::json!({
             "a_path": self.a_meta.restore_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "a_name": self.a_meta.name,
@@ -743,6 +736,16 @@ impl Panel for ComparePanel {
     /// hunk row when the tab closes leaves nothing stale behind.
     fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.set_hover(None, cx);
+    }
+}
+
+impl Panel for ComparePanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(compare_title(&self.a_meta.name, &self.b_meta.name))
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(compare_title(&self.a_meta.name, &self.b_meta.name)))
     }
 }
 
@@ -772,7 +775,7 @@ impl Render for ComparePanel {
                     .min_h(px(TABLE_HEIGHT))
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .child(Table::new(&self.table)),
+                    .child(DataTable::new(&self.table)),
             )
     }
 }
@@ -810,8 +813,8 @@ impl TableDelegate for CompareTableDelegate {
         self.panel.upgrade().map(|p| p.read(cx).visible_hunks().len()).unwrap_or(0)
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     /// Preview the hovered hunk on both panes.

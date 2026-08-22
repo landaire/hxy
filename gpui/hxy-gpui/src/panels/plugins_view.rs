@@ -49,6 +49,7 @@ use gpui::div;
 use gpui_component::ActiveTheme;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::h_flex;
@@ -472,11 +473,13 @@ fn open_in_file_manager(path: &Path) -> std::io::Result<()> {
     std::process::Command::new("explorer").arg(path).status().map(|_| ())
 }
 
-impl Panel for PluginsPanel {
+impl BasePanel for PluginsPanel {
     fn panel_name(&self) -> &'static str {
         PLUGINS_PANEL_NAME
     }
+}
 
+impl Panel for PluginsPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(hxy_i18n::t("tab-plugins"))
     }

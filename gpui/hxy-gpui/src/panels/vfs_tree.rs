@@ -36,6 +36,7 @@ use gpui::uniform_list;
 use gpui_component::ActiveTheme;
 use gpui_component::Icon;
 use gpui_component::IconName;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use hxy_vfs::MountedVfs;
@@ -176,11 +177,13 @@ impl VfsTreePanel {
 impl EventEmitter<VfsTreeEvent> for VfsTreePanel {}
 impl EventEmitter<PanelEvent> for VfsTreePanel {}
 
-impl Panel for VfsTreePanel {
+impl BasePanel for VfsTreePanel {
     fn panel_name(&self) -> &'static str {
         VFS_TREE_PANEL_NAME
     }
+}
 
+impl Panel for VfsTreePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(hxy_i18n::t("gpui-vfs-tree-title"))
     }
@@ -202,7 +205,7 @@ impl Render for VfsTreePanel {
         let list = uniform_list("vfs-tree-rows", count, move |range, _window, _cx| {
             range.map(|ix| render_row(rows[ix].clone(), weak.clone(), muted, accent)).collect::<Vec<_>>()
         })
-        .track_scroll(self.scroll.clone())
+        .track_scroll(&self.scroll)
         .size_full();
 
         div().track_focus(&self.focus_handle).size_full().bg(cx.theme().background).child(list)

@@ -74,8 +74,9 @@ use gpui::div;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::dock::DockArea;
-use gpui_component::dock::DockItem;
-use gpui_component::dock::TabPanel;
+use gpui_component::dock::DockPlacement;
+use gpui_component::dock::PaneRef;
+use gpui_component::dock::PanelHandle;
 use gpui_component::h_flex;
 use gpui_component::v_flex;
 
@@ -130,7 +131,7 @@ impl PickTarget {
     fn activate(&self, window: &mut Window, cx: &mut App) {
         match &self.on_activate {
             Some(on_activate) => on_activate(window, cx),
-            None => window.focus(&self.focus),
+            None => window.focus(&self.focus, cx),
         }
     }
 
@@ -148,25 +149,23 @@ impl PickTarget {
         empty_label: impl Into<SharedString>,
         cx: &App,
     ) -> Vec<PickTarget> {
-        let mut leaves = Vec::new();
-        collect_tab_panels(dock_area.read(cx).items(), &mut leaves);
         let empty_label = empty_label.into();
-        leaves
-            .into_iter()
-            .map(|tab_panel| {
-                let label = tab_panel
-                    .read(cx)
-                    .active_panel(cx)
-                    .and_then(|panel| panel.tab_name(cx))
-                    .unwrap_or_else(|| empty_label.clone());
-                // `TabPanel::focus_handle` delegates to its active panel's
-                // own handle (falling back to the tab panel's own handle
-                // when empty), so this reaches the leaf's real content --
-                // e.g. a hosted hex pane -- with no extra plumbing.
-                let focus = tab_panel.read(cx).focus_handle(cx);
-                PickTarget::new(label, focus)
-            })
-            .collect()
+        let area = dock_area.read(cx);
+        let mut targets = Vec::new();
+        let Some(tree) = area.layout(DockPlacement::Center) else { return targets };
+        tree.root().walk(&mut |node| {
+            let PaneRef::Tabs { panels, active_ix } = node.kind() else { return };
+            let Some(panel_id) = panels.get(active_ix).copied() else { return };
+            let Some(panel) = area.panel(panel_id) else { return };
+            let label = PanelHandle::of(panel)
+                .and_then(|handle| handle.tab_name(cx))
+                .unwrap_or_else(|| empty_label.clone());
+            // The panel's own focus handle reaches the leaf's real
+            // content (e.g. a hosted hex pane), matching the old
+            // `TabPanel::focus_handle` delegation.
+            targets.push(PickTarget::new(label, panel.focus_handle(cx)));
+        });
+        targets
     }
 }
 
@@ -238,7 +237,7 @@ impl DockPicker {
             None => window.focused(cx),
         };
         self.active = Some(Session { targets, restore_focus, on_pick: Rc::new(on_pick) });
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 
@@ -247,7 +246,7 @@ impl DockPicker {
     pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.active.take() else { return };
         if let Some(handle) = session.restore_focus {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }
@@ -283,14 +282,6 @@ impl DockPicker {
 }
 
 /// Collect every `TabPanel` leaf under `item`, in tree order.
-fn collect_tab_panels(item: &DockItem, out: &mut Vec<Entity<TabPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|child| collect_tab_panels(child, out)),
-        DockItem::Tabs { view, .. } => out.push(view.clone()),
-        DockItem::Panel { .. } | DockItem::Tiles { .. } => {}
-    }
-}
-
 impl Focusable for DockPicker {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

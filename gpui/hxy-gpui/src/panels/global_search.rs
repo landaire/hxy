@@ -53,6 +53,7 @@ use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::Button;
 use gpui_component::checkbox::Checkbox;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::h_flex;
@@ -61,7 +62,7 @@ use gpui_component::input::InputEvent;
 use gpui_component::input::InputState;
 use gpui_component::label::Label;
 use gpui_component::table::Column;
-use gpui_component::table::Table;
+use gpui_component::table::DataTable;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableEvent;
 use gpui_component::table::TableState;
@@ -434,11 +435,13 @@ impl GlobalSearchPanel {
     }
 }
 
-impl Panel for GlobalSearchPanel {
+impl BasePanel for GlobalSearchPanel {
     fn panel_name(&self) -> &'static str {
         GLOBAL_SEARCH_PANEL_NAME
     }
+}
 
+impl Panel for GlobalSearchPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // Search prefix mirrors egui's MAGNIFYING_GLASS. gpui-component
         // 0.5.1 surfaces this element only in single-panel title-bar
@@ -471,7 +474,7 @@ impl Render for GlobalSearchPanel {
             .size_full()
             .bg(cx.theme().background)
             .child(self.render_toolbar(cx))
-            .child(div().flex_1().min_h_0().child(Table::new(&self.table)))
+            .child(div().flex_1().min_h_0().child(DataTable::new(&self.table)))
     }
 }
 
@@ -501,8 +504,8 @@ impl TableDelegate for GlobalSearchTableDelegate {
         self.panel.upgrade().map(|p| p.read(cx).state.matches.len()).unwrap_or(0)
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     fn render_td(

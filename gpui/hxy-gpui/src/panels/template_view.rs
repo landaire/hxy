@@ -48,7 +48,7 @@ use gpui_component::menu::PopupMenuItem;
 use gpui_component::popover::Popover;
 use gpui_component::spinner::Spinner;
 use gpui_component::table::Column;
-use gpui_component::table::Table;
+use gpui_component::table::DataTable;
 use gpui_component::table::TableDelegate;
 use gpui_component::table::TableEvent;
 use gpui_component::table::TableState;
@@ -244,7 +244,7 @@ impl TemplateView {
             // table's inner focus (taken by the click) would
             // otherwise route arrows to its column-selection
             // handlers.
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
         }
     }
 
@@ -533,7 +533,7 @@ impl Render for TemplateView {
                 .on_action(cx.listener(Self::on_expand_row))
                 .flex_1()
                 .min_h_0()
-                .child(Table::new(&self.table)),
+                .child(DataTable::new(&self.table)),
         )
     }
 }
@@ -1030,8 +1030,8 @@ impl TableDelegate for TemplateTableDelegate {
         self.view.upgrade().map(|view| view.read(cx).rows.len()).unwrap_or(0)
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     /// Row hover feeds the hex view's hover band (via the reducer's
@@ -1467,7 +1467,7 @@ mod tests {
         apply(&panel, cx, TemplateEvent::Select(TemplateNodeIdx(1)));
 
         let focus = panel.read_with(cx, |panel, cx| panel.template_view().read(cx).focus_handle.clone());
-        cx.update(|window, _| window.focus(&focus));
+        cx.update(|window, cx| window.focus(&focus, cx));
         cx.run_until_parked();
 
         cx.simulate_keystrokes("down");

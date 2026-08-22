@@ -91,6 +91,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("menu-file-quit"), Quit),
             ],
+            disabled: false,
         },
         Menu {
             name: hxy_i18n::t("menu-file").into(),
@@ -103,6 +104,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("menu-file-reopen-closed"), ReopenClosedTab),
                 MenuItem::action(hxy_i18n::t("gpui-palette-close-tab"), CloseTab),
             ],
+            disabled: false,
         },
         Menu {
             name: hxy_i18n::t("menu-edit").into(),
@@ -115,6 +117,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("menu-edit-copy-bytes"), CopyBytes),
                 MenuItem::action(hxy_i18n::t("menu-edit-copy-hex"), CopyHex),
             ],
+            disabled: false,
         },
         Menu {
             name: hxy_i18n::t("menu-view").into(),
@@ -134,6 +137,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("tab-plugins"), OpenPlugins),
                 MenuItem::action(hxy_i18n::t("tab-console"), OpenConsole),
             ],
+            disabled: false,
         },
     ]
 }

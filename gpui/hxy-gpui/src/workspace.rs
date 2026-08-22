@@ -39,14 +39,19 @@ use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
 use gpui_component::button::ButtonVariants;
+use gpui_component::dialog::DialogFooter;
+use gpui_component::dock::BasePanelView as PanelView;
+use gpui_component::dock::PanelHandle;
 use gpui_component::dock::DockArea;
 use gpui_component::dock::DockEvent;
-use gpui_component::dock::DockItem;
+use gpui_component::dock::DockSkin;
+use gpui_component::dock::DockLayout;
 use gpui_component::dock::DockPlacement;
+use gpui_component::dock::PaneRef;
+use gpui_component::dock::PanelBuildContext;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelRegistry;
 use gpui_component::dock::PanelState;
-use gpui_component::dock::PanelView;
 use gpui_component::h_flex;
 use gpui_component::label::Label;
 use gpui_component::notification::Notification;
@@ -520,14 +525,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let dock = cx.new(|cx| DockArea::new("workspace", Some(persist::LAYOUT_VERSION), window, cx));
+        // The 0.5.2 DockArea renders no chrome (tab bars, title bars) on its
+        // own; `DockSkin` is the renderer that draws them. Without it the
+        // dock still docks/persists but shows no tabs and no panel frames.
+        let dock =
+            cx.new(|cx| DockArea::new("workspace", Some(persist::LAYOUT_VERSION), window, cx).with_renderer(DockSkin::new(cx)));
         let dock_subscription = cx.subscribe(&dock, |workspace, _dock, event: &DockEvent, cx| match event {
             DockEvent::LayoutChanged => {
                 workspace.needs_reconcile = true;
                 workspace.schedule_save(cx);
                 cx.notify();
             }
-            DockEvent::DragDrop(_) => {}
+            DockEvent::DragDrop { .. } => {}
         });
 
         let palette = {
@@ -630,7 +639,7 @@ impl Workspace {
             }
             // The load-built cache is accurate; register the restored
             // panels so a later resync can reuse them.
-            collect_file_entities(self.dock.read(cx).items(), &mut self.open_files);
+            collect_file_entities(self.dock.read(cx), &mut self.open_files);
             self.resubscribe_file_visualizer_events(window, cx);
             // Session-restored tabs bypass `open_or_focus`, so their
             // patch sidecars are never consulted; queue every restored
@@ -638,22 +647,22 @@ impl Workspace {
             // of this method.
             self.restore_queue.extend(self.open_files.iter().cloned());
             let mut restored_strings = Vec::new();
-            collect_strings_entities(self.dock.read(cx).items(), &mut restored_strings);
+            collect_strings_entities(self.dock.read(cx), &mut restored_strings);
             for panel in restored_strings {
                 self.track_strings_panel(panel, window, cx);
             }
             let mut restored_entropy = Vec::new();
-            collect_entropy_entities(self.dock.read(cx).items(), &mut restored_entropy);
+            collect_entropy_entities(self.dock.read(cx), &mut restored_entropy);
             for panel in restored_entropy {
                 self.track_entropy_panel(panel);
             }
             let mut restored_checksums = Vec::new();
-            collect_checksums_entities(self.dock.read(cx).items(), &mut restored_checksums);
+            collect_checksums_entities(self.dock.read(cx), &mut restored_checksums);
             for panel in restored_checksums {
                 self.track_checksums_panel(panel);
             }
             let mut restored_visualizers = Vec::new();
-            collect_visualizer_entities(self.dock.read(cx).items(), &mut restored_visualizers);
+            collect_visualizer_entities(self.dock.read(cx), &mut restored_visualizers);
             for panel in restored_visualizers {
                 self.track_visualizer_panel(panel);
             }
@@ -664,7 +673,7 @@ impl Workspace {
             // `toggle_global_search` would then build a SECOND panel
             // on top of the restored one instead of finding it.
             let mut restored_global_search = Vec::new();
-            collect_global_search_entities(self.dock.read(cx).items(), &mut restored_global_search);
+            collect_global_search_entities(self.dock.read(cx), &mut restored_global_search);
             if let Some(panel) = restored_global_search.into_iter().next() {
                 self._global_search_sub = Some(cx.subscribe_in(&panel, window, Self::on_global_search_jumped));
                 self.global_search_panel = Some(panel);
@@ -673,17 +682,17 @@ impl Workspace {
             // subscription: the panel talks to the settings global,
             // not the workspace).
             let mut restored_settings = Vec::new();
-            collect_settings_entities(self.dock.read(cx).items(), &mut restored_settings);
+            collect_settings_entities(self.dock.read(cx), &mut restored_settings);
             self.settings_panel = restored_settings.into_iter().next();
             // Same singleton recovery for the console tab (no
             // subscription: the panel reads the console-log global).
             let mut restored_console = Vec::new();
-            collect_console_entities(self.dock.read(cx).items(), &mut restored_console);
+            collect_console_entities(self.dock.read(cx), &mut restored_console);
             self.console_panel = restored_console.into_iter().next();
             // The plugins tab needs its fetch-patterns subscription
             // re-established so a restored tab's button still works.
             let mut restored_plugins = Vec::new();
-            collect_plugins_entities(self.dock.read(cx).items(), &mut restored_plugins);
+            collect_plugins_entities(self.dock.read(cx), &mut restored_plugins);
             if let Some(panel) = restored_plugins.into_iter().next() {
                 self._plugins_sub = Some(cx.subscribe_in(&panel, window, Self::on_fetch_imhex_patterns_requested));
                 self.plugins_panel = Some(panel);
@@ -765,10 +774,20 @@ impl Workspace {
         {
             self.inspector_for_test = Some(inspector.clone());
         }
-        let inspector: Arc<dyn PanelView> = Arc::new(inspector);
-        let weak = self.dock.downgrade();
-        let item = DockItem::tabs(vec![inspector], &weak, window, cx);
-        self.dock.update(cx, |dock, cx| dock.set_right_dock(item, Some(INSPECTOR_DOCK_WIDTH), false, window, cx));
+        // `set_dock` installs a dock open at its default size; the inspector
+        // is closed by default (the old `set_right_dock(.., false)` open
+        // flag), so size it and toggle it shut. `toggle_dock` closes it
+        // because a fresh dock is open and collapsible.
+        self.dock.update(cx, |dock, cx| {
+            dock.set_dock(
+                DockPlacement::Right,
+                DockLayout::tabs().panel_view(Arc::new(PanelHandle::new(inspector)), cx),
+                window,
+                cx,
+            );
+            dock.set_dock_size(DockPlacement::Right, INSPECTOR_DOCK_WIDTH, window, cx);
+            dock.toggle_dock(DockPlacement::Right, window, cx);
+        });
     }
 
     fn on_toggle_inspector(&mut self, _: &ToggleInspector, window: &mut Window, cx: &mut Context<Self>) {
@@ -840,8 +859,7 @@ impl Workspace {
         let b = CompareSideInit { name: hxy_i18n::t("snapshot-pick-current"), bytes: current, restore_path: None };
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| ComparePanel::from_sources(a, b, window, cx));
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Open the per-file snapshots dialog: a list of captures (name, size,
@@ -885,9 +903,11 @@ impl Workspace {
             }
             let weak_for_footer = weak.clone();
             dialog.title(hxy_i18n::t_args("snapshot-dialog-title", &[("name", &name)])).child(body).footer(
-                move |_ok, _cancel, _window, _cx| {
-                    if has_store { vec![snapshot_take_button(&weak_for_footer)] } else { Vec::new() }
-                },
+                DialogFooter::new().children(if has_store {
+                    vec![snapshot_take_button(&weak_for_footer)]
+                } else {
+                    Vec::new()
+                }),
             )
         });
     }
@@ -911,8 +931,11 @@ impl Workspace {
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| StringsPanel::new(pane, path, window, cx));
         self.track_strings_panel(panel.clone(), window, cx);
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel.clone())), DockPlacement::Center, None, window, cx));
+        // The 0.5.2 dock does not focus a freshly added panel; focus the
+        // strings tab so it becomes the dispatch target (keystrokes reach
+        // the workspace's reference-file fallback while it is front-most).
+        window.focus(&panel.read(cx).focus_handle(cx), cx);
     }
 
     /// Register `panel` in `strings_panels` (if not already tracked)
@@ -977,19 +1000,18 @@ impl Workspace {
     /// trusting it to still be the live entity `strings_panels` points
     /// at.
     fn focus_strings_tab(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_strings_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_strings_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
         self.resync_center_if_stale(window, cx);
         let panel = self.strings_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Open (or focus an existing) `EntropyPanel` tab for the
@@ -1009,8 +1031,7 @@ impl Workspace {
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| EntropyPanel::new(pane, path, window, cx));
         self.track_entropy_panel(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Register `panel` in `entropy_panels` if not already tracked.
@@ -1038,19 +1059,18 @@ impl Workspace {
     /// Bring an already-open entropy tab to the foreground. Mirrors
     /// `focus_strings_tab`.
     fn focus_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_entropy_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_entropy_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
         self.resync_center_if_stale(window, cx);
         let panel = self.entropy_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Open (or focus an existing) `ChecksumsPanel` tab for the
@@ -1070,8 +1090,7 @@ impl Workspace {
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| ChecksumsPanel::new(pane, path, window, cx));
         self.track_checksums_panel(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Register `panel` in `checksums_panels` if not already tracked.
@@ -1099,19 +1118,18 @@ impl Workspace {
     /// Bring an already-open checksums tab to the foreground. Mirrors
     /// `focus_entropy_tab`.
     fn focus_checksums_tab(&mut self, panel: Entity<ChecksumsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_checksums_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_checksums_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
         self.resync_center_if_stale(window, cx);
         let panel = self.checksums_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Palette "Show Visualizer panel": open (or focus) the
@@ -1159,8 +1177,7 @@ impl Workspace {
             panel.update(cx, |panel, cx| panel.set_active(key, cx));
         }
         self.track_visualizer_panel(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Register `panel` in `visualizer_panels` if not already tracked.
@@ -1186,19 +1203,18 @@ impl Workspace {
     /// Bring an already-open visualizer tab to the foreground. Mirrors
     /// `focus_entropy_tab`.
     fn focus_visualizer_tab(&mut self, panel: Entity<VisualizerPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_visualizer_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_visualizer_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
         self.resync_center_if_stale(window, cx);
         let panel = self.visualizer_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// `cmd-shift-f` / the palette entry: close the global search tab if
@@ -1206,8 +1222,7 @@ impl Workspace {
     /// `toggle_global_search` exactly (open-or-close, not just focus).
     pub(crate) fn toggle_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.open_global_search_panel(cx) {
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
             return;
         }
         self.open_global_search(window, cx);
@@ -1226,8 +1241,7 @@ impl Workspace {
         let panel = cx.new(|cx| GlobalSearchPanel::new(window, cx));
         self._global_search_sub = Some(cx.subscribe_in(&panel, window, Self::on_global_search_jumped));
         self.global_search_panel = Some(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// The live `GlobalSearchPanel` if its tab is still open, else
@@ -1249,17 +1263,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if active_global_search_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_global_search_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         self.resync_center_if_stale(window, cx);
         let Some(panel) = self.global_search_panel.clone() else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// A global search result row was clicked: bring the matched file's
@@ -1294,8 +1307,7 @@ impl Workspace {
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| SettingsPanel::new(window, cx));
         self.settings_panel = Some(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// The live `SettingsPanel` if its tab is still open, else `None`.
@@ -1312,17 +1324,16 @@ impl Workspace {
     /// Bring an already-open settings tab to the foreground. Mirrors
     /// `focus_global_search_tab`.
     fn focus_settings_tab(&mut self, panel: Entity<SettingsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_settings_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_settings_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         self.resync_center_if_stale(window, cx);
         let Some(panel) = self.settings_panel.clone() else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     fn on_open_plugins(&mut self, _: &OpenPlugins, window: &mut Window, cx: &mut Context<Self>) {
@@ -1341,8 +1352,7 @@ impl Workspace {
         let panel = cx.new(|cx| PluginsPanel::new(window, cx));
         self._plugins_sub = Some(cx.subscribe_in(&panel, window, Self::on_fetch_imhex_patterns_requested));
         self.plugins_panel = Some(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// The live `PluginsPanel` if its tab is still open, else `None`.
@@ -1358,17 +1368,16 @@ impl Workspace {
     /// Bring an already-open plugins tab to the foreground. Mirrors
     /// `focus_settings_tab`.
     fn focus_plugins_tab(&mut self, panel: Entity<PluginsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        if active_plugins_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
+        if active_plugins_panel(self.dock.read(cx), cx).as_ref().map(Entity::entity_id)
             == Some(panel.entity_id())
         {
-            window.focus(&panel.read(cx).focus_handle(cx));
+            window.focus(&panel.read(cx).focus_handle(cx), cx);
             return;
         }
         self.resync_center_if_stale(window, cx);
         let Some(panel) = self.plugins_panel.clone() else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Drive the ImHex-patterns download when the plugins panel asks for
@@ -1430,20 +1439,23 @@ impl Workspace {
         self.open_console(window, cx);
     }
 
-    /// Open (or focus an existing) Console tab. Singleton like
-    /// `open_settings`; the menu and palette entry points open-or-focus
-    /// rather than toggling closed (the same deliberate deviation from
-    /// egui's `toggle_console` that settings and plugins already make).
+    /// Toggle the Console: close it if open, otherwise open it in the
+    /// bottom dock (matching egui's `toggle_console`, which docks the
+    /// Console below via `split_below(root)`). The menu and palette
+    /// entry points route here.
     pub(crate) fn open_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.resync_center_if_stale(window, cx);
+        if let Some(panel) = self.live_console_panel(cx) {
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
+            self.console_panel = None;
+            return;
+        }
         self.show_console(window, cx);
     }
 
-    /// The open-or-focus core, callable with a bare `&mut App` so the
-    /// `Error` auto-open in [`Self::console_log`] can reach it. The
-    /// menu/palette path runs [`Self::resync_center_if_stale`] first (in
-    /// [`Self::open_console`]); the auto-open path skips it -- the
-    /// dump-presence scan still prevents a duplicate tab.
+    /// Open (or focus an existing) Console in the bottom dock. Callable
+    /// with a bare `&mut App` so the `Error` auto-open in
+    /// [`Self::console_log`] can reach it; that path only ever opens,
+    /// never toggles closed.
     fn show_console(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(panel) = self.live_console_panel(cx) {
             self.focus_console_tab(panel, window, cx);
@@ -1451,34 +1463,26 @@ impl Workspace {
         }
         let panel = cx.new(ConsolePanel::new);
         self.console_panel = Some(panel.clone());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Bottom, None, window, cx));
     }
 
-    /// The live `ConsolePanel` if its tab is still open, else `None`.
-    /// Mirrors `open_settings_panel`.
+    /// The live `ConsolePanel` if its tab is still open in the bottom
+    /// dock, else `None`.
     fn live_console_panel(&self, cx: &App) -> Option<Entity<ConsolePanel>> {
         let dump = self.dock.read(cx).dump(cx);
-        if !dump_has_console(&dump.center) {
+        let present = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_console(d.panel()));
+        if !present {
             return None;
         }
         self.console_panel.clone()
     }
 
-    /// Bring an already-open Console tab to the foreground. Mirrors
-    /// `focus_settings_tab` (minus the resync, which the `&mut App`
-    /// auto-open path cannot run and the menu path already did).
+    /// Ensure the bottom dock is open, then focus the Console.
     fn focus_console_tab(&mut self, panel: Entity<ConsolePanel>, window: &mut Window, cx: &mut App) {
-        if active_console_panel(self.dock.read(cx).items(), cx).as_ref().map(Entity::entity_id)
-            == Some(panel.entity_id())
-        {
-            window.focus(&panel.read(cx).focus_handle(cx));
-            return;
+        if !self.dock.read(cx).is_dock_open(DockPlacement::Bottom) {
+            self.dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Bottom, window, cx));
         }
-        let Some(panel) = self.console_panel.clone() else { return };
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        window.focus(&panel.read(cx).focus_handle(cx), cx);
     }
 
     /// The open files that can seed a compare pick: every live center
@@ -1486,7 +1490,7 @@ impl Workspace {
     /// off the live dock tree so a closed file never lingers in the list.
     pub(crate) fn open_compare_choices(&self, cx: &App) -> Vec<(String, PathBuf)> {
         let mut files = Vec::new();
-        collect_file_entities(self.dock.read(cx).items(), &mut files);
+        collect_file_entities(self.dock.read(cx), &mut files);
         let mut out = Vec::new();
         for file in files {
             if let Some(path) = file.read(cx).path().map(Path::to_path_buf) {
@@ -1513,8 +1517,7 @@ impl Workspace {
         let b = self.resolve_compare_side(b_path, b_open, cx);
         self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| ComparePanel::from_sources(a, b, window, cx));
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
     }
 
     /// Read one compare side's bytes. An open-file pick reads the live
@@ -1626,8 +1629,12 @@ impl Workspace {
         // collapsed-away tab panel (see `resync_center_if_stale`).
         self.resync_center_if_stale(window, cx);
         self.register_open_file(&panel, window, cx);
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel.clone())), DockPlacement::Center, None, window, cx));
+        // The 0.5.2 dock (unlike 0.5.1's TabPanel) does not focus a
+        // freshly added panel; focus it so typing reaches the editor.
+        // `FilePanel::focus_handle` delegates to the inner `HexPane`, the
+        // element that owns the key handlers.
+        window.focus(&panel.read(cx).focus_handle(cx), cx);
     }
 
     /// Track a newly opened file for later resync reuse, replacing any
@@ -1689,7 +1696,7 @@ impl Workspace {
     /// gone empty (rare: after a collapse), so healthy layouts pay
     /// nothing.
     fn resync_center_if_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !center_has_empty_tab_panel(self.dock.read(cx).items(), cx) {
+        if !center_has_empty_tab_panel(self.dock.read(cx), cx) {
             return;
         }
         self.rebuild_center_cache(window, cx);
@@ -1716,8 +1723,7 @@ impl Workspace {
     /// (right before it enumerates targets), so it checks this directly
     /// instead of widening the general resync cadence.
     fn center_cache_missing_a_live_leaf(&self, cx: &App) -> bool {
-        let items = self.dock.read(cx).items();
-        count_dock_item_tab_leaves(items) != count_panel_state_tab_leaves(&self.dock.read(cx).dump(cx).center)
+        count_center_tab_leaves(self.dock.read(cx)) != count_panel_state_tab_leaves(&self.dock.read(cx).dump(cx).center)
     }
 
     /// Rebuild the center's cached `DockItem` tree from the live panel
@@ -1771,30 +1777,30 @@ impl Workspace {
         // `strings_panels`'s `StringsJumped` subscriptions) are dead
         // and must be replaced, not merged.
         let mut live_files = Vec::new();
-        collect_file_entities(self.dock.read(cx).items(), &mut live_files);
+        collect_file_entities(self.dock.read(cx), &mut live_files);
         self.open_files = live_files;
         self.resubscribe_file_visualizer_events(window, cx);
         let mut live_strings = Vec::new();
-        collect_strings_entities(self.dock.read(cx).items(), &mut live_strings);
+        collect_strings_entities(self.dock.read(cx), &mut live_strings);
         self.strings_panels.clear();
         self.strings_panel_subs.clear();
         for panel in live_strings {
             self.track_strings_panel(panel, window, cx);
         }
         let mut live_entropy = Vec::new();
-        collect_entropy_entities(self.dock.read(cx).items(), &mut live_entropy);
+        collect_entropy_entities(self.dock.read(cx), &mut live_entropy);
         self.entropy_panels.clear();
         for panel in live_entropy {
             self.track_entropy_panel(panel);
         }
         let mut live_checksums = Vec::new();
-        collect_checksums_entities(self.dock.read(cx).items(), &mut live_checksums);
+        collect_checksums_entities(self.dock.read(cx), &mut live_checksums);
         self.checksums_panels.clear();
         for panel in live_checksums {
             self.track_checksums_panel(panel);
         }
         let mut live_visualizers = Vec::new();
-        collect_visualizer_entities(self.dock.read(cx).items(), &mut live_visualizers);
+        collect_visualizer_entities(self.dock.read(cx), &mut live_visualizers);
         self.visualizer_panels.clear();
         for panel in live_visualizers {
             self.track_visualizer_panel(panel);
@@ -1804,20 +1810,20 @@ impl Workspace {
         // and there is no dedup concern. The old subscription (if any)
         // is dropped here, since it targets a now-detached entity.
         let mut live_global_search = Vec::new();
-        collect_global_search_entities(self.dock.read(cx).items(), &mut live_global_search);
+        collect_global_search_entities(self.dock.read(cx), &mut live_global_search);
         self.global_search_panel = live_global_search.into_iter().next();
         self._global_search_sub = self
             .global_search_panel
             .as_ref()
             .map(|panel| cx.subscribe_in(panel, window, Self::on_global_search_jumped));
         let mut live_settings = Vec::new();
-        collect_settings_entities(self.dock.read(cx).items(), &mut live_settings);
+        collect_settings_entities(self.dock.read(cx), &mut live_settings);
         self.settings_panel = live_settings.into_iter().next();
         let mut live_console = Vec::new();
-        collect_console_entities(self.dock.read(cx).items(), &mut live_console);
+        collect_console_entities(self.dock.read(cx), &mut live_console);
         self.console_panel = live_console.into_iter().next();
         let mut live_plugins = Vec::new();
-        collect_plugins_entities(self.dock.read(cx).items(), &mut live_plugins);
+        collect_plugins_entities(self.dock.read(cx), &mut live_plugins);
         self.plugins_panel = live_plugins.into_iter().next();
         self._plugins_sub = self
             .plugins_panel
@@ -1947,12 +1953,11 @@ impl Workspace {
     fn focus_existing_tab(&mut self, existing: Entity<FilePanel>, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_file.as_ref().map(Entity::entity_id) == Some(existing.entity_id()) {
             let handle = existing.read(cx).pane().read(cx).focus_handle(cx);
-            window.focus(&handle);
+            window.focus(&handle, cx);
             return;
         }
         self.resync_center_if_stale(window, cx);
-        let view: Arc<dyn PanelView> = Arc::new(existing.clone());
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(existing.clone(), window, cx));
         self.add_file_panel(existing, window, cx);
     }
 
@@ -2130,7 +2135,7 @@ impl Workspace {
                     true
                 })
                 .on_close(move |_, window, cx| dismiss_reload_as_ignore(&weak_for_close, window, cx))
-                .footer(move |_ok, _cancel, _window, _cx| {
+                .footer(DialogFooter::new().children({
                     // "Reload (discard edits)" reads oddly on a clean
                     // buffer (nothing to discard), so the label swaps --
                     // mirrors egui's `reload-prompt-discard` /
@@ -2159,7 +2164,7 @@ impl Workspace {
                         ReloadDecision::Ignore,
                     ));
                     buttons
-                })
+                }))
         });
     }
 
@@ -2531,22 +2536,20 @@ impl Workspace {
                     true
                 })
                 .on_close(move |_, window, cx| dismiss_restore(&weak_for_close, window, cx))
-                .footer(move |_ok, _cancel, _window, _cx| {
-                    vec![
-                        restore_button(
-                            "restore-apply",
-                            hxy_i18n::t(restore_key),
-                            weak_for_footer.clone(),
-                            RestoreDecision::Restore,
-                        ),
-                        restore_button(
-                            "restore-discard",
-                            hxy_i18n::t("restore-patch-discard"),
-                            weak_for_footer.clone(),
-                            RestoreDecision::Discard,
-                        ),
-                    ]
-                })
+                .footer(DialogFooter::new().children(vec![
+                    restore_button(
+                        "restore-apply",
+                        hxy_i18n::t(restore_key),
+                        weak_for_footer.clone(),
+                        RestoreDecision::Restore,
+                    ),
+                    restore_button(
+                        "restore-discard",
+                        hxy_i18n::t("restore-patch-discard"),
+                        weak_for_footer.clone(),
+                        RestoreDecision::Discard,
+                    ),
+                ]))
         });
     }
 
@@ -2792,10 +2795,10 @@ impl Workspace {
                 // dock first (a no-op when it's already open) before
                 // moving focus -- otherwise picking it while collapsed
                 // would silently do nothing visible.
-                if !dock.read(cx).is_dock_open(DockPlacement::Right, cx) {
+                if !dock.read(cx).is_dock_open(DockPlacement::Right) {
                     dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Right, window, cx));
                 }
-                window.focus(&focus_for_activate);
+                window.focus(&focus_for_activate, cx);
             }));
         }
         let workspace = cx.entity().downgrade();
@@ -2826,7 +2829,7 @@ impl Workspace {
     /// somewhere that isn't a center-dock file leaf (e.g. the inspector).
     fn sync_active_file_after_pick(&mut self, window: &Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else { return };
-        let Some(file) = focused_center_file_panel(self.dock.read(cx).items(), &focused, cx) else { return };
+        let Some(file) = focused_center_file_panel(self.dock.read(cx), &focused, cx) else { return };
         self.set_active_file(Some(file), cx);
     }
 
@@ -3176,14 +3179,12 @@ impl Workspace {
         // reopen ring so cmd-shift-t brings the plain file back.
         self.remember_closed(&file, cx);
         let closed = file.entity_id();
-        let view: Arc<dyn PanelView> = Arc::new(file);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(file, window, cx));
         self.open_files.retain(|f| f.entity_id() != closed);
 
         let outer = self.dock.downgrade();
         let host = cx.new(|cx| WorkspaceHostPanel::new(outer, mount, parent_path, window, cx));
-        let view: Arc<dyn PanelView> = Arc::new(host);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(host)), DockPlacement::Center, None, window, cx));
         cx.notify();
     }
 
@@ -3234,8 +3235,7 @@ impl Workspace {
             // Mirrors egui's `install_mount_tab` install log.
             tracing::info!(plugin = %record.plugin_name, id = record.id.0, "plugin mount tab installed");
         }
-        let view: Arc<dyn PanelView> = Arc::new(host);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(host)), DockPlacement::Center, None, window, cx));
         cx.notify();
     }
 
@@ -3331,19 +3331,19 @@ impl Workspace {
     /// rationale). The closed entity here is genuinely gone, so removing
     /// only it by identity is safe.
     pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(strings) = active_strings_panel(self.dock.read(cx).items(), cx) {
+        if let Some(strings) = active_strings_panel(self.dock.read(cx), cx) {
             self.close_strings_tab(strings, window, cx);
             return;
         }
-        if let Some(entropy) = active_entropy_panel(self.dock.read(cx).items(), cx) {
+        if let Some(entropy) = active_entropy_panel(self.dock.read(cx), cx) {
             self.close_entropy_tab(entropy, window, cx);
             return;
         }
-        if let Some(checksums) = active_checksums_panel(self.dock.read(cx).items(), cx) {
+        if let Some(checksums) = active_checksums_panel(self.dock.read(cx), cx) {
             self.close_checksums_tab(checksums, window, cx);
             return;
         }
-        if let Some(visualizer) = active_visualizer_panel(self.dock.read(cx).items(), cx) {
+        if let Some(visualizer) = active_visualizer_panel(self.dock.read(cx), cx) {
             self.close_visualizer_tab(visualizer, window, cx);
             return;
         }
@@ -3359,8 +3359,13 @@ impl Workspace {
         // `active_unrecognized_panel`): our own tabs that simply lack a
         // `cmd-w` path (compare, workspace host, global search) keep their
         // existing tab-close-button behavior and their state bookkeeping.
-        if let Some(view) = active_unrecognized_panel(self.dock.read(cx).items(), cx) {
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        if let Some(view) = active_unrecognized_panel(self.dock.read(cx), cx) {
+            // A stale-layout `InvalidPanel` has no nameable `Entity` to hand
+            // `remove_panel`, so close it by id via the dock's
+            // `remove_panel_id` (a fork addition), so `cmd-w` can never leave
+            // a tab un-closable.
+            let id = view.panel_id(cx);
+            self.dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
         }
     }
 
@@ -3411,28 +3416,26 @@ impl Workspace {
                 .on_close(move |_, window, cx| {
                     resolve_close_on(&weak_for_close, CloseDecision::Cancel, window, cx);
                 })
-                .footer(move |_ok, _cancel, _window, _cx| {
-                    vec![
-                        close_button(
-                            "close-save",
-                            hxy_i18n::t("close-prompt-save"),
-                            weak_for_footer.clone(),
-                            CloseDecision::Save,
-                        ),
-                        close_button(
-                            "close-discard",
-                            hxy_i18n::t("close-prompt-discard"),
-                            weak_for_footer.clone(),
-                            CloseDecision::DontSave,
-                        ),
-                        close_button(
-                            "close-cancel",
-                            hxy_i18n::t("close-prompt-cancel"),
-                            weak_for_footer.clone(),
-                            CloseDecision::Cancel,
-                        ),
-                    ]
-                })
+                .footer(DialogFooter::new().children(vec![
+                    close_button(
+                        "close-save",
+                        hxy_i18n::t("close-prompt-save"),
+                        weak_for_footer.clone(),
+                        CloseDecision::Save,
+                    ),
+                    close_button(
+                        "close-discard",
+                        hxy_i18n::t("close-prompt-discard"),
+                        weak_for_footer.clone(),
+                        CloseDecision::DontSave,
+                    ),
+                    close_button(
+                        "close-cancel",
+                        hxy_i18n::t("close-prompt-cancel"),
+                        weak_for_footer.clone(),
+                        CloseDecision::Cancel,
+                    ),
+                ]))
         });
     }
 
@@ -3473,8 +3476,7 @@ impl Workspace {
         let closed = file.entity_id();
         let closed_path = file.read(cx).path().map(Path::to_path_buf);
         self.remember_closed(&file, cx);
-        let view: Arc<dyn PanelView> = Arc::new(file);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(file, window, cx));
         self.open_files.retain(|f| f.entity_id() != closed);
         self.close_strings_tabs_for_path(closed_path.as_deref(), window, cx);
         self.close_entropy_tabs_for_path(closed_path.as_deref(), window, cx);
@@ -3527,15 +3529,13 @@ impl Workspace {
     /// Close one `EntropyPanel` tab by identity. Mirrors `close_strings_tab`.
     fn close_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.entropy_panels.retain(|p| p.entity_id() != panel.entity_id());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
     }
 
     /// Close one `ChecksumsPanel` tab by identity. Mirrors `close_strings_tab`.
     fn close_checksums_tab(&mut self, panel: Entity<ChecksumsPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.checksums_panels.retain(|p| p.entity_id() != panel.entity_id());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
     }
 
     /// Close every `EntropyPanel` tab bound to `path`. Mirrors
@@ -3553,8 +3553,7 @@ impl Workspace {
             }
         });
         for panel in closing {
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
         }
     }
 
@@ -3571,8 +3570,7 @@ impl Workspace {
             }
         });
         for panel in closing {
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
         }
     }
 
@@ -3580,8 +3578,7 @@ impl Workspace {
     /// `close_entropy_tab`.
     fn close_visualizer_tab(&mut self, panel: Entity<VisualizerPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.visualizer_panels.retain(|p| p.entity_id() != panel.entity_id());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
     }
 
     /// Close every `VisualizerPanel` tab bound to `path`. Mirrors
@@ -3599,16 +3596,14 @@ impl Workspace {
             }
         });
         for panel in closing {
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
         }
     }
 
     /// Close one `StringsPanel` tab by identity.
     fn close_strings_tab(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.strings_panels.retain(|p| p.entity_id() != panel.entity_id());
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
     }
 
     /// Close every `StringsPanel` tab bound to `path`. Called when the
@@ -3628,8 +3623,7 @@ impl Workspace {
             }
         });
         for panel in closing {
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
         }
     }
 
@@ -3655,26 +3649,22 @@ impl Workspace {
                 || count_global_search_panels(&state.center) > 0
                 || count_settings_panels(&state.center) > 0
                 || count_plugins_panels(&state.center) > 0
-                || count_console_panels(&state.center) > 0
         };
 
         if !has_content {
             if self.welcome.is_none() {
                 let welcome = cx.new(WelcomePanel::new);
                 self.welcome_sub = Some(cx.subscribe_in(&welcome, window, Self::on_welcome_open_recent));
-                let view: Arc<dyn PanelView> = Arc::new(welcome.clone());
-                let weak = self.dock.downgrade();
+                // Replace the whole center with a fresh tab group holding
+                // welcome. Installing a described layout (rather than an
+                // incremental add) keeps this a clean single-leaf center
+                // when the last content tab has just gone.
                 self.dock.update(cx, |dock, cx| {
-                    // Rebuild the center as a fresh, subscribed Split before
-                    // adding welcome. Closing the last tab (or emptying every
-                    // split pane) detaches its TabPanel from the live tree
-                    // while the center's `DockItem` cache keeps the orphan;
-                    // adding welcome through that stale cache would attach it
-                    // to a detached panel that never renders. A fresh Split
-                    // resets the cache and re-subscribes for LayoutChanged.
-                    let center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
-                    dock.set_center(center, window, cx);
-                    dock.add_panel(view, DockPlacement::Center, None, window, cx);
+                    dock.set_center(
+                        DockLayout::tabs().panel_view(Arc::new(PanelHandle::new(welcome.clone())), cx),
+                        window,
+                        cx,
+                    );
                 });
                 self.welcome = Some(welcome);
             }
@@ -3684,12 +3674,11 @@ impl Workspace {
             self.resync_center_if_stale(window, cx);
             if let Some(welcome) = self.welcome.take() {
                 self.welcome_sub = None;
-                let view: Arc<dyn PanelView> = Arc::new(welcome);
-                self.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+                self.dock.update(cx, |dock, cx| dock.remove_panel(welcome, window, cx));
             }
         }
 
-        let active = active_file_panel(self.dock.read(cx).items(), cx);
+        let active = active_file_panel(self.dock.read(cx), cx);
         self.set_active_file(active, cx);
         // Republish for `StringsPanel`'s restore-time rebind (see
         // `crate::panels::strings`'s module doc): a panel that
@@ -4008,27 +3997,36 @@ fn count_visualizer_panels(state: &PanelState) -> usize {
 /// signature of the stale-cache hazard `resync_center_if_stale` heals: a
 /// populated tab panel always reports an active panel, and empty ones
 /// self-remove, so an empty one still present in the cache is orphaned.
-fn center_has_empty_tab_panel(item: &DockItem, cx: &App) -> bool {
-    match item {
-        DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
-        DockItem::Split { items, .. } => items.iter().any(|item| center_has_empty_tab_panel(item, cx)),
-        DockItem::Panel { .. } | DockItem::Tiles { .. } => false,
-    }
+fn center_has_empty_tab_panel(area: &DockArea, _cx: &App) -> bool {
+    let Some(tree) = area.layout(DockPlacement::Center) else { return false };
+    let mut empty = false;
+    tree.root().walk(&mut |node| {
+        if let PaneRef::Tabs { panels, active_ix } = node.kind()
+            && panels.get(active_ix).and_then(|id| area.panel(*id)).is_none()
+        {
+            empty = true;
+        }
+    });
+    empty
 }
 
-/// Number of tab-panel leaves in the CACHED `DockItem` tree (one per
-/// `DockItem::Tabs`). Compare against [`count_panel_state_tab_leaves`] on
-/// a live `dump()` to detect a cache the live tree has outgrown.
-fn count_dock_item_tab_leaves(item: &DockItem) -> usize {
-    match item {
-        DockItem::Split { items, .. } => items.iter().map(count_dock_item_tab_leaves).sum(),
-        DockItem::Tabs { .. } => 1,
-        DockItem::Panel { .. } | DockItem::Tiles { .. } => 0,
-    }
+/// Number of tab-group leaves in the center layout (one per
+/// [`PaneRef::Tabs`]). Compare against [`count_panel_state_tab_leaves`] on
+/// a live `dump()`. The fork keeps the layout in sync with the live tree,
+/// so the two counts always agree; retained as a defensive check.
+fn count_center_tab_leaves(area: &DockArea) -> usize {
+    let Some(tree) = area.layout(DockPlacement::Center) else { return 0 };
+    let mut count = 0;
+    tree.root().walk(&mut |node| {
+        if matches!(node.kind(), PaneRef::Tabs { .. }) {
+            count += 1;
+        }
+    });
+    count
 }
 
 /// Number of tab-panel leaves in a LIVE `dump()` tree (one per
-/// `PanelInfo::Tabs`). See [`count_dock_item_tab_leaves`].
+/// `PanelInfo::Tabs`). See [`count_center_tab_leaves`].
 fn count_panel_state_tab_leaves(state: &PanelState) -> usize {
     match &state.info {
         PanelInfo::Tabs { .. } => 1,
@@ -4049,31 +4047,36 @@ fn rebuild_item(
     dock_area: &gpui::WeakEntity<DockArea>,
     window: &mut Window,
     cx: &mut App,
-) -> DockItem {
+) -> DockLayout {
     match &state.info {
         PanelInfo::Stack { sizes, axis } => {
-            let items: Vec<DockItem> = state
-                .children
-                .iter()
-                .map(|child| rebuild_item(child, reusable, reusable_mounts, welcome, dock_area, window, cx))
-                .collect();
             let axis = if *axis == 0 { Axis::Horizontal } else { Axis::Vertical };
-            let sizes: Vec<Option<gpui::Pixels>> = sizes.iter().map(|size| Some(*size)).collect();
-            DockItem::split_with_sizes(axis, items, sizes, dock_area, window, cx)
+            let mut layout = match axis {
+                Axis::Horizontal => DockLayout::h_split(),
+                Axis::Vertical => DockLayout::v_split(),
+            };
+            for (ix, child) in state.children.iter().enumerate() {
+                let child_layout = rebuild_item(child, reusable, reusable_mounts, welcome, dock_area, window, cx);
+                layout = layout.child(child_layout, sizes.get(ix).copied());
+            }
+            layout
         }
         PanelInfo::Tabs { active_index } => {
-            let panels: Vec<Arc<dyn PanelView>> = state
-                .children
-                .iter()
-                .map(|leaf| resolve_leaf(leaf, reusable, reusable_mounts, welcome, dock_area, window, cx))
-                .collect();
-            let count = panels.len();
-            let item = DockItem::tabs(panels, dock_area, window, cx);
-            if count > 0 { item.active_index((*active_index).min(count - 1)) } else { item }
+            let mut layout = DockLayout::tabs();
+            for leaf in &state.children {
+                if let Some(panel) = resolve_leaf(leaf, reusable, reusable_mounts, welcome, dock_area, window, cx) {
+                    layout = layout.panel_view(panel, cx);
+                }
+            }
+            // Out-of-range indices are clamped by the layout's own normalize.
+            layout.active_index(*active_index)
         }
         PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => {
-            let panel = resolve_leaf(state, reusable, reusable_mounts, welcome, dock_area, window, cx);
-            DockItem::tabs(vec![panel], dock_area, window, cx)
+            let mut layout = DockLayout::tabs();
+            if let Some(panel) = resolve_leaf(state, reusable, reusable_mounts, welcome, dock_area, window, cx) {
+                layout = layout.panel_view(panel, cx);
+            }
+            layout
         }
     }
 }
@@ -4102,12 +4105,12 @@ fn resolve_leaf(
     dock_area: &gpui::WeakEntity<DockArea>,
     window: &mut Window,
     cx: &mut App,
-) -> Arc<dyn PanelView> {
+) -> Option<Arc<dyn PanelView>> {
     if leaf.panel_name == FILE_PANEL_NAME
         && let Some(path) = file_path_from_info(&leaf.info)
         && let Some(panel) = reusable.remove(&path)
     {
-        return panel;
+        return Some(panel);
     }
     // A live plugin-mount host is reused by its `(plugin_name, token)`
     // identity: rebuilding it via `WorkspaceHostPanel::restore` would drop
@@ -4116,14 +4119,23 @@ fn resolve_leaf(
         && let Some(key) = workspace_host_mount_key(&leaf.info)
         && let Some(panel) = reusable_mounts.get(&key)
     {
-        return panel.clone();
+        return Some(panel.clone());
     }
     if leaf.panel_name == WELCOME_PANEL_NAME
         && let Some(welcome) = welcome
     {
-        return Arc::new(welcome.clone());
+        return Some(Arc::new(welcome.clone()));
     }
-    Arc::from(PanelRegistry::build_panel(&leaf.panel_name, dock_area.clone(), leaf, &leaf.info, window, cx))
+    // A panel name with no registered builder returns `None` (the 0.5.2
+    // registry no longer substitutes a placeholder here); the leaf is then
+    // dropped from the rebuilt layout. Only reachable on a center-cache
+    // resync, which the fork's always-live tree makes effectively dead.
+    PanelRegistry::build_panel(
+        &leaf.panel_name,
+        PanelBuildContext::new(dock_area.clone(), leaf, &leaf.info),
+        window,
+        cx,
+    )
 }
 
 /// A workspace-host leaf's plugin-mount identity (`plugin_mount`'s
@@ -4147,7 +4159,7 @@ fn workspace_host_mount_key(info: &PanelInfo) -> Option<(String, String)> {
 fn spawn_watch_poll(window: &mut Window, cx: &mut Context<Workspace>) -> Task<()> {
     cx.spawn_in(window, async move |this, cx| {
         loop {
-            gpui::Timer::after(crate::watch::POLL_INTERVAL).await;
+            cx.background_executor().timer(crate::watch::POLL_INTERVAL).await;
             if this.update_in(cx, |workspace, window, cx| workspace.poll_file_watch(window, cx)).is_err() {
                 return;
             }
@@ -4174,7 +4186,7 @@ fn spawn_ipc_poll(
 ) -> Task<()> {
     cx.spawn_in(window, async move |this, cx| {
         loop {
-            gpui::Timer::after(IPC_POLL_INTERVAL).await;
+            cx.background_executor().timer(IPC_POLL_INTERVAL).await;
             let mut paths: Vec<PathBuf> = Vec::new();
             if let Some(receiver) = receiver.as_ref() {
                 while let Ok(batch) = receiver.try_recv() {
@@ -4455,133 +4467,68 @@ fn read_pane_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
     }
 }
 
-/// Collect the live `FilePanel` entities from a `DockItem` tree. Only
-/// accurate right after the cache is rebuilt (`load` / `set_center`);
-/// `DockItem::Tabs.items` is stale after incremental add/remove.
-fn collect_file_entities(item: &DockItem, out: &mut Vec<Entity<FilePanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_file_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(file) = panel.view().downcast::<FilePanel>() {
-                    out.push(file);
+/// Every center-dock panel of type `P`, in tree order, resolving each
+/// tab-group panel id to its live view. The fork keeps the center layout
+/// in sync with the live tree, so this is always current (the old
+/// `DockItem::Tabs.items` staleness caveat no longer applies).
+fn collect_center_panels<P: 'static>(area: &DockArea, out: &mut Vec<Entity<P>>) {
+    let Some(tree) = area.layout(DockPlacement::Center) else { return };
+    tree.root().walk(&mut |node| {
+        if let PaneRef::Tabs { panels, .. } = node.kind() {
+            for id in panels {
+                if let Some(view) = area.panel(*id)
+                    && let Ok(entity) = view.view().downcast::<P>()
+                {
+                    out.push(entity);
                 }
             }
         }
-        DockItem::Panel { view, .. } => {
-            if let Ok(file) = view.view().downcast::<FilePanel>() {
-                out.push(file);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+    });
 }
 
-/// Collect the live `StringsPanel` entities from a `DockItem` tree, for
-/// the open-or-focus dedup in `open_strings_for_active_file`. Same
-/// staleness caveat as `collect_file_entities`.
-fn collect_strings_entities(item: &DockItem, out: &mut Vec<Entity<StringsPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_strings_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(strings) = panel.view().downcast::<StringsPanel>() {
-                    out.push(strings);
-                }
-            }
+/// The active tab's panel of type `P` in the first center leaf that has
+/// one, in tree order. `None` when the active tab everywhere is a
+/// different type.
+fn active_center_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
+    let tree = area.layout(DockPlacement::Center)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_some() {
+            return;
         }
-        DockItem::Panel { view, .. } => {
-            if let Ok(strings) = view.view().downcast::<StringsPanel>() {
-                out.push(strings);
-            }
+        if let PaneRef::Tabs { panels, active_ix } = node.kind()
+            && let Some(id) = panels.get(active_ix).copied()
+            && let Some(view) = area.panel(id)
+            && let Ok(entity) = view.view().downcast::<P>()
+        {
+            found = Some(entity);
         }
-        DockItem::Tiles { .. } => {}
-    }
+    });
+    found
 }
 
-/// Collect the live `EntropyPanel` entities from a `DockItem` tree.
-/// Mirrors `collect_strings_entities`.
-fn collect_entropy_entities(item: &DockItem, out: &mut Vec<Entity<EntropyPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_entropy_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(entropy) = panel.view().downcast::<EntropyPanel>() {
-                    out.push(entropy);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(entropy) = view.view().downcast::<EntropyPanel>() {
-                out.push(entropy);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_file_entities(area: &DockArea, out: &mut Vec<Entity<FilePanel>>) {
+    collect_center_panels(area, out);
 }
 
-/// Collect the live `ChecksumsPanel` entities from a `DockItem` tree.
-/// Mirrors `collect_strings_entities`.
-fn collect_checksums_entities(item: &DockItem, out: &mut Vec<Entity<ChecksumsPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_checksums_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(checksums) = panel.view().downcast::<ChecksumsPanel>() {
-                    out.push(checksums);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(checksums) = view.view().downcast::<ChecksumsPanel>() {
-                out.push(checksums);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_strings_entities(area: &DockArea, out: &mut Vec<Entity<StringsPanel>>) {
+    collect_center_panels(area, out);
 }
 
-/// Collect the live `VisualizerPanel` entities from a `DockItem` tree.
-/// Mirrors `collect_strings_entities`.
-fn collect_visualizer_entities(item: &DockItem, out: &mut Vec<Entity<VisualizerPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_visualizer_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(visualizer) = panel.view().downcast::<VisualizerPanel>() {
-                    out.push(visualizer);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(visualizer) = view.view().downcast::<VisualizerPanel>() {
-                out.push(visualizer);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_entropy_entities(area: &DockArea, out: &mut Vec<Entity<EntropyPanel>>) {
+    collect_center_panels(area, out);
 }
 
-/// Collect the live `GlobalSearchPanel` entities from a `DockItem` tree
-/// (at most one -- it's a singleton -- but shaped like its siblings for
-/// reuse in `rebuild_center_cache`). Mirrors `collect_checksums_entities`.
-fn collect_global_search_entities(item: &DockItem, out: &mut Vec<Entity<GlobalSearchPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_global_search_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(search) = panel.view().downcast::<GlobalSearchPanel>() {
-                    out.push(search);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(search) = view.view().downcast::<GlobalSearchPanel>() {
-                out.push(search);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_checksums_entities(area: &DockArea, out: &mut Vec<Entity<ChecksumsPanel>>) {
+    collect_center_panels(area, out);
+}
+
+fn collect_visualizer_entities(area: &DockArea, out: &mut Vec<Entity<VisualizerPanel>>) {
+    collect_center_panels(area, out);
+}
+
+fn collect_global_search_entities(area: &DockArea, out: &mut Vec<Entity<GlobalSearchPanel>>) {
+    collect_center_panels(area, out);
 }
 
 /// The file panel backing the active tab, if the active tab is a file.
@@ -4602,15 +4549,8 @@ fn collect_global_search_entities(item: &DockItem, out: &mut Vec<Entity<GlobalSe
 /// that means "reference file" without also meaning "the tab
 /// `focus_existing_tab`/`open_file_for_path` treat as already focused"
 /// -- its own design decision, not folded into this task.
-fn active_file_panel(item: &DockItem, cx: &App) -> Option<Entity<FilePanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<FilePanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_file_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<FilePanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_file_panel(area: &DockArea, _cx: &App) -> Option<Entity<FilePanel>> {
+    active_center_panel(area)
 }
 
 /// The `StringsPanel` backing the active tab, if the active tab is a
@@ -4624,54 +4564,26 @@ fn active_file_panel(item: &DockItem, cx: &App) -> Option<Entity<FilePanel>> {
 /// stale -- incremental adds mutate the live `TabPanel` entity in
 /// place, and `active_panel` reads through that handle, not the cached
 /// vec.
-fn active_strings_panel(item: &DockItem, cx: &App) -> Option<Entity<StringsPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<StringsPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_strings_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<StringsPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_strings_panel(area: &DockArea, _cx: &App) -> Option<Entity<StringsPanel>> {
+    active_center_panel(area)
 }
 
 /// The `EntropyPanel` backing the active tab, if the active tab is an
 /// entropy tab. Mirrors `active_strings_panel`.
-fn active_entropy_panel(item: &DockItem, cx: &App) -> Option<Entity<EntropyPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<EntropyPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_entropy_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<EntropyPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_entropy_panel(area: &DockArea, _cx: &App) -> Option<Entity<EntropyPanel>> {
+    active_center_panel(area)
 }
 
 /// The `ChecksumsPanel` backing the active tab, if the active tab is a
 /// checksums tab. Mirrors `active_strings_panel`.
-fn active_checksums_panel(item: &DockItem, cx: &App) -> Option<Entity<ChecksumsPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<ChecksumsPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_checksums_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<ChecksumsPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_checksums_panel(area: &DockArea, _cx: &App) -> Option<Entity<ChecksumsPanel>> {
+    active_center_panel(area)
 }
 
 /// The `VisualizerPanel` backing the active tab, if the active tab is a
 /// visualizer tab. Mirrors `active_strings_panel`.
-fn active_visualizer_panel(item: &DockItem, cx: &App) -> Option<Entity<VisualizerPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<VisualizerPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_visualizer_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<VisualizerPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_visualizer_panel(area: &DockArea, _cx: &App) -> Option<Entity<VisualizerPanel>> {
+    active_center_panel(area)
 }
 
 /// The active center tab's panel view when its type is not one this
@@ -4681,14 +4593,22 @@ fn active_visualizer_panel(item: &DockItem, cx: &App) -> Option<Entity<Visualize
 /// bookkeeping). Identity is by `panel_name`: `InvalidPanel` reports
 /// "InvalidPanel", absent from the known set. Mirrors
 /// `active_strings_panel`'s tree walk.
-fn active_unrecognized_panel(item: &DockItem, cx: &App) -> Option<Arc<dyn PanelView>> {
-    let active = match item {
-        DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx),
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_unrecognized_panel(item, cx)),
-        DockItem::Panel { view, .. } => Some(view.clone()),
-        DockItem::Tiles { .. } => None,
-    }?;
-    if is_known_panel_name(active.panel_name(cx)) { None } else { Some(active) }
+fn active_unrecognized_panel(area: &DockArea, cx: &App) -> Option<Arc<dyn PanelView>> {
+    let tree = area.layout(DockPlacement::Center)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_some() {
+            return;
+        }
+        if let PaneRef::Tabs { panels, active_ix } = node.kind()
+            && let Some(id) = panels.get(active_ix).copied()
+            && let Some(view) = area.panel(id)
+            && !is_known_panel_name(view.panel_name(cx))
+        {
+            found = Some(view.clone());
+        }
+    });
+    found
 }
 
 /// Whether `name` is a panel type this build registers (see
@@ -4715,117 +4635,32 @@ fn is_known_panel_name(name: &str) -> bool {
 
 /// The `GlobalSearchPanel` backing the active tab, if the active tab is
 /// the global search tab. Mirrors `active_checksums_panel`.
-fn active_global_search_panel(item: &DockItem, cx: &App) -> Option<Entity<GlobalSearchPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<GlobalSearchPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_global_search_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<GlobalSearchPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_global_search_panel(area: &DockArea, _cx: &App) -> Option<Entity<GlobalSearchPanel>> {
+    active_center_panel(area)
 }
 
-/// Collect the live `SettingsPanel` entities from a `DockItem` tree
-/// (at most one -- singleton). Mirrors `collect_global_search_entities`.
-fn collect_settings_entities(item: &DockItem, out: &mut Vec<Entity<SettingsPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_settings_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(settings) = panel.view().downcast::<SettingsPanel>() {
-                    out.push(settings);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(settings) = view.view().downcast::<SettingsPanel>() {
-                out.push(settings);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_settings_entities(area: &DockArea, out: &mut Vec<Entity<SettingsPanel>>) {
+    collect_center_panels(area, out);
 }
 
 /// The `SettingsPanel` backing the active tab, if the active tab is
 /// the settings tab. Mirrors `active_global_search_panel`.
-fn active_settings_panel(item: &DockItem, cx: &App) -> Option<Entity<SettingsPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<SettingsPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_settings_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<SettingsPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_settings_panel(area: &DockArea, _cx: &App) -> Option<Entity<SettingsPanel>> {
+    active_center_panel(area)
 }
 
-/// Collect the live `PluginsPanel` entities from a `DockItem` tree (at
-/// most one -- singleton). Mirrors `collect_settings_entities`.
-fn collect_plugins_entities(item: &DockItem, out: &mut Vec<Entity<PluginsPanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_plugins_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(plugins) = panel.view().downcast::<PluginsPanel>() {
-                    out.push(plugins);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(plugins) = view.view().downcast::<PluginsPanel>() {
-                out.push(plugins);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
+fn collect_plugins_entities(area: &DockArea, out: &mut Vec<Entity<PluginsPanel>>) {
+    collect_center_panels(area, out);
 }
 
 /// The `PluginsPanel` backing the active tab, if the active tab is the
 /// plugins tab. Mirrors `active_settings_panel`.
-fn active_plugins_panel(item: &DockItem, cx: &App) -> Option<Entity<PluginsPanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<PluginsPanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_plugins_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<PluginsPanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn active_plugins_panel(area: &DockArea, _cx: &App) -> Option<Entity<PluginsPanel>> {
+    active_center_panel(area)
 }
 
-/// Collect the live `ConsolePanel` entities from a `DockItem` tree (at
-/// most one -- singleton). Mirrors `collect_settings_entities`.
-fn collect_console_entities(item: &DockItem, out: &mut Vec<Entity<ConsolePanel>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_console_entities(item, out)),
-        DockItem::Tabs { items, .. } => {
-            for panel in items {
-                if let Ok(console) = panel.view().downcast::<ConsolePanel>() {
-                    out.push(console);
-                }
-            }
-        }
-        DockItem::Panel { view, .. } => {
-            if let Ok(console) = view.view().downcast::<ConsolePanel>() {
-                out.push(console);
-            }
-        }
-        DockItem::Tiles { .. } => {}
-    }
-}
-
-/// The `ConsolePanel` backing the active tab, if the active tab is the
-/// console tab. Mirrors `active_settings_panel`.
-fn active_console_panel(item: &DockItem, cx: &App) -> Option<Entity<ConsolePanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<ConsolePanel>().ok())
-        }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| active_console_panel(item, cx)),
-        DockItem::Panel { view, .. } => view.view().downcast::<ConsolePanel>().ok(),
-        DockItem::Tiles { .. } => None,
-    }
+fn collect_console_entities(area: &DockArea, out: &mut Vec<Entity<ConsolePanel>>) {
+    collect_center_panels(area, out);
 }
 
 /// The `FilePanel` in whichever center-dock `Tabs` leaf's live
@@ -4835,17 +4670,25 @@ fn active_console_panel(item: &DockItem, cx: &App) -> Option<Entity<ConsolePanel
 /// element belong to" without needing the leaf's `TabPanel` identity
 /// tracked separately. Used by `sync_active_file_after_pick` to re-derive
 /// the active file after the pane picker moves focus directly.
-fn focused_center_file_panel(item: &DockItem, focused: &FocusHandle, cx: &App) -> Option<Entity<FilePanel>> {
-    match item {
-        DockItem::Tabs { view, .. } => {
-            if &view.read(cx).focus_handle(cx) != focused {
-                return None;
-            }
-            view.read(cx).active_panel(cx).and_then(|panel| panel.view().downcast::<FilePanel>().ok())
+fn focused_center_file_panel(area: &DockArea, focused: &FocusHandle, cx: &App) -> Option<Entity<FilePanel>> {
+    let tree = area.layout(DockPlacement::Center)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_some() {
+            return;
         }
-        DockItem::Split { items, .. } => items.iter().find_map(|item| focused_center_file_panel(item, focused, cx)),
-        DockItem::Panel { .. } | DockItem::Tiles { .. } => None,
-    }
+        // The active panel's own focus handle is where the leaf's focus
+        // resolves (matching the old `TabPanel::focus_handle` delegation),
+        // so a match identifies the leaf the focused element belongs to.
+        if let PaneRef::Tabs { panels, active_ix } = node.kind()
+            && let Some(id) = panels.get(active_ix).copied()
+            && let Some(view) = area.panel(id)
+            && &view.focus_handle(cx) == focused
+        {
+            found = view.view().downcast::<FilePanel>().ok();
+        }
+    });
+    found
 }
 
 impl Focusable for Workspace {
@@ -4907,7 +4750,7 @@ impl Render for Workspace {
                     Some(file) => file.read(cx).pane().read(cx).focus_handle(cx),
                     None => self.focus_handle.clone(),
                 };
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         }
 
@@ -5075,28 +4918,27 @@ mod tests {
     }
 
     fn console_tab_count(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
-        workspace.read_with(cx, |ws, cx| count_console_panels(&ws.dock.read(cx).dump(cx).center))
+        workspace.read_with(cx, |ws, cx| {
+            ws.dock.read(cx).dump(cx).bottom_dock.as_ref().map_or(0, |d| count_console_panels(d.panel()))
+        })
     }
 
-    /// `open_console` is a singleton like `open_settings`: the first call
-    /// adds one tab, a second focuses the existing panel (same entity)
-    /// instead of building another.
+    /// `open_console` is a real toggle in the bottom dock (matching
+    /// egui's `toggle_console`): the first call opens one Console tab
+    /// below, a second closes it.
     #[gpui::test]
-    fn open_console_focuses_the_existing_singleton(cx: &mut TestAppContext) {
+    fn open_console_toggles_the_bottom_dock(cx: &mut TestAppContext) {
         setup(cx);
         let (window, workspace) = open_workspace_with_root(cx, Vec::new(), None);
         let cx = VisualTestContext::from_window(*window, cx).into_mut();
 
         workspace.update_in(cx, |ws, window, cx| ws.open_console(window, cx));
         cx.run_until_parked();
-        assert_eq!(console_tab_count(&workspace, cx), 1, "first open adds the tab");
-        let first = workspace.read_with(cx, |ws, _| ws.console_panel.clone()).expect("singleton handle tracked");
+        assert_eq!(console_tab_count(&workspace, cx), 1, "first open adds the bottom-dock tab");
 
         workspace.update_in(cx, |ws, window, cx| ws.open_console(window, cx));
         cx.run_until_parked();
-        assert_eq!(console_tab_count(&workspace, cx), 1, "second open focuses instead of duplicating");
-        let second = workspace.read_with(cx, |ws, _| ws.console_panel.clone()).expect("singleton handle kept");
-        assert_eq!(first.entity_id(), second.entity_id(), "the same panel entity is reused");
+        assert_eq!(console_tab_count(&workspace, cx), 0, "second open toggles it closed");
     }
 
     /// `console_log` appends an entry, publishes it on the read-view
@@ -5208,7 +5050,7 @@ mod tests {
                     cx.notify();
                 });
                 let handle = file.read(cx).pane().read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -5956,8 +5798,7 @@ mod tests {
         window
             .update(cx, |ws, window, cx| {
                 let active = ws.active_file.clone().unwrap();
-                let view: Arc<dyn PanelView> = Arc::new(active);
-                ws.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+                ws.dock.update(cx, |dock, cx| dock.remove_panel(active, window, cx));
             })
             .unwrap();
         cx.run_until_parked();
@@ -5984,11 +5825,72 @@ mod tests {
         here + state.children.iter().map(count_welcome_panels).sum::<usize>()
     }
 
-    fn first_live_tab_panel(item: &DockItem) -> Option<Entity<gpui_component::dock::TabPanel>> {
-        match item {
-            DockItem::Tabs { view, .. } => Some(view.clone()),
-            DockItem::Split { items, .. } => items.iter().find_map(first_live_tab_panel),
-            _ => None,
+    /// The `NodeId` of the first center tab-group leaf, in tree order.
+    /// Replaces the old `first_live_tab_panel` (the fork has no
+    /// app-visible `TabPanel` entity; leaves are addressed by node id).
+    fn first_center_tab_node(area: &DockArea) -> Option<gpui_component::dock::NodeId> {
+        let tree = area.layout(DockPlacement::Center)?;
+        let mut found = None;
+        tree.root().walk(&mut |node| {
+            if found.is_none() && matches!(node.kind(), PaneRef::Tabs { .. }) {
+                found = Some(node.id());
+            }
+        });
+        found
+    }
+
+    /// Drag-split simulation: register `panel` in the center, then move it
+    /// into a new tab group to the right of `node`. The new-API equivalent
+    /// of the old `TabPanel::add_panel_at(.., Placement::Right, ..)`.
+    fn drag_split_right(
+        dock: &Entity<DockArea>,
+        node: gpui_component::dock::NodeId,
+        panel: Entity<FilePanel>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let id = gpui_component::dock::PanelId::from(panel.entity_id());
+        dock.update(cx, |dock, cx| {
+            dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx);
+            dock.move_panel(
+                id,
+                gpui_component::dock::InsertTarget::Split {
+                    node,
+                    placement: gpui_component::Placement::Right,
+                    size: None,
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// Empty center tab-group `node` by removing every `FilePanel` in it.
+    /// Replaces the old "loop `tab.remove_panel(tab.active_panel())`"
+    /// drag-collapse simulation (the panes these tests empty hold only
+    /// file tabs).
+    fn empty_center_file_node(
+        ws: &mut Workspace,
+        node: gpui_component::dock::NodeId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let area = ws.dock.read(cx);
+        let ids: Vec<gpui_component::dock::PanelId> = area
+            .layout(DockPlacement::Center)
+            .and_then(|tree| tree.find_node(node))
+            .map(|node| match node.kind() {
+                PaneRef::Tabs { panels, .. } => panels.to_vec(),
+                _ => Vec::new(),
+            })
+            .unwrap_or_default();
+        let files: Vec<Entity<FilePanel>> = ids
+            .into_iter()
+            .filter_map(|id| area.panel(id).cloned())
+            .filter_map(|view| view.view().downcast::<FilePanel>().ok())
+            .collect();
+        for file in files {
+            ws.dock.update(cx, |dock, cx| dock.remove_panel(file, window, cx));
         }
     }
 
@@ -6012,32 +5914,26 @@ mod tests {
         window_open(window, &f2, cx);
 
         let original = window
-            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
             .unwrap()
             .expect("a center tab panel");
 
         // Split a new pane (f3) beside the original -- the UI drag-split path.
         window
-            .update(cx, |_ws, window, cx| {
+            .update(cx, |ws, window, cx| {
                 let bytes = std::fs::read(&f3).unwrap();
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let f3_panel = cx.new(|cx| FilePanel::new(source, Some(f3.clone()), window, cx));
-                let view: Arc<dyn PanelView> = Arc::new(f3_panel);
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, f3_panel, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
         assert_eq!(file_count(window, cx), 3);
 
-        // Empty the original pane so its TabPanel detaches from the live tree.
+        // Empty the original pane so it detaches from the live tree.
         window
-            .update(cx, |_ws, window, cx| {
-                original.update(cx, |tab, cx| {
-                    while let Some(panel) = tab.active_panel(cx) {
-                        tab.remove_panel(panel, window, cx);
-                    }
-                });
+            .update(cx, |ws, window, cx| {
+                empty_center_file_node(ws, original, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -6050,19 +5946,10 @@ mod tests {
         assert!(paths.contains(&f3));
     }
 
-    fn file_panel_by_path(item: &DockItem, cx: &App, target: &Path) -> Option<Entity<FilePanel>> {
-        match item {
-            DockItem::Split { items, .. } => items.iter().find_map(|item| file_panel_by_path(item, cx, target)),
-            DockItem::Tabs { items, .. } => items.iter().find_map(|panel| {
-                let file = panel.view().downcast::<FilePanel>().ok()?;
-                (file.read(cx).path() == Some(target)).then_some(file)
-            }),
-            DockItem::Panel { view, .. } => {
-                let file = view.view().downcast::<FilePanel>().ok()?;
-                (file.read(cx).path() == Some(target)).then_some(file)
-            }
-            DockItem::Tiles { .. } => None,
-        }
+    fn file_panel_by_path(area: &DockArea, cx: &App, target: &Path) -> Option<Entity<FilePanel>> {
+        let mut files = Vec::new();
+        collect_center_panels::<FilePanel>(area, &mut files);
+        files.into_iter().find(|file| file.read(cx).path() == Some(target))
     }
 
     /// A center-cache resync (triggered by an unrelated pane collapsing)
@@ -6081,7 +5968,7 @@ mod tests {
         // Split file A into a new pane and register it as an open file --
         // mirrors dragging an already-open file into a split.
         let original = window
-            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
             .unwrap()
             .expect("a center tab panel");
         let fa_entity = window
@@ -6090,9 +5977,7 @@ mod tests {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(fa.clone()), window, cx));
                 ws.open_files.push(panel.clone());
-                let view: Arc<dyn PanelView> = Arc::new(panel.clone());
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, panel.clone(), window, cx);
                 panel
             })
             .unwrap();
@@ -6103,7 +5988,7 @@ mod tests {
         window
             .update(cx, |_ws, window, cx| {
                 let handle = fa_entity.read(cx).pane().read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -6114,15 +5999,10 @@ mod tests {
             "file A should be dirty after typing",
         );
 
-        // Collapse the original pane so its cached tab panel goes empty and
-        // the reconcile resync fires while file A survives in the split.
+        // Collapse the original pane so file A survives in the split.
         window
-            .update(cx, |_ws, window, cx| {
-                original.update(cx, |tab, cx| {
-                    while let Some(panel) = tab.active_panel(cx) {
-                        tab.remove_panel(panel, window, cx);
-                    }
-                });
+            .update(cx, |ws, window, cx| {
+                empty_center_file_node(ws, original, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -6134,7 +6014,7 @@ mod tests {
             "resync must preserve the surviving file's dirty edits",
         );
         let live_a = window
-            .read_with(cx, |ws, cx| file_panel_by_path(ws.dock.read(cx).items(), cx, &fa))
+            .read_with(cx, |ws, cx| file_panel_by_path(ws.dock.read(cx), cx, &fa))
             .unwrap()
             .expect("file A still live");
         assert_eq!(live_a.entity_id(), fa_entity.entity_id(), "resync must reuse the same panel entity");
@@ -6167,7 +6047,7 @@ mod tests {
         window
             .update(cx, |_ws, window, cx| {
                 let handle = fa_entity.read(cx).pane().read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -6414,7 +6294,7 @@ mod tests {
         let window = open_workspace(cx, Vec::new(), None);
 
         let is_open = |cx: &mut TestAppContext| {
-            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap()
+            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right)).unwrap()
         };
         assert!(!is_open(cx), "inspector starts closed");
 
@@ -6437,7 +6317,7 @@ mod tests {
 
         let first = open_workspace(cx, Vec::new(), Some(layout.clone()));
         cx.simulate_keystrokes(first.into(), "cmd-i");
-        assert!(first.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap());
+        assert!(first.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right)).unwrap());
         first.read_with(cx, |ws, cx| ws.save_now(cx).unwrap().unwrap()).unwrap();
 
         let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
@@ -6446,7 +6326,7 @@ mod tests {
 
         let second = open_workspace(cx, Vec::new(), Some(layout));
         assert!(
-            second.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            second.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right)).unwrap(),
             "inspector open state must restore",
         );
     }
@@ -6513,7 +6393,7 @@ mod tests {
         window_open(window, &f1, cx);
 
         let original = window
-            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
             .unwrap()
             .expect("a center tab panel");
         let f2_pane = window
@@ -6529,9 +6409,7 @@ mod tests {
                 // reuse and would silently rebuild a fresh FilePanel.
                 ws.open_files.push(panel.clone());
                 let pane = panel.read(cx).pane().clone();
-                let view: Arc<dyn PanelView> = Arc::new(panel);
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, panel, window, cx);
                 pane
             })
             .unwrap();
@@ -6544,7 +6422,8 @@ mod tests {
 
         window
             .update(cx, |ws, window, cx| {
-                window.focus(&ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx))
+                let handle = ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx);
+                window.focus(&handle, cx)
             })
             .unwrap();
         cx.simulate_keystrokes(window.into(), "cmd-k");
@@ -6614,7 +6493,7 @@ mod tests {
         let f1 = temp_file(&dir, "t.bin", &[0u8; 16]);
         let window = open_workspace(cx, vec![f1.clone()], None);
         assert!(
-            !window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            !window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right)).unwrap(),
             "inspector dock starts collapsed"
         );
 
@@ -6633,7 +6512,7 @@ mod tests {
         cx.simulate_keystrokes(window.into(), &inspector_letter.to_string());
 
         assert!(
-            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right, cx)).unwrap(),
+            window.read_with(cx, |ws, cx| ws.dock.read(cx).is_dock_open(DockPlacement::Right)).unwrap(),
             "picking the inspector opens its collapsed dock"
         );
         let inspector_handle = window
@@ -6669,7 +6548,7 @@ mod tests {
         window_open(window, &f1, cx);
 
         let original = window
-            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
             .unwrap()
             .expect("a center tab panel");
         window
@@ -6678,9 +6557,7 @@ mod tests {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
                 ws.open_files.push(panel.clone());
-                let view: Arc<dyn PanelView> = Arc::new(panel);
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, panel, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -6779,16 +6656,14 @@ mod tests {
         // left/active leaf) collapses its leaf into a cache orphan -- the
         // hazard that fires the focus-stealing rebuild.
         let original =
-            ws.read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items())).expect("a center tab panel");
+            ws.read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx))).expect("a center tab panel");
         cx.update_window(window.into(), |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 let bytes = std::fs::read(&f2).unwrap();
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
                 ws.open_files.push(panel.clone());
-                let view: Arc<dyn PanelView> = Arc::new(panel);
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, panel, window, cx);
             });
         })
         .unwrap();
@@ -6799,7 +6674,7 @@ mod tests {
         cx.update_window(window.into(), |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 let handle = ws.active_file.as_ref().unwrap().read(cx).pane().read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             });
         })
         .unwrap();
@@ -7279,7 +7154,7 @@ mod tests {
         cx.run_until_parked();
 
         let original = window
-            .read_with(cx, |ws, cx| first_live_tab_panel(ws.dock.read(cx).items()))
+            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
             .unwrap()
             .expect("a center tab panel");
         window
@@ -7288,9 +7163,7 @@ mod tests {
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let b_panel = cx.new(|cx| FilePanel::new(source, Some(fb.clone()), window, cx));
                 ws.open_files.push(b_panel.clone());
-                let view: Arc<dyn PanelView> = Arc::new(b_panel.clone());
-                original
-                    .update(cx, |tab, cx| tab.add_panel_at(view, gpui_component::Placement::Right, None, window, cx));
+                drag_split_right(&ws.dock, original, b_panel.clone(), window, cx);
                 // A plain split does not itself change `active_file`:
                 // the newly split-off `TabPanel` has no node at all in
                 // the cached `DockItem` tree yet (only a live resync or
@@ -7584,9 +7457,8 @@ mod tests {
         window_open(window, &f1, cx);
 
         let f1_panel = window.read_with(cx, |ws, _| ws.active_file.clone()).unwrap().expect("f1 open");
-        let (left, f2_panel) = window
+        let (left_node, f2_panel) = window
             .update(cx, |ws, window, cx| {
-                let weak = ws.dock.downgrade();
                 let bytes = std::fs::read(&f2).unwrap();
                 let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
                 let f2_panel = cx.new(|cx| FilePanel::new(source, Some(f2.clone()), window, cx));
@@ -7595,30 +7467,29 @@ mod tests {
                 ws.open_files = vec![f1_panel.clone(), f2_panel.clone()];
                 ws.track_strings_panel(strings_f2.clone(), window, cx);
 
-                let left_view: Arc<dyn PanelView> = Arc::new(f1_panel.clone());
-                let right_views: Vec<Arc<dyn PanelView>> = vec![Arc::new(f2_panel.clone()), Arc::new(strings_f2)];
-                let left = DockItem::tabs(vec![left_view], &weak, window, cx);
-                let right = DockItem::tabs(right_views, &weak, window, cx);
-                let split = DockItem::split(Axis::Horizontal, vec![left.clone(), right], &weak, window, cx);
-                ws.dock.update(cx, |dock, cx| dock.set_center(split, window, cx));
+                // Left leaf: F1. Right leaf: F2 + its strings tab.
+                ws.dock.update(cx, |dock, cx| {
+                    dock.set_center(
+                        DockLayout::h_split()
+                            .child(DockLayout::tabs().panel(f1_panel.clone()), None)
+                            .child(DockLayout::tabs().panel(f2_panel.clone()).panel(strings_f2), None),
+                        window,
+                        cx,
+                    );
+                });
                 ws.set_active_file(Some(f2_panel.clone()), cx);
-                (left, f2_panel)
+                let left_node = first_center_tab_node(ws.dock.read(cx)).expect("left leaf");
+                (left_node, f2_panel)
             })
             .unwrap();
         cx.run_until_parked();
         assert_eq!(file_count(window, cx), 2);
         assert_eq!(strings_tab_count(window, cx), 1);
 
-        // Empty the left (F1) panel so its `TabPanel` detaches, leaving
-        // a dead entry in the cache ahead of the still-live right one.
-        let DockItem::Tabs { view: left_view, .. } = &left else { unreachable!() };
+        // Empty the left (F1) leaf so a file survives only in the right one.
         window
-            .update(cx, |_ws, window, cx| {
-                left_view.update(cx, |tab, cx| {
-                    while let Some(panel) = tab.active_panel(cx) {
-                        tab.remove_panel(panel, window, cx);
-                    }
-                });
+            .update(cx, |ws, window, cx| {
+                empty_center_file_node(ws, left_node, window, cx);
             })
             .unwrap();
         cx.run_until_parked();
@@ -7739,8 +7610,7 @@ mod tests {
         let f1_panel = window.read_with(cx, |ws, cx| ws.open_file_for_path(&f1, cx)).unwrap().expect("f1 open");
         window
             .update(cx, |ws, window, cx| {
-                let view: Arc<dyn PanelView> = Arc::new(f1_panel);
-                ws.dock.update(cx, |dock, cx| dock.remove_panel(view, DockPlacement::Center, window, cx));
+                ws.dock.update(cx, |dock, cx| dock.remove_panel(f1_panel, window, cx));
             })
             .unwrap();
         cx.run_until_parked();

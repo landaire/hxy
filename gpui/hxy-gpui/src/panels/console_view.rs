@@ -31,6 +31,7 @@ use gpui_component::ActiveTheme;
 use gpui_component::Icon;
 use gpui_component::IconName;
 use gpui_component::Sizable;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::h_flex;
@@ -63,11 +64,13 @@ fn format_console_time(ts: jiff::Timestamp) -> String {
     format!("{:02}:{:02}:{:02}", zoned.hour(), zoned.minute(), zoned.second())
 }
 
-impl Panel for ConsolePanel {
+impl BasePanel for ConsolePanel {
     fn panel_name(&self) -> &'static str {
         CONSOLE_PANEL_NAME
     }
+}
 
+impl Panel for ConsolePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(hxy_i18n::t("tab-console"))
     }

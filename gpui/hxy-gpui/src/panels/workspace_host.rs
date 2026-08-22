@@ -20,17 +20,21 @@
 //! detect-and-eject correction; it is app-level and forks no upstream
 //! code.
 //!
-//! Sweep boundary: the eject sweep covers the inner CENTER dock only.
-//! gpui-component 0.5.1 exposes no accessor for a `DockArea`'s side-dock
-//! (`left`/`right`/`bottom`) panel entities -- those fields are private
-//! with no `items()`-equivalent -- so cheaply enumerating a foreign tab
-//! dropped into an inner side dock is not possible without forking
-//! upstream. The inner layout ships only a left tree dock (owned), and a
-//! foreign drop lands in a center `TabPanel` in the common case, so this
-//! is an acceptable M3 floor. The symmetric OUTWARD escape (an owned
-//! entry dragged out to the outer dock) is likewise left to a future
-//! pass: detecting it needs outer-dock walking that the same missing
-//! accessors make non-cheap.
+//! Sweep boundary: the eject sweep covers the inner CENTER dock only. A
+//! deliberate scope choice, not a hard limit: the inner layout ships only
+//! a left tree dock (owned), and a foreign drop lands in a center tab
+//! group in the common case, so the center sweep is the acceptable floor.
+//! The symmetric OUTWARD escape (an owned entry dragged out to the outer
+//! dock) is likewise left to a future pass.
+//!
+//! Removal reach: eject requires removing the foreign panel from the inner
+//! dock, and gpui-component 0.5.2's only public removal takes a concrete
+//! `Entity<P>` (no remove-by-PanelId/Arc, no exposed `TabGroup` to drive a
+//! close). The guard recovers that entity by downcasting to `FilePanel` --
+//! the type a cross-area drop realistically lands in a VFS workspace and
+//! the one the guard test exercises. A foreign panel of any other type is
+//! left in the inner dock rather than duplicated across both docks; see
+//! `enforce_membership`.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -59,15 +63,19 @@ use gpui::div;
 use gpui_component::Icon;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
+use gpui_component::dock::BasePanel;
+use gpui_component::dock::BasePanelView;
 use gpui_component::dock::DockArea;
+use gpui_component::dock::DockSkin;
 use gpui_component::dock::DockEvent;
-use gpui_component::dock::DockItem;
+use gpui_component::dock::DockLayout;
 use gpui_component::dock::DockPlacement;
+use gpui_component::dock::PaneRef;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
+use gpui_component::dock::PanelHandle;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelState;
-use gpui_component::dock::PanelView;
 use gpui_component::dock::register_panel;
 use gpui_component::h_flex;
 use gpui_component::notification::Notification;
@@ -119,8 +127,10 @@ pub fn register(cx: &mut App) {
     registry.register(Arc::new(hxy_vfs::handlers::ZipHandler::new()));
     cx.set_global(VfsRegistryGlobal(registry));
 
-    register_panel(cx, WORKSPACE_HOST_PANEL_NAME, |outer, _state, info, window, cx| {
-        Box::new(cx.new(|cx| WorkspaceHostPanel::restore(outer, info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, WORKSPACE_HOST_PANEL_NAME, |ctx, window, cx| {
+        let outer = ctx.dock_area();
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| WorkspaceHostPanel::restore(outer, info, window, cx))))
     });
 }
 
@@ -247,18 +257,20 @@ impl WorkspaceHostPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let dock = cx.new(|cx| DockArea::new("workspace-inner", Some(1), window, cx));
+        let dock = cx.new(|cx| DockArea::new("workspace-inner", Some(1), window, cx).with_renderer(DockSkin::new(cx)));
         let tree = cx.new(|cx| VfsTreePanel::new(mount.clone(), expanded, cx));
 
-        // Seed the inner dock: tree on the left, an empty center split
-        // that entry tabs are added into. A bare center Tabs never emits
-        // LayoutChanged (see the m2 notes), so start from an empty Split.
-        let weak = dock.downgrade();
-        let tree_item = DockItem::tabs(vec![Arc::new(tree.clone()) as Arc<dyn PanelView>], &weak, window, cx);
-        let center = DockItem::split(gpui::Axis::Horizontal, vec![], &weak, window, cx);
+        // Seed the inner dock: the tree in the left dock, an empty center
+        // split that entry tabs are added into. In the 0.5.2 dock the layout
+        // is data and every edit (set_center / add_panel) emits LayoutChanged
+        // itself, so the empty split is just the neutral starting shape; the
+        // guard's reconcile is driven by those explicit emissions. A fresh
+        // left dock opens by default, matching the old `open: true`.
         dock.update(cx, |dock, cx| {
-            dock.set_center(center, window, cx);
-            dock.set_left_dock(tree_item, Some(gpui::px(220.0)), true, window, cx);
+            dock.set_center(DockLayout::h_split(), window, cx);
+            let left = DockLayout::tabs().panel_view(Arc::new(PanelHandle::new(tree.clone())), cx);
+            dock.set_dock(DockPlacement::Left, left, window, cx);
+            dock.set_dock_size(DockPlacement::Left, gpui::px(220.0), window, cx);
         });
 
         let dock_subscription = cx.subscribe(&dock, |host, _dock, event: &DockEvent, cx| match event {
@@ -266,7 +278,7 @@ impl WorkspaceHostPanel {
                 host.needs_guard = true;
                 cx.notify();
             }
-            DockEvent::DragDrop(_) => {}
+            DockEvent::DragDrop { .. } => {}
         });
         let tree_subscription = cx.subscribe_in(&tree, window, Self::on_tree_event);
 
@@ -322,15 +334,18 @@ impl WorkspaceHostPanel {
         // stops being persisted and can be reopened from the tree.
         self.entries.retain(|e| e.panel.upgrade().is_some());
         if let Some(panel) = self.entries.iter().find(|e| e.vfs_path == vfs_path).and_then(|e| e.panel.upgrade()) {
-            // gpui-component 0.5.1 has no "activate tab", so `window.focus`
-            // alone leaves a background entry behind its front tab. Re-add
-            // it through the inner dock -- the same remove+re-add
-            // workaround `Workspace::focus_existing_tab` uses -- so it
-            // becomes the visible tab. The entity (and its `owned` id) is
-            // unchanged, so the drag guard still leaves it alone.
-            let view: Arc<dyn PanelView> = Arc::new(panel);
-            self.dock.update(cx, |dock, cx| dock.remove_panel(view.clone(), DockPlacement::Center, window, cx));
-            self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+            // There is no "activate tab" call, so re-adding the panel is what
+            // brings a background entry to the front -- add_panel_view merges
+            // it into the center group as the active tab. The same
+            // remove+re-add workaround `Workspace::focus_existing_tab` uses.
+            // The entity (and its `owned` id) is unchanged, so the drag guard
+            // still leaves it alone. Re-added through a fresh PanelHandle so
+            // the tab keeps its skin title (a bare entity would draw only its
+            // panel_name).
+            self.dock.update(cx, |dock, cx| {
+                dock.remove_panel(panel.clone(), window, cx);
+                dock.add_panel_view(Arc::new(PanelHandle::new(panel.clone())), DockPlacement::Center, None, window, cx);
+            });
             return;
         }
         let bytes = match read_entry(&self.mount, &vfs_path) {
@@ -362,8 +377,9 @@ impl WorkspaceHostPanel {
         }
         self.owned.insert(panel.entity_id());
         self.entries.push(EntryTab { vfs_path, panel: panel.downgrade(), virtual_base });
-        let view: Arc<dyn PanelView> = Arc::new(panel);
-        self.dock.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel_view(Arc::new(PanelHandle::new(panel.clone())), DockPlacement::Center, None, window, cx)
+        });
     }
 
     /// Eject every inner-center panel this host does not own back to the
@@ -373,16 +389,14 @@ impl WorkspaceHostPanel {
     /// inner center, is detected here as un-owned, and is moved back.
     /// Returns an empty vec in the common case (nothing foreign).
     pub fn enforce_membership(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<String> {
-        // gpui-component's `TabPanel` exposes only its ACTIVE panel, not
-        // its whole list, and the cached `DockItem::Tabs.items` vec is
-        // stale after an incremental drop (see the m2 notes). A foreign
-        // tab dropped in from the outer dock becomes the active tab of
-        // its target `TabPanel`, so walking each center tab container's
-        // active panel is what reliably surfaces it; a foreign panel left
-        // as a background tab is caught the moment it is activated (that
-        // emits its own `LayoutChanged`).
+        // The 0.5.2 layout is immutable data, so read the center tree and
+        // resolve each tab group's active PanelId back to a live view. A
+        // foreign tab dropped in from the outer dock becomes the active tab
+        // of its target group, so walking active panels surfaces it; a
+        // foreign panel left as a background tab is caught the moment it is
+        // activated (that emits its own `LayoutChanged`).
         let mut active = Vec::new();
-        collect_active_panels(self.dock.read(cx).items(), cx, &mut active);
+        collect_active_panels(self.dock.read(cx), cx, &mut active);
         // If the outer dock is gone (window teardown) there is nowhere to
         // move a foreign panel to, so leave it in place rather than
         // destroy it by removing it with no re-home.
@@ -393,14 +407,30 @@ impl WorkspaceHostPanel {
             if self.owned.contains(&id) {
                 continue;
             }
-            let name = leaf
-                .view()
-                .downcast::<FilePanel>()
-                .ok()
-                .and_then(|f| f.read(cx).path().map(display_name))
-                .unwrap_or_else(|| leaf.panel_name(cx).to_string());
-            self.dock.update(cx, |dock, cx| dock.remove_panel(leaf.clone(), DockPlacement::Center, window, cx));
-            outer.update(cx, |dock, cx| dock.add_panel(leaf.clone(), DockPlacement::Center, None, window, cx));
+            // Ejecting removes the panel from the inner dock and re-homes it
+            // in the outer one. 0.5.2's `DockArea::remove_panel` takes a
+            // concrete `Entity<P>`, and there is no public remove-by-PanelId
+            // or remove-by-Arc (`remove_panel_id` is private, and no live
+            // `TabGroup` handle is exposed to drive a close), so removal needs
+            // the panel's concrete entity. It is recovered by downcasting the
+            // leaf's view to `FilePanel` -- the type a cross-area drop
+            // realistically lands here and the one the guard test exercises.
+            // A foreign panel of any other type cannot be removed through the
+            // public API, so it is left in the inner dock (never duplicated
+            // across both docks); see the module note.
+            let Ok(file) = leaf.view().downcast::<FilePanel>() else {
+                tracing::warn!(
+                    panel = leaf.panel_name(cx),
+                    "workspace guard: foreign non-FilePanel center tab cannot be ejected \
+                     (gpui-component 0.5.2 has no public remove-by-id); left in the inner dock",
+                );
+                continue;
+            };
+            let name = file.read(cx).path().map(display_name).unwrap_or_else(|| leaf.panel_name(cx).to_string());
+            self.dock.update(cx, |dock, cx| dock.remove_panel(file.clone(), window, cx));
+            outer.update(cx, |dock, cx| {
+                dock.add_panel_view(Arc::new(PanelHandle::new(file.clone())), DockPlacement::Center, None, window, cx)
+            });
             ejected.push(name);
         }
         ejected
@@ -463,33 +493,17 @@ impl WorkspaceHostPanel {
     }
 }
 
-impl Panel for WorkspaceHostPanel {
+impl BasePanel for WorkspaceHostPanel {
     fn panel_name(&self) -> &'static str {
         WORKSPACE_HOST_PANEL_NAME
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // House prefix mirrors egui's workspace-root icon (inner entry
-        // tabs stay unprefixed). Shows only in single-panel title-bar
-        // mode -- the multi-tab TabBar renders `tab_name` text, which
-        // has no icon slot (gpui-component 0.5.1).
-        h_flex()
-            .gap_1()
-            .items_center()
-            .child(Icon::new(HxyIcon::House).small())
-            .child(SharedString::from(self.title_text()))
-    }
-
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(self.title_text()))
-    }
-
     /// Refuse to close the host tab while any inner entry tab is dirty, so
-    /// the tab bar's own Close (no pre-close veto in gpui-component 0.5.1)
-    /// can't discard unsaved entry edits with the whole nested dock. Moot
-    /// for today's writerless mounts (entries open read-only via
-    /// `open_entry`, so they never go dirty), but defense in depth for the
-    /// M4 writer-bearing mounts whose entries will be mutable.
+    /// the tab bar's own Close (no pre-close veto in gpui-component) can't
+    /// discard unsaved entry edits with the whole nested dock. Moot for
+    /// today's writerless mounts (entries open read-only via `open_entry`,
+    /// so they never go dirty), but defense in depth for the M4
+    /// writer-bearing mounts whose entries will be mutable.
     fn closable(&self, cx: &App) -> bool {
         !self.entries.iter().any(|e| e.panel.upgrade().is_some_and(|p| p.read(cx).is_dirty(cx)))
     }
@@ -499,7 +513,7 @@ impl Panel for WorkspaceHostPanel {
     /// hints. `DockArea::dump`/`load` know nothing about this nesting, so
     /// the host owns every byte of it (see the verdict's exercise (b)).
     fn dump(&self, cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         // A plugin mount is a live session (its token is not re-drivable
         // offline), so the dump records only a marker; `persist::prune_for_restore`
         // drops it before load rather than re-mounting -- the documented
@@ -532,6 +546,24 @@ impl Panel for WorkspaceHostPanel {
             "virtual_bases": virtual_bases,
         }));
         state
+    }
+}
+
+impl Panel for WorkspaceHostPanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // House prefix mirrors egui's workspace-root icon (inner entry
+        // tabs stay unprefixed). Shows only in single-panel title-bar
+        // mode -- the multi-tab TabBar renders `tab_name` text, which
+        // has no icon slot (gpui-component 0.5.1).
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(Icon::new(HxyIcon::House).small())
+            .child(SharedString::from(self.title_text()))
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(self.title_text()))
     }
 }
 
@@ -610,21 +642,21 @@ fn display_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
-/// Collect the live ACTIVE panel of every tab container in a `DockItem`
-/// tree. Reads through the `TabPanel` entity (never the stale cache), so
-/// a freshly dropped-in foreign tab -- which becomes active on drop -- is
-/// included.
-fn collect_active_panels(item: &DockItem, cx: &App, out: &mut Vec<Arc<dyn PanelView>>) {
-    match item {
-        DockItem::Split { items, .. } => items.iter().for_each(|item| collect_active_panels(item, cx, out)),
-        DockItem::Tabs { view, .. } => {
-            if let Some(active) = view.read(cx).active_panel(cx) {
-                out.push(active);
-            }
+/// Collect the live ACTIVE panel of every tab container in `area`'s center
+/// tree. 0.5.2's layout is immutable data (`PaneTree`), so this walks the
+/// tree and resolves each tab group's active `PanelId` back to its live view
+/// via `DockArea::panel`. A freshly dropped-in foreign tab -- which becomes
+/// the active tab of its group -- is included. The inner dock never uses a
+/// tiles canvas, so only tab groups are inspected.
+fn collect_active_panels(area: &DockArea, _cx: &App, out: &mut Vec<Arc<dyn BasePanelView>>) {
+    let Some(tree) = area.layout(DockPlacement::Center) else { return };
+    tree.root().walk(&mut |node| {
+        let PaneRef::Tabs { panels, active_ix } = node.kind() else { return };
+        let Some(id) = panels.get(active_ix).copied() else { return };
+        if let Some(view) = area.panel(id) {
+            out.push(view.clone());
         }
-        DockItem::Panel { view, .. } => out.push(view.clone()),
-        DockItem::Tiles { .. } => {}
-    }
+    });
 }
 
 fn parent_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
@@ -703,8 +735,8 @@ mod tests {
         let window = cx.add_window(move |window, cx| {
             let outer = cx.new(|cx| DockArea::new("outer", None, window, cx));
             let host = cx.new(|cx| WorkspaceHostPanel::new(outer.downgrade(), mount, parent_path, window, cx));
-            let view: Arc<dyn PanelView> = Arc::new(host);
-            outer.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+            let view: Arc<dyn BasePanelView> = Arc::new(PanelHandle::new(host));
+            outer.update(cx, |dock, cx| dock.add_panel_view(view, DockPlacement::Center, None, window, cx));
             Root::new(outer, window, cx)
         });
         let root = window.root(cx).unwrap();
@@ -718,7 +750,7 @@ mod tests {
     fn fetch_host(outer: &Entity<DockArea>, cx: &mut VisualTestContext) -> Option<Entity<WorkspaceHostPanel>> {
         cx.update(|_window, cx| {
             let mut active = Vec::new();
-            collect_active_panels(outer.read(cx).items(), cx, &mut active);
+            collect_active_panels(outer.read(cx), cx, &mut active);
             active.into_iter().find_map(|p| p.view().downcast::<WorkspaceHostPanel>().ok())
         })
     }
@@ -775,7 +807,7 @@ mod tests {
         let active_ids = |vcx: &mut VisualTestContext| {
             host.read_with(vcx, |host, cx| {
                 let mut active = Vec::new();
-                collect_active_panels(host.inner_dock().read(cx).items(), cx, &mut active);
+                collect_active_panels(host.inner_dock().read(cx), cx, &mut active);
                 active.iter().map(|p| p.view().entity_id()).collect::<Vec<_>>()
             })
         };
@@ -821,12 +853,12 @@ mod tests {
     fn host_is_not_closable_while_an_inner_entry_is_dirty(cx: &mut TestAppContext) {
         setup(cx);
         let (_outer, host, vcx) = build(cx, mount_fixture(), None);
-        assert!(host.read_with(vcx, Panel::closable), "an empty host is closable");
+        assert!(host.read_with(vcx, BasePanel::closable), "an empty host is closable");
 
         let tree = host.read_with(vcx, |host, _| host.tree().clone());
         tree.update(vcx, |tree, cx| tree.activate_file("/top.txt".to_string(), cx));
         vcx.run_until_parked();
-        assert!(host.read_with(vcx, Panel::closable), "a clean entry keeps the host closable");
+        assert!(host.read_with(vcx, BasePanel::closable), "a clean entry keeps the host closable");
 
         // Force the entry mutable and dirty it (simulating a future
         // writer-bearing mount's editable entry).
@@ -837,7 +869,7 @@ mod tests {
             pane.editor_mut().splice(0, 1, vec![0xFF]).unwrap();
             cx.notify();
         });
-        assert!(!host.read_with(vcx, Panel::closable), "a dirty inner entry makes the host non-closable");
+        assert!(!host.read_with(vcx, BasePanel::closable), "a dirty inner entry makes the host non-closable");
     }
 
     /// A host with an open entry and an expanded directory round-trips
@@ -900,8 +932,8 @@ mod tests {
         let window = cx.add_window(move |window, cx| {
             let outer = cx.new(|cx| DockArea::new("outer", None, window, cx));
             let host = cx.new(|cx| WorkspaceHostPanel::restore(outer.downgrade(), &info, window, cx));
-            let view: Arc<dyn PanelView> = Arc::new(host);
-            outer.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+            let view: Arc<dyn BasePanelView> = Arc::new(PanelHandle::new(host));
+            outer.update(cx, |dock, cx| dock.add_panel_view(view, DockPlacement::Center, None, window, cx));
             Root::new(outer, window, cx)
         });
         let vcx = VisualTestContext::from_window(*window, cx).into_mut();
@@ -929,9 +961,9 @@ mod tests {
         let foreign = vcx.update(|window, cx| cx.new(|cx| FilePanel::new(source, None, window, cx)));
         let foreign_id = foreign.entity_id();
         let inner = host.read_with(vcx, |host, _| host.inner_dock().clone());
-        let view: Arc<dyn PanelView> = Arc::new(foreign);
+        let view: Arc<dyn BasePanelView> = Arc::new(PanelHandle::new(foreign));
         vcx.update(|window, cx| {
-            inner.update(cx, |dock, cx| dock.add_panel(view, DockPlacement::Center, None, window, cx));
+            inner.update(cx, |dock, cx| dock.add_panel_view(view, DockPlacement::Center, None, window, cx));
         });
         vcx.run_until_parked();
 
@@ -939,7 +971,7 @@ mod tests {
         // center and now lives in the outer dock.
         let inner_has_foreign = host.read_with(vcx, |host, cx| {
             let mut active = Vec::new();
-            collect_active_panels(host.inner_dock().read(cx).items(), cx, &mut active);
+            collect_active_panels(host.inner_dock().read(cx), cx, &mut active);
             active.iter().any(|p| p.view().entity_id() == foreign_id)
         });
         assert!(!inner_has_foreign, "foreign panel ejected from the inner center");

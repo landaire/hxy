@@ -121,7 +121,7 @@ mod tests {
             IconName::FolderOpen,
             IconName::Frame,
             IconName::GalleryVerticalEnd,
-            IconName::GitHub,
+            IconName::Github,
             IconName::Globe,
             IconName::Heart,
             IconName::HeartOff,

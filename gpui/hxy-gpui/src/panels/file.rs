@@ -29,6 +29,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::WindowExt;
+use gpui_component::dock::BasePanel;
 use gpui_component::dock::Panel;
 use gpui_component::dock::PanelEvent;
 use gpui_component::dock::PanelInfo;
@@ -1062,20 +1063,9 @@ fn tab_title(path: Option<&Path>) -> String {
     }
 }
 
-impl Panel for FilePanel {
+impl BasePanel for FilePanel {
     fn panel_name(&self) -> &'static str {
         FILE_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(self.tab_label())
-    }
-
-    /// Same text as `title`, just via the `&self` (non-rendering) path
-    /// `Panel::tab_name` provides -- defaults to `None`, which would
-    /// otherwise leave every file leaf's pane-picker row unlabeled.
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(self.tab_label()))
     }
 
     /// Hide the tab bar's "Close" affordance while the buffer is dirty.
@@ -1097,7 +1087,7 @@ impl Panel for FilePanel {
     /// overrides) so the tab -- and its templates -- can be
     /// re-established next launch.
     fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
+        let mut state = PanelState::new(self.panel_name());
         let path = self.path.as_ref().map(|p| p.to_string_lossy().into_owned());
         let templates: Vec<serde_json::Value> = self
             .templates
@@ -1128,6 +1118,19 @@ impl Panel for FilePanel {
             "template_panel_visible": self.template_panel_visible,
         }));
         state
+    }
+}
+
+impl Panel for FilePanel {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(self.tab_label())
+    }
+
+    /// Same text as `title`, just via the `&self` (non-rendering) path
+    /// `Panel::tab_name` provides -- defaults to `None`, which would
+    /// otherwise leave every file leaf's pane-picker row unlabeled.
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(self.tab_label()))
     }
 }
 
@@ -1210,7 +1213,7 @@ mod tests {
         let (panel, cx) = build(cx);
 
         let grid_handle = panel.read_with(cx, |panel, cx| panel.pane.read(cx).focus_handle(cx));
-        cx.update(|window, _cx| window.focus(&grid_handle));
+        cx.update(|window, cx| window.focus(&grid_handle, cx));
         cx.run_until_parked();
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid_handle.clone()), "grid starts focused");
 
@@ -1233,14 +1236,14 @@ mod tests {
     fn dirty_panel_is_not_closable(cx: &mut TestAppContext) {
         setup(cx);
         let (panel, cx) = build(cx);
-        assert!(panel.read_with(cx, Panel::closable), "a clean buffer is closable");
+        assert!(panel.read_with(cx, BasePanel::closable), "a clean buffer is closable");
         panel.update(cx, |panel, cx| {
             panel.pane().update(cx, |pane, cx| {
                 pane.editor_mut().splice(0, 1, vec![0xAA]).unwrap();
                 cx.notify();
             });
         });
-        assert!(!panel.read_with(cx, Panel::closable), "a dirty buffer is not closable");
+        assert!(!panel.read_with(cx, BasePanel::closable), "a dirty buffer is not closable");
     }
 
     /// Styler precedence, egui parity (`hex_body.rs`): a patched byte

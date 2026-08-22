@@ -243,7 +243,12 @@ impl Palette {
     /// `Change` subscription production does), for tests.
     #[cfg(test)]
     pub(crate) fn set_query_for_test(&self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx);
+            // 0.5.2 `set_value` is silent (suppresses events); emit the
+            // `Change` a real edit would so the palette re-filters.
+            cx.emit(InputEvent::Change);
+        });
     }
 
     /// Open the palette at `mode`, stashing `restore` as the focus to
@@ -298,7 +303,7 @@ impl Palette {
         self.plugin_cascade = None;
         self.plugin_prompt = None;
         if let Some(handle) = self.restore_focus.take() {
-            window.focus(&handle);
+            window.focus(&handle, cx);
         }
         cx.notify();
     }

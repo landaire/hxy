@@ -7,9 +7,11 @@
 //! registered with gpui-component's `PanelRegistry` under stable names
 //! so a persisted layout can rebuild them.
 
+use std::sync::Arc;
+
 use gpui::App;
 use gpui::AppContext;
-use gpui_component::dock::PanelView;
+use gpui_component::dock::PanelHandle;
 use gpui_component::dock::register_panel;
 
 pub mod checksums;
@@ -64,50 +66,57 @@ pub use workspace_host::WorkspaceHostPanel;
 /// Register every panel name so `DockArea::load` can rebuild a saved
 /// layout. Must run once at startup, before any layout is loaded.
 pub fn register(cx: &mut App) {
-    register_panel(cx, FILE_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| FilePanel::restore(info, window, cx)))
+    register_panel(cx, FILE_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| FilePanel::restore(info, window, cx))))
     });
-    register_panel(cx, WELCOME_PANEL_NAME, |_dock, _state, _info, _window, cx| {
-        Box::new(cx.new(WelcomePanel::new)) as Box<dyn PanelView>
+    register_panel(cx, WELCOME_PANEL_NAME, |_ctx, _window, cx| {
+        Arc::new(PanelHandle::new(cx.new(WelcomePanel::new)))
     });
-    register_panel(cx, INSPECTOR_PANEL_NAME, |_dock, _state, info, _window, cx| {
-        Box::new(cx.new(|cx| InspectorPanel::restore(info, cx))) as Box<dyn PanelView>
+    register_panel(cx, INSPECTOR_PANEL_NAME, |ctx, _window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| InspectorPanel::restore(info, cx))))
     });
-    register_panel(cx, STRINGS_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| StringsPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, STRINGS_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| StringsPanel::restore(info, window, cx))))
     });
-    register_panel(cx, ENTROPY_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| EntropyPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, ENTROPY_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| EntropyPanel::restore(info, window, cx))))
     });
-    register_panel(cx, CHECKSUMS_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| ChecksumsPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, CHECKSUMS_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| ChecksumsPanel::restore(info, window, cx))))
     });
-    register_panel(cx, COMPARE_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| ComparePanel::restore(info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, COMPARE_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| ComparePanel::restore(info, window, cx))))
     });
-    register_panel(cx, VISUALIZER_PANEL_NAME, |_dock, _state, info, window, cx| {
-        Box::new(cx.new(|cx| VisualizerPanel::restore(info, window, cx))) as Box<dyn PanelView>
+    register_panel(cx, VISUALIZER_PANEL_NAME, |ctx, window, cx| {
+        let info = ctx.info();
+        Arc::new(PanelHandle::new(cx.new(|cx| VisualizerPanel::restore(info, window, cx))))
     });
     // Settings restores fresh: the panel reads the live settings
     // global and carries no per-instance state worth persisting.
-    register_panel(cx, SETTINGS_PANEL_NAME, |_dock, _state, _info, window, cx| {
-        Box::new(cx.new(|cx| SettingsPanel::new(window, cx))) as Box<dyn PanelView>
+    register_panel(cx, SETTINGS_PANEL_NAME, |_ctx, window, cx| {
+        Arc::new(PanelHandle::new(cx.new(|cx| SettingsPanel::new(window, cx))))
     });
     // Plugins restores fresh: the panel reads the live handler registry
     // and settings globals, carrying no per-instance state.
-    register_panel(cx, PLUGINS_PANEL_NAME, |_dock, _state, _info, window, cx| {
-        Box::new(cx.new(|cx| PluginsPanel::new(window, cx))) as Box<dyn PanelView>
+    register_panel(cx, PLUGINS_PANEL_NAME, |_ctx, window, cx| {
+        Arc::new(PanelHandle::new(cx.new(|cx| PluginsPanel::new(window, cx))))
     });
     // Console restores fresh: it renders the live console-log global and
     // carries no per-instance state worth persisting.
-    register_panel(cx, CONSOLE_PANEL_NAME, |_dock, _state, _info, _window, cx| {
-        Box::new(cx.new(ConsolePanel::new)) as Box<dyn PanelView>
+    register_panel(cx, CONSOLE_PANEL_NAME, |_ctx, _window, cx| {
+        Arc::new(PanelHandle::new(cx.new(ConsolePanel::new)))
     });
     // Global search restores as a fresh, empty panel -- egui likewise
     // persists only the `SearchResults` tab marker, not the query
     // (`crates/hxy/src/tabs/persisted_dock.rs`'s `PersistedTab::SearchResults`).
-    register_panel(cx, GLOBAL_SEARCH_PANEL_NAME, |_dock, _state, _info, window, cx| {
-        Box::new(cx.new(|cx| GlobalSearchPanel::new(window, cx))) as Box<dyn PanelView>
+    register_panel(cx, GLOBAL_SEARCH_PANEL_NAME, |_ctx, window, cx| {
+        Arc::new(PanelHandle::new(cx.new(|cx| GlobalSearchPanel::new(window, cx))))
     });
     workspace_host::register(cx);
 }
@@ -116,6 +125,7 @@ pub fn register(cx: &mut App) {
 mod tests {
     use gpui::TestAppContext;
     use gpui_component::dock::DockArea;
+    use gpui_component::dock::PanelBuildContext;
     use gpui_component::dock::PanelInfo;
     use gpui_component::dock::PanelRegistry;
     use gpui_component::dock::PanelState;
@@ -159,7 +169,9 @@ mod tests {
                         children: Vec::new(),
                         info: PanelInfo::panel(serde_json::json!({})),
                     };
-                    let view = PanelRegistry::build_panel(name, weak.clone(), &state, &state.info, window, cx);
+                    let ctx = PanelBuildContext::new(weak.clone(), &state, &state.info);
+                    let view = PanelRegistry::build_panel(name, ctx, window, cx)
+                        .unwrap_or_else(|| panic!("{name} must build a real panel, not an unregistered name"));
                     assert_eq!(view.panel_name(cx), name, "{name} must build a real panel, not InvalidPanel");
                 }
             })
