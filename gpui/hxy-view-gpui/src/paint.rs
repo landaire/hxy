@@ -503,18 +503,26 @@ fn paint_range_band(ctx: &RowCtx, range: ByteRange, color: Hsla, window: &mut Wi
     }
     let first = (lo - ctx.row_start) as u16;
     let last = (hi - 1 - ctx.row_start) as u16;
-    paint_col_run(ctx, first, last, color, window);
+    paint_col_run(ctx, first, last, color, false, window);
 }
 
 /// Fill an inclusive `from..=to` column run with `color`: one quad in
 /// the hex pane and one in the ascii pane. The hex quad spans from the
 /// first cell's left edge to the last cell's right edge, bridging the
 /// inter-cell gaps but stopping at the run's outer edges (no bleed into
-/// the section gap after the last hex column).
-fn paint_col_run(ctx: &RowCtx, from: u16, to: u16, color: Hsla, window: &mut Window) {
+/// the section gap after the last hex column). When `bridge_right` is
+/// set, the hex quad instead extends to column `to + 1`'s left edge,
+/// closing the inter-cell gap so an adjacent differently-colored fill
+/// meets this one flush; the caller sets it only when `to + 1` is
+/// itself filled, so this never bleeds into the trailing section gap.
+fn paint_col_run(ctx: &RowCtx, from: u16, to: u16, color: Hsla, bridge_right: bool, window: &mut Window) {
     let g = ctx.geometry;
     let hx0 = ctx.origin_x + g.hex_x(from);
-    let hx1 = ctx.origin_x + g.hex_x(to) + g.hex_cell_w();
+    let hx1 = if bridge_right {
+        ctx.origin_x + g.hex_x(to + 1)
+    } else {
+        ctx.origin_x + g.hex_x(to) + g.hex_cell_w()
+    };
     window.paint_quad(fill(band_bounds(hx0, hx1, ctx.row_y, ctx.line_h()), color));
 
     let ax0 = ctx.origin_x + g.ascii_x(from);
@@ -612,8 +620,13 @@ fn paint_cell_fills(ctx: &RowCtx, snap: &GridSnapshot, window: &mut Window) {
             cells.push((c as u16, bg));
         }
     }
-    for (from, to, color) in merge_tint_runs(&cells) {
-        paint_col_run(ctx, from, to, color, window);
+    let runs = merge_tint_runs(&cells);
+    for (i, &(from, to, color)) in runs.iter().enumerate() {
+        // Bridge the inter-cell gap only when the next run begins at the
+        // very next column: two adjacent differently-colored fills then
+        // meet flush instead of showing the background between them.
+        let bridge_right = runs.get(i + 1).is_some_and(|&(next_from, ..)| next_from == to + 1);
+        paint_col_run(ctx, from, to, color, bridge_right, window);
     }
 }
 
