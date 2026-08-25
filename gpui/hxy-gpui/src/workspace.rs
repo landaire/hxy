@@ -16,6 +16,12 @@ use gpui::App;
 use gpui::AnyElement;
 use gpui::Axis;
 use gpui::Bounds;
+use gpui::DispatchPhase;
+use gpui::DragMoveEvent;
+use gpui::MouseButton;
+use gpui::MouseUpEvent;
+use gpui::Point;
+use gpui::canvas;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
 use gpui::size;
@@ -37,11 +43,13 @@ use gpui::Window;
 use gpui::actions;
 use gpui::div;
 use gpui::prelude::*;
+use gpui::Pixels;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Placement;
 use gpui_component::Root;
 use gpui_component::Icon;
+use gpui_component::IconName;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use gpui_component::button::Button;
@@ -368,6 +376,11 @@ pub struct Workspace {
     /// which defers reconciliation (welcome presence + active tracking)
     /// to just after the frame, where a `&mut Window` is available.
     needs_reconcile: bool,
+    /// The tab currently being dragged, tracked from `on_drag_move` so a
+    /// release outside the window can tear that tab into a new window (a
+    /// window-global mouse-up handler has no drop payload of its own).
+    /// Cleared on every left mouse-up.
+    dragging_tab: Option<PanelId>,
     /// Panels torn off into their own OS windows (`tear_active_tab_into_window`).
     /// Holding the `Arc` here keeps the entity -- and its unsaved edits --
     /// alive independent of either dock, so closing the float window can
@@ -587,6 +600,7 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             focus_pending: true,
             needs_reconcile: false,
+            dragging_tab: None,
             torn_off: std::collections::HashMap::new(),
             pending_reclaim: Vec::new(),
             open_files: Vec::new(),
@@ -5033,8 +5047,11 @@ impl Workspace {
         let accent = cx.theme().accent;
         let accent_fg = cx.theme().accent_foreground;
         // A transparent, non-occluding full-window layer that only
-        // positions the pill; it registers no drop handler, so events pass
-        // through everywhere except the pill itself.
+        // positions the small square landing zone; it registers no drop
+        // handler, so events pass through everywhere except the square.
+        // (Dragging a tab fully outside the window tears it too -- see
+        // `render_drag_release_watcher` -- so this is the discoverable
+        // affordance, not the only path.)
         div()
             .absolute()
             .top_0()
@@ -5046,24 +5063,69 @@ impl Workspace {
                 div()
                     .id("hxy-tear-zone")
                     .mt(px(8.0))
-                    .px_4()
-                    .py_2()
+                    .size(px(44.0))
                     .flex()
                     .items_center()
-                    .rounded_full()
-                    .bg(accent.opacity(0.92))
+                    .justify_center()
+                    .rounded_md()
+                    .bg(accent.opacity(0.9))
                     .border_2()
                     .border_dashed()
                     .border_color(accent_fg)
                     .shadow_lg()
                     .text_color(accent_fg)
-                    .child(hxy_i18n::t("gpui-tear-drop-zone"))
+                    .child(Icon::new(IconName::ExternalLink).small())
                     .drag_over::<DragPanel>(|this, _, _, cx| this.bg(cx.theme().accent))
                     .on_drop(cx.listener(|workspace, drag: &DragPanel, window, cx| {
                         workspace.tear_panel_into_window(drag.panel(), window, cx);
                     })),
             )
             .into_any_element()
+    }
+
+    /// Record which tab is being dragged so a release outside the window
+    /// can tear it (the window-global mouse-up handler carries no drag
+    /// payload). Fires for every `DragPanel` move over the window.
+    fn on_tab_drag_move(&mut self, event: &DragMoveEvent<DragPanel>, _window: &mut Window, cx: &mut Context<Self>) {
+        self.dragging_tab = Some(event.drag(cx).panel());
+    }
+
+    /// A left mouse-up ends any tab drag. If the release landed outside
+    /// the window, tear the dragged tab into a new OS window (the
+    /// browser-style "drag it off the window" gesture); an in-window
+    /// release just clears the tracked tab and lets the dock's own
+    /// drop -- reorder / dock / the landing square -- stand.
+    fn on_drag_release(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.dragging_tab.take() else { return };
+        let size = window.viewport_size();
+        let outside =
+            position.x < px(0.0) || position.y < px(0.0) || position.x > size.width || position.y > size.height;
+        if outside {
+            self.tear_panel_into_window(id, window, cx);
+        }
+    }
+
+    /// A paint-phase-only element that registers a window-global mouse-up
+    /// listener each frame (the only way to observe a release outside every
+    /// element's hitbox). It fires before gpui clears the active drag, so
+    /// `on_drag_release` can act on an outside-the-window release.
+    fn render_drag_release_watcher(&self, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        canvas(
+            |_, _, _| (),
+            move |_, (), window, _cx| {
+                window.on_mouse_event::<MouseUpEvent>(move |event, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                        return;
+                    }
+                    let position = event.position;
+                    _ = this.update(cx, |workspace, cx| workspace.on_drag_release(position, window, cx));
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
     }
 }
 
@@ -5181,6 +5243,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_copy_bytes))
             .on_action(cx.listener(Self::on_copy_hex))
             .on_action(cx.listener(Self::on_show_about))
+            // Track which tab is under an in-flight drag so a release
+            // outside the window can tear it (see `on_drag_release`).
+            .on_drag_move(cx.listener(Self::on_tab_drag_move))
             .child(div().flex_1().child(self.dock.clone()));
 
         root = root.child(self.render_status_bar(cx));
@@ -5195,8 +5260,13 @@ impl Render for Workspace {
         // row for any off-pane target) while a `cmd-k` session is open.
         root = root.child(self.pane_picker.clone());
 
-        // The drag-to-pop-out zone: inert unless a tab is being dragged.
+        // The drag-to-pop-out landing square: inert unless a tab is being
+        // dragged.
         root = root.child(self.render_tear_zone(cx));
+
+        // Watches for a tab released outside the window (the browser-style
+        // "drag it off the window" tear gesture). Paints nothing.
+        root = root.child(self.render_drag_release_watcher(cx));
 
         // `gpui_component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is
