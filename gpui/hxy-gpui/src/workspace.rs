@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::App;
+use gpui::AnyElement;
 use gpui::Axis;
 use gpui::Bounds;
 use gpui::WindowBounds;
@@ -54,6 +55,7 @@ use gpui_component::dock::DockSkin;
 use gpui_component::dock::DockLayout;
 use gpui_component::dock::DockPlacement;
 use gpui_component::dock::InsertTarget;
+use gpui_component::dock::DragPanel;
 use gpui_component::dock::NodeId;
 use gpui_component::dock::PaneNode;
 use gpui_component::dock::PaneRef;
@@ -1643,16 +1645,25 @@ impl Workspace {
         }
     }
 
-    /// Tear the active center tab out into its own OS window. The panel's
-    /// `Arc` is stashed in `torn_off` (keeping the live entity, and its
-    /// unsaved edits, alive), removed from the main dock, and handed to a
-    /// [`FloatingWindow`]. Closing that window reclaims the panel (see
-    /// [`reclaim_torn_panel`](Self::reclaim_torn_panel)). A no-op with no
-    /// active center tab; if the window fails to open the panel is put
-    /// straight back rather than stranded.
+    /// Tear the active center tab out into its own OS window (the palette
+    /// verb). Resolves the active tab, then defers to
+    /// [`tear_panel_into_window`](Self::tear_panel_into_window).
     pub(crate) fn tear_active_tab_into_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.resync_center_if_stale(window, cx);
         let Some((_, id)) = active_center_leaf(self.dock.read(cx)) else { return };
+        self.tear_panel_into_window(id, window, cx);
+    }
+
+    /// Tear the tab with `id` out into its own OS window (the palette verb
+    /// via the active tab, or the pop-out drop zone via a dragged tab).
+    /// The panel's `Arc` is stashed in `torn_off` (keeping the live
+    /// entity, and its unsaved edits, alive), removed from the main dock,
+    /// and handed to a [`FloatingWindow`]. Closing that window reclaims
+    /// the panel (see [`reclaim_torn_panel`](Self::reclaim_torn_panel)).
+    /// A no-op for an unknown id; if the window fails to open the panel is
+    /// put straight back rather than stranded.
+    pub(crate) fn tear_panel_into_window(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
         let Some(panel) = self.dock.read(cx).panel(id).cloned() else { return };
         self.torn_off.insert(id, panel.clone());
         self.dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
@@ -5005,6 +5016,57 @@ fn focused_center_file_panel(area: &DockArea, focused: &FocusHandle, cx: &App) -
     found
 }
 
+impl Workspace {
+    /// The pop-out drop zone: while any tab is being dragged, a pill near
+    /// the top-center of the window that tears the dropped tab out into
+    /// its own OS window (the drag-driven counterpart to the "Move tab to
+    /// new window" palette verb). Rendered as an inert empty element when
+    /// nothing is dragging. Only the pill is a drop target (and only it
+    /// occludes), so dropping a tab anywhere else -- e.g. reordering along
+    /// the tab bar -- still reaches the dock underneath. Shown for any
+    /// active drag; the only draggable things are tabs, and the
+    /// `DragPanel` drop handler ignores other payloads regardless.
+    fn render_tear_zone(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !cx.has_active_drag() {
+            return div().into_any_element();
+        }
+        let accent = cx.theme().accent;
+        let accent_fg = cx.theme().accent_foreground;
+        // A transparent, non-occluding full-window layer that only
+        // positions the pill; it registers no drop handler, so events pass
+        // through everywhere except the pill itself.
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("hxy-tear-zone")
+                    .mt(px(8.0))
+                    .px_4()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .bg(accent.opacity(0.92))
+                    .border_2()
+                    .border_dashed()
+                    .border_color(accent_fg)
+                    .shadow_lg()
+                    .text_color(accent_fg)
+                    .child(hxy_i18n::t("gpui-tear-drop-zone"))
+                    .drag_over::<DragPanel>(|this, _, _, cx| this.bg(cx.theme().accent))
+                    .on_drop(cx.listener(|workspace, drag: &DragPanel, window, cx| {
+                        workspace.tear_panel_into_window(drag.panel(), window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -5129,10 +5191,12 @@ impl Render for Workspace {
         root = root.child(self.palette.clone());
 
         // The pane picker overlay, likewise always childed: inert while
-        // inactive, a centered target list while a `cmd-k` session is
-        // open (see `gpui_dock_picker`'s crate docs for why it's a list
-        // rather than badges over each pane).
+        // inactive, a letter badge over each center pane (plus a listed
+        // row for any off-pane target) while a `cmd-k` session is open.
         root = root.child(self.pane_picker.clone());
+
+        // The drag-to-pop-out zone: inert unless a tab is being dragged.
+        root = root.child(self.render_tear_zone(cx));
 
         // `gpui_component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is

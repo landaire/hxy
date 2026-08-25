@@ -760,6 +760,7 @@ gpui-palette-show-console = Show console
 
 # Tear-off windows (gpui-only; egui is single-window)
 gpui-palette-tear-tab = Move tab to new window
+gpui-tear-drop-zone = Drop here to open in a new window
 
 # Plugins management panel (M4c)
 gpui-palette-show-plugins = Show plugins
