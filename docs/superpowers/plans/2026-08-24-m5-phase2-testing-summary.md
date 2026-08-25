@@ -106,13 +106,21 @@ so the dock has real content to exercise.
 
 ### 11. Drag a tab out to pop it into a window -- NEW
 
-- Start dragging any tab. A dashed accent "Drop here to open in a new window"
-  pill appears near the top-center of the window.
-- Drop the tab on the pill: it tears into its own OS window (same reclaim-on-
-  close behavior as #10).
+Two ways, both tear the tab into its own OS window (same reclaim-on-close
+behavior as #10):
+
+- **Drag it off the window:** drag a tab past the window's edge and release
+  outside. (Tab drags stay internal to gpui -- no OS drag handoff -- so the
+  release is detected via a window-global mouse-up while the drag is still
+  live.) This is the browser-style gesture.
+- **Drop on the landing square:** while dragging, a small dashed accent square
+  with a pop-out icon appears at the top-center; drop the tab on it.
 - Regression check: dragging a tab to reorder it along the tab bar, or to
-  split/dock it at a pane edge, still works -- only the pill's own footprint
-  tears; everywhere else the drop reaches the dock underneath.
+  split/dock it at a pane edge, still works -- only the small square's own
+  footprint is a drop target; releasing anywhere else inside the window reaches
+  the dock underneath.
+- Not done: dropping onto a *different existing* hxy window (that needs
+  cross-window drag routing); tearing always opens a fresh window.
 
 ### 12. Visual pane picker badges (Cmd+K) -- NEW
 
