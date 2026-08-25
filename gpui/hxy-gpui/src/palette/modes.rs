@@ -154,6 +154,17 @@ pub enum CompareSide {
     B,
 }
 
+/// A dock direction for the split / merge / move-tab verbs (egui's
+/// `DockDir`). Kept UI-framework-free here; the workspace maps it to the
+/// fork's `Placement` and to the neighbor-leaf search axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// Which byte-format a [`PaletteAction::CopySelection`] writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyFormat {
@@ -270,6 +281,16 @@ pub enum PaletteAction {
     /// Focus the open tab with this `PanelId` (egui's `Action::FocusTab`,
     /// picked from QuickOpen).
     FocusTab(PanelId),
+    /// Split the active center pane, seeding an empty pane on `dir`
+    /// (egui's `DockSplit`).
+    SplitPane(DockDir),
+    /// Move the active tab into the neighbor pane on `dir`, a no-op at
+    /// the edge (egui's `DockMoveTab`).
+    MoveTab(DockDir),
+    /// Merge the active pane into the neighbor pane on `dir` (moving all
+    /// its tabs there and removing it), a no-op at the edge (egui's
+    /// `DockMerge`).
+    MergePane(DockDir),
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -655,6 +676,41 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
             entry = entry.with_subtitle(hxy_i18n::t("gpui-palette-copy-selection-none"));
         }
         out.push(entry);
+    }
+
+    build_dock_entries(out, ctx);
+}
+
+/// The pane split / merge / move-tab verbs (egui's `DockSplit` /
+/// `DockMerge` / `DockMoveTab`). All act on the active center pane, so
+/// they gate on `has_active_file` like the other tab-scoped rows;
+/// directional merge / move are inert no-ops at the tree edge, which the
+/// dispatch handles silently rather than disabling the row (the edge is
+/// not known here without the live tree).
+fn build_dock_entries(out: &mut Vec<Entry<PaletteAction>>, ctx: PaletteContext) {
+    for (key, dir) in [
+        ("palette-split-right", DockDir::Right),
+        ("palette-split-left", DockDir::Left),
+        ("palette-split-up", DockDir::Up),
+        ("palette-split-down", DockDir::Down),
+    ] {
+        out.push(Entry::new(hxy_i18n::t(key), PaletteAction::SplitPane(dir)).with_disabled(!ctx.has_active_file));
+    }
+    for (key, dir) in [
+        ("palette-move-tab-right", DockDir::Right),
+        ("palette-move-tab-left", DockDir::Left),
+        ("palette-move-tab-up", DockDir::Up),
+        ("palette-move-tab-down", DockDir::Down),
+    ] {
+        out.push(Entry::new(hxy_i18n::t(key), PaletteAction::MoveTab(dir)).with_disabled(!ctx.has_active_file));
+    }
+    for (key, dir) in [
+        ("palette-merge-right", DockDir::Right),
+        ("palette-merge-left", DockDir::Left),
+        ("palette-merge-up", DockDir::Up),
+        ("palette-merge-down", DockDir::Down),
+    ] {
+        out.push(Entry::new(hxy_i18n::t(key), PaletteAction::MergePane(dir)).with_disabled(!ctx.has_active_file));
     }
 }
 

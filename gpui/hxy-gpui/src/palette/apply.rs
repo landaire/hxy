@@ -38,6 +38,9 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::OpenPlugins => ws.open_plugins(window, cx),
         PaletteAction::OpenConsole => ws.open_console(window, cx),
         PaletteAction::BrowseVfs => ws.browse_active_file_as_workspace(window, cx),
+        PaletteAction::SplitPane(dir) => ws.split_active_pane(dir, window, cx),
+        PaletteAction::MoveTab(dir) => ws.move_active_tab(dir, window, cx),
+        PaletteAction::MergePane(dir) => ws.merge_active_pane(dir, window, cx),
         PaletteAction::GoToOffset(target) => {
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| {

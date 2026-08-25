@@ -34,6 +34,7 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
+use gpui_component::Placement;
 use gpui_component::Icon;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
@@ -48,7 +49,10 @@ use gpui_component::dock::DockSkin;
 use gpui_component::dock::DockLayout;
 use gpui_component::dock::DockPlacement;
 use gpui_component::dock::InsertTarget;
+use gpui_component::dock::NodeId;
+use gpui_component::dock::PaneNode;
 use gpui_component::dock::PaneRef;
+use gpui_component::dock::PaneTree;
 use gpui_component::dock::PanelId;
 use gpui_component::dock::PanelBuildContext;
 use gpui_component::dock::PanelInfo;
@@ -88,6 +92,7 @@ use crate::palette::Palette;
 use crate::palette::apply;
 use crate::palette::modes::CompareSide;
 use crate::palette::modes::CopyFormat;
+use crate::palette::modes::DockDir;
 use crate::palette::modes::PaletteAction;
 use crate::palette::modes::PaletteContext;
 use crate::panels::CHECKSUMS_PANEL_NAME;
@@ -1536,6 +1541,89 @@ impl Workspace {
     fn on_open_tab_switcher(&mut self, _: &OpenTabSwitcher, window: &mut Window, cx: &mut Context<Self>) {
         let restore = window.focused(cx);
         self.palette.update(cx, |palette, cx| palette.open_at_quick_open(restore, window, cx));
+    }
+
+    /// Split the active center pane, seeding a fresh empty (`Welcome`)
+    /// pane on `dir` and focusing it (egui's `dock_split_focused`: the new
+    /// leaf is a placeholder so the next opened file lands there). The
+    /// welcome is registered in the center, then moved out beside the
+    /// active leaf into its own tab group -- the same two-step the
+    /// drag-split path uses.
+    pub(crate) fn split_active_pane(&mut self, dir: DockDir, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
+        let Some((node, _)) = active_center_leaf(self.dock.read(cx)) else { return };
+        let welcome = cx.new(WelcomePanel::new);
+        let id = PanelId::from(welcome.entity_id());
+        let placement = dir_placement(dir);
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel_view(Arc::new(PanelHandle::new(welcome.clone())), DockPlacement::Center, None, window, cx);
+            dock.move_panel(id, InsertTarget::Split { node, placement, size: None }, window, cx);
+        });
+        window.focus(&welcome.read(cx).focus_handle(cx), cx);
+    }
+
+    /// Move the active tab into the neighbor pane on `dir`. A no-op at the
+    /// tree edge (no neighbor) -- egui's `dock_move_focused_tab`.
+    pub(crate) fn move_active_tab(&mut self, dir: DockDir, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
+        let Some((active, neighbor)) = ({
+            let area = self.dock.read(cx);
+            active_center_leaf(area).and_then(|(node, active)| {
+                area.layout(DockPlacement::Center)
+                    .and_then(|tree| center_neighbor_leaf(tree, node, dir))
+                    .map(|neighbor| (active, neighbor))
+            })
+        }) else {
+            return;
+        };
+        self.dock.update(cx, |dock, cx| {
+            dock.move_panel(active, InsertTarget::Tabs { node: neighbor, ix: None, activate: true }, window, cx);
+        });
+        if let Some(handle) = self.dock.read(cx).panel(active).map(|panel| panel.focus_handle(cx)) {
+            window.focus(&handle, cx);
+        }
+    }
+
+    /// Merge the active pane into the neighbor pane on `dir`: move every
+    /// tab of the active leaf there, then let normalize drop the emptied
+    /// source. A no-op at the tree edge -- egui's `dock_merge_focused`.
+    /// The neighbor node is re-resolved through a stable anchor panel each
+    /// move, since emptying the source can restructure ancestor splits.
+    pub(crate) fn merge_active_pane(&mut self, dir: DockDir, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
+        let Some((panels, anchor)) = ({
+            let area = self.dock.read(cx);
+            let Some((node, _)) = active_center_leaf(area) else { return };
+            let Some(tree) = area.layout(DockPlacement::Center) else { return };
+            let Some(neighbor) = center_neighbor_leaf(tree, node, dir) else { return };
+            let panels: Vec<PanelId> = match tree.find_node(node).map(|node| node.kind()) {
+                Some(PaneRef::Tabs { panels, .. }) => panels.to_vec(),
+                _ => return,
+            };
+            let anchor = match tree.find_node(neighbor).map(|node| node.kind()) {
+                Some(PaneRef::Tabs { panels, active_ix }) => {
+                    panels.get(active_ix).copied().or_else(|| panels.first().copied())
+                }
+                _ => None,
+            };
+            anchor.map(|anchor| (panels, anchor))
+        }) else {
+            return;
+        };
+        let last = panels.last().copied();
+        self.dock.update(cx, |dock, cx| {
+            for id in panels {
+                let Some(target) =
+                    dock.layout(DockPlacement::Center).and_then(|tree| tree.find_panel_node(anchor))
+                else {
+                    break;
+                };
+                dock.move_panel(id, InsertTarget::Tabs { node: target, ix: None, activate: true }, window, cx);
+            }
+        });
+        if let Some(handle) = last.and_then(|id| self.dock.read(cx).panel(id)).map(|panel| panel.focus_handle(cx)) {
+            window.focus(&handle, cx);
+        }
     }
 
     /// The open files that can seed a compare pick: every live center
@@ -4560,6 +4648,116 @@ fn active_center_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
     found
 }
 
+/// The first center `Tabs` container and its active panel id -- the
+/// workspace's notion of the "active center pane" (matching
+/// [`active_center_panel`]'s first-container-wins rule). `None` when the
+/// center has no tab container. Drives the split / merge / move-tab verbs.
+fn active_center_leaf(area: &DockArea) -> Option<(NodeId, PanelId)> {
+    let tree = area.layout(DockPlacement::Center)?;
+    let mut found = None;
+    tree.root().walk(&mut |node| {
+        if found.is_some() {
+            return;
+        }
+        if let PaneRef::Tabs { panels, active_ix } = node.kind()
+            && let Some(id) = panels.get(active_ix).copied()
+        {
+            found = Some((node.id(), id));
+        }
+    });
+    found
+}
+
+/// One ancestor split on the path from the tree root to a target node:
+/// the split's id and axis, plus which child index leads toward the
+/// target. Built by [`build_node_path`] and consumed by
+/// [`center_neighbor_leaf`].
+struct PathStep {
+    split_id: NodeId,
+    axis: Axis,
+    child_ix: usize,
+}
+
+/// Record the ancestor splits from `node` down to `target` into `acc`,
+/// returning whether `target` was found. Pre-order DFS; `acc` holds the
+/// root-to-target chain of [`PathStep`]s on success.
+fn build_node_path(node: &PaneNode, target: NodeId, acc: &mut Vec<PathStep>) -> bool {
+    if node.id() == target {
+        return true;
+    }
+    if let PaneRef::Split { axis, children, .. } = node.kind() {
+        for (child_ix, child) in children.iter().enumerate() {
+            acc.push(PathStep { split_id: node.id(), axis, child_ix });
+            if build_node_path(child, target, acc) {
+                return true;
+            }
+            acc.pop();
+        }
+    }
+    false
+}
+
+/// The first `Tabs`/`Tiles` leaf reached by descending `node`'s left
+/// spine (mirrors egui's `first_leaf_in`, which always takes the left
+/// child).
+fn first_leaf_id(node: &PaneNode) -> NodeId {
+    match node.kind() {
+        PaneRef::Split { children, .. } => children.first().map(first_leaf_id).unwrap_or_else(|| node.id()),
+        _ => node.id(),
+    }
+}
+
+/// The leaf adjacent to `node` in `dir` within the center `tree`, or
+/// `None` at the tree edge. Mirrors egui's `find_neighbor_leaf`: climb to
+/// the nearest ancestor split along `dir`'s axis that has a sibling on
+/// `dir`'s side, then descend that sibling to its first leaf.
+fn center_neighbor_leaf(tree: &PaneTree, node: NodeId, dir: DockDir) -> Option<NodeId> {
+    let mut path = Vec::new();
+    if !build_node_path(tree.root(), node, &mut path) {
+        return None;
+    }
+    let want_axis = dir_axis(dir);
+    let forward = matches!(dir, DockDir::Right | DockDir::Down);
+    for step in path.iter().rev() {
+        if step.axis != want_axis {
+            continue;
+        }
+        let split = tree.find_node(step.split_id)?;
+        let PaneRef::Split { children, .. } = split.kind() else {
+            continue;
+        };
+        let sib_ix = if forward {
+            let next = step.child_ix + 1;
+            if next < children.len() { next } else { continue }
+        } else if step.child_ix == 0 {
+            continue
+        } else {
+            step.child_ix - 1
+        };
+        return children.get(sib_ix).map(first_leaf_id);
+    }
+    None
+}
+
+/// The fork `Placement` a [`DockDir`] splits toward.
+fn dir_placement(dir: DockDir) -> Placement {
+    match dir {
+        DockDir::Left => Placement::Left,
+        DockDir::Right => Placement::Right,
+        DockDir::Up => Placement::Top,
+        DockDir::Down => Placement::Bottom,
+    }
+}
+
+/// The split axis a [`DockDir`] travels along (left/right split the
+/// horizontal axis, up/down the vertical).
+fn dir_axis(dir: DockDir) -> Axis {
+    match dir {
+        DockDir::Left | DockDir::Right => Axis::Horizontal,
+        DockDir::Up | DockDir::Down => Axis::Vertical,
+    }
+}
+
 fn collect_file_entities(area: &DockArea, out: &mut Vec<Entity<FilePanel>>) {
     collect_center_panels(area, out);
 }
@@ -4977,6 +5175,22 @@ mod tests {
         })
     }
 
+    /// The number of `Tabs` leaves in the center tree (one per pane).
+    /// Drives the split / merge / move-tab verb tests.
+    fn center_group_count(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+        workspace.read_with(cx, |ws, cx| {
+            let mut count = 0;
+            if let Some(tree) = ws.dock.read(cx).layout(DockPlacement::Center) {
+                tree.root().walk(&mut |node| {
+                    if matches!(node.kind(), PaneRef::Tabs { .. }) {
+                        count += 1;
+                    }
+                });
+            }
+            count
+        })
+    }
+
     /// `open_console` is a real toggle in the bottom dock (matching
     /// egui's `toggle_console`): the first call opens one Console tab
     /// below, a second closes it.
@@ -4993,6 +5207,97 @@ mod tests {
         workspace.update_in(cx, |ws, window, cx| ws.open_console(window, cx));
         cx.run_until_parked();
         assert_eq!(console_tab_count(&workspace, cx), 0, "second open toggles it closed");
+    }
+
+    /// `split_active_pane` adds a second center pane on the chosen side
+    /// (egui's `DockSplit`). Both axes exercised: right (horizontal) and
+    /// down (vertical).
+    #[gpui::test]
+    fn split_adds_a_second_center_pane(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+        assert_eq!(center_group_count(&ws, cx), 1, "one file starts as one pane");
+
+        ws.update_in(cx, |ws, window, cx| ws.split_active_pane(DockDir::Right, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 2, "split-right adds a pane");
+
+        ws.update_in(cx, |ws, window, cx| ws.split_active_pane(DockDir::Down, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 3, "split-down adds another pane");
+    }
+
+    /// `merge_active_pane` moves the active pane's tabs into the
+    /// directional neighbor and drops the emptied source, collapsing a
+    /// split back to one pane (egui's `DockMerge`). Exercises the
+    /// neighbor-leaf search finding the right sibling.
+    #[gpui::test]
+    fn merge_collapses_a_split_back_to_one_pane(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        ws.update_in(cx, |ws, window, cx| ws.split_active_pane(DockDir::Right, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 2, "split-right made two panes");
+
+        // The active leaf is the first (left) pane; its right neighbor is
+        // the seeded pane, so merge-right collapses them into one.
+        ws.update_in(cx, |ws, window, cx| ws.merge_active_pane(DockDir::Right, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 1, "merge-right collapsed back to one pane");
+    }
+
+    /// Directional merge / move are no-ops at the tree edge: the left
+    /// pane has no left neighbor, so merge-left leaves the layout intact
+    /// (the neighbor-leaf search returns `None`).
+    #[gpui::test]
+    fn merge_at_the_edge_is_a_noop(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        ws.update_in(cx, |ws, window, cx| ws.split_active_pane(DockDir::Right, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 2);
+
+        // The active (left) pane is already at the left edge.
+        ws.update_in(cx, |ws, window, cx| ws.merge_active_pane(DockDir::Left, window, cx));
+        cx.run_until_parked();
+        assert_eq!(center_group_count(&ws, cx), 2, "merge-left at the edge changes nothing");
+    }
+
+    /// The fork's `move_panel` ownership guard, exercised through the real
+    /// dependency: moving a `PanelId` this dock does not own -- as a stray
+    /// cross-`DockArea` drop from a nested workspace-host dock would --
+    /// leaves the center untouched instead of stranding a ghost tab.
+    #[gpui::test]
+    fn moving_an_unowned_panel_leaves_the_center_intact(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        let before = ws.read_with(cx, |ws, cx| ws.dock.read(cx).dump(cx));
+        let node = ws.read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx))).unwrap();
+        ws.update_in(cx, |ws, window, cx| {
+            ws.dock.update(cx, |dock, cx| {
+                dock.move_panel(
+                    PanelId::from_u64(9_999_999),
+                    InsertTarget::Tabs { node, ix: None, activate: true },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let after = ws.read_with(cx, |ws, cx| ws.dock.read(cx).dump(cx));
+        assert_eq!(before, after, "an unowned panel move is a no-op");
     }
 
     /// `console_log` appends an entry, publishes it on the read-view
