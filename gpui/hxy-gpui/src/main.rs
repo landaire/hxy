@@ -13,6 +13,7 @@ use gpui_component::WindowExt;
 
 mod assets;
 mod console;
+mod floating;
 mod menu;
 mod os_color;
 mod palette;

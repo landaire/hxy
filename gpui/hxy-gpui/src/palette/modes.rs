@@ -291,6 +291,9 @@ pub enum PaletteAction {
     /// its tabs there and removing it), a no-op at the edge (egui's
     /// `DockMerge`).
     MergePane(DockDir),
+    /// Tear the active tab out into its own OS window. No egui equivalent
+    /// (that app is single-window); closing the window returns the tab.
+    TearTab,
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -712,6 +715,7 @@ fn build_dock_entries(out: &mut Vec<Entry<PaletteAction>>, ctx: PaletteContext) 
     ] {
         out.push(Entry::new(hxy_i18n::t(key), PaletteAction::MergePane(dir)).with_disabled(!ctx.has_active_file));
     }
+    out.push(Entry::new(hxy_i18n::t("gpui-palette-tear-tab"), PaletteAction::TearTab).with_disabled(!ctx.has_active_file));
 }
 
 /// Resolve a `@<expr>` query into a single Go-to-offset entry. Empty

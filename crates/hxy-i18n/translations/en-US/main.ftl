@@ -758,6 +758,9 @@ gpui-plugin-mount-retry = Retry
 # Console tab (M4f)
 gpui-palette-show-console = Show console
 
+# Tear-off windows (gpui-only; egui is single-window)
+gpui-palette-tear-tab = Move tab to new window
+
 # Plugins management panel (M4c)
 gpui-palette-show-plugins = Show plugins
 plugin-intro = Drop compiled WASM components into these directories to load them at startup.

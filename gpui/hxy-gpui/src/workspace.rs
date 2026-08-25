@@ -14,6 +14,10 @@ use std::time::Duration;
 
 use gpui::App;
 use gpui::Axis;
+use gpui::Bounds;
+use gpui::WindowBounds;
+use gpui::WindowOptions;
+use gpui::size;
 use gpui::Context;
 use gpui::Entity;
 use gpui::FocusHandle;
@@ -35,6 +39,7 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui_component::ActiveTheme;
 use gpui_component::Placement;
+use gpui_component::Root;
 use gpui_component::Icon;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
@@ -90,6 +95,7 @@ use crate::menu::ToggleEditMode;
 use crate::menu::Undo;
 use crate::palette::Palette;
 use crate::palette::apply;
+use crate::floating::FloatingWindow;
 use crate::palette::modes::CompareSide;
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::DockDir;
@@ -360,6 +366,15 @@ pub struct Workspace {
     /// which defers reconciliation (welcome presence + active tracking)
     /// to just after the frame, where a `&mut Window` is available.
     needs_reconcile: bool,
+    /// Panels torn off into their own OS windows (`tear_active_tab_into_window`).
+    /// Holding the `Arc` here keeps the entity -- and its unsaved edits --
+    /// alive independent of either dock, so closing the float window can
+    /// hand the live panel back rather than dropping it.
+    torn_off: std::collections::HashMap<PanelId, Arc<dyn PanelView>>,
+    /// Panels a closed float window has handed back, awaiting re-insertion
+    /// into the center. Drained by `render`, which has the `&mut Window`
+    /// `add_panel_view` needs (mirrors `needs_reconcile`).
+    pending_reclaim: Vec<Arc<dyn PanelView>>,
     /// `FilePanel` entities the workspace has opened, looked up by path
     /// so a center-cache resync can reinstall the SAME panels (preserving
     /// editor state) instead of rebuilding them from disk. Deduped per
@@ -570,6 +585,8 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             focus_pending: true,
             needs_reconcile: false,
+            torn_off: std::collections::HashMap::new(),
+            pending_reclaim: Vec::new(),
             open_files: Vec::new(),
             strings_panels: Vec::new(),
             strings_panel_subs: Vec::new(),
@@ -1623,6 +1640,45 @@ impl Workspace {
         });
         if let Some(handle) = last.and_then(|id| self.dock.read(cx).panel(id)).map(|panel| panel.focus_handle(cx)) {
             window.focus(&handle, cx);
+        }
+    }
+
+    /// Tear the active center tab out into its own OS window. The panel's
+    /// `Arc` is stashed in `torn_off` (keeping the live entity, and its
+    /// unsaved edits, alive), removed from the main dock, and handed to a
+    /// [`FloatingWindow`]. Closing that window reclaims the panel (see
+    /// [`reclaim_torn_panel`](Self::reclaim_torn_panel)). A no-op with no
+    /// active center tab; if the window fails to open the panel is put
+    /// straight back rather than stranded.
+    pub(crate) fn tear_active_tab_into_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.resync_center_if_stale(window, cx);
+        let Some((_, id)) = active_center_leaf(self.dock.read(cx)) else { return };
+        let Some(panel) = self.dock.read(cx).panel(id).cloned() else { return };
+        self.torn_off.insert(id, panel.clone());
+        self.dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
+
+        let weak = cx.entity().downgrade();
+        let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
+        let opened = cx.open_window(
+            WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
+            move |window, cx| {
+                let float = cx.new(|cx| FloatingWindow::new(panel.clone(), id, weak.clone(), window, cx));
+                cx.new(|cx| Root::new(float, window, cx))
+            },
+        );
+        if opened.is_err() {
+            self.reclaim_torn_panel(id, cx);
+        }
+    }
+
+    /// Take a torn-off panel back from its (now closed) float window into
+    /// the reclaim queue; `render` re-inserts it into the center where a
+    /// `&mut Window` is available. A no-op if the id was already reclaimed
+    /// (e.g. a double `on_release` during app teardown).
+    pub(crate) fn reclaim_torn_panel(&mut self, id: PanelId, cx: &mut Context<Self>) {
+        if let Some(panel) = self.torn_off.remove(&id) {
+            self.pending_reclaim.push(panel);
+            cx.notify();
         }
     }
 
@@ -4118,9 +4174,10 @@ fn count_plugins_panels(state: &PanelState) -> usize {
     here + state.children.iter().map(count_plugins_panels).sum::<usize>()
 }
 
-/// Total console panels anywhere under `state` (0 or 1 -- singleton,
-/// same contract as `count_settings_panels`). A console tab counts as
-/// center content, so an empty-workspace welcome rebuild never wipes it.
+/// Total console panels anywhere under `state` (0 or 1 -- singleton).
+/// Test-only: the Console lives in the bottom dock, so no production
+/// center-content check counts it.
+#[cfg(test)]
 fn count_console_panels(state: &PanelState) -> usize {
     let here = usize::from(state.panel_name == CONSOLE_PANEL_NAME);
     here + state.children.iter().map(count_console_panels).sum::<usize>()
@@ -4987,6 +5044,26 @@ impl Render for Workspace {
             });
         }
 
+        // A closed float window queued its panel for reclaim; re-insert it
+        // into the center now that a `&mut Window` is in hand (deferred out
+        // of render like `reconcile`).
+        if !self.pending_reclaim.is_empty() {
+            let panels = std::mem::take(&mut self.pending_reclaim);
+            let this = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |workspace, cx| {
+                        workspace.resync_center_if_stale(window, cx);
+                        for panel in panels {
+                            workspace.dock.update(cx, |dock, cx| {
+                                dock.add_panel_view(panel, DockPlacement::Center, None, window, cx)
+                            });
+                        }
+                    });
+                }
+            });
+        }
+
         if self.focus_pending {
             self.focus_pending = false;
             // Skip the actual focus move while an overlay (the pane picker
@@ -5298,6 +5375,54 @@ mod tests {
 
         let after = ws.read_with(cx, |ws, cx| ws.dock.read(cx).dump(cx));
         assert_eq!(before, after, "an unowned panel move is a no-op");
+    }
+
+    /// Tearing the active tab into a window removes it from the main dock
+    /// and parks the live panel in `torn_off` (so its entity, and any
+    /// unsaved edits, survive the move).
+    #[gpui::test]
+    fn tearing_a_tab_moves_it_out_of_the_main_dock(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+        assert_eq!(ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)), 1);
+
+        ws.update_in(cx, |ws, window, cx| ws.tear_active_tab_into_window(window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)),
+            0,
+            "the file left the main center"
+        );
+        assert_eq!(ws.read_with(cx, |ws, _| ws.torn_off.len()), 1, "the panel is parked in torn_off");
+    }
+
+    /// Reclaiming a torn-off panel (what a closed float window's
+    /// `on_release` triggers) re-inserts it into the center and clears
+    /// `torn_off` -- the round trip that keeps a closed float window from
+    /// dropping the tab.
+    #[gpui::test]
+    fn reclaiming_a_torn_tab_returns_it_to_the_center(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
+        let cx = VisualTestContext::from_window(*window, cx).into_mut();
+
+        ws.update_in(cx, |ws, window, cx| ws.tear_active_tab_into_window(window, cx));
+        cx.run_until_parked();
+        let id = ws.read_with(cx, |ws, _| *ws.torn_off.keys().next().expect("a torn panel"));
+
+        ws.update_in(cx, |ws, _window, cx| ws.reclaim_torn_panel(id, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)),
+            1,
+            "the file is back in the center"
+        );
+        assert_eq!(ws.read_with(cx, |ws, _| ws.torn_off.len()), 0, "torn_off is cleared");
     }
 
     /// `console_log` appends an entry, publishes it on the read-view

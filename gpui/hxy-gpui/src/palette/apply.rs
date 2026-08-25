@@ -41,6 +41,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::SplitPane(dir) => ws.split_active_pane(dir, window, cx),
         PaletteAction::MoveTab(dir) => ws.move_active_tab(dir, window, cx),
         PaletteAction::MergePane(dir) => ws.merge_active_pane(dir, window, cx),
+        PaletteAction::TearTab => ws.tear_active_tab_into_window(window, cx),
         PaletteAction::GoToOffset(target) => {
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| {
