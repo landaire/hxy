@@ -47,7 +47,9 @@ use gpui_component::dock::DockEvent;
 use gpui_component::dock::DockSkin;
 use gpui_component::dock::DockLayout;
 use gpui_component::dock::DockPlacement;
+use gpui_component::dock::InsertTarget;
 use gpui_component::dock::PaneRef;
+use gpui_component::dock::PanelId;
 use gpui_component::dock::PanelBuildContext;
 use gpui_component::dock::PanelInfo;
 use gpui_component::dock::PanelRegistry;
@@ -154,6 +156,7 @@ actions!(
         CloseSearch,
         ToggleGlobalSearch,
         OpenPalette,
+        OpenTabSwitcher,
         PickPane,
         OpenStrings,
         OpenEntropy,
@@ -255,6 +258,8 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-shift-f", ToggleGlobalSearch, None),
         // Mirror the egui app's `COMMAND_PALETTE` chord (Cmd+Shift+P).
         gpui::KeyBinding::new("cmd-shift-p", OpenPalette, None),
+        // Mirror the egui app's `QUICK_OPEN` chord (Cmd+P).
+        gpui::KeyBinding::new("cmd-p", OpenTabSwitcher, None),
         // Mirror the egui app's Toggle Settings accelerator (Cmd+Comma).
         gpui::KeyBinding::new("cmd-,", OpenSettings, None),
         // Mirror the egui app's `FOCUS_PANE` chord (Cmd+K).
@@ -1483,6 +1488,54 @@ impl Workspace {
             self.dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Bottom, window, cx));
         }
         window.focus(&panel.read(cx).focus_handle(cx), cx);
+    }
+
+    /// Every open tab as `(display name, PanelId)`, across all dock
+    /// regions, for the fuzzy tab switcher. The name is the skin tab
+    /// name, falling back to the base panel name.
+    pub(crate) fn open_tab_labels(&self, cx: &App) -> Vec<(SharedString, PanelId)> {
+        let area = self.dock.read(cx);
+        let mut out = Vec::new();
+        for placement in [DockPlacement::Center, DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+            let Some(tree) = area.layout(placement) else { continue };
+            tree.root().walk(&mut |node| {
+                if let PaneRef::Tabs { panels, .. } = node.kind() {
+                    for &id in panels {
+                        if let Some(panel) = area.panel(id) {
+                            let label = PanelHandle::of(panel)
+                                .and_then(|handle| handle.tab_name(cx))
+                                .unwrap_or_else(|| SharedString::from(panel.panel_name(cx)));
+                            out.push((label, id));
+                        }
+                    }
+                }
+            });
+        }
+        out
+    }
+
+    /// Make the tab with `id` the front tab of its group and focus it
+    /// (the tab switcher's pick). `move_panel` with `activate` brings a
+    /// background tab forward; the panel is then focused so keys reach it.
+    pub(crate) fn activate_tab(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        let node = [DockPlacement::Center, DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom]
+            .into_iter()
+            .find_map(|placement| self.dock.read(cx).layout(placement).and_then(|tree| tree.find_panel_node(id)));
+        let Some(node) = node else { return };
+        self.dock.update(cx, |dock, cx| {
+            dock.move_panel(id, InsertTarget::Tabs { node, ix: None, activate: true }, window, cx);
+        });
+        let handle = self.dock.read(cx).panel(id).map(|panel| panel.focus_handle(cx));
+        if let Some(handle) = handle {
+            window.focus(&handle, cx);
+        }
+    }
+
+    /// Open the command palette directly in the tab-switcher mode,
+    /// stashing the currently-focused element to restore on dismiss.
+    fn on_open_tab_switcher(&mut self, _: &OpenTabSwitcher, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = window.focused(cx);
+        self.palette.update(cx, |palette, cx| palette.open_at_quick_open(restore, window, cx));
     }
 
     /// The open files that can seed a compare pick: every live center
@@ -4776,6 +4829,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_take_snapshot))
             .on_action(cx.listener(Self::on_open_snapshots))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_open_tab_switcher))
             .on_action(cx.listener(Self::on_pick_pane))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_undo))

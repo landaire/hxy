@@ -271,6 +271,21 @@ impl Palette {
         }
     }
 
+    /// Open (or re-target) the palette directly in QuickOpen tab-switch
+    /// mode. A re-invoke while already in QuickOpen toggles closed, so the
+    /// same chord opens and dismisses (egui's Cmd+P behaviour). `restore`
+    /// is only stashed on a fresh open, never when already open.
+    pub fn open_at_quick_open(&mut self, restore: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.open && self.mode == PaletteMode::QuickOpen {
+            self.close(window, cx);
+            return;
+        }
+        if !self.state.open {
+            self.restore_focus = restore;
+        }
+        self.enter_mode(PaletteMode::QuickOpen, window, cx);
+    }
+
     /// Switch to `mode` (fresh query / selection / focus), keeping the
     /// palette open and the stashed restore-focus intact. Drives both
     /// the `SwitchMode` pick and the Escape cascade pop.
@@ -381,6 +396,7 @@ impl Palette {
             PaletteMode::UninstallTemplate => build_uninstall_mode_entries(),
             PaletteMode::PluginCascade => self.plugin_cascade_rows(),
             PaletteMode::PluginPrompt => self.plugin_prompt_rows(),
+            PaletteMode::QuickOpen => self.build_tab_entries(cx),
             _ => build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window)),
         };
         // Loaded plugins append their commands to the Main list (egui
@@ -479,6 +495,18 @@ impl Palette {
         self.plugin_prompt.as_ref().map(|p| build_plugin_prompt_entry(p, &self.state.query)).unwrap_or_default()
     }
 
+    /// QuickOpen rows: one per open tab across every dock region, fuzzy
+    /// filtered by tab name (egui's `Mode::QuickOpen`). Empty when the
+    /// workspace is gone.
+    fn build_tab_entries(&self, cx: &App) -> Vec<Entry<PaletteAction>> {
+        let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
+        ws.read(cx)
+            .open_tab_labels(cx)
+            .into_iter()
+            .map(|(label, id)| Entry::new(label, PaletteAction::FocusTab(id)))
+            .collect()
+    }
+
     fn pick_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (entries, filtered) = self.build(window, cx);
         let Some(hit) = filtered.get(self.state.selected) else { return };
@@ -522,6 +550,15 @@ impl Palette {
                 self.close(window, cx);
                 if let Some(ws) = self.workspace.upgrade() {
                     ws.update(cx, |ws, cx| ws.compare_browse(side, prior_a, restore, window, cx));
+                }
+            }
+            // QuickOpen pick: close, then bring the chosen tab forward and
+            // focus it (activate_tab focuses the panel itself, so the
+            // stashed restore-focus is irrelevant here).
+            PaletteAction::FocusTab(id) => {
+                self.close(window, cx);
+                if let Some(ws) = self.workspace.upgrade() {
+                    ws.update(cx, |ws, cx| ws.activate_tab(id, window, cx));
                 }
             }
             // Close first (restoring focus to the grid), then act, so
@@ -959,6 +996,45 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(!pal.read_with(cx, |p, _| p.is_open()));
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid), "close restores grid focus");
+    }
+
+    /// Cmd+P opens QuickOpen and picking a background tab brings it to
+    /// the front. Opens a strings tab (front-most, so the file tab is
+    /// backgrounded), then fuzzy-picks the file tab by name: the file
+    /// becomes the strict active tab again.
+    #[gpui::test]
+    fn quick_open_switches_to_a_background_tab(cx: &mut TestAppContext) {
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_strings_for_active_file(window, cx)));
+        cx.run_until_parked();
+        assert!(!ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "sanity: strings tab is front-most");
+
+        let pal = palette(&ws, cx);
+        cx.simulate_keystrokes("cmd-p");
+        assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-p opens the palette");
+        assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::QuickOpen, "cmd-p enters QuickOpen");
+
+        type_query(&pal, "t.bin", cx);
+        cx.simulate_keystrokes("enter");
+
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking closes the palette");
+        assert!(ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "the file tab is front-most again");
+    }
+
+    /// Re-invoking Cmd+P while already in QuickOpen toggles the palette
+    /// closed (egui's Cmd+P behaviour), mirroring `cmd-shift-p` at Main.
+    #[gpui::test]
+    fn quick_open_toggles_closed_on_reinvoke(cx: &mut TestAppContext) {
+        setup(cx);
+        let (ws, cx) = build(cx, 32);
+        let pal = palette(&ws, cx);
+
+        cx.simulate_keystrokes("cmd-p");
+        assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-p opens QuickOpen");
+        cx.simulate_keystrokes("cmd-p");
+        assert!(!pal.read_with(cx, |p, _| p.is_open()), "re-invoking cmd-p closes it");
     }
 
     /// Clicking the dimmed backdrop fully closes the palette even from a

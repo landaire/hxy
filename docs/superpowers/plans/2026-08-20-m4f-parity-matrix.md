@@ -24,9 +24,9 @@ line has since drifted, the cited symbol name is authoritative.
 
 ## Summary counts
 
-- parity: 78
+- parity: 80
 - deviation: 24
-- gap: 14
+- gap: 12
 - n/a-wasm-only: 4
 
 The gaps are dominated by (a) palette commands whose function is reachable via
@@ -112,7 +112,7 @@ egui: `crates/hxy/src/commands/shortcuts.rs` + `tabs/focus.rs`. gpui:
 | vim toggle | (palette) | cmd-alt-v ToggleVim | parity (gpui adds a binding) |
 | cmd-V / cmd-shift-V paste/paste hex | PASTE/PASTE_AS_HEX | none | gap (no paste path) |
 | cmd-N new file | NEW_FILE | none | gap (no scratch buffer) |
-| cmd-P quick open | QUICK_OPEN | none | gap (no quick-open mode; use cmd-shift-p palette) |
+| cmd-P quick open | QUICK_OPEN | cmd-p OpenTabSwitcher (palette `QuickOpen` mode) | parity |
 | ctrl-Tab / ctrl-shift-Tab next/prev tab | NEXT_TAB/PREV_TAB | none | gap (native dock tab focus; no keybound cycle) |
 | alt-Tab toggle tab focus | TOGGLE_TAB_FOCUS | none | gap (nested-dock focus toggle; not ported) |
 | cmd-] / cmd-[ jump next/prev field | JUMP_NEXT/PREV_FIELD | none (palette action only) | deviation (reachable via palette `JumpNextField/PrevField`, no keybinding) |
@@ -142,7 +142,7 @@ copy-calc prefixes, and copy-selection formats.
 | SetColumnsGlobal | Settings panel `hex_columns` | deviation |
 | SetVirtualBase | none | gap (virtual-base offset labeling not ported) |
 | Recent (mode) / OpenRecent | Welcome panel recents only | gap (no palette recents mode) |
-| QuickOpen (cmd-P mode) | none | gap |
+| QuickOpen (cmd-P mode) | palette `QuickOpen` mode (cmd-p), fuzzy over all open tabs | parity |
 | UninstallPlugin (mode) | Plugins panel delete button | deviation (plugin uninstall via panel, not palette) |
 | CompareSideARecent / CompareSideBRecent | Compare browse dialog + open files | deviation (no recents as compare source) |
 | ReloadActiveFile | file watcher reload dialog; no explicit palette reload | gap (reachable only via watch prompt) |

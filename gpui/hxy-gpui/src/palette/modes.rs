@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use gpui_component::dock::PanelId;
 use hxy_calculator::NullResolver;
 use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
@@ -31,6 +32,10 @@ use palette_core::Entry;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteMode {
     Main,
+    /// Fuzzy quick-switcher over the open tabs (egui's `Mode::QuickOpen`,
+    /// Cmd+P). Entered directly via its own keybinding, not cascaded from
+    /// Main, so Escape closes it; its rows are fuzzy-filtered by tab name.
+    QuickOpen,
     GoToOffset,
     /// Virtual-address variant of [`Self::GoToOffset`]. The gpui port
     /// has no virtual-base plumbing yet, so no Main entry constructs it;
@@ -78,7 +83,7 @@ impl PaletteMode {
     /// `Main`, and `Main` itself closes the palette outright.
     pub fn parent(self) -> Option<Self> {
         match self {
-            PaletteMode::Main => None,
+            PaletteMode::Main | PaletteMode::QuickOpen => None,
             PaletteMode::GoToOffset
             | PaletteMode::GoToAddress
             | PaletteMode::SelectFromOffset
@@ -113,7 +118,8 @@ impl PaletteMode {
             | PaletteMode::Templates
             | PaletteMode::TemplatesAtSelection
             | PaletteMode::UninstallTemplate
-            | PaletteMode::PluginCascade => false,
+            | PaletteMode::PluginCascade
+            | PaletteMode::QuickOpen => false,
             _ => true,
         }
     }
@@ -122,6 +128,7 @@ impl PaletteMode {
     pub fn hint_key(self) -> &'static str {
         match self {
             PaletteMode::Main => "palette-hint-main",
+            PaletteMode::QuickOpen => "palette-hint-quick-open",
             PaletteMode::GoToOffset => "palette-hint-go-to-offset",
             PaletteMode::GoToAddress => "palette-hint-go-to-address",
             PaletteMode::SelectFromOffset => "palette-hint-select-from-offset",
@@ -260,6 +267,9 @@ pub enum PaletteAction {
         command_id: String,
         answer: String,
     },
+    /// Focus the open tab with this `PanelId` (egui's `Action::FocusTab`,
+    /// picked from QuickOpen).
+    FocusTab(PanelId),
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -321,17 +331,18 @@ pub fn build_entries(
         | PaletteMode::SelectFromOffset
         | PaletteMode::SelectRange
         | PaletteMode::SetColumns => build_arg_entries(&mut out, mode, query.trim(), ctx),
-        // Compare picks and the template lists depend on live app
-        // state (open files, the library global, the active file's
-        // head bytes), which the pure builders don't have; the
-        // overlay builds those rows.
+        // Compare picks, the template lists, and QuickOpen depend on live
+        // app state (open files, the library global, the active file's
+        // head bytes, the open tabs), which the pure builders don't have;
+        // the overlay builds those rows.
         PaletteMode::CompareSideA
         | PaletteMode::CompareSideB
         | PaletteMode::Templates
         | PaletteMode::TemplatesAtSelection
         | PaletteMode::UninstallTemplate
         | PaletteMode::PluginCascade
-        | PaletteMode::PluginPrompt => {}
+        | PaletteMode::PluginPrompt
+        | PaletteMode::QuickOpen => {}
     }
     out
 }
@@ -798,7 +809,8 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
         | PaletteMode::CompareSideA
         | PaletteMode::CompareSideB
         | PaletteMode::PluginCascade
-        | PaletteMode::PluginPrompt => {}
+        | PaletteMode::PluginPrompt
+        | PaletteMode::QuickOpen => {}
     }
 }
 

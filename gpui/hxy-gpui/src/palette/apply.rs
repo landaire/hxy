@@ -97,13 +97,14 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         // Consumed by the overlay before reaching dispatch: mode
-        // switches, the no-op rows, and the compare cascade (which the
-        // overlay routes through `Workspace::open_compare` /
-        // `compare_browse` directly).
+        // switches, the no-op rows, the compare cascade (routed through
+        // `Workspace::open_compare` / `compare_browse`), and the QuickOpen
+        // tab pick (routed through `Workspace::activate_tab`).
         PaletteAction::SwitchMode(_)
         | PaletteAction::NoOp
         | PaletteAction::CompareSelectSource { .. }
-        | PaletteAction::CompareBrowse(_) => {}
+        | PaletteAction::CompareBrowse(_)
+        | PaletteAction::FocusTab(_) => {}
     }
 }
 
