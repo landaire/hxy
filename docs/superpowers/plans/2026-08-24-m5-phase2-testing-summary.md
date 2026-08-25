@@ -68,20 +68,41 @@ so the dock has real content to exercise.
 - This was the largest change; regressions here would show as missing tab
   chrome, blank panels, or lost layout on restart.
 
-## Known deferred (not done this session)
+### 8. Pane split / merge / move-tab palette verbs (#6) -- NEW
 
-These were scoped but not implemented; call them out if you test dock parity:
+- Open the palette (Cmd+Shift+P) with a file open. Near the bottom are:
+  Split pane right/left/up/down, Move tab right/left/up/down, Merge pane
+  with right/left/up/down.
+- **Split**: adds an empty pane on the chosen side and focuses it. Opening a
+  file then fills it.
+- **Move tab**: with two side-by-side panes, moves the active tab into the
+  neighbor pane. At the layout edge (no neighbor that way) it does nothing.
+- **Merge**: folds the active pane's tabs into the neighbor pane and removes
+  the emptied pane. Edge = no-op.
+- Note: "active pane" is the first center tab group in tree order (matches the
+  rest of the app's active-pane rule), which may differ from the visually
+  focused split -- verify the verbs act on the pane you expect in a multi-split
+  layout.
 
-- **Palette Split/Merge/MoveTab verbs (#6):** egui exposes these as palette
-  commands; gpui reaches the same result via native drag-drop docking. This is
-  a deliberate, documented deviation, not a regression. No palette verbs added.
-- **Nested-workspace cross-area drag guard (#7):** dragging a panel between the
-  outer dock and a workspace-host's nested dock is not explicitly guarded in
-  the fork. No crash has been reproduced, but this path is untested -- worth a
-  targeted try (open a plugin-mount/workspace-host tab, drag a panel in/out of
-  its nested dock) to confirm it does not corrupt layout state.
-- **Floating / tear-off windows (#9):** multi-surface tear-off is an XL,
-  separate milestone and was not started.
+### 9. Cross-window drag guard (#7) -- NEW (fork)
+
+- Open a plugin-mount / workspace-host tab (it hosts a nested dock). Drag a tab
+  from the outer dock into the nested dock, and vice versa.
+- Expect: the drop is rejected and the tab stays where it was -- no ghost or
+  duplicated tab. (Same-dock drag-docking is unaffected.)
+
+### 10. Tear-off windows (#9) -- NEW
+
+- With a file tab active, run the palette command "Move tab to new window".
+- Expect: a second OS window opens showing that tab's hex view; the tab leaves
+  the main window.
+- Edit bytes in the torn-off window, then close that window: the tab returns to
+  the main window with its unsaved edits intact (the panel entity is preserved
+  across the move, so nothing is lost).
+- Known limitations of the torn-off window: it is a bare hex view -- no
+  inspector / status bar / minimap, and the file is not watched for external
+  changes while floating (watch resumes on reclaim). The main window's
+  inspector/status do not reflect the torn tab while it floats.
 
 ## Pre-existing issue (not from this work)
 

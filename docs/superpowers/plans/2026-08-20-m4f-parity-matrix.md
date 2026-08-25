@@ -24,7 +24,7 @@ line has since drifted, the cited symbol name is authoritative.
 
 ## Summary counts
 
-- parity: 80
+- parity: 81
 - deviation: 24
 - gap: 12
 - n/a-wasm-only: 4
@@ -136,7 +136,8 @@ copy-calc prefixes, and copy-selection formats.
 |---|---|---|
 | Undo / Redo / ToggleEditMode | menu + keybinding, not palette | deviation (functionally reachable off-palette) |
 | CopyCaretOffset / CopyCaretAddress / CopySelectionRange(+Address) / CopySelectionLength / CopyFileLength | gpui `CopySelection`/`CopyText` cover selection + calc copies | deviation (per-target copy rows collapsed; caret/file-length copies absent) |
-| SplitRight/Left/Up/Down, MergeRight/Left/Up/Down, MoveTab* , MergeVisual, MoveTabVisual | gpui-component DockArea native drag-drop docking | deviation (docking via drag, not palette verbs) |
+| SplitRight/Left/Up/Down, MergeRight/Left/Up/Down, MoveTabRight/Left/Up/Down | palette `SplitPane` / `MergePane` / `MoveTab` verbs (directional, neighbor-leaf search) | parity |
+| MergeVisual, MoveTabVisual | gpui-component DockArea native drag-drop docking | deviation (visual retarget via drag, not a pane-pick palette verb) |
 | FocusPane | cmd-k PickPane (DockPicker overlay) | parity (off-palette) |
 | WatchAlways/Ask/Never, SetPollInterval | Settings panel auto-reload + poll fields | deviation (per-file watch prefs via settings, not palette) |
 | SetColumnsGlobal | Settings panel `hex_columns` | deviation |
