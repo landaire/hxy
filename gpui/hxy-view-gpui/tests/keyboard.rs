@@ -32,7 +32,7 @@ fn source_200_rows() -> Arc<dyn HexSource> {
 fn focus(cx: &mut VisualTestContext, pane: &Entity<HexPane>) {
     cx.update(|window, cx| {
         let handle = pane.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         window.activate_window();
     });
 }
