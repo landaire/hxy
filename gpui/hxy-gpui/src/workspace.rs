@@ -4754,13 +4754,19 @@ fn build_node_path(node: &PaneNode, target: NodeId, acc: &mut Vec<PathStep>) -> 
     false
 }
 
-/// The first `Tabs`/`Tiles` leaf reached by descending `node`'s left
-/// spine (mirrors egui's `first_leaf_in`, which always takes the left
-/// child).
-fn first_leaf_id(node: &PaneNode) -> NodeId {
+/// The first `Tabs` leaf reached by descending `node`'s left spine
+/// (mirrors egui's `first_leaf_in`, which always takes the left child),
+/// or `None` if that leaf is a `Tiles` canvas or the node is a malformed
+/// empty split. The move / merge verbs feed this into a `Tabs` insert,
+/// which silently strands the panel (then reconcile destroys it) if the
+/// target is not a `Tabs` node -- the center never holds a `Tiles` leaf
+/// today, so this guard is defensive against a future tiles region rather
+/// than a live path.
+fn first_tabs_leaf(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
-        PaneRef::Split { children, .. } => children.first().map(first_leaf_id).unwrap_or_else(|| node.id()),
-        _ => node.id(),
+        PaneRef::Split { children, .. } => children.first().and_then(first_tabs_leaf),
+        PaneRef::Tabs { .. } => Some(node.id()),
+        PaneRef::Tiles { .. } => None,
     }
 }
 
@@ -4791,7 +4797,7 @@ fn center_neighbor_leaf(tree: &PaneTree, node: NodeId, dir: DockDir) -> Option<N
         } else {
             step.child_ix - 1
         };
-        return children.get(sib_ix).map(first_leaf_id);
+        return children.get(sib_ix).and_then(first_tabs_leaf);
     }
     None
 }
