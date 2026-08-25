@@ -104,6 +104,39 @@ so the dock has real content to exercise.
   changes while floating (watch resumes on reclaim). The main window's
   inspector/status do not reflect the torn tab while it floats.
 
+### 11. Drag a tab out to pop it into a window -- NEW
+
+- Start dragging any tab. A dashed accent "Drop here to open in a new window"
+  pill appears near the top-center of the window.
+- Drop the tab on the pill: it tears into its own OS window (same reclaim-on-
+  close behavior as #10).
+- Regression check: dragging a tab to reorder it along the tab bar, or to
+  split/dock it at a pane edge, still works -- only the pill's own footprint
+  tears; everywhere else the drop reaches the dock underneath.
+
+### 12. Visual pane picker badges (Cmd+K) -- NEW
+
+- Press Cmd+K. Expect: a large letter badge painted over each center pane
+  (vimium-style), not a centered list. Press a pane's letter to jump focus
+  there.
+- With the inspector (right dock) open, its target still appears as a listed
+  row at the bottom (it has no center-pane rect to badge).
+- Escape / backdrop-click cancels and restores prior focus.
+
+### 13. Minimap parallax -- NEW
+
+- Open a file much taller than the minimap can show at ~2px/row (a large
+  binary). Scroll the hex view top to bottom.
+- Expect: the minimap now shows a *scrolled window* of the file at higher
+  fidelity (not the whole file squeezed in), and as you scroll the window
+  slides while the viewport indicator glides from the top of the strip to the
+  bottom -- the parallax the egui minimap has.
+- Small files (that fit at ~2px/row) still show the whole file at once, as
+  before.
+- Click / drag on the strip still scrolls the whole file proportionally (like a
+  scrollbar), matching egui: the strip renders a parallax window but a click
+  maps to `fraction * whole-file`, so you can still jump anywhere.
+
 ## Pre-existing issue (not from this work)
 
 - The `elf.hexpat` template surfaces a garbled "Expected X got X" assert
