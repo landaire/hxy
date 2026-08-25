@@ -1,13 +1,18 @@
-//! Right-edge minimap strip: a whole-file downsampled overview painted
-//! next to the hex grid, with a translucent viewport indicator and
-//! click/drag-to-center scrolling.
+//! Right-edge minimap strip: a downsampled overview painted next to the
+//! hex grid, with a translucent viewport indicator and click/drag-to-
+//! center scrolling.
 //!
-//! Unlike `egui_minimap` (crates/egui_minimap), which windows a huge
-//! file into whatever number of pixel-rows fit the strip and scrolls
-//! that window, this strip always compresses the *entire* file into
-//! the available height: each strip row averages
-//! `row_count.div_ceil(capacity)` source rows, matching the task
-//! brief's simpler "whole file always visible" downsampling contract.
+//! Two modes, matching `egui_minimap` (crates/egui_minimap):
+//!
+//! - **Whole-file** when the file fits at the strip's row scale
+//!   (`row_count <= capacity`): every source row gets its own strip row,
+//!   the whole file is visible at once, and the indicator maps directly.
+//! - **Windowed with parallax** when it does not: the strip shows a
+//!   `capacity`-row window at 1:1 fidelity (no averaging) and scrolls that
+//!   window as the grid scrolls. The window advances *slower* than the
+//!   grid (see [`parallax_window_top`]), so the viewport indicator glides
+//!   down the strip from top to bottom over the length of the file rather
+//!   than pinning to one spot -- the parallax the egui minimap has.
 
 use gpui::BorderStyle;
 use gpui::Bounds;
@@ -115,27 +120,37 @@ pub(crate) fn paint_minimap(
         return;
     }
 
-    let capacity = (f32::from(strip.size.height) / ROW_H).floor().max(1.0) as u64;
-    let rows_per_bin = row_count.div_ceil(capacity).max(1);
-    let bin_count = row_count.div_ceil(rows_per_bin).max(1);
-    let bin_h = px(f32::from(strip.size.height) / bin_count as f32);
+    let strip_h = f32::from(strip.size.height);
+    let capacity = (strip_h / ROW_H).floor().max(1.0) as u64;
+
+    // Whole-file: every row visible, each painted at strip_h/row_count.
+    // Windowed: a `capacity`-row window scrolled with parallax, each row at
+    // the fixed ROW_H (1:1, no averaging).
+    let (window_top, window_rows, row_h) = if row_count <= capacity {
+        (0u64, row_count, px(strip_h / row_count as f32))
+    } else {
+        (parallax_window_top(row_count, capacity, first_visible_row, rows_visible), capacity, px(ROW_H))
+    };
+
     let cols = columns.as_u64();
     let len = source_len.get();
     // A persistently failing source (e.g. deleted mid-session) would
-    // otherwise log once per bin -- hundreds per repaint for a tall
-    // strip, versus the grid's own read path logging once per frame
-    // (a single batched read). Cap logging to the first failure in
-    // this pass; later bins still skip painting silently.
+    // otherwise log once per row -- hundreds per repaint for a tall strip,
+    // versus the grid's own read path logging once per frame. Cap logging
+    // to the first failure in this pass; later rows still skip silently.
     let mut warned = false;
 
-    for bin in 0..bin_count {
-        let row_start = bin.saturating_mul(rows_per_bin);
-        if row_start >= row_count {
+    for i in 0..window_rows {
+        let src_row = window_top.saturating_add(i);
+        if src_row >= row_count {
             break;
         }
-        let row_end = row_start.saturating_add(rows_per_bin).min(row_count);
-        let byte_start = row_start.saturating_mul(cols).min(len);
-        let byte_end = row_end.saturating_mul(cols).min(len).min(byte_start.saturating_add(MAX_BYTES_PER_ROW));
+        let byte_start = src_row.saturating_mul(cols).min(len);
+        let byte_end = src_row
+            .saturating_add(1)
+            .saturating_mul(cols)
+            .min(len)
+            .min(byte_start.saturating_add(MAX_BYTES_PER_ROW));
         if byte_start >= byte_end {
             continue;
         }
@@ -144,7 +159,7 @@ pub(crate) fn paint_minimap(
             Ok(bytes) => bytes,
             Err(err) => {
                 if !warned {
-                    tracing::warn!(?range, %err, bin, bin_count, "minimap row read failed; painting nothing for this and any further failed rows this pass");
+                    tracing::warn!(?range, %err, src_row, "minimap row read failed; painting nothing for this and any further failed rows this pass");
                     warned = true;
                 }
                 continue;
@@ -158,11 +173,28 @@ pub(crate) fn paint_minimap(
         } else {
             average_gray_color(&bytes, colors.dark)
         };
-        let y = strip.origin.y + bin_h * bin as f32;
-        window.paint_quad(fill(bounds(point(strip.origin.x, y), size(strip.size.width, bin_h)), color));
+        let y = strip.origin.y + row_h * i as f32;
+        window.paint_quad(fill(bounds(point(strip.origin.x, y), size(strip.size.width, row_h)), color));
     }
 
-    paint_viewport_indicator(strip, colors, row_count, first_visible_row, rows_visible, window);
+    paint_viewport_indicator(strip, colors, window_top, row_h, first_visible_row, rows_visible, window);
+}
+
+/// The top source row of the scrolled minimap window (windowed mode).
+///
+/// Interpolates the `capacity`-row window across the file so that at the
+/// very top the window sits at row 0 and at the very bottom it sits at
+/// `row_count - capacity`. Because the window spans fewer rows than the
+/// file, it advances slower than the grid's own scroll -- the parallax
+/// that makes the viewport indicator glide down the strip instead of
+/// staying put. `rows_visible` is the grid viewport's height in rows.
+fn parallax_window_top(row_count: u64, capacity: u64, first_visible_row: u64, rows_visible: f32) -> u64 {
+    let max_top = row_count.saturating_sub(capacity);
+    // The grid's own scroll range is `row_count - rows_visible`; map the
+    // current position within it onto `[0, max_top]`.
+    let denom = (row_count as f32 - rows_visible).max(1.0);
+    let frac = (first_visible_row as f32 / denom).clamp(0.0, 1.0);
+    (frac * max_top as f32).round() as u64
 }
 
 /// Palette average for one strip row: every byte contributes its
@@ -209,25 +241,29 @@ fn average_gray_color(bytes: &[u8], dark: bool) -> Hsla {
 
 /// Marks the strip rows spanned by the grid's current viewport, in the
 /// theme accent: an accent wash, a crisp accent outline, and a solid
-/// accent bar on the inner edge. The accent (vs the old low-alpha
-/// foreground wash) and the bar make the visible slice legible over the
-/// downsampled row colors. Mirrors `egui_minimap`'s indicator plus its
-/// left bracket (`Minimap::show`, crates/egui_minimap/src/lib.rs).
+/// accent bar on the inner edge. Positioned relative to the painted
+/// window (`window_top`, `row_h`), so in windowed mode it glides down the
+/// strip as the window scrolls under it. Mirrors `egui_minimap`'s
+/// indicator plus its left bracket (`Minimap::show`).
 fn paint_viewport_indicator(
     strip: MinimapBounds,
     colors: &PaintColors,
-    row_count: u64,
+    window_top: u64,
+    row_h: Pixels,
     first_visible_row: u64,
     rows_visible: f32,
     window: &mut Window,
 ) {
-    let total = row_count as f32;
-    let strip_h = f32::from(strip.size.height);
-    let top_frac = (first_visible_row as f32 / total).clamp(0.0, 1.0);
-    let bot_frac = ((first_visible_row as f32 + rows_visible) / total).clamp(0.0, 1.0);
-    let top = strip.origin.y + px(strip_h * top_frac);
-    let bot = strip.origin.y + px(strip_h * bot_frac);
-    let indicator = bounds(point(strip.origin.x, top), size(strip.size.width, (bot - top).max(px(1.0))));
+    let strip_top = f32::from(strip.origin.y);
+    let strip_bot = strip_top + f32::from(strip.size.height);
+    let row_h = f32::from(row_h);
+    // Rows from the window's top down to the viewport's first row (clamped:
+    // the viewport can sit slightly above the window while the parallax
+    // window catches up at the very ends of the file).
+    let rel_top = (first_visible_row as f32 - window_top as f32).max(0.0);
+    let top = (strip_top + rel_top * row_h).clamp(strip_top, strip_bot);
+    let bot = (top + rows_visible * row_h).clamp(top, strip_bot);
+    let indicator = bounds(point(strip.origin.x, px(top)), size(strip.size.width, px((bot - top).max(1.0))));
     window.paint_quad(fill(indicator, colors.accent.opacity(INDICATOR_FILL_ALPHA)));
     window.paint_quad(outline(indicator, colors.accent, BorderStyle::Solid));
     let bracket = bounds(indicator.origin, size(px(INDICATOR_BRACKET_W).min(indicator.size.width), indicator.size.height));
@@ -281,6 +317,18 @@ mod tests {
         assert!((rgba.r - 0.5).abs() < 1e-3, "half red: {rgba:?}");
         assert!((rgba.b - 0.5).abs() < 1e-3, "half blue: {rgba:?}");
         assert!((averaged.a - BLEND).abs() < 1e-4, "blend factor applied");
+    }
+
+    /// The parallax window pins to the top at the start of the file, to
+    /// `row_count - capacity` at the end, and interpolates between --
+    /// advancing slower than the grid so the indicator glides.
+    #[test]
+    fn parallax_window_pins_at_the_ends_and_interpolates() {
+        let (rc, cap, vis) = (1000u64, 100u64, 20.0f32);
+        assert_eq!(parallax_window_top(rc, cap, 0, vis), 0, "top of file: window at row 0");
+        assert_eq!(parallax_window_top(rc, cap, rc - vis as u64, vis), rc - cap, "bottom: window at max");
+        let mid = parallax_window_top(rc, cap, 490, vis);
+        assert!((440..=460).contains(&mid), "mid-file window_top interpolates: {mid}");
     }
 
     /// Grayscale rows sit on the shared ramp endpoints (dark: 40..230)

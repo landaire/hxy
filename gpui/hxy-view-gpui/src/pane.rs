@@ -415,6 +415,10 @@ impl HexPane {
         if b.size.height <= px(0.0) {
             return;
         }
+        // A strip click maps to a whole-file proportional scroll (egui
+        // parity: `egui_minimap` renders a parallax window but scrolls
+        // `frac * max_scroll` on click, so the strip works like a
+        // scrollbar over the whole file, not just the shown window).
         let frac = ((y - b.origin.y) / b.size.height).clamp(0.0, 1.0);
         let target_row = frac * self.row_count() as f32;
         let max = self.max_scroll_rows();
