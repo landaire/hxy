@@ -10,19 +10,20 @@ license = "MIT OR Apache-2.0"
 authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
 
-# gpui-component points at the local fork (`~/src/gpui-component`), whose
-# 0.5.2 dock rewrite (pure-data `PaneTree`/`DockLayout`, nestable side
-# docks, per-tab close) is what the app now targets. The fork is not on
-# crates.io, so this is a path dep during fork development; swap to the
-# pushed git fork once it lands upstream. A relative path keeps the
-# reference off any one machine's absolute layout (assumes the fork sits
-# at `~/src/gpui-component` alongside `~/dev/hxy`).
+# gpui-component points at the pushed fork
+# (github.com/landaire-contrib/gpui-component), whose 0.5.2 dock rewrite
+# (pure-data `PaneTree`/`DockLayout`, nestable side docks, per-tab close,
+# render_tab hook) is what the app now targets. A git source rather than an
+# out-of-tree path, so the nested workspace can be reindeer/buck2 buckified;
+# the cost is that local fork edits must be pushed before the app sees them.
 #
-# The fork's `gpui-component` resolves `gpui` from zed git (it depends on
-# git-only zed crates like `gpui_platform`/`gpui_macros` that never ship
-# to crates.io), so the app must resolve the SAME git `gpui` or the two
-# `gpui` instances are distinct crates and won't interoperate. Hence the
-# git rev below matches the fork's `Cargo.lock`.
+# Pinned to the `hxy-pin` branch, NOT `upstream-dock`. Both share the same
+# dock code, but `upstream-dock` (the clean branch we upstream) leaves the
+# zed git deps floating, and Cargo will not unify a floating `git = zed` dep
+# with this workspace's rev-pinned one -- it pulls a SECOND zed tree at the
+# branch tip and the two `gpui` instances get incompatible types. `hxy-pin`
+# is `upstream-dock` plus a one-commit `Cargo.toml` pin of the zed deps to
+# the rev below, so the fork's `gpui` unifies with this workspace's.
 # `runtime_shaders`: gpui's default macOS build ahead-of-time-compiles its
 # Metal shaders via `xcrun metal`, which ships with full Xcode.app, not
 # Xcode Command Line Tools (all that's installed here). This feature makes
@@ -34,7 +35,7 @@ repository = "https://github.com/landaire/hxy"
 [workspace.dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", features = ["runtime_shaders"] }
-gpui-component = { path = "../../../src/gpui-component/crates/ui" }
+gpui-component = { git = "https://github.com/landaire-contrib/gpui-component", rev = "6302a9babf85111aaf1878ae827870227172ca36" }
 gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.5.0" }
 hxy-core = { path = "../crates/hxy-core", version = "0.5.0" }
