@@ -104,23 +104,28 @@ so the dock has real content to exercise.
   changes while floating (watch resumes on reclaim). The main window's
   inspector/status do not reflect the torn tab while it floats.
 
-### 11. Drag a tab out to pop it into a window -- NEW
+### 11. Multi-window docking: move tabs between windows -- NEW
 
-Two ways, both tear the tab into its own OS window (same reclaim-on-close
-behavior as #10):
+Every window (main + each float) is a full dock surface; a tab dragged off any
+window is routed by where it is released:
 
-- **Drag it off the window:** drag a tab past the window's edge and release
-  outside. (Tab drags stay internal to gpui -- no OS drag handoff -- so the
-  release is detected via a window-global mouse-up while the drag is still
-  live.) This is the browser-style gesture.
-- **Drop on the landing square:** while dragging, a small dashed accent square
-  with a pop-out icon appears at the top-center; drop the tab on it.
-- Regression check: dragging a tab to reorder it along the tab bar, or to
-  split/dock it at a pane edge, still works -- only the small square's own
-  footprint is a drop target; releasing anywhere else inside the window reaches
-  the dock underneath.
-- Not done: dropping onto a *different existing* hxy window (that needs
-  cross-window drag routing); tearing always opens a fresh window.
+- **Drop on empty desktop** -> a new float window opens there with the tab.
+- **Drop over another existing window** (main or a float) -> the tab docks into
+  that window. Try main -> float, float -> main, float -> float.
+- **Drop back inside the source window** -> normal in-dock behavior (reorder /
+  split / the landing square); nothing tears.
+- **Last tab leaves a float window** -> that float window closes automatically.
+- **Close a float window that still holds tabs** (OS close button) -> its
+  remaining tabs are handed back to the main window, so nothing is lost.
+- Also still works: the "Move tab to new window" palette verb, and the small
+  dashed landing square at the top-center while dragging.
+- Unsaved edits survive every move (the panel entity is transferred, never
+  re-created).
+- Not done: dropping onto a *non-hxy* OS window.
+- Manual-only: all of the cross-window drag routing depends on macOS delivering
+  the outside-window mouse-up plus global-coordinate window hit-testing, which
+  the headless test harness can't exercise. Unit tests cover the tear/register
+  and the reclaim-on-close paths.
 
 ### 12. Visual pane picker badges (Cmd+K) -- NEW
 
