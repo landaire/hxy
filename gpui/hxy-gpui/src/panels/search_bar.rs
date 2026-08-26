@@ -39,21 +39,21 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::FluentBuilder;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::IconName;
-use gpui_component::Selectable;
-use gpui_component::WindowExt;
-use gpui_component::button::Button;
-use gpui_component::checkbox::Checkbox;
-use gpui_component::dialog::DialogButtonProps;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputEvent;
-use gpui_component::input::InputState;
-use gpui_component::label::Label;
-use gpui_component::notification::Notification;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Disableable;
+use gpui::component::IconName;
+use gpui::component::Selectable;
+use gpui::component::WindowExt;
+use gpui::component::button::Button;
+use gpui::component::checkbox::Checkbox;
+use gpui::component::dialog::DialogButtonProps;
+use gpui::component::h_flex;
+use gpui::component::input::Input;
+use gpui::component::input::InputEvent;
+use gpui::component::input::InputState;
+use gpui::component::label::Label;
+use gpui::component::notification::Notification;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::HexSource;
 use hxy_core::Selection;
@@ -778,7 +778,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     fn source(bytes: Vec<u8>) -> Arc<dyn HexSource> {
@@ -795,11 +795,11 @@ mod tests {
 
     impl Render for DialogTestHost {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.bar.clone()).children(gpui_component::Root::render_dialog_layer(window, cx))
+            div().size_full().child(self.bar.clone()).children(gpui::component::Root::render_dialog_layer(window, cx))
         }
     }
 
-    /// Builds a `SearchBar` inside a real `gpui_component::Root` window
+    /// Builds a `SearchBar` inside a real `gpui::component::Root` window
     /// (like the production shell does in `main.rs`), with the dialog
     /// layer wired up like `Workspace::render` does, so
     /// `WindowExt::open_dialog` -- used by the replace-all / length-
@@ -810,7 +810,7 @@ mod tests {
             let pane = cx.new(|cx| HexPane::new(source(bytes), cx));
             let bar = cx.new(|cx| SearchBar::new(pane, window, cx));
             let host = cx.new(|_cx| DialogTestHost { bar: bar.clone() });
-            gpui_component::Root::new(host, window, cx)
+            gpui::component::Root::new(host, window, cx)
         });
         let root = window.root(cx).unwrap();
         let bar = root.read_with(cx, |root, _| root.view().clone().downcast::<DialogTestHost>().unwrap());

@@ -47,38 +47,38 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::Pixels;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Placement;
-use gpui_component::Root;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Sizable;
-use gpui_component::WindowExt;
-use gpui_component::button::Button;
-use gpui_component::button::ButtonVariants;
-use gpui_component::dialog::DialogFooter;
-use gpui_component::dock::BasePanelView as PanelView;
-use gpui_component::dock::PanelHandle;
-use gpui_component::dock::DockArea;
-use gpui_component::dock::DockEvent;
-use gpui_component::dock::DockSkin;
-use gpui_component::dock::DockLayout;
-use gpui_component::dock::DockPlacement;
-use gpui_component::dock::InsertTarget;
-use gpui_component::dock::DragPanel;
-use gpui_component::dock::NodeId;
-use gpui_component::dock::PaneNode;
-use gpui_component::dock::PaneRef;
-use gpui_component::dock::PaneTree;
-use gpui_component::dock::PanelId;
-use gpui_component::dock::PanelBuildContext;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelRegistry;
-use gpui_component::dock::PanelState;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::notification::Notification;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Placement;
+use gpui::component::Root;
+use gpui::component::Icon;
+use gpui::component::IconName;
+use gpui::component::Sizable;
+use gpui::component::WindowExt;
+use gpui::component::button::Button;
+use gpui::component::button::ButtonVariants;
+use gpui::component::dialog::DialogFooter;
+use gpui::component::dock::BasePanelView as PanelView;
+use gpui::component::dock::PanelHandle;
+use gpui::component::dock::DockArea;
+use gpui::component::dock::DockEvent;
+use gpui::component::dock::DockSkin;
+use gpui::component::dock::DockLayout;
+use gpui::component::dock::DockPlacement;
+use gpui::component::dock::InsertTarget;
+use gpui::component::dock::DragPanel;
+use gpui::component::dock::NodeId;
+use gpui::component::dock::PaneNode;
+use gpui::component::dock::PaneRef;
+use gpui::component::dock::PaneTree;
+use gpui::component::dock::PanelId;
+use gpui::component::dock::PanelBuildContext;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelRegistry;
+use gpui::component::dock::PanelState;
+use gpui::component::h_flex;
+use gpui::component::label::Label;
+use gpui::component::notification::Notification;
+use gpui::component::v_flex;
 use gpui_dock_picker::DockPicker;
 use gpui_dock_picker::PickTarget;
 use hxy_core::ByteOffset;
@@ -101,6 +101,8 @@ use crate::console::ConsoleSeverity;
 use crate::menu::CloseTab;
 use crate::menu::CopyBytes;
 use crate::menu::CopyHex;
+use crate::menu::Paste;
+use crate::menu::PasteHex;
 use crate::menu::Redo;
 use crate::menu::ShowAbout;
 use crate::menu::ToggleEditMode;
@@ -169,6 +171,7 @@ use crate::watch::ReloadDecision;
 actions!(
     hxy_gpui,
     [
+        NewFile,
         OpenFile,
         Save,
         SaveAs,
@@ -266,10 +269,35 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// sized it yet.
 const INSPECTOR_DOCK_WIDTH: gpui::Pixels = px(280.0);
 
+/// Parse pasted text as hex byte pairs, ignoring all whitespace so
+/// "de ad be ef" and "deadbeef" are equivalent. Errs on an odd nibble
+/// count or a non-hex character. Local to the paste path rather than
+/// reusing `hxy_panels`' search encoder, whose error type is
+/// search-specific.
+fn parse_hex_paste(s: &str) -> Result<Vec<u8>, String> {
+    let collapsed: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if collapsed.is_empty() {
+        return Err("no hex digits".to_owned());
+    }
+    if !collapsed.len().is_multiple_of(2) {
+        return Err(format!("odd hex-digit count ({})", collapsed.len()));
+    }
+    let bytes = collapsed.as_bytes();
+    let mut out = Vec::with_capacity(collapsed.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let pair = std::str::from_utf8(&bytes[i..i + 2]).map_err(|_| "non-ascii hex".to_owned())?;
+        out.push(u8::from_str_radix(pair, 16).map_err(|_| format!("invalid hex byte '{pair}'"))?);
+        i += 2;
+    }
+    Ok(out)
+}
+
 /// Register the shell's keybindings. Called once at startup before any
 /// window opens.
 pub fn init_keybindings(cx: &mut App) {
     cx.bind_keys([
+        gpui::KeyBinding::new("cmd-n", NewFile, None),
         gpui::KeyBinding::new("cmd-o", OpenFile, None),
         gpui::KeyBinding::new("cmd-s", Save, None),
         gpui::KeyBinding::new("cmd-shift-s", SaveAs, None),
@@ -2415,7 +2443,7 @@ impl Workspace {
             let cell_for_click = remember_cell.clone();
             let weak_for_remember = weak.clone();
             body = body.child(
-                gpui_component::checkbox::Checkbox::new("reload-remember")
+                gpui::component::checkbox::Checkbox::new("reload-remember")
                     .label(hxy_i18n::t("reload-prompt-remember"))
                     .checked(remember_cell.get())
                     .on_click(move |checked: &bool, _window, cx| {
@@ -2656,6 +2684,65 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// `cmd-n` / File > New: open a fresh empty untitled buffer. Its hex
+    /// view shows a dim ghost placeholder initial byte (see
+    /// `GridSnapshot::ghost_offset`); typing or pasting grows the buffer.
+    /// The caret starts on that placeholder so it is selected immediately.
+    fn on_new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
+        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(Vec::new()));
+        let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
+        self.add_file_panel(panel.clone(), window, cx);
+        let pane = panel.read(cx).pane().clone();
+        pane.update(cx, |pane, _cx| {
+            pane.editor_mut().set_selection(Some(Selection::caret(ByteOffset::new(0))));
+        });
+    }
+
+    /// `cmd-v` / Edit > Paste: insert the clipboard text as its raw
+    /// (UTF-8) bytes at the cursor of the active file. A pure insert, so
+    /// an empty/new buffer grows.
+    fn on_paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
+        self.paste_bytes(text.into_bytes(), window, cx);
+    }
+
+    /// `cmd-shift-v` / Edit > Paste as hex: interpret the clipboard text as
+    /// hex byte pairs (whitespace ignored, e.g. "de ad be ef") and insert
+    /// them at the cursor. Malformed hex is logged and does nothing.
+    fn on_paste_hex(&mut self, _: &PasteHex, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
+        match parse_hex_paste(&text) {
+            Ok(bytes) => self.paste_bytes(bytes, window, cx),
+            Err(reason) => tracing::warn!(%reason, "paste as hex: clipboard is not valid hex"),
+        }
+    }
+
+    /// Insert `bytes` at the active file's cursor as a single undo entry,
+    /// advancing the caret past them. No-op with no active file or no
+    /// bytes. The insert offset is clamped to the buffer length, so a
+    /// caret on an empty buffer's ghost byte (offset 0, len 0) inserts at
+    /// 0 rather than failing an out-of-bounds splice.
+    fn paste_bytes(&mut self, bytes: Vec<u8>, _window: &mut Window, cx: &mut Context<Self>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let pane = file.read(cx).pane().clone();
+        pane.update(cx, |pane, cx| {
+            let editor = pane.editor_mut();
+            let source_len = editor.source().len().get();
+            let at = editor.selection().map(|s| s.cursor.get().min(source_len)).unwrap_or(source_len);
+            let inserted = bytes.len() as u64;
+            editor.push_history_boundary();
+            if editor.splice(at, 0, bytes).is_ok() {
+                let end = ByteOffset::new(at + inserted);
+                editor.set_selection(Some(Selection::caret(end)));
+                editor.set_scroll_to_byte(end);
+            }
+            cx.notify();
+        });
     }
 
     /// `cmd-s` / File > Save: write the reference file to its existing
@@ -5308,6 +5395,9 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .bg(cx.theme().background)
+            .on_action(cx.listener(Self::on_new_file))
+            .on_action(cx.listener(Self::on_paste))
+            .on_action(cx.listener(Self::on_paste_hex))
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
@@ -5358,15 +5448,15 @@ impl Render for Workspace {
         // "drag it off the window" tear gesture). Paints nothing.
         root = root.child(self.render_drag_release_watcher(cx));
 
-        // `gpui_component::Root` (the window's actual top-level view,
+        // `gpui::component::Root` (the window's actual top-level view,
         // see `main.rs`) only renders its child; the child is
         // responsible for appending the dialog/sheet/notification
         // layers each frame. File-open errors, layout-restore warnings,
         // and the search bar's wrap/replace toasts all render through
         // the notification layer; the search bar's length-mismatch and
         // replace-all confirms render through the dialog layer.
-        root.children(gpui_component::Root::render_dialog_layer(window, cx))
-            .children(gpui_component::Root::render_notification_layer(window, cx))
+        root.children(gpui::component::Root::render_dialog_layer(window, cx))
+            .children(gpui::component::Root::render_notification_layer(window, cx))
     }
 }
 
@@ -5402,7 +5492,7 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
             init_keybindings(cx);
             crate::menu::init_keybindings(cx);
@@ -5429,7 +5519,7 @@ mod tests {
     }
 
     /// Like [`open_workspace`], but wraps the `Workspace` in a real
-    /// `gpui_component::Root` -- required by anything that touches the
+    /// `gpui::component::Root` -- required by anything that touches the
     /// notification layer (`WindowExt::push_notification` panics
     /// without a `Root` as the window's actual root view). Returns the
     /// `Workspace` entity directly rather than a `WindowHandle<Workspace>`,
@@ -5440,11 +5530,11 @@ mod tests {
         cx: &mut TestAppContext,
         initial: Vec<PathBuf>,
         layout_path: Option<PathBuf>,
-    ) -> (WindowHandle<gpui_component::Root>, Entity<Workspace>) {
+    ) -> (WindowHandle<gpui::component::Root>, Entity<Workspace>) {
         let window = cx.add_window(move |window, cx| {
             let subscription = window.observe_window_appearance(|_, _| {});
             let workspace = cx.new(|cx| Workspace::new(initial, subscription, layout_path, window, cx));
-            gpui_component::Root::new(workspace, window, cx)
+            gpui::component::Root::new(workspace, window, cx)
         });
         let root = window.root(cx).unwrap();
         let workspace = root.read_with(cx, |root, _| root.view().clone().downcast::<Workspace>().unwrap());
@@ -5799,6 +5889,58 @@ mod tests {
             !window.read_with(cx, |_ws, cx| file.read(cx).pane().read(cx).editor().is_dirty()).unwrap(),
             "the editor re-anchors onto the saved bytes and goes clean",
         );
+    }
+
+    /// New File opens an empty, untitled buffer (no path, zero bytes) and
+    /// makes it the active file -- the basis for the ghost placeholder byte.
+    #[gpui::test]
+    fn new_file_opens_an_empty_untitled_buffer(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Vec::new(), None);
+        window.update(cx, |ws, window, cx| ws.on_new_file(&NewFile, window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let file = window.read_with(cx, |ws, cx| ws.reference_active_file(cx)).unwrap().expect("a new active file");
+        window
+            .read_with(cx, |_ws, cx| {
+                let panel = file.read(cx);
+                assert!(panel.path().is_none(), "a new file is untitled");
+                assert!(panel.pane().read(cx).editor().source().is_empty(), "a new file starts empty");
+            })
+            .unwrap();
+    }
+
+    /// Paste inserts bytes at the cursor and grows an empty buffer (the ghost
+    /// placeholder's slot), leaving the caret just past the inserted bytes.
+    #[gpui::test]
+    fn paste_inserts_bytes_into_an_empty_buffer(cx: &mut TestAppContext) {
+        setup(cx);
+        let window = open_workspace(cx, Vec::new(), None);
+        window.update(cx, |ws, window, cx| ws.on_new_file(&NewFile, window, cx)).unwrap();
+        cx.run_until_parked();
+        window.update(cx, |ws, window, cx| ws.paste_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF], window, cx)).unwrap();
+        cx.run_until_parked();
+
+        let file = window.read_with(cx, |ws, cx| ws.reference_active_file(cx)).unwrap().unwrap();
+        window
+            .read_with(cx, |_ws, cx| {
+                let editor = file.read(cx).pane().read(cx).editor();
+                let range = hxy_core::ByteRange::new(ByteOffset::new(0), ByteOffset::new(4)).unwrap();
+                assert_eq!(editor.source().read(range).unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF], "pasted bytes landed");
+                assert_eq!(editor.selection().unwrap().cursor.get(), 4, "caret advanced past the paste");
+            })
+            .unwrap();
+    }
+
+    /// The hex-paste interpreter reads byte pairs, ignores whitespace, and
+    /// rejects odd/non-hex input.
+    #[test]
+    fn parse_hex_paste_reads_pairs_and_ignores_whitespace() {
+        assert_eq!(parse_hex_paste("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(parse_hex_paste("de ad\tbe\nef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(parse_hex_paste("abc").is_err(), "odd nibble count is rejected");
+        assert!(parse_hex_paste("zz").is_err(), "non-hex digits are rejected");
+        assert!(parse_hex_paste("   ").is_err(), "whitespace-only is rejected");
     }
 
     /// The save-before-closing prompt's Save answer writes then closes the
@@ -6543,7 +6685,7 @@ mod tests {
     /// The `NodeId` of the first center tab-group leaf, in tree order.
     /// Replaces the old `first_live_tab_panel` (the fork has no
     /// app-visible `TabPanel` entity; leaves are addressed by node id).
-    fn first_center_tab_node(area: &DockArea) -> Option<gpui_component::dock::NodeId> {
+    fn first_center_tab_node(area: &DockArea) -> Option<gpui::component::dock::NodeId> {
         let tree = area.layout(DockPlacement::Center)?;
         let mut found = None;
         tree.root().walk(&mut |node| {
@@ -6559,19 +6701,19 @@ mod tests {
     /// of the old `TabPanel::add_panel_at(.., Placement::Right, ..)`.
     fn drag_split_right(
         dock: &Entity<DockArea>,
-        node: gpui_component::dock::NodeId,
+        node: gpui::component::dock::NodeId,
         panel: Entity<FilePanel>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let id = gpui_component::dock::PanelId::from(panel.entity_id());
+        let id = gpui::component::dock::PanelId::from(panel.entity_id());
         dock.update(cx, |dock, cx| {
             dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx);
             dock.move_panel(
                 id,
-                gpui_component::dock::InsertTarget::Split {
+                gpui::component::dock::InsertTarget::Split {
                     node,
-                    placement: gpui_component::Placement::Right,
+                    placement: gpui::component::Placement::Right,
                     size: None,
                 },
                 window,
@@ -6586,12 +6728,12 @@ mod tests {
     /// file tabs).
     fn empty_center_file_node(
         ws: &mut Workspace,
-        node: gpui_component::dock::NodeId,
+        node: gpui::component::dock::NodeId,
         window: &mut Window,
         cx: &mut App,
     ) {
         let area = ws.dock.read(cx);
-        let ids: Vec<gpui_component::dock::PanelId> = area
+        let ids: Vec<gpui::component::dock::PanelId> = area
             .layout(DockPlacement::Center)
             .and_then(|tree| tree.find_node(node))
             .map(|node| match node.kind() {
@@ -6902,7 +7044,7 @@ mod tests {
 
         window
             .update(cx, |ws, window, cx| {
-                let state = gpui_component::dock::DockAreaState {
+                let state = gpui::component::dock::DockAreaState {
                     version: Some(persist::LAYOUT_VERSION),
                     center: PanelState {
                         panel_name: "TabPanel".to_string(),
@@ -6968,7 +7110,7 @@ mod tests {
         cx.run_until_parked();
 
         assert!(layout.exists(), "debounced save must fire once the window elapses");
-        let state: gpui_component::dock::DockAreaState =
+        let state: gpui::component::dock::DockAreaState =
             serde_json::from_slice(&std::fs::read(&layout).unwrap()).unwrap();
         let paths = collect_file_paths(&state.center);
         assert!(
@@ -7354,7 +7496,7 @@ mod tests {
     /// focus (mirrors the pane-picker guard). The palette stays open,
     /// keeps focus, and still answers Escape. Uses
     /// [`open_workspace_with_root`] because the palette overlay reads the
-    /// window's `gpui_component::Root`.
+    /// window's `gpui::component::Root`.
     #[gpui::test]
     fn cmd_w_while_palette_open_keeps_its_focus(cx: &mut TestAppContext) {
         setup(cx);
@@ -7519,18 +7661,17 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
-        let window = open_workspace(cx, Vec::new(), None);
-        window_open(window, &f1, cx);
+        // Under a `Root`: copy now pushes a "copied" toast through the
+        // notification layer, which panics without a `Root` window root.
+        let (window, ws) = open_workspace_with_root(cx, vec![f1], None);
 
-        window
-            .update(cx, |ws, _window, cx| {
-                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
-                pane.update(cx, |pane, _| {
-                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
-                    pane.editor_mut().set_selection(Some(selection));
-                });
-            })
-            .unwrap();
+        ws.update(cx, |ws, cx| {
+            let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+            pane.update(cx, |pane, _| {
+                let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
+                pane.editor_mut().set_selection(Some(selection));
+            });
+        });
 
         cx.simulate_keystrokes(window.into(), "cmd-shift-c");
         let clip = cx.read_from_clipboard().and_then(|item| item.text());
@@ -7545,18 +7686,17 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", b"hxy!!!!");
-        let window = open_workspace(cx, Vec::new(), None);
-        window_open(window, &f1, cx);
+        // Under a `Root`: copy now pushes a "copied" toast through the
+        // notification layer, which panics without a `Root` window root.
+        let (window, ws) = open_workspace_with_root(cx, vec![f1], None);
 
-        window
-            .update(cx, |ws, _window, cx| {
-                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
-                pane.update(cx, |pane, _| {
-                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(2) };
-                    pane.editor_mut().set_selection(Some(selection));
-                });
-            })
-            .unwrap();
+        ws.update(cx, |ws, cx| {
+            let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+            pane.update(cx, |pane, _| {
+                let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(2) };
+                pane.editor_mut().set_selection(Some(selection));
+            });
+        });
 
         cx.simulate_keystrokes(window.into(), "cmd-c");
         let clip = cx.read_from_clipboard().and_then(|item| item.text());
@@ -8116,23 +8256,26 @@ mod tests {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
-        let window = open_workspace(cx, Vec::new(), None);
-        window_open(window, &f1, cx);
+        // Under a `Root`: copy now pushes a "copied" toast through the
+        // notification layer, which panics without a `Root` window root.
+        let (window, ws) = open_workspace_with_root(cx, vec![f1], None);
+
+        ws.update(cx, |ws, cx| {
+            let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
+            pane.update(cx, |pane, _| {
+                let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
+                pane.editor_mut().set_selection(Some(selection));
+            });
+        });
 
         window
-            .update(cx, |ws, _window, cx| {
-                let pane = ws.active_file.as_ref().unwrap().read(cx).pane().clone();
-                pane.update(cx, |pane, _| {
-                    let selection = Selection { anchor: ByteOffset::new(0), cursor: ByteOffset::new(1) };
-                    pane.editor_mut().set_selection(Some(selection));
-                });
+            .update(cx, |_root, window, cx| {
+                ws.update(cx, |ws, cx| ws.open_strings_for_active_file(window, cx));
             })
             .unwrap();
-
-        window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert!(
-            !window.read_with(cx, |ws, _| ws.has_strict_active_file()).unwrap(),
+            !ws.read_with(cx, |ws, _| ws.has_strict_active_file()),
             "sanity: strings tab is front-most"
         );
 
@@ -8231,7 +8374,7 @@ mod tests {
     /// through the `Root` notification layer (replacing the old inline
     /// status-text banner). Uses [`open_workspace_with_root`] (not the
     /// plain [`open_workspace`] every other test uses): `push_notification`
-    /// needs a real `gpui_component::Root` as the window's root view,
+    /// needs a real `gpui::component::Root` as the window's root view,
     /// which production always has (see `main.rs`) but the bare
     /// `open_workspace` helper does not.
     #[gpui::test]
@@ -8576,7 +8719,7 @@ mod tests {
 
     fn collect_file_paths_into(state: &PanelState, out: &mut Vec<PathBuf>) {
         if state.panel_name == FILE_PANEL_NAME
-            && let gpui_component::dock::PanelInfo::Panel(value) = &state.info
+            && let gpui::component::dock::PanelInfo::Panel(value) = &state.info
             && let Some(path) = value.get("path").and_then(|p| p.as_str())
         {
             out.push(PathBuf::from(path));

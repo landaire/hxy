@@ -45,28 +45,28 @@ use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Selectable;
-use gpui_component::Sizable;
-use gpui_component::button::Button;
-use gpui_component::checkbox::Checkbox;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputEvent;
-use gpui_component::input::InputState;
-use gpui_component::label::Label;
-use gpui_component::table::Column;
-use gpui_component::table::DataTable;
-use gpui_component::table::TableDelegate;
-use gpui_component::table::TableEvent;
-use gpui_component::table::TableState;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Disableable;
+use gpui::component::Icon;
+use gpui::component::IconName;
+use gpui::component::Selectable;
+use gpui::component::Sizable;
+use gpui::component::button::Button;
+use gpui::component::checkbox::Checkbox;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::h_flex;
+use gpui::component::input::Input;
+use gpui::component::input::InputEvent;
+use gpui::component::input::InputState;
+use gpui::component::label::Label;
+use gpui::component::table::Column;
+use gpui::component::table::DataTable;
+use gpui::component::table::TableDelegate;
+use gpui::component::table::TableEvent;
+use gpui::component::table::TableState;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -568,7 +568,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     /// Every `EncodeError` variant maps to a distinct, resolvable i18n key
@@ -597,7 +597,7 @@ mod tests {
     fn build(cx: &mut TestAppContext) -> (Entity<GlobalSearchPanel>, &mut gpui::VisualTestContext) {
         let window = cx.add_window(|window, cx| {
             let panel = cx.new(|cx| GlobalSearchPanel::new(window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<GlobalSearchPanel>().unwrap());

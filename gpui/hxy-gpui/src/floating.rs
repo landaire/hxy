@@ -36,15 +36,15 @@ use gpui::canvas;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
-use gpui_component::Root;
-use gpui_component::dock::BasePanelView as PanelView;
-use gpui_component::dock::DockArea;
-use gpui_component::dock::DockEvent;
-use gpui_component::dock::DockLayout;
-use gpui_component::dock::DockPlacement;
-use gpui_component::dock::DockSkin;
-use gpui_component::dock::DragPanel;
-use gpui_component::dock::PanelId;
+use gpui::component::Root;
+use gpui::component::dock::BasePanelView as PanelView;
+use gpui::component::dock::DockArea;
+use gpui::component::dock::DockEvent;
+use gpui::component::dock::DockLayout;
+use gpui::component::dock::DockPlacement;
+use gpui::component::dock::DockSkin;
+use gpui::component::dock::DragPanel;
+use gpui::component::dock::PanelId;
 
 use crate::workspace::Workspace;
 

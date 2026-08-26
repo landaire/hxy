@@ -10,6 +10,8 @@
 use gpui::ClipboardItem;
 use gpui::Context;
 use gpui::Window;
+use gpui::component::WindowExt;
+use gpui::component::notification::Notification;
 use hxy_core::ByteOffset;
 use hxy_core::Selection;
 
@@ -97,8 +99,14 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::CopyText(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         PaletteAction::CopySelection(format) => {
             let Some(pane) = ws.active_pane(cx) else { return };
-            let Some(text) = selection_text(&pane, format, cx) else { return };
+            let Some((text, count)) = selection_text(&pane, format, cx) else { return };
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let key = match format {
+                CopyFormat::Hex => "gpui-toast-copied-hex",
+                CopyFormat::Bytes => "gpui-toast-copied-ascii",
+            };
+            let message = hxy_i18n::t_args(key, &[("count", &count.to_string())]);
+            window.push_notification(Notification::info(message), cx);
         }
         // Consumed by the overlay before reaching dispatch: mode
         // switches, the no-op rows, the compare cascade (routed through
@@ -112,16 +120,23 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
     }
 }
 
-/// Read the active pane's current selection and render it in `format`.
-/// `None` when there is no selection or the bytes can't be read.
-fn selection_text(pane: &gpui::Entity<hxy_view_gpui::HexPane>, format: CopyFormat, cx: &gpui::App) -> Option<String> {
+/// Read the active pane's current selection, render it in `format`, and
+/// report the byte count (for the copied toast). `None` when there is no
+/// selection or the bytes can't be read.
+fn selection_text(
+    pane: &gpui::Entity<hxy_view_gpui::HexPane>,
+    format: CopyFormat,
+    cx: &gpui::App,
+) -> Option<(String, u64)> {
     let pane = pane.read(cx);
     let editor = pane.editor();
     let range = editor.selection()?.range();
     let bytes = editor.source().read(range).ok()?;
-    Some(match format {
+    let count = bytes.len() as u64;
+    let text = match format {
         // Space-separated uppercase hex, matching the vim hex-pane yank.
         CopyFormat::Hex => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
         CopyFormat::Bytes => String::from_utf8_lossy(&bytes).into_owned(),
-    })
+    };
+    Some((text, count))
 }

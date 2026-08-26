@@ -13,8 +13,6 @@ publish = false
 gpui = { workspace = true }
 # Pulled solely to enable its `runtime_shaders` feature (see the
 # workspace manifest); the binary links gpui's platform layer through it.
-gpui_platform = { workspace = true }
-gpui-component = { workspace = true }
 gpui_dock_picker = { workspace = true }
 hxy-calculator = { workspace = true }
 hxy-core = { workspace = true }

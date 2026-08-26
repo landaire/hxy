@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use gpui_component::dock::PanelId;
+use gpui::component::dock::PanelId;
 use hxy_calculator::NullResolver;
 use hxy_core::ByteRange;
 use hxy_core::ColumnCount;

@@ -252,10 +252,10 @@ mod tests {
         bytes: Vec<u8>,
         path: PathBuf,
     ) -> (Entity<FilePanel>, &mut gpui::VisualTestContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let window = cx.add_window(move |window, cx| {
             let panel = cx.new(|cx| FilePanel::new(source(bytes), Some(path), window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<FilePanel>().unwrap());

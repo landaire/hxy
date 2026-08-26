@@ -66,7 +66,7 @@ fn selection(cx: &mut VisualTestContext, pane: &gpui::Entity<HexPane>) -> Option
 /// linear `row * cols`.
 #[gpui::test]
 fn row_map_real_row_click_uses_slot_offset(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     // Row 0: bytes 0..16. Row 1: gap. Row 2: bytes 128..144.
@@ -84,7 +84,7 @@ fn row_map_real_row_click_uses_slot_offset(cx: &mut TestAppContext) {
 /// prior real-row click stays put.
 #[gpui::test]
 fn row_map_gap_row_click_is_noop(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, cx| {
@@ -105,7 +105,7 @@ fn row_map_gap_row_click_is_noop(cx: &mut TestAppContext) {
 /// a click past its real bytes is a no-hit.
 #[gpui::test]
 fn row_map_partial_row_tail_click_is_noop(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     // Single 4-byte row.
@@ -124,7 +124,7 @@ fn row_map_partial_row_tail_click_is_noop(cx: &mut TestAppContext) {
 /// read): the mapped path must tolerate the degenerate config.
 #[gpui::test]
 fn empty_row_map_paints(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, cx| p.set_row_map(Some(Vec::new()), cx));
@@ -134,7 +134,7 @@ fn empty_row_map_paints(cx: &mut TestAppContext) {
 /// Installing a hover span paints the secondary band without panic.
 #[gpui::test]
 fn hover_span_paints(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let span = ByteRange::new(ByteOffset::new(4), ByteOffset::new(12)).unwrap();
@@ -148,7 +148,7 @@ fn hover_span_paints(cx: &mut TestAppContext) {
 /// smokes the full pass with a palette in the snapshot).
 #[gpui::test]
 fn text_highlight_paints(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, cx| {
@@ -165,7 +165,7 @@ fn text_highlight_paints(cx: &mut TestAppContext) {
 /// hover span present so the skip rules run too.
 #[gpui::test]
 fn background_highlight_paints_cell_fills(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let span = ByteRange::new(ByteOffset::new(4), ByteOffset::new(12)).unwrap();
@@ -184,7 +184,7 @@ fn background_highlight_paints_cell_fills(cx: &mut TestAppContext) {
 /// The byte styler is consulted for on-screen cells during paint.
 #[gpui::test]
 fn byte_styler_consulted_during_paint(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
 

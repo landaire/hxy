@@ -116,7 +116,7 @@ fn selection(cx: &mut VisualTestContext, pane: &gpui::Entity<HexPane>) -> (u64, 
 
 #[gpui::test]
 fn click_sets_caret_and_pane(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -130,7 +130,7 @@ fn click_sets_caret_and_pane(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn click_ascii_cell_switches_pane(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -144,7 +144,7 @@ fn click_ascii_cell_switches_pane(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn drag_extends_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -163,7 +163,7 @@ fn drag_extends_selection(cx: &mut TestAppContext) {
 /// with a fractional row offset, not just from the top of the file.
 #[gpui::test]
 fn click_after_fractional_scroll_hits_correct_byte(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(tall_source(), cx));
     focus(cx, &pane);
     let frame1 = frame(cx, &pane);
@@ -186,7 +186,7 @@ fn click_after_fractional_scroll_hits_correct_byte(cx: &mut TestAppContext) {
 /// top edge, so it must still trigger an upward auto-scroll.
 #[gpui::test]
 fn drag_above_true_top_after_fractional_scroll_scrolls_up(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(tall_source(), cx));
     focus(cx, &pane);
     let frame1 = frame(cx, &pane);
@@ -216,7 +216,7 @@ fn drag_above_true_top_after_fractional_scroll_scrolls_up(cx: &mut TestAppContex
 /// unconditionally resets the nibble) used to fail.
 #[gpui::test]
 fn drag_on_same_byte_preserves_pending_nibble(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -250,7 +250,7 @@ fn thousand_rows_source() -> Arc<dyn HexSource> {
 /// file, so no clamp interferes.
 #[gpui::test]
 fn minimap_click_scrolls_viewport(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(thousand_rows_source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -269,7 +269,7 @@ fn minimap_click_scrolls_viewport(cx: &mut TestAppContext) {
 /// zero-height content mask a childless canvas would produce.
 #[gpui::test]
 fn paint_sizes_the_canvas(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(tall_source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -284,7 +284,7 @@ fn paint_sizes_the_canvas(cx: &mut TestAppContext) {
 /// (hxy-view/src/lib.rs:2349-2358).
 #[gpui::test]
 fn shift_click_extends_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);
@@ -301,7 +301,7 @@ fn shift_click_extends_selection(cx: &mut TestAppContext) {
 /// address gutter resolves to no cell and clears it.
 #[gpui::test]
 fn mouse_move_tracks_hovered_offset(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     let frame = frame(cx, &pane);

@@ -60,25 +60,25 @@ use gpui::Subscription;
 use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
-use gpui_component::Icon;
-use gpui_component::Sizable;
-use gpui_component::WindowExt;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::BasePanelView;
-use gpui_component::dock::DockArea;
-use gpui_component::dock::DockSkin;
-use gpui_component::dock::DockEvent;
-use gpui_component::dock::DockLayout;
-use gpui_component::dock::DockPlacement;
-use gpui_component::dock::PaneRef;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelHandle;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::dock::register_panel;
-use gpui_component::h_flex;
-use gpui_component::notification::Notification;
+use gpui::component::Icon;
+use gpui::component::Sizable;
+use gpui::component::WindowExt;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::BasePanelView;
+use gpui::component::dock::DockArea;
+use gpui::component::dock::DockSkin;
+use gpui::component::dock::DockEvent;
+use gpui::component::dock::DockLayout;
+use gpui::component::dock::DockPlacement;
+use gpui::component::dock::PaneRef;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelHandle;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::dock::register_panel;
+use gpui::component::h_flex;
+use gpui::component::notification::Notification;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
 use hxy_vfs::MountedVfs;
@@ -698,8 +698,8 @@ mod tests {
     use gpui::Entity;
     use gpui::TestAppContext;
     use gpui::VisualTestContext;
-    use gpui_component::Root;
-    use gpui_component::dock::DockAreaState;
+    use gpui::component::Root;
+    use gpui::component::dock::DockAreaState;
 
     use super::super::vfs_tree::test_support::fixture_zip_bytes;
     use super::super::vfs_tree::test_support::mount_fixture;
@@ -707,7 +707,7 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
         });
     }

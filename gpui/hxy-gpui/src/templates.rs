@@ -19,8 +19,8 @@ use gpui::Global;
 use gpui::Hsla;
 use gpui::Task;
 use gpui::Window;
-use gpui_component::WindowExt;
-use gpui_component::notification::Notification;
+use gpui::component::WindowExt;
+use gpui::component::notification::Notification;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -519,18 +519,18 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             cx.set_global(TemplateRuntimes(hxy_templates::builtin::builtins()));
         });
     }
 
-    /// A `FilePanel` inside a real `gpui_component::Root` window --
+    /// A `FilePanel` inside a real `gpui::component::Root` window --
     /// the run flow's toasts need the Root notification layer.
     fn build(cx: &mut TestAppContext, bytes: Vec<u8>) -> (Entity<FilePanel>, &mut gpui::VisualTestContext) {
         let window = cx.add_window(|window, cx| {
             let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
             let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<FilePanel>().unwrap());

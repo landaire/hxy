@@ -34,25 +34,25 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::FluentBuilder;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Selectable;
-use gpui_component::Sizable;
-use gpui_component::button::Button;
-use gpui_component::button::ButtonVariants;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::menu::PopupMenu;
-use gpui_component::menu::PopupMenuItem;
-use gpui_component::popover::Popover;
-use gpui_component::spinner::Spinner;
-use gpui_component::table::Column;
-use gpui_component::table::DataTable;
-use gpui_component::table::TableDelegate;
-use gpui_component::table::TableEvent;
-use gpui_component::table::TableState;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Icon;
+use gpui::component::IconName;
+use gpui::component::Selectable;
+use gpui::component::Sizable;
+use gpui::component::button::Button;
+use gpui::component::button::ButtonVariants;
+use gpui::component::h_flex;
+use gpui::component::label::Label;
+use gpui::component::menu::PopupMenu;
+use gpui::component::menu::PopupMenuItem;
+use gpui::component::popover::Popover;
+use gpui::component::spinner::Spinner;
+use gpui::component::table::Column;
+use gpui::component::table::DataTable;
+use gpui::component::table::TableDelegate;
+use gpui::component::table::TableEvent;
+use gpui::component::table::TableState;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -1223,7 +1223,7 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::workspace::init_keybindings(cx);
         });
     }
@@ -1232,7 +1232,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let source: Arc<dyn HexSource> = Arc::new(MemorySource::new((0u8..32).collect::<Vec<_>>()));
             let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<FilePanel>().unwrap());
@@ -1541,7 +1541,7 @@ mod tests {
             let fallback = panel.pane().read(cx).highlight().cloned();
             let expected = crate::settings::highlight_palette(
                 &crate::settings::settings(cx),
-                gpui_component::ActiveTheme::theme(cx).mode.is_dark(),
+                gpui::component::ActiveTheme::theme(cx).mode.is_dark(),
             );
             (fallback, expected)
         });

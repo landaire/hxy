@@ -43,20 +43,20 @@ use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Selectable;
-use gpui_component::Sizable;
-use gpui_component::button::Button;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Icon;
+use gpui::component::IconName;
+use gpui::component::Selectable;
+use gpui::component::Sizable;
+use gpui::component::button::Button;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::h_flex;
+use gpui::component::label::Label;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_editor::HexEditor;
@@ -380,7 +380,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     fn source(bytes: Vec<u8>) -> Arc<dyn HexSource> {

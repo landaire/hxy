@@ -11,7 +11,6 @@ publish = false
 
 [dependencies]
 gpui = { workspace = true }
-gpui-component = { workspace = true }
 hxy-core = { workspace = true }
 hxy-editor = { workspace = true, features = ["editor"] }
 tracing = { workspace = true }

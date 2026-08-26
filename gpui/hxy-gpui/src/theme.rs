@@ -66,10 +66,10 @@
 use std::rc::Rc;
 
 use gpui::App;
-use gpui_component::Theme;
-use gpui_component::ThemeConfig;
-use gpui_component::ThemeMode;
-use gpui_component::ThemeSet;
+use gpui::component::Theme;
+use gpui::component::ThemeConfig;
+use gpui::component::ThemeMode;
+use gpui::component::ThemeSet;
 
 use crate::assets::Assets;
 
@@ -108,7 +108,7 @@ fn parse_embedded_theme() -> Result<ThemePair, ThemeLoadError> {
 }
 
 /// Installs the hxy theme pair as the app default. Call after
-/// `gpui_component::init` (which creates the `Theme` global) and before
+/// `gpui::component::init` (which creates the `Theme` global) and before
 /// the window's first `sync_system_appearance`.
 ///
 /// The JSON is embedded, so a load failure is a build defect; it is
@@ -132,7 +132,7 @@ pub fn init(cx: &mut App) {
 mod tests {
     use gpui::Hsla;
     use gpui::TestAppContext;
-    use gpui_component::ActiveTheme;
+    use gpui::component::ActiveTheme;
 
     use super::*;
 
@@ -151,7 +151,7 @@ mod tests {
     #[gpui::test]
     fn init_applies_brand_colors(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             init(cx);
         });
         cx.update(|cx| {
@@ -172,7 +172,7 @@ mod tests {
     #[gpui::test]
     fn brand_colors_survive_appearance_toggle(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             init(cx);
         });
 

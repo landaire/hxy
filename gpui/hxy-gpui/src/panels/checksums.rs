@@ -46,22 +46,22 @@ use gpui::Task;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::WindowExt;
-use gpui_component::button::Button;
-use gpui_component::checkbox::Checkbox;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputState;
-use gpui_component::label::Label;
-use gpui_component::notification::Notification;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Disableable;
+use gpui::component::WindowExt;
+use gpui::component::button::Button;
+use gpui::component::checkbox::Checkbox;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::h_flex;
+use gpui::component::input::Input;
+use gpui::component::input::InputState;
+use gpui::component::label::Label;
+use gpui::component::notification::Notification;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -563,7 +563,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     fn source(bytes: Vec<u8>) -> Arc<dyn HexSource> {
@@ -575,7 +575,7 @@ mod tests {
             let pane = cx.new(|cx| HexPane::new(source(bytes), cx));
             let panel = cx
                 .new(|cx| ChecksumsPanel::new(pane, Some(PathBuf::from("/tmp/hxy-checksums-fixture.bin")), window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());
@@ -696,7 +696,7 @@ mod tests {
             cx.set_global(OpenFilePanels(vec![file_panel]));
             let info = PanelInfo::panel(serde_json::json!({ "path": path_for_closure.to_string_lossy() }));
             let panel = cx.new(|cx| ChecksumsPanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());
@@ -718,7 +718,7 @@ mod tests {
         let info = PanelInfo::panel(serde_json::json!({ "path": path.to_string_lossy() }));
         let window = cx.add_window(move |window, cx| {
             let panel = cx.new(|cx| ChecksumsPanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());
@@ -746,7 +746,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let pane = cx.new(|cx| HexPane::new(source(Vec::new()), cx));
             let panel = cx.new(|cx| ChecksumsPanel::new(pane, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());
@@ -763,7 +763,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let pane = cx.new(|cx| HexPane::new(source(Vec::new()), cx));
             let panel = cx.new(|cx| ChecksumsPanel::new(pane, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<ChecksumsPanel>().unwrap());

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use gpui::App;
 use gpui::AppContext;
-use gpui_component::dock::PanelHandle;
-use gpui_component::dock::register_panel;
+use gpui::component::dock::PanelHandle;
+use gpui::component::dock::register_panel;
 
 pub mod checksums;
 pub mod compare;
@@ -124,11 +124,11 @@ pub fn register(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
-    use gpui_component::dock::DockArea;
-    use gpui_component::dock::PanelBuildContext;
-    use gpui_component::dock::PanelInfo;
-    use gpui_component::dock::PanelRegistry;
-    use gpui_component::dock::PanelState;
+    use gpui::component::dock::DockArea;
+    use gpui::component::dock::PanelBuildContext;
+    use gpui::component::dock::PanelInfo;
+    use gpui::component::dock::PanelRegistry;
+    use gpui::component::dock::PanelState;
 
     use super::*;
 
@@ -142,7 +142,7 @@ mod tests {
     #[gpui::test]
     fn every_registered_name_builds_a_real_panel(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             register(cx);
         });
         let window = cx.add_window(|window, cx| DockArea::new("test", None, window, cx));

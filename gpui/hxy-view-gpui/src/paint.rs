@@ -52,6 +52,9 @@ const NIBBLE_UNDERLINE_H: f32 = 2.0;
 /// Alpha applied to the accent color for the active-pane cursor fill so
 /// the glyph painted on top stays legible.
 const CURSOR_FILL_ALPHA: f32 = 0.4;
+/// Opacity of the ghost placeholder glyph drawn at the insertion slot of an
+/// empty buffer, so a new file shows a dim, selectable initial byte.
+const GHOST_ALPHA: f32 = 0.4;
 /// Advance-width fallback fraction of the font size, used only if the
 /// text system cannot measure the mono font (it always can in practice;
 /// paint has no channel to propagate an error, and a proportional guess
@@ -107,6 +110,10 @@ pub(crate) struct GridSnapshot {
     pub show_minimap: bool,
     /// Byte-class colors when true; grayscale gradient when false.
     pub minimap_colored: bool,
+    /// A dim placeholder byte to draw at this offset when its slot holds no
+    /// real byte (an empty buffer's insertion caret), so a new file shows a
+    /// selectable "initial byte". `None` outside that case.
+    pub ghost_offset: Option<ByteOffset>,
 }
 
 /// Build the canvas element that paints the grid. `entity` is used from
@@ -594,6 +601,31 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
         let shaped = window.text_system().shape_line(ascii.into(), snap.mono_size, &ascii_runs, None);
         let _ = shaped.paint(point(ctx.origin_x + g.ascii_x(0), ctx.row_y), ctx.line_h(), TextAlign::Left, None, window, app);
     }
+
+    // Ghost placeholder: a dim `00` / `.` at the insertion slot of an empty
+    // buffer, painted separately from the real glyphs so it does not disturb
+    // the shaped ascii run. Only when the slot has no real byte in this row.
+    if let Some(ghost) = snap.ghost_offset {
+        let goff = ghost.get();
+        if goff >= ctx.row_start
+            && goff < ctx.row_start + ctx.cols as u64
+            && (goff - ctx.row_start) as usize >= ctx.bytes.len()
+        {
+            let col = (goff - ctx.row_start) as u16;
+            // A dim placeholder normally, but full-contrast foreground when the
+            // selection/cursor covers it: the dim muted glyph is unreadable
+            // over the accent selection band, so under highlight it matches how
+            // a real selected byte renders.
+            let highlighted = snap.selection.is_some_and(|s| {
+                let r = s.range();
+                goff >= r.start().get() && goff < r.end().get()
+            });
+            let ghost_color =
+                if highlighted { snap.colors.foreground } else { snap.colors.muted.opacity(GHOST_ALPHA) };
+            paint_line(mono, "00", snap.mono_size, ghost_color, point(ctx.origin_x + g.hex_x(col), ctx.row_y), window, app);
+            paint_line(mono, ".", snap.mono_size, ghost_color, point(ctx.origin_x + g.ascii_x(col), ctx.row_y), window, app);
+        }
+    }
 }
 
 /// Cell-fill pass: fills each cell whose styler returns a `bg`, or --
@@ -765,7 +797,7 @@ fn is_printable(byte: u8) -> bool {
 const HOVER_TINT_ALPHA: f32 = 0.45;
 
 impl PaintColors {
-    pub(crate) fn from_theme(theme: &gpui_component::Theme) -> Self {
+    pub(crate) fn from_theme(theme: &gpui::component::Theme) -> Self {
         Self {
             foreground: theme.foreground,
             muted: theme.muted_foreground,

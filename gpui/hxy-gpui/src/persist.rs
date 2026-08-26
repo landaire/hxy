@@ -9,9 +9,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-use gpui_component::dock::DockAreaState;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
+use gpui::component::dock::DockAreaState;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
 
 use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::COMPARE_PANEL_NAME;
@@ -444,8 +444,8 @@ fn file_readable(info: &PanelInfo) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui_component::dock::PanelInfo;
-    use gpui_component::dock::PanelState;
+    use gpui::component::dock::PanelInfo;
+    use gpui::component::dock::PanelState;
 
     use super::*;
 

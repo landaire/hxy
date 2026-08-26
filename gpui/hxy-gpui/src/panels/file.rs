@@ -27,14 +27,14 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::FluentBuilder;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::WindowExt;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::notification::Notification;
+use gpui::component::ActiveTheme;
+use gpui::component::WindowExt;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::notification::Notification;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -1179,7 +1179,7 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::workspace::init_keybindings(cx);
         });
     }
@@ -1188,14 +1188,14 @@ mod tests {
         Arc::new(MemorySource::new(vec![0u8; 16]))
     }
 
-    /// Builds a `FilePanel` inside a real `gpui_component::Root` window
+    /// Builds a `FilePanel` inside a real `gpui::component::Root` window
     /// (like the production shell does): `InputState`'s focus tracking
     /// -- and thus the search bar's query field -- needs the Root layer
     /// present, not just dialogs.
     fn build(cx: &mut TestAppContext) -> (Entity<FilePanel>, &mut gpui::VisualTestContext) {
         let window = cx.add_window(|window, cx| {
             let panel = cx.new(|cx| FilePanel::new(source(), None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<FilePanel>().unwrap());
@@ -1308,7 +1308,7 @@ mod tests {
     #[gpui::test]
     fn edit_reruns_templates_after_debounce_with_overrides(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
         });
         let dir = tempfile::tempdir().unwrap();
@@ -1318,7 +1318,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x01, 0x02, 0x03, 0x04]));
             let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
@@ -1390,7 +1390,7 @@ mod tests {
     #[gpui::test]
     fn rerun_requested_mid_run_queues_and_replays(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
         });
         let dir = tempfile::tempdir().unwrap();
@@ -1400,7 +1400,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(vec![0x01, 0x02, 0x03, 0x04]));
             let panel = cx.new(|cx| FilePanel::new(source, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
@@ -1461,7 +1461,7 @@ mod tests {
     #[gpui::test]
     fn template_dump_restore_round_trip_reruns_with_overrides(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
             cx.set_global(crate::templates::TemplateRuntimes(hxy_templates::builtin::builtins()));
         });
@@ -1475,7 +1475,7 @@ mod tests {
         let window = cx.add_window(|window, cx| {
             let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(std::fs::read(&data_path).unwrap()));
             let panel = cx.new(|cx| FilePanel::new(source, Some(data_path.clone()), window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();
@@ -1508,7 +1508,7 @@ mod tests {
         // Second session: restore from the dump payload.
         let window2 = vcx.add_window(|window, cx| {
             let panel = cx.new(|cx| FilePanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let restored =
             window2.root(vcx).unwrap().read_with(vcx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
@@ -1539,7 +1539,7 @@ mod tests {
         // `crate::panels::register` installs the VFS registry global that
         // detection reads; the plain `setup` above does not.
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
         });
         let dir = tempfile::tempdir().unwrap();
@@ -1549,7 +1549,7 @@ mod tests {
         let info = PanelInfo::panel(serde_json::json!({ "path": archive.to_string_lossy() }));
         let window = cx.add_window(|window, cx| {
             let panel = cx.new(|cx| FilePanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let panel = window.root(cx).unwrap().read_with(cx, |r, _| r.view().clone().downcast::<FilePanel>().unwrap());
         let vcx = gpui::VisualTestContext::from_window(*window, cx).into_mut();

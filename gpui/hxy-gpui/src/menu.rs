@@ -23,11 +23,12 @@
 //! (no active file, empty undo stack, no selection, ...).
 //!
 //! Parity source: `crates/hxy/src/menu.rs:28-58` (egui's `MenuAction`).
-//! Ships a subset -- no New/Paste (not implemented in the gpui port
-//! yet). Save / Save As / Reopen Closed Tab landed with the M3 save +
+//! Save / Save As / Reopen Closed Tab landed with the M3 save +
 //! dirty-close work; Settings (open-or-focus, Cmd+Comma like egui's
 //! Toggle Settings) landed with M4e; Plugins and Console (both
-//! open-or-focus) landed with M4.
+//! open-or-focus) landed with M4. New File and Paste / Paste as hex are
+//! the newest additions (New: an empty untitled buffer; Paste: clipboard
+//! text as raw bytes; Paste as hex: clipboard text as hex byte pairs).
 
 use gpui::App;
 use gpui::Menu;
@@ -42,6 +43,7 @@ use crate::workspace::OpenPlugins;
 use crate::workspace::OpenSettings;
 use crate::workspace::OpenSnapshots;
 use crate::workspace::OpenStrings;
+use crate::workspace::NewFile;
 use crate::workspace::ReopenClosedTab;
 use crate::workspace::Save;
 use crate::workspace::SaveAs;
@@ -50,7 +52,7 @@ use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
 
-actions!(hxy_gpui_menu, [ShowAbout, Quit, CloseTab, Undo, Redo, ToggleEditMode, CopyBytes, CopyHex]);
+actions!(hxy_gpui_menu, [ShowAbout, Quit, CloseTab, Undo, Redo, ToggleEditMode, CopyBytes, CopyHex, Paste, PasteHex]);
 
 /// Register the menu-only keybindings (the File/View actions they
 /// share -- `OpenFile`, `ToggleVim`, `ToggleInspector` -- are already
@@ -64,6 +66,8 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-e", ToggleEditMode, None),
         gpui::KeyBinding::new("cmd-c", CopyBytes, None),
         gpui::KeyBinding::new("cmd-shift-c", CopyHex, None),
+        gpui::KeyBinding::new("cmd-v", Paste, None),
+        gpui::KeyBinding::new("cmd-shift-v", PasteHex, None),
         gpui::KeyBinding::new("cmd-q", Quit, None),
     ]);
 }
@@ -96,6 +100,7 @@ pub fn build_menus() -> Vec<Menu> {
         Menu {
             name: hxy_i18n::t("menu-file").into(),
             items: vec![
+                MenuItem::action(hxy_i18n::t("menu-file-new"), NewFile),
                 MenuItem::action(hxy_i18n::t("menu-file-open"), OpenFile),
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("menu-file-save"), Save),
@@ -116,6 +121,9 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(hxy_i18n::t("menu-edit-copy-bytes"), CopyBytes),
                 MenuItem::action(hxy_i18n::t("menu-edit-copy-hex"), CopyHex),
+                MenuItem::separator(),
+                MenuItem::action(hxy_i18n::t("menu-edit-paste"), Paste),
+                MenuItem::action(hxy_i18n::t("menu-edit-paste-as-hex"), PasteHex),
             ],
             disabled: false,
         },
@@ -162,8 +170,12 @@ mod tests {
 
         let item_count = |ix: usize| menus[ix].items.len();
         assert_eq!(item_count(0), 3, "App menu: About, separator, Quit");
-        assert_eq!(item_count(1), 7, "File menu: Open, sep, Save, Save As, sep, Reopen Closed Tab, Close Tab");
-        assert_eq!(item_count(2), 7, "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex");
+        assert_eq!(item_count(1), 8, "File menu: New, Open, sep, Save, Save As, sep, Reopen Closed Tab, Close Tab");
+        assert_eq!(
+            item_count(2),
+            10,
+            "Edit menu: Undo, Redo, sep, Toggle Edit Mode, sep, Copy Bytes, Copy Hex, sep, Paste, Paste as hex"
+        );
         assert_eq!(
             item_count(3),
             14,

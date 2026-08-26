@@ -9,7 +9,7 @@
 //! `Tab::Strings(FileId)`, but keyed by the owning file's path rather
 //! than an in-memory id (gpui persists layouts across restarts).
 //! Dock-layout restore rebuilds panels one at a time via
-//! [`gpui_component::dock::PanelRegistry`], with no way for a
+//! [`gpui::component::dock::PanelRegistry`], with no way for a
 //! restored panel to reach a sibling panel directly. So restore
 //! defers binding: it records `owning_path` from the persisted JSON
 //! and observes the [`OpenFilePanels`] global (published by
@@ -46,29 +46,29 @@ use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Disableable;
-use gpui_component::Selectable;
-use gpui_component::WindowExt;
-use gpui_component::button::Button;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputEvent;
-use gpui_component::input::InputState;
-use gpui_component::label::Label;
-use gpui_component::notification::Notification;
-use gpui_component::table::Column;
-use gpui_component::table::ColumnSort;
-use gpui_component::table::DataTable;
-use gpui_component::table::TableDelegate;
-use gpui_component::table::TableEvent;
-use gpui_component::table::TableState;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Disableable;
+use gpui::component::Selectable;
+use gpui::component::WindowExt;
+use gpui::component::button::Button;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::h_flex;
+use gpui::component::input::Input;
+use gpui::component::input::InputEvent;
+use gpui::component::input::InputState;
+use gpui::component::label::Label;
+use gpui::component::notification::Notification;
+use gpui::component::table::Column;
+use gpui::component::table::ColumnSort;
+use gpui::component::table::DataTable;
+use gpui::component::table::TableDelegate;
+use gpui::component::table::TableEvent;
+use gpui::component::table::TableState;
+use gpui::component::v_flex;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
@@ -659,7 +659,7 @@ impl BasePanel for StringsPanel {
     /// Clear the owning pane's hover band on removal, however the tab
     /// closed (the workspace's own close paths, or the tab bar's own
     /// close button, which bypasses the workspace entirely) --
-    /// `gpui_component::dock::BasePanel::on_removed` fires unconditionally
+    /// `gpui::component::dock::BasePanel::on_removed` fires unconditionally
     /// from the tab group's `detach_panel`, so this is the one place
     /// that reliably catches all of them. Without it, a pointer left
     /// resting on a row when the tab closes leaves a stale hover band
@@ -845,7 +845,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     fn source(bytes: Vec<u8>) -> Arc<dyn HexSource> {
@@ -853,7 +853,7 @@ mod tests {
     }
 
     /// Builds a `StringsPanel` bound to a fresh `HexPane` inside a
-    /// real `gpui_component::Root` window, mirroring `FilePanel`'s
+    /// real `gpui::component::Root` window, mirroring `FilePanel`'s
     /// test harness (`InputState`'s focus tracking needs the `Root`
     /// layer present).
     fn build(cx: &mut TestAppContext, bytes: Vec<u8>) -> (Entity<StringsPanel>, &mut gpui::VisualTestContext) {
@@ -861,7 +861,7 @@ mod tests {
             let pane = cx.new(|cx| HexPane::new(source(bytes), cx));
             let panel =
                 cx.new(|cx| StringsPanel::new(pane, Some(PathBuf::from("/tmp/hxy-strings-fixture.bin")), window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<StringsPanel>().unwrap());
@@ -1010,7 +1010,7 @@ mod tests {
             cx.set_global(OpenFilePanels(vec![file_panel]));
             let info = PanelInfo::panel(serde_json::json!({ "path": path_for_closure.to_string_lossy() }));
             let panel = cx.new(|cx| StringsPanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<StringsPanel>().unwrap());
@@ -1032,7 +1032,7 @@ mod tests {
         let info = PanelInfo::panel(serde_json::json!({ "path": path.to_string_lossy() }));
         let window = cx.add_window(move |window, cx| {
             let panel = cx.new(|cx| StringsPanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<StringsPanel>().unwrap());

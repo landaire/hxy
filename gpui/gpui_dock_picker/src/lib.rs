@@ -1,4 +1,4 @@
-//! Vimium-style keyboard pane picker for [`gpui_component::dock::DockArea`]
+//! Vimium-style keyboard pane picker for [`gpui::component::dock::DockArea`]
 //! docks: activate, press a letter, focus jumps there.
 //!
 //! [`DockPicker`] is a reusable `gpui` view a host mounts once (like a
@@ -63,13 +63,13 @@ use gpui::Styled;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::dock::DockArea;
-use gpui_component::dock::DockPlacement;
-use gpui_component::dock::PaneRef;
-use gpui_component::dock::PanelHandle;
-use gpui_component::h_flex;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::dock::DockArea;
+use gpui::component::dock::DockPlacement;
+use gpui::component::dock::PaneRef;
+use gpui::component::dock::PanelHandle;
+use gpui::component::h_flex;
+use gpui::component::v_flex;
 
 /// Activation behavior a target can override; see [`PickTarget::with_on_activate`].
 type OnActivate = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -325,25 +325,25 @@ impl Render for DockPicker {
             .iter()
             .filter_map(|(letter, target)| target.bounds().map(|bounds| (letter, bounds)))
             .map(|(letter, bounds)| {
-                let diameter = px(72.0);
+                let size = px(96.0);
                 let center_x = bounds.origin.x + bounds.size.width * 0.5;
                 let center_y = bounds.origin.y + bounds.size.height * 0.5;
                 div()
                     .absolute()
-                    .left(center_x - diameter * 0.5)
-                    .top(center_y - diameter * 0.5)
-                    .w(diameter)
-                    .h(diameter)
+                    .left(center_x - size * 0.5)
+                    .top(center_y - size * 0.5)
+                    .w(size)
+                    .h(size)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_full()
+                    .rounded_2xl()
                     .bg(accent)
                     .border_2()
                     .border_color(accent_fg)
                     .shadow_lg()
                     .text_color(accent_fg)
-                    .text_size(px(40.0))
+                    .text_size(px(64.0))
                     .child(letter.to_ascii_uppercase().to_string())
                     .into_any_element()
             })
@@ -437,12 +437,12 @@ mod tests {
     use gpui::TestAppContext;
     use gpui::VisualTestContext;
     use gpui::WindowHandle;
-    use gpui_component::dock::BasePanel;
-    use gpui_component::dock::DockLayout;
-    use gpui_component::dock::Panel;
-    use gpui_component::dock::BasePanelView;
-    use gpui_component::dock::PanelEvent;
-    use gpui_component::dock::PanelHandle;
+    use gpui::component::dock::BasePanel;
+    use gpui::component::dock::DockLayout;
+    use gpui::component::dock::Panel;
+    use gpui::component::dock::BasePanelView;
+    use gpui::component::dock::PanelEvent;
+    use gpui::component::dock::PanelHandle;
 
     use super::*;
 
@@ -504,7 +504,7 @@ mod tests {
         cx: &mut TestAppContext,
         panel_count: usize,
     ) -> (Entity<DockArea>, Entity<DockPicker>, Vec<FocusHandle>, &mut VisualTestContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let mut panel_handles = Vec::new();
         let window: WindowHandle<Host> = cx.add_window(|window, cx| {
             let dock_area = cx.new(|cx| DockArea::new("test", None, window, cx));

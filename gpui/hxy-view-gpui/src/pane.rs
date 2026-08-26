@@ -28,7 +28,7 @@ use gpui::Window;
 use gpui::div;
 use gpui::point;
 use gpui::px;
-use gpui_component::ActiveTheme;
+use gpui::component::ActiveTheme;
 use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::ColumnCount;
@@ -684,6 +684,9 @@ impl Render for HexPane {
             highlight: self.highlight.clone(),
             show_minimap: self.show_minimap,
             minimap_colored: self.minimap_colored,
+            // A ghost initial byte only for a genuinely empty buffer; a
+            // non-empty file's EOF insertion slot needs no placeholder.
+            ghost_offset: self.editor.source().is_empty().then(|| ByteOffset::new(0)),
         };
         let canvas = hex_canvas(snap, cx.entity());
 
@@ -749,7 +752,7 @@ mod tests {
     /// the settings-based highlight right after a source swap).
     #[gpui::test]
     fn set_source_clears_highlight_and_hover_state(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
         let table = Arc::new([gpui::hsla(0.5, 0.5, 0.5, 1.0); 256]);
         let installed = PaneHighlight { mode: hxy_core::byte_palette::ValueHighlight::Text, table };
@@ -783,7 +786,7 @@ mod tests {
     /// re-showing restores it. The colored flag round-trips too.
     #[gpui::test]
     fn hidden_minimap_latches_a_zero_width_strip(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
         window.update(cx, |_, _, cx| cx.notify()).unwrap();
         cx.run_until_parked();
@@ -814,7 +817,7 @@ mod tests {
 
     #[gpui::test]
     fn scroll_wheel_moves_and_clamps(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let window = cx.add_window(|_window, cx| HexPane::new(source_64_rows(), cx));
         let pane = window.root(cx).unwrap();
         // Force a real paint so a frame is latched; the overscroll clamp

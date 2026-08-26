@@ -57,35 +57,35 @@ use gpui::point;
 use gpui::px;
 use gpui::size;
 use gpui::uniform_list;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::Selectable;
-use gpui_component::Sizable;
-use gpui_component::button::Button;
-use gpui_component::dock::BasePanel;
-use gpui_component::dock::Panel;
-use gpui_component::dock::PanelEvent;
-use gpui_component::dock::PanelInfo;
-use gpui_component::dock::PanelState;
-use gpui_component::h_flex;
-use gpui_component::label::Label;
-use gpui_component::plot::AXIS_GAP;
-use gpui_component::plot::AxisText;
-use gpui_component::plot::Grid;
-use gpui_component::plot::IntoPlot;
-use gpui_component::plot::Plot;
-use gpui_component::plot::PlotAxis;
-use gpui_component::plot::PlotLabel;
-use gpui_component::plot::label::Text as PlotText;
-use gpui_component::plot::scale::Scale;
-use gpui_component::plot::scale::ScaleLinear;
-use gpui_component::plot::shape::Bar;
-use gpui_component::plot::shape::Line;
-use gpui_component::table::Column;
-use gpui_component::table::DataTable;
-use gpui_component::table::TableDelegate;
-use gpui_component::table::TableState;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Icon;
+use gpui::component::Selectable;
+use gpui::component::Sizable;
+use gpui::component::button::Button;
+use gpui::component::dock::BasePanel;
+use gpui::component::dock::Panel;
+use gpui::component::dock::PanelEvent;
+use gpui::component::dock::PanelInfo;
+use gpui::component::dock::PanelState;
+use gpui::component::h_flex;
+use gpui::component::label::Label;
+use gpui::component::plot::AXIS_GAP;
+use gpui::component::plot::AxisText;
+use gpui::component::plot::Grid;
+use gpui::component::plot::IntoPlot;
+use gpui::component::plot::Plot;
+use gpui::component::plot::PlotAxis;
+use gpui::component::plot::PlotLabel;
+use gpui::component::plot::label::Text as PlotText;
+use gpui::component::plot::scale::Scale;
+use gpui::component::plot::scale::ScaleLinear;
+use gpui::component::plot::shape::Bar;
+use gpui::component::plot::shape::Line;
+use gpui::component::table::Column;
+use gpui::component::table::DataTable;
+use gpui::component::table::TableDelegate;
+use gpui::component::table::TableState;
+use gpui::component::v_flex;
 use hxy_core::format::TemplateValueFormats;
 use hxy_core::format::format_offset;
 use hxy_panels::entropy::MAX_ENTROPY;
@@ -1318,7 +1318,7 @@ mod tests {
     use super::*;
 
     fn setup(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
     }
 
     struct InertParsed;
@@ -1386,7 +1386,7 @@ mod tests {
                 std::sync::Arc::new(MemorySource::new((0u8..16).collect::<Vec<_>>()));
             let file = cx.new(|cx| FilePanel::new(source, None, window, cx));
             let panel = cx.new(|cx| VisualizerPanel::new(file, None, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<VisualizerPanel>().unwrap());
@@ -1558,7 +1558,7 @@ mod tests {
             let panel = cx.new(|cx| {
                 VisualizerPanel::new(file, Some(PathBuf::from("/tmp/hxy-visualizer-fixture.bin")), window, cx)
             });
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<VisualizerPanel>().unwrap());
@@ -1584,7 +1584,7 @@ mod tests {
         let info = PanelInfo::panel(serde_json::json!({ "path": path.to_string_lossy() }));
         let window = cx.add_window(move |window, cx| {
             let panel = cx.new(|cx| VisualizerPanel::restore(&info, window, cx));
-            gpui_component::Root::new(panel, window, cx)
+            gpui::component::Root::new(panel, window, cx)
         });
         let root = window.root(cx).unwrap();
         let panel = root.read_with(cx, |root, _| root.view().clone().downcast::<VisualizerPanel>().unwrap());

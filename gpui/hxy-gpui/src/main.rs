@@ -8,8 +8,8 @@ use gpui::WindowOptions;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
-use gpui_component::Root;
-use gpui_component::WindowExt;
+use gpui::component::Root;
+use gpui::component::WindowExt;
 
 mod assets;
 mod console;
@@ -77,7 +77,7 @@ fn main() -> ExitCode {
     // forwards parsed paths through a channel the workspace poll loop
     // drains (mirroring the socket receiver).
     let (open_urls_tx, open_urls_receiver) = std::sync::mpsc::channel::<Vec<PathBuf>>();
-    let app = gpui_platform::application().with_assets(assets::Assets);
+    let app = gpui::platform::application().with_assets(assets::Assets);
     app.on_open_urls(move |urls| {
         let paths: Vec<PathBuf> = urls.iter().filter_map(|url| parse_file_url(url)).collect();
         if !paths.is_empty() {
@@ -95,8 +95,8 @@ fn main() -> ExitCode {
                 None
             }
         };
-        gpui_component::init(cx);
-        // Must run after gpui_component::init (Theme global) and before
+        gpui::component::init(cx);
+        // Must run after gpui::component::init (Theme global) and before
         // the window's sync_system_appearance so the first paint and all
         // later appearance toggles use the hxy theme pair.
         theme::init(cx);
@@ -117,10 +117,10 @@ fn main() -> ExitCode {
         cx.open_window(
             WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
             move |window, cx| {
-                gpui_component::Theme::sync_system_appearance(Some(window), cx);
+                gpui::component::Theme::sync_system_appearance(Some(window), cx);
                 os_color::sync(cx);
                 let appearance_subscription = window.observe_window_appearance(|window, cx| {
-                    gpui_component::Theme::sync_system_appearance(Some(window), cx);
+                    gpui::component::Theme::sync_system_appearance(Some(window), cx);
                     os_color::sync(cx);
                 });
                 // Initial keyboard focus (active pane if a file loaded,
@@ -147,7 +147,7 @@ fn main() -> ExitCode {
                     // returns.
                     window.defer(cx, move |window, cx| {
                         let text = hxy_i18n::t(failure.toast_key());
-                        window.push_notification(gpui_component::notification::Notification::warning(text), cx);
+                        window.push_notification(gpui::component::notification::Notification::warning(text), cx);
                     });
                 }
                 cx.new(|cx| Root::new(workspace, window, cx))

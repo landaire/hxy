@@ -10,32 +10,23 @@ license = "MIT OR Apache-2.0"
 authors = ["Lander Brandt"]
 repository = "https://github.com/landaire/hxy"
 
-# gpui-component points at the pushed fork
-# (github.com/landaire-contrib/gpui-component), whose 0.5.2 dock rewrite
-# (pure-data `PaneTree`/`DockLayout`, nestable side docks, per-tab close,
-# render_tab hook) is what the app now targets. A git source rather than an
-# out-of-tree path, so the nested workspace can be reindeer/buck2 buckified;
-# the cost is that local fork edits must be pushed before the app sees them.
+# The app targets the pushed fork's dock rewrite (pure-data
+# `PaneTree`/`DockLayout`, nestable side docks, per-tab close, render_tab hook),
+# now shipped through the `gpui-kit` umbrella crate
+# (github.com/landaire-contrib/gpui-component, `crates/kit`).
+# `gpui = { package = "gpui-kit" }` aliases the umbrella to the `gpui` name, so
+# `gpui::*` is GPUI, `gpui::component` is the dock/widgets, and `gpui::platform`
+# is the platform layer -- one dependency in place of the old gpui +
+# gpui_platform + gpui-component trio.
 #
-# Pinned to the `hxy-pin` branch, NOT `upstream-dock`. Both share the same
-# dock code, but `upstream-dock` (the clean branch we upstream) leaves the
-# zed git deps floating, and Cargo will not unify a floating `git = zed` dep
-# with this workspace's rev-pinned one -- it pulls a SECOND zed tree at the
-# branch tip and the two `gpui` instances get incompatible types. `hxy-pin`
-# is `upstream-dock` plus a one-commit `Cargo.toml` pin of the zed deps to
-# the rev below, so the fork's `gpui` unifies with this workspace's.
-# `runtime_shaders`: gpui's default macOS build ahead-of-time-compiles its
-# Metal shaders via `xcrun metal`, which ships with full Xcode.app, not
-# Xcode Command Line Tools (all that's installed here). This feature makes
-# gpui stitch/compile shaders at runtime instead, so the build doesn't need
-# the `metal` binary at all. At this zed rev the feature lives on
-# `gpui_platform` (not `gpui`), so it is enabled via a direct
-# `gpui_platform` dep that hxy-gpui pulls in; Cargo feature unification
-# then turns it on for the single `gpui_platform` the whole graph shares.
+# GPUI itself is now the crates.io `gpui-pre` family (pulled in by gpui-kit),
+# so there are no more zed git deps to pin or unify. `runtime_shaders` (compile
+# Metal shaders at runtime, so the build needs no `xcrun metal` from a full
+# Xcode) rides in via gpui-kit's `gpui_platform` dep. A local path dep on the
+# fork checkout at `~/src/gpui-component`, so the app builds against local fork
+# edits without a push (assumes the fork sits alongside `~/dev/hxy`).
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", features = ["runtime_shaders"] }
-gpui-component = { git = "https://github.com/landaire-contrib/gpui-component", rev = "6302a9babf85111aaf1878ae827870227172ca36" }
+gpui = { package = "gpui-kit", path = "../../../src/gpui-component/crates/kit" }
 gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.5.0" }
 hxy-core = { path = "../crates/hxy-core", version = "0.5.0" }

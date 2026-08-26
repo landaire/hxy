@@ -34,15 +34,15 @@ use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
 use gpui::px;
-use gpui_component::ActiveTheme;
-use gpui_component::Icon;
-use gpui_component::IconName;
-use gpui_component::Sizable;
-use gpui_component::h_flex;
-use gpui_component::input::Input;
-use gpui_component::input::InputEvent;
-use gpui_component::input::InputState;
-use gpui_component::v_flex;
+use gpui::component::ActiveTheme;
+use gpui::component::Icon;
+use gpui::component::IconName;
+use gpui::component::Sizable;
+use gpui::component::h_flex;
+use gpui::component::input::Input;
+use gpui::component::input::InputEvent;
+use gpui::component::input::InputState;
+use gpui::component::v_flex;
 use palette_core::CaseMatching;
 use palette_core::Entry;
 use palette_core::MatchResult;
@@ -804,13 +804,13 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
             crate::workspace::init_keybindings(cx);
         });
     }
 
-    /// A workspace inside a real `gpui_component::Root` (like the shell),
+    /// A workspace inside a real `gpui::component::Root` (like the shell),
     /// opened on a `len`-byte scratch file so the palette has an active
     /// pane to act on. The backing temp file is read at construction and
     /// dropped once `build` returns; its bytes already live in the
@@ -822,7 +822,7 @@ mod tests {
         let window = cx.add_window(move |window, cx| {
             let sub = window.observe_window_appearance(|_, _| {});
             let ws = cx.new(|cx| Workspace::new(vec![path], sub, None, window, cx));
-            gpui_component::Root::new(ws, window, cx)
+            gpui::component::Root::new(ws, window, cx)
         });
         let root = window.root(cx).unwrap();
         let ws = root.read_with(cx, |root, _| root.view().clone().downcast::<Workspace>().unwrap());

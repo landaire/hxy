@@ -59,7 +59,7 @@ fn selection(cx: &mut VisualTestContext, pane: &Entity<HexPane>) -> (u64, u64) {
 
 #[gpui::test]
 fn typing_hex_digits_writes_byte_and_advances(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     // Hex typing writes at the cursor; without a live selection
@@ -74,7 +74,7 @@ fn typing_hex_digits_writes_byte_and_advances(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn shift_arrow_extends_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, _| p.editor_mut().set_active_pane(Pane::Ascii));
@@ -86,7 +86,7 @@ fn shift_arrow_extends_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn vim_motion_and_yank_reach_clipboard(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, _| p.editor_mut().set_input_mode(InputMode::Vim));
@@ -99,7 +99,7 @@ fn vim_motion_and_yank_reach_clipboard(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn cmd_modified_keys_pass_through(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     // A caret is present, so a stray hex 'a' would land at byte 0 if the
@@ -113,7 +113,7 @@ fn cmd_modified_keys_pass_through(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn ascii_pane_typing_inserts_text(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source(), cx));
     focus(cx, &pane);
     pane.update(cx, |p, _| p.editor_mut().set_active_pane(Pane::Ascii));
@@ -136,7 +136,7 @@ fn ascii_pane_typing_inserts_text(cx: &mut TestAppContext) {
 /// this exercises the real integrated path, no synthesized frame.
 #[gpui::test]
 fn arrow_down_past_scrolloff_scrolls_the_view(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(gpui::component::init);
     let (pane, cx) = cx.add_window_view(|_, cx| HexPane::new(source_200_rows(), cx));
     focus(cx, &pane);
     seed_caret(cx, &pane, 0);

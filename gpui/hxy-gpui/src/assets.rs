@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use gpui::AssetSource;
 use gpui::Result;
 use gpui::SharedString;
-use gpui_component::IconNamed;
+use gpui::component::IconNamed;
 use rust_embed::RustEmbed;
 
 /// Embedded app assets (icon SVGs under `assets/icons/`).
@@ -64,7 +64,7 @@ impl IconNamed for HxyIcon {
 
 #[cfg(test)]
 mod tests {
-    use gpui_component::IconName;
+    use gpui::component::IconName;
 
     use super::*;
 

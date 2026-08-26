@@ -25,8 +25,8 @@ use gpui::Context;
 use gpui::Global;
 use gpui::Window;
 use gpui::prelude::*;
-use gpui_component::WindowExt;
-use gpui_component::notification::Notification;
+use gpui::component::WindowExt;
+use gpui::component::notification::Notification;
 use hxy_plugin_host::InvokeOutcome;
 use hxy_plugin_host::MountByTokenError;
 use hxy_plugin_host::PermissionGrants;
@@ -648,18 +648,18 @@ mod tests {
     /// at construction (mirrors `workspace.rs`'s test setup).
     fn setup_workspace(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui::component::init(cx);
             crate::panels::register(cx);
         });
     }
 
-    /// A `Workspace` wrapped in a real `gpui_component::Root` (needed by
+    /// A `Workspace` wrapped in a real `gpui::component::Root` (needed by
     /// `push_notification`), returned alongside its window.
-    fn open_workspace(cx: &mut TestAppContext) -> (WindowHandle<gpui_component::Root>, Entity<Workspace>) {
+    fn open_workspace(cx: &mut TestAppContext) -> (WindowHandle<gpui::component::Root>, Entity<Workspace>) {
         let window = cx.add_window(|window, cx| {
             let subscription = window.observe_window_appearance(|_, _| {});
             let workspace = cx.new(|cx| Workspace::new(Vec::new(), subscription, None, window, cx));
-            gpui_component::Root::new(workspace, window, cx)
+            gpui::component::Root::new(workspace, window, cx)
         });
         let root = window.root(cx).unwrap();
         let workspace = root.read_with(cx, |root, _| root.view().clone().downcast::<Workspace>().unwrap());
@@ -859,7 +859,7 @@ mod tests {
     /// Error. The plugin's own error text passes through untranslated.
     #[gpui::test]
     fn completion_helpers_map_severity(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui::component::init);
         let window = cx.add_window(|_window, _cx| NullView);
         let cx = VisualTestContext::from_window(*window, cx).into_mut();
 
