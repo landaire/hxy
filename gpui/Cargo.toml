@@ -32,8 +32,8 @@ repository = "https://github.com/landaire/hxy"
 # `gpui_platform` dep that hxy-gpui pulls in; Cargo feature unification
 # then turns it on for the single `gpui_platform` the whole graph shares.
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5", features = ["runtime_shaders"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", features = ["runtime_shaders"] }
 gpui-component = { path = "../../../src/gpui-component/crates/ui" }
 gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.5.0" }
