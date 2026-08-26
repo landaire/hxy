@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use gpui::App;
 use gpui::AnyElement;
+use gpui::AnyWindowHandle;
 use gpui::Axis;
 use gpui::Bounds;
 use gpui::DispatchPhase;
@@ -23,6 +24,7 @@ use gpui::MouseUpEvent;
 use gpui::Point;
 use gpui::canvas;
 use gpui::WindowBounds;
+use gpui::WindowId;
 use gpui::WindowOptions;
 use gpui::size;
 use gpui::Context;
@@ -328,6 +330,14 @@ struct PluginMountRecord {
 /// [`Workspace::mount_failed_with_retry`]).
 struct MountRetryToast;
 
+/// One open float window as a routable dock surface: its OS handle (for
+/// global-coordinate hit-testing on a cross-window drop) and a weak
+/// handle to its [`DockArea`] (dropped panels are added here).
+struct FloatSurface {
+    window: AnyWindowHandle,
+    dock: WeakEntity<DockArea>,
+}
+
 pub struct Workspace {
     dock: Entity<DockArea>,
     /// The welcome placeholder while it occupies the center; `None`
@@ -381,14 +391,19 @@ pub struct Workspace {
     /// window-global mouse-up handler has no drop payload of its own).
     /// Cleared on every left mouse-up.
     dragging_tab: Option<PanelId>,
-    /// Panels torn off into their own OS windows (`tear_active_tab_into_window`).
-    /// Holding the `Arc` here keeps the entity -- and its unsaved edits --
-    /// alive independent of either dock, so closing the float window can
-    /// hand the live panel back rather than dropping it.
-    torn_off: std::collections::HashMap<PanelId, Arc<dyn PanelView>>,
-    /// Panels a closed float window has handed back, awaiting re-insertion
-    /// into the center. Drained by `render`, which has the `&mut Window`
-    /// `add_panel_view` needs (mirrors `needs_reconcile`).
+    /// This workspace's own (main) OS window, latched on first render.
+    /// Needed alongside `float_windows` to hit-test which surface a
+    /// cross-window tab drag was released over.
+    main_window: Option<AnyWindowHandle>,
+    /// Every open float window's OS handle and its dock, so a tab dragged
+    /// off one window can be routed into whichever window it was dropped
+    /// over (`route_dragged_tab`). The main workspace coordinates all
+    /// surfaces; panels live in whichever dock holds them.
+    float_windows: Vec<FloatSurface>,
+    /// Panels a closing float window handed back (it still had tabs when
+    /// the user closed it), awaiting re-insertion into the main center.
+    /// Drained by `render`, which has the `&mut Window` `add_panel_view`
+    /// needs (mirrors `needs_reconcile`).
     pending_reclaim: Vec<Arc<dyn PanelView>>,
     /// `FilePanel` entities the workspace has opened, looked up by path
     /// so a center-cache resync can reinstall the SAME panels (preserving
@@ -601,7 +616,8 @@ impl Workspace {
             focus_pending: true,
             needs_reconcile: false,
             dragging_tab: None,
-            torn_off: std::collections::HashMap::new(),
+            main_window: None,
+            float_windows: Vec::new(),
             pending_reclaim: Vec::new(),
             open_files: Vec::new(),
             strings_panels: Vec::new(),
@@ -1668,42 +1684,106 @@ impl Workspace {
         self.tear_panel_into_window(id, window, cx);
     }
 
-    /// Tear the tab with `id` out into its own OS window (the palette verb
-    /// via the active tab, or the pop-out drop zone via a dragged tab).
-    /// The panel's `Arc` is stashed in `torn_off` (keeping the live
-    /// entity, and its unsaved edits, alive), removed from the main dock,
-    /// and handed to a [`FloatingWindow`]. Closing that window reclaims
-    /// the panel (see [`reclaim_torn_panel`](Self::reclaim_torn_panel)).
-    /// A no-op for an unknown id; if the window fails to open the panel is
-    /// put straight back rather than stranded.
+    /// Tear the tab with `id` out of the main dock into a fresh, centered
+    /// float window (the palette verb). Removed from the main dock and
+    /// handed to a [`FloatingWindow`]; if the window fails to open the
+    /// panel is queued straight back rather than stranded.
     pub(crate) fn tear_panel_into_window(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
         self.resync_center_if_stale(window, cx);
         let Some(panel) = self.dock.read(cx).panel(id).cloned() else { return };
-        self.torn_off.insert(id, panel.clone());
         self.dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
-
-        let weak = cx.entity().downgrade();
         let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
-        let opened = cx.open_window(
-            WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
-            move |window, cx| {
-                let float = cx.new(|cx| FloatingWindow::new(panel.clone(), id, weak.clone(), window, cx));
-                cx.new(|cx| Root::new(float, window, cx))
-            },
-        );
-        if opened.is_err() {
-            self.reclaim_torn_panel(id, cx);
+        if !self.spawn_float(panel.clone(), bounds, cx) {
+            self.pending_reclaim.push(panel);
+            cx.notify();
         }
     }
 
-    /// Take a torn-off panel back from its (now closed) float window into
-    /// the reclaim queue; `render` re-inserts it into the center where a
-    /// `&mut Window` is available. A no-op if the id was already reclaimed
-    /// (e.g. a double `on_release` during app teardown).
-    pub(crate) fn reclaim_torn_panel(&mut self, id: PanelId, cx: &mut Context<Self>) {
-        if let Some(panel) = self.torn_off.remove(&id) {
-            self.pending_reclaim.push(panel);
-            cx.notify();
+    /// Open a float window hosting `panel` at `bounds` (screen coords).
+    /// The [`FloatingWindow`] self-registers as a routable surface and, on
+    /// close, hands any remaining tabs back. Returns whether it opened.
+    fn spawn_float(&mut self, panel: Arc<dyn PanelView>, bounds: Bounds<Pixels>, cx: &mut Context<Self>) -> bool {
+        let weak = cx.entity().downgrade();
+        cx.open_window(
+            WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
+            move |window, cx| {
+                let float = cx.new(|cx| FloatingWindow::new(panel.clone(), weak.clone(), window, cx));
+                cx.new(|cx| Root::new(float, window, cx))
+            },
+        )
+        .is_ok()
+    }
+
+    /// Register a float window as a routable dock surface (called by
+    /// [`FloatingWindow::new`]).
+    pub(crate) fn register_float(&mut self, window: AnyWindowHandle, dock: WeakEntity<DockArea>) {
+        self.float_windows.push(FloatSurface { window, dock });
+    }
+
+    /// Drop a closed float window from the surface registry.
+    pub(crate) fn unregister_float(&mut self, id: WindowId) {
+        self.float_windows.retain(|surface| surface.window.window_id() != id);
+    }
+
+    /// Re-insert panels a closing float window handed back (it still held
+    /// tabs when closed). Drained by `render` where a `&mut Window` is in
+    /// hand. Empty (an already-empty float) is a no-op.
+    pub(crate) fn reclaim_panels(&mut self, panels: Vec<Arc<dyn PanelView>>, cx: &mut Context<Self>) {
+        if panels.is_empty() {
+            return;
+        }
+        self.pending_reclaim.extend(panels);
+        cx.notify();
+    }
+
+    /// Route a tab dragged off `source_dock` (in the window `source_id`)
+    /// and released at global point `global`: into whichever open window
+    /// sits under the cursor, or -- on empty desktop -- a new float window
+    /// there. The panel is added to the target before it is removed from
+    /// the source, so its entity (and unsaved edits) never drops.
+    pub(crate) fn route_dragged_tab(
+        &mut self,
+        source_dock: Entity<DockArea>,
+        source_id: WindowId,
+        id: PanelId,
+        global: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = source_dock.read(cx).panel(id).cloned() else { return };
+        // Candidate target surfaces (main + floats), minus the source.
+        let mut candidates: Vec<(AnyWindowHandle, Entity<DockArea>)> = Vec::new();
+        if let Some(main) = self.main_window {
+            candidates.push((main, self.dock.clone()));
+        }
+        for surface in &self.float_windows {
+            if let Some(dock) = surface.dock.upgrade() {
+                candidates.push((surface.window, dock));
+            }
+        }
+        let target = candidates.into_iter().find(|(handle, _)| {
+            handle.window_id() != source_id
+                && handle.update(cx, |_, target_window, _| target_window.bounds().contains(&global)).unwrap_or(false)
+        });
+
+        match target {
+            Some((handle, target_dock)) => {
+                let arc = panel.clone();
+                let _ = handle.update(cx, |_, target_window, cx| {
+                    target_dock.update(cx, |dock, cx| {
+                        dock.add_panel_view(arc, DockPlacement::Center, None, target_window, cx)
+                    });
+                });
+                source_dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
+            }
+            None => {
+                source_dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx));
+                let bounds = Bounds { origin: global, size: size(px(800.0), px(600.0)) };
+                if !self.spawn_float(panel.clone(), bounds, cx) {
+                    self.pending_reclaim.push(panel);
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -5090,19 +5170,23 @@ impl Workspace {
         self.dragging_tab = Some(event.drag(cx).panel());
     }
 
-    /// A left mouse-up ends any tab drag. If the release landed outside
-    /// the window, tear the dragged tab into a new OS window (the
-    /// browser-style "drag it off the window" gesture); an in-window
-    /// release just clears the tracked tab and lets the dock's own
-    /// drop -- reorder / dock / the landing square -- stand.
+    /// A left mouse-up ends any tab drag. A release outside this window
+    /// routes the tab to whichever window sits under the cursor, or a new
+    /// float window on empty desktop (`route_dragged_tab`); an in-window
+    /// release just clears the tracked tab and lets the dock's own drop --
+    /// reorder / dock / the landing square -- stand.
     fn on_drag_release(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.dragging_tab.take() else { return };
         let size = window.viewport_size();
         let outside =
             position.x < px(0.0) || position.y < px(0.0) || position.x > size.width || position.y > size.height;
-        if outside {
-            self.tear_panel_into_window(id, window, cx);
+        if !outside {
+            return;
         }
+        let global = window.bounds().origin + position;
+        let source_id = window.window_handle().window_id();
+        let source_dock = self.dock.clone();
+        self.route_dragged_tab(source_dock, source_id, id, global, window, cx);
     }
 
     /// A paint-phase-only element that registers a window-global mouse-up
@@ -5137,6 +5221,12 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Latch this workspace's own window handle so cross-window tab
+        // routing can hit-test the main window as a drop surface.
+        if self.main_window.is_none() {
+            self.main_window = Some(window.window_handle());
+        }
+
         let title = window_title_text(self.active_path(cx).as_deref());
         if self.last_title.as_deref() != Some(title.as_str()) {
             window.set_window_title(&title);
@@ -5518,8 +5608,7 @@ mod tests {
     }
 
     /// Tearing the active tab into a window removes it from the main dock
-    /// and parks the live panel in `torn_off` (so its entity, and any
-    /// unsaved edits, survive the move).
+    /// and registers a float surface for it.
     #[gpui::test]
     fn tearing_a_tab_moves_it_out_of_the_main_dock(cx: &mut TestAppContext) {
         setup(cx);
@@ -5536,33 +5625,35 @@ mod tests {
             0,
             "the file left the main center"
         );
-        assert_eq!(ws.read_with(cx, |ws, _| ws.torn_off.len()), 1, "the panel is parked in torn_off");
+        assert_eq!(ws.read_with(cx, |ws, _| ws.float_windows.len()), 1, "a float surface is registered");
     }
 
-    /// Reclaiming a torn-off panel (what a closed float window's
-    /// `on_release` triggers) re-inserts it into the center and clears
-    /// `torn_off` -- the round trip that keeps a closed float window from
-    /// dropping the tab.
+    /// Reclaiming panels (what a closing float window that still holds tabs
+    /// drives) re-inserts them into the main center.
     #[gpui::test]
-    fn reclaiming_a_torn_tab_returns_it_to_the_center(cx: &mut TestAppContext) {
+    fn reclaiming_panels_returns_them_to_the_center(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let (window, ws) = open_workspace_with_root(cx, vec![temp_file(&dir, "a.bin", &[0u8; 32])], None);
         let cx = VisualTestContext::from_window(*window, cx).into_mut();
 
-        ws.update_in(cx, |ws, window, cx| ws.tear_active_tab_into_window(window, cx));
+        // Pull the file panel's Arc out of the main dock, then reclaim it.
+        let (id, arc) = ws.read_with(cx, |ws, cx| {
+            let area = ws.dock.read(cx);
+            let id = area.layout(DockPlacement::Center).unwrap().panels().next().unwrap();
+            (id, area.panel(id).cloned().unwrap())
+        });
+        ws.update_in(cx, |ws, window, cx| ws.dock.update(cx, |dock, cx| dock.remove_panel_id(id, window, cx)));
         cx.run_until_parked();
-        let id = ws.read_with(cx, |ws, _| *ws.torn_off.keys().next().expect("a torn panel"));
+        assert_eq!(ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)), 0);
 
-        ws.update_in(cx, |ws, _window, cx| ws.reclaim_torn_panel(id, cx));
+        ws.update_in(cx, |ws, _window, cx| ws.reclaim_panels(vec![arc], cx));
         cx.run_until_parked();
-
         assert_eq!(
             ws.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)),
             1,
-            "the file is back in the center"
+            "the reclaimed file is back in the center"
         );
-        assert_eq!(ws.read_with(cx, |ws, _| ws.torn_off.len()), 0, "torn_off is cleared");
     }
 
     /// `console_log` appends an entry, publishes it on the read-view
