@@ -2974,6 +2974,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
+source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3009,6 +3010,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
+source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3050,6 +3052,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
+source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3060,6 +3063,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit"
 version = "0.6.0"
+source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -3072,6 +3076,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
+source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
 dependencies = [
  "anyhow",
  "gpui-pre",

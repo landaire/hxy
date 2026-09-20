@@ -22,11 +22,12 @@ repository = "https://github.com/landaire/hxy"
 # GPUI itself is now the crates.io `gpui-pre` family (pulled in by gpui-kit),
 # so there are no more zed git deps to pin or unify. `runtime_shaders` (compile
 # Metal shaders at runtime, so the build needs no `xcrun metal` from a full
-# Xcode) rides in via gpui-kit's `gpui_platform` dep. A local path dep on the
-# fork checkout at `~/src/gpui-component`, so the app builds against local fork
-# edits without a push (assumes the fork sits alongside `~/dev/hxy`).
+# Xcode) rides in via gpui-kit's `gpui_platform` dep. A git dep pinned to the
+# `upstream-dock` tip so the nix package and buck2 can build the gpui client
+# (a local path is invisible to the sandboxed/vendored build); the cost is
+# that local fork edits must be pushed before the app sees them.
 [workspace.dependencies]
-gpui = { package = "gpui-kit", path = "../../../src/gpui-component/crates/kit" }
+gpui = { package = "gpui-kit", git = "https://github.com/landaire-contrib/gpui-component", rev = "753f1545d9b57a2ed9f78df50c984a9f3da7e726" }
 gpui_dock_picker = { path = "gpui_dock_picker", version = "0.3.0" }
 hxy-calculator = { path = "../crates/hxy-calculator", version = "0.5.0" }
 hxy-core = { path = "../crates/hxy-core", version = "0.5.0" }

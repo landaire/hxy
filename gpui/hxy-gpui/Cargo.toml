@@ -9,6 +9,13 @@ repository.workspace = true
 description = "GPUI port of the hxy hex editor"
 publish = false
 
+# The gpui client is the canonical `hxy` binary. The crate stays `hxy-gpui`
+# (so the nested workspace's deps are unaffected); only the produced binary
+# is named `hxy`. The egui client's binary is `hxy-egui`.
+[[bin]]
+name = "hxy"
+path = "src/main.rs"
+
 [dependencies]
 gpui = { workspace = true }
 # Pulled solely to enable its `runtime_shaders` feature (see the

@@ -11,8 +11,11 @@ readme = "README.md"
 keywords = ["hex", "editor", "gui"]
 categories = ["gui"]
 
+# The gpui client is now the canonical `hxy` (see gpui/hxy-gpui). The egui
+# client's binary is `hxy-egui` until the hard cutover; its crate/package
+# stays `hxy`, so `-p hxy` and existing build wiring are unaffected.
 [[bin]]
-name = "hxy"
+name = "hxy-egui"
 path = "src/main.rs"
 required-features = ["desktop"]
 
