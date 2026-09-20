@@ -4421,7 +4421,7 @@ fn count_panel_state_tab_leaves(state: &PanelState) -> usize {
     match &state.info {
         PanelInfo::Tabs { .. } => 1,
         PanelInfo::Stack { .. } => state.children.iter().map(count_panel_state_tab_leaves).sum(),
-        PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => 0,
+        PanelInfo::Panel(_) => 0,
     }
 }
 
@@ -4461,7 +4461,7 @@ fn rebuild_item(
             // Out-of-range indices are clamped by the layout's own normalize.
             layout.active_index(*active_index)
         }
-        PanelInfo::Panel(_) | PanelInfo::Tiles { .. } => {
+        PanelInfo::Panel(_) => {
             let mut layout = DockLayout::tabs();
             if let Some(panel) = resolve_leaf(state, reusable, reusable_mounts, welcome, dock_area, window, cx) {
                 layout = layout.panel_view(panel, cx);
@@ -4948,17 +4948,13 @@ fn build_node_path(node: &PaneNode, target: NodeId, acc: &mut Vec<PathStep>) -> 
 
 /// The first `Tabs` leaf reached by descending `node`'s left spine
 /// (mirrors egui's `first_leaf_in`, which always takes the left child),
-/// or `None` if that leaf is a `Tiles` canvas or the node is a malformed
-/// empty split. The move / merge verbs feed this into a `Tabs` insert,
-/// which silently strands the panel (then reconcile destroys it) if the
-/// target is not a `Tabs` node -- the center never holds a `Tiles` leaf
-/// today, so this guard is defensive against a future tiles region rather
-/// than a live path.
+/// or `None` if the node is a malformed empty split. The move / merge
+/// verbs feed this into a `Tabs` insert, which silently strands the panel
+/// (then reconcile destroys it) if the target is not a `Tabs` node.
 fn first_tabs_leaf(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
         PaneRef::Split { children, .. } => children.first().and_then(first_tabs_leaf),
         PaneRef::Tabs { .. } => Some(node.id()),
-        PaneRef::Tiles { .. } => None,
     }
 }
 

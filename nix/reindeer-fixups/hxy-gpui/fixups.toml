@@ -1,0 +1,4 @@
+# rust-embed's `#[derive(RustEmbed)] #[folder = "assets"]` reads the assets
+# dir at compile time relative to CARGO_MANIFEST_DIR; precise_srcs only stages
+# .rs files, so pull the embedded assets in explicitly.
+extra_srcs = ["assets/**/*"]

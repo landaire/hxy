@@ -1,1 +1,7 @@
 buildscript.run = true
+
+# reindeer sets CARGO_MANIFEST_DIR to the git repo root for a workspace-member
+# git dep, but this crate embeds assets via env!("CARGO_MANIFEST_DIR")/assets
+# (generated include_bytes! and rust-embed). Point it at the actual crate dir.
+[env]
+CARGO_MANIFEST_DIR = "gpui-component-612a4e35e10905a2/crates/assets"

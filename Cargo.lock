@@ -798,15 +798,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2865,17 +2856,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
-dependencies = [
- "bit-set 0.8.0",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3798,17 +3778,18 @@ dependencies = [
 
 [[package]]
 name = "gpui-base"
-version = "0.6.0"
-source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
+version = "0.6.4"
+source = "git+https://github.com/landaire-contrib/gpui-component?branch=buck-crate-path-fix#1b880d6ee842cae0a860d0dfaf041fe737481902"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "ashpd",
  "async-channel",
  "chrono",
+ "data-url",
  "futures",
  "gpui-pre",
  "gpui-pre-macros",
- "gpui-pre-platform",
  "gpui-pre-sum-tree",
  "html5ever",
  "instant",
@@ -3826,16 +3807,16 @@ dependencies = [
  "serde_json",
  "smallvec",
  "smol",
- "syntect",
  "tracing",
  "unicode-segmentation",
  "web-time",
+ "windows 0.58.0",
 ]
 
 [[package]]
 name = "gpui-component"
-version = "0.6.0"
-source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
+version = "0.6.4"
+source = "git+https://github.com/landaire-contrib/gpui-component?branch=buck-crate-path-fix#1b880d6ee842cae0a860d0dfaf041fe737481902"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3860,6 +3841,7 @@ dependencies = [
  "once_cell",
  "paste",
  "raw-window-handle",
+ "regex",
  "resvg 0.45.1",
  "ropey",
  "rust-i18n",
@@ -3876,8 +3858,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-component-macros"
-version = "0.6.0"
-source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
+version = "0.6.4"
+source = "git+https://github.com/landaire-contrib/gpui-component?branch=buck-crate-path-fix#1b880d6ee842cae0a860d0dfaf041fe737481902"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -3887,8 +3869,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-kit"
-version = "0.6.0"
-source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
+version = "0.6.4"
+source = "git+https://github.com/landaire-contrib/gpui-component?branch=buck-crate-path-fix#1b880d6ee842cae0a860d0dfaf041fe737481902"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -3900,8 +3882,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-kit-assets"
-version = "0.6.0"
-source = "git+https://github.com/landaire-contrib/gpui-component?rev=753f1545d9b57a2ed9f78df50c984a9f3da7e726#753f1545d9b57a2ed9f78df50c984a9f3da7e726"
+version = "0.6.4"
+source = "git+https://github.com/landaire-contrib/gpui-component?branch=buck-crate-path-fix#1b880d6ee842cae0a860d0dfaf041fe737481902"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -10074,24 +10056,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "syntect"
-version = "5.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
-dependencies = [
- "bincode",
- "fancy-regex",
- "flate2",
- "fnv",
- "once_cell",
- "regex-syntax",
- "serde",
- "serde_derive",
- "thiserror 2.0.20",
- "walkdir",
 ]
 
 [[package]]
