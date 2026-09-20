@@ -106,15 +106,11 @@
           ];
       };
 
-      # Union vendor of both cargo workspaces: the root workspace and the
-      # nested gpui/ workspace (excluded from the root graph so its pinned
-      # gpui stack does not unify with eframe/egui). Vendoring both locks
-      # lets offline cargo work anywhere inside the dev shell.
-      cargoVendorDir = craneLib.vendorMultipleCargoDeps {
-        cargoLockList = [
-          ./Cargo.lock
-          ./gpui/Cargo.lock
-        ];
+      # One workspace, one lock: the gpui client is a member of the root
+      # workspace now, so a single vendor covers the whole repo (egui stack,
+      # gpui-pre family, and the gpui-kit git dep).
+      cargoVendorDir = craneLib.vendorCargoDeps {
+        cargoLock = ./Cargo.lock;
       };
       cargoVendorCacheKey = builtins.baseNameOf (toString cargoVendorDir);
 
@@ -183,60 +179,19 @@
               }).overrideAttrs {meta.mainProgram = bin;}
             else unwrapped;
 
-          # The canonical `hxy` is the gpui client, built from the nested
-          # gpui/ workspace (excluded from the root graph). It needs its own
-          # deps-only artifacts and dummy src keyed to `gpui/Cargo.toml`,
-          # since the root dummy src omits the gpui members. gpui-kit is a
-          # git dep, so the shared vendor already carries it.
-          gpuiArgs = {
-            pname = "hxy";
-            version = "0.3.0";
-            src = hxySource;
-            strictDeps = true;
-            nativeBuildInputs = commonArgs.nativeBuildInputs;
-            buildInputs = guiBuildInputs;
-            cargoExtraArgs = "--manifest-path gpui/Cargo.toml -p hxy-gpui";
-            doCheck = false;
-          };
-          gpuiDummySource = sourcePkgs.runCommand "hxy-gpui-dummy-source" {} ''
-            mkdir -p "$out"
-            cp -R ${craneLib.mkDummySrc (gpuiArgs // {src = filteredSource;})}/. "$out"
-            chmod -R u+w "$out"
-            # mkDummySrc keeps the root Cargo.lock but not the nested one;
-            # the vendored git `gpui-kit` source needs `gpui/Cargo.lock`
-            # present to resolve against the replacement.
-            cp ${./gpui/Cargo.lock} "$out/gpui/Cargo.lock"
-          '';
-          gpuiArtifactsFor = profile:
-            craneLib.buildDepsOnly (gpuiArgs
+          # The canonical `hxy` is the gpui client, now a member of the root
+          # workspace, so it builds like any other package: shared vendor,
+          # shared deps-only artifacts, `-p hxy-gpui`. Its `[[bin]]` is `hxy`,
+          # which crane discovers from the root manifest.
+          gpuiClientFor = profile:
+            craneLib.buildPackage (commonArgs
               // {
                 inherit cargoVendorDir;
-                dummySrc = gpuiDummySource;
+                cargoArtifacts = cargoArtifactsFor profile;
+                cargoExtraArgs = "-p hxy-gpui";
                 CARGO_PROFILE = profile;
-              });
-          gpuiClientFor = profile: let
-            profileDir =
-              if profile == "dev"
-              then "debug"
-              else profile;
-          in
-            craneLib.buildPackage (gpuiArgs
-              // {
-                inherit cargoVendorDir;
-                cargoArtifacts = gpuiArtifactsFor profile;
-                CARGO_PROFILE = profile;
-                # crane discovers installable bins from the root manifest, so
-                # it installs nothing for a `--manifest-path gpui/` build.
-                # Install the gpui client's `hxy` binary explicitly.
-                installPhaseCommand = ''
-                  mkdir -p "$out/bin"
-                  hxybin=$(find "''${CARGO_TARGET_DIR:-.}" -type f -perm -111 -path "*/${profileDir}/hxy" | head -1)
-                  if [ -z "$hxybin" ]; then
-                    echo "gpui client binary 'hxy' not found under the ${profileDir} target" >&2
-                    exit 1
-                  fi
-                  cp "$hxybin" "$out/bin/hxy"
-                '';
+                doCheck = false;
+                buildInputs = guiBuildInputs;
                 meta.mainProgram = "hxy";
               });
 

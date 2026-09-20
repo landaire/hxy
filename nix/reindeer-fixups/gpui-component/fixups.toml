@@ -1,0 +1,6 @@
+# gpui-component's build script only re-exports gpui-kit-assets' `links`
+# icons-dir metadata as `cargo:rustc-env=GPUI_KIT_DEFAULT_ICONS_DIR`, a legacy
+# expansion-time path. Nothing in the graph reads that env at compile time, and
+# Reindeer does not propagate the DEP_ links metadata the script expects, so it
+# would panic. Skip the build script entirely -- it produces nothing else.
+buildscript.run = false

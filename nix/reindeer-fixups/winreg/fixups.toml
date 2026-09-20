@@ -1,0 +1,2 @@
+# winreg resolves with no build script in this graph; override the base
+# shim fixup so its buildscript stanza is not flagged as unused.

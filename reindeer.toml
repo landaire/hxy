@@ -139,15 +139,24 @@ genrule(
 # The canonical build: hxy compiled by Buck's own Rust rules from the Reindeer
 # graph. Requires the Nix dev shell for the toolchain. `//:hxy-nix` above is the
 # reproducible Nix package (a genrule wrapping `nix build`), kept as a fallback.
+#
+# `//:hxy` is the gpui client (the main app); `//:hxy-egui` is the egui client,
+# kept buildable until the hard cutover.
 alias(
     name = "hxy",
-    actual = ":hxy-0.5-hxy",
+    actual = ":hxy-gpui-0.5-hxy",
     visibility = ["PUBLIC"],
 )
 
 alias(
     name = "hxy-native",
-    actual = ":hxy-0.5-hxy",
+    actual = ":hxy-gpui-0.5-hxy",
+    visibility = ["PUBLIC"],
+)
+
+alias(
+    name = "hxy-egui",
+    actual = ":hxy-0.5-hxy-egui",
     visibility = ["PUBLIC"],
 )
 """

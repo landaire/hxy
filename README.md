@@ -1,6 +1,11 @@
 # hxy
 
-A hex editor built with Rust and [egui]. Desktop and web.
+A hex editor built with Rust. Desktop and web.
+
+The app is moving from its original [egui] UI to a GPUI-based client. The
+GPUI client is now the canonical `hxy`; the egui client stays available as
+`hxy-egui` until the hard cutover. Both build from this repo (see
+Development).
 
 Reusable egui widget: [![hxy-view on crates.io](https://img.shields.io/crates/v/hxy-view.svg?label=hxy-view)](https://crates.io/crates/hxy-view) [![hxy-view on docs.rs](https://docs.rs/hxy-view/badge.svg)](https://docs.rs/hxy-view)
 
@@ -59,7 +64,13 @@ is opt-level 3 with no debuginfo, and `@modes/debug-full` adds full debuginfo.
 
 - `//:hxy-nix` is a genrule that stages the declared sources and shells out to
   `nix build`, i.e. the reproducible Nix package -- kept as a fallback.
-- `nix build .#hxy` builds that same reproducible package directly.
+- `nix build .#hxy` builds the reproducible Nix package directly. This is now
+  the GPUI client (the canonical `hxy`), built from the nested `gpui/`
+  workspace; `nix build .#hxy-egui` builds the egui client.
+- The native Buck `//:hxy` target still compiles the egui client from the
+  Reindeer graph. A native Buck target for the GPUI client is pending: the
+  `gpui/` workspace depends on root crates via `../crates` path deps that
+  Reindeer cannot yet reference across the workspace boundary.
 
 Verified on aarch64-darwin; the Linux native build is exercised by CI.
 
