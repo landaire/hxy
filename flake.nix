@@ -79,6 +79,11 @@
       hxySource = sourcePkgs.runCommand "hxy-source" {} ''
         mkdir -p "$out"
         cp -R ${filteredSource}/. "$out"
+        # The copied tree is read-only (nix store) and may already carry the
+        # dev-shell's `third-party/overrides` symlinks; make it writable and
+        # drop those so this derivation is the sole author of the overrides.
+        chmod -R u+w "$out"
+        rm -rf "$out/third-party/overrides"
         mkdir -p "$out/third-party/overrides"
         ln -s ${eguiPhosphor} "$out/third-party/overrides/egui-phosphor"
         ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
@@ -162,7 +167,83 @@
               fontconfig
             ];
 
-          unwrappedFor = profile:
+          # Wrap a built client's binary with the runtime GUI libs on Linux
+          # (a no-op elsewhere). `bin` names the produced binary.
+          wrapClient = unwrapped: bin:
+            if stdenv.hostPlatform.isLinux
+            then
+              (pkgs.symlinkJoin {
+                name = "${bin}-${unwrapped.version or "dev"}";
+                paths = [unwrapped];
+                nativeBuildInputs = [pkgs.makeWrapper];
+                postBuild = ''
+                  wrapProgram $out/bin/${bin} \
+                    --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiRuntimeLibs}
+                '';
+              }).overrideAttrs {meta.mainProgram = bin;}
+            else unwrapped;
+
+          # The canonical `hxy` is the gpui client, built from the nested
+          # gpui/ workspace (excluded from the root graph). It needs its own
+          # deps-only artifacts and dummy src keyed to `gpui/Cargo.toml`,
+          # since the root dummy src omits the gpui members. gpui-kit is a
+          # git dep, so the shared vendor already carries it.
+          gpuiArgs = {
+            pname = "hxy";
+            version = "0.3.0";
+            src = hxySource;
+            strictDeps = true;
+            nativeBuildInputs = commonArgs.nativeBuildInputs;
+            buildInputs = guiBuildInputs;
+            cargoExtraArgs = "--manifest-path gpui/Cargo.toml -p hxy-gpui";
+            doCheck = false;
+          };
+          gpuiDummySource = sourcePkgs.runCommand "hxy-gpui-dummy-source" {} ''
+            mkdir -p "$out"
+            cp -R ${craneLib.mkDummySrc (gpuiArgs // {src = filteredSource;})}/. "$out"
+            chmod -R u+w "$out"
+            # mkDummySrc keeps the root Cargo.lock but not the nested one;
+            # the vendored git `gpui-kit` source needs `gpui/Cargo.lock`
+            # present to resolve against the replacement.
+            cp ${./gpui/Cargo.lock} "$out/gpui/Cargo.lock"
+          '';
+          gpuiArtifactsFor = profile:
+            craneLib.buildDepsOnly (gpuiArgs
+              // {
+                inherit cargoVendorDir;
+                dummySrc = gpuiDummySource;
+                CARGO_PROFILE = profile;
+              });
+          gpuiClientFor = profile: let
+            profileDir =
+              if profile == "dev"
+              then "debug"
+              else profile;
+          in
+            craneLib.buildPackage (gpuiArgs
+              // {
+                inherit cargoVendorDir;
+                cargoArtifacts = gpuiArtifactsFor profile;
+                CARGO_PROFILE = profile;
+                # crane discovers installable bins from the root manifest, so
+                # it installs nothing for a `--manifest-path gpui/` build.
+                # Install the gpui client's `hxy` binary explicitly.
+                installPhaseCommand = ''
+                  mkdir -p "$out/bin"
+                  hxybin=$(find "''${CARGO_TARGET_DIR:-.}" -type f -perm -111 -path "*/${profileDir}/hxy" | head -1)
+                  if [ -z "$hxybin" ]; then
+                    echo "gpui client binary 'hxy' not found under the ${profileDir} target" >&2
+                    exit 1
+                  fi
+                  cp "$hxybin" "$out/bin/hxy"
+                '';
+                meta.mainProgram = "hxy";
+              });
+
+          # The egui client, kept buildable as `hxy-egui` until the hard
+          # cutover. Built from the root workspace's `hxy` package, whose
+          # binary is now `hxy-egui`.
+          eguiClientFor = profile:
             craneLib.buildPackage (commonArgs
               // {
                 inherit cargoVendorDir;
@@ -171,27 +252,13 @@
                 CARGO_PROFILE = profile;
                 doCheck = false;
                 buildInputs = guiBuildInputs;
-              meta.mainProgram = "hxy";
-            });
-
-          packageFor = profile: let
-            unwrapped = unwrappedFor profile;
-          in
-            if stdenv.hostPlatform.isLinux
-            then
-              (pkgs.symlinkJoin {
-                name = "hxy-${unwrapped.version or "dev"}";
-                paths = [unwrapped];
-                nativeBuildInputs = [pkgs.makeWrapper];
-                postBuild = ''
-                  wrapProgram $out/bin/hxy \
-                    --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiRuntimeLibs}
-                '';
-              }).overrideAttrs {meta.mainProgram = "hxy";}
-            else unwrapped;
+                meta.mainProgram = "hxy-egui";
+              });
         in {
-          hxy = packageFor "release";
-          hxy-debug = packageFor "dev";
+          hxy = wrapClient (gpuiClientFor "release") "hxy";
+          hxy-debug = wrapClient (gpuiClientFor "dev") "hxy";
+          hxy-egui = wrapClient (eguiClientFor "release") "hxy-egui";
+          hxy-egui-debug = wrapClient (eguiClientFor "dev") "hxy-egui";
 
           default = self.packages.${system}.hxy;
           egui-phosphor-source = eguiPhosphor;
