@@ -1,12 +1,12 @@
-//! The command palette: a custom top-center overlay over
-//! [`palette_core`], driven by the workspace's `cmd-shift-p` binding.
+//! The command palette: gpui-component's builtin [`Command`] widget in a
+//! top-center overlay, driven by the workspace's `cmd-shift-p` binding.
 //!
-//! Not the gpui-component `Dialog`: the palette needs top-center
-//! anchoring, a dimmed click-to-close backdrop, and per-keystroke
-//! filtering, none of which the dialog gives. The overlay renders as a
-//! child of [`Workspace`](crate::workspace::Workspace); its input takes
-//! focus on open and restores the previously-focused element on close,
-//! so editor keys never leak to the grid while it is up.
+//! The `Command` owns the search field, the result list, and keyboard
+//! navigation (up/down/enter/escape). We keep our own filtering
+//! ([`palette_core`], via `filterable(false)`) and dispatch: each render
+//! hands `Command` the already-ranked rows and wires `on_query`
+//! (refilter), `on_select` (track the highlight), `on_confirm` (run the
+//! [`PaletteAction`]) and `on_cancel` (pop the cascade or close).
 //!
 //! The mode cascade, entry vocabulary, and argument parsing live in
 //! [`modes`] (framework-agnostic, unit-tested); action dispatch into
@@ -23,28 +23,26 @@ use gpui::Context;
 use gpui::Entity;
 use gpui::FocusHandle;
 use gpui::Focusable;
-use gpui::Hsla;
 use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::MouseButton;
 use gpui::ParentElement;
-use gpui::ScrollHandle;
-use gpui::StatefulInteractiveElement;
 use gpui::Styled;
-use gpui::Subscription;
 use gpui::WeakEntity;
 use gpui::Window;
+use gpui::Keystroke;
 use gpui::div;
 use gpui::px;
 use gpui::component::ActiveTheme;
+use gpui::component::Disableable;
 use gpui::component::Icon;
 use gpui::component::IconName;
-use gpui::component::Sizable;
 use gpui::component::h_flex;
-use gpui::component::input::Input;
-use gpui::component::input::InputEvent;
-use gpui::component::input::InputState;
+use gpui::component::kbd::Kbd;
 use gpui::component::v_flex;
+use gpui::component::command::Command;
+use gpui::component::command::CommandItem;
+use gpui::component::command::CommandState;
 use palette_core::CaseMatching;
 use palette_core::Entry;
 use palette_core::MatchResult;
@@ -81,10 +79,10 @@ use crate::workspace::ToggleVim;
 use crate::workspace::Workspace;
 use hxy_vfs::VfsHandler;
 
-gpui::actions!(hxy_gpui_palette, [PaletteUp, PaletteDown, PaletteDismiss]);
-
 /// Vertical gap from the window top to the palette panel, matching the
-/// egui palette's `TopCenter { y_offset: 72.0 }`.
+/// egui palette's `TopCenter { y_offset: 72.0 }`. Up/down/enter/escape
+/// are bound by the `Command` widget itself (see its `init`), so the
+/// palette registers no navigation actions of its own.
 const TOP_OFFSET: f32 = 72.0;
 const PANEL_WIDTH: f32 = 560.0;
 const LIST_MAX_HEIGHT: f32 = 360.0;
@@ -96,8 +94,11 @@ pub struct Palette {
     workspace: WeakEntity<Workspace>,
     state: State,
     mode: PaletteMode,
-    input: Entity<InputState>,
-    _input_sub: Subscription,
+    /// The builtin command widget's state (query field, highlight,
+    /// scroll). We keep [`State`] as the source of truth for the query
+    /// (fed by `on_query`) and the highlighted row (fed by `on_select`),
+    /// so [`build`](Self::build) and the pick path stay unchanged.
+    command_state: Entity<CommandState>,
     /// Focused element to restore when the palette closes (the grid, or
     /// the workspace handle when no file is open). Stashed on open.
     restore_focus: Option<FocusHandle>,
@@ -114,28 +115,20 @@ pub struct Palette {
     /// [`enter_plugin_prompt`](Self::enter_plugin_prompt), cleared like
     /// `plugin_cascade`.
     plugin_prompt: Option<PluginPromptState>,
-    /// Scroll handle for the result list; drives scroll-into-view so the
-    /// selected row stays visible under keyboard nav (egui's
-    /// `scroll_to_selection`).
-    scroll: ScrollHandle,
 }
 
 impl Palette {
     pub fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(hxy_i18n::t("gpui-palette-search-placeholder")));
-        let input_sub = cx.subscribe_in(&input, window, Self::on_input_event);
+        let command_state = cx.new(|cx| CommandState::new(window, cx));
         Self {
             workspace,
             state: State::default(),
             mode: PaletteMode::Main,
-            input,
-            _input_sub: input_sub,
+            command_state,
             restore_focus: None,
             compare_a: None,
             plugin_cascade: None,
             plugin_prompt: None,
-            scroll: ScrollHandle::new(),
         }
     }
 
@@ -197,16 +190,13 @@ impl Palette {
             self.restore_focus = restore;
         }
         self.enter_mode(PaletteMode::PluginPrompt, window, cx);
-        // The plugin's question is the real hint; prefill any default so an
-        // "edit existing value" flow starts from it.
-        let title = prompt.title.clone();
+        // The plugin's `title` becomes the placeholder in `render`; prefill
+        // any default into the query field so an "edit existing value" flow
+        // starts from it. `self.state.query` is the answer the prompt row bakes.
         let prefill = default_value.unwrap_or_default();
         self.plugin_prompt = Some(prompt);
         self.state.query = prefill.clone();
-        self.input.update(cx, |input, cx| {
-            input.set_placeholder(title, window, cx);
-            input.set_value(prefill, window, cx);
-        });
+        self.command_state.update(cx, |st, cx| st.set_query(prefill, window, cx));
         cx.notify();
     }
 
@@ -250,16 +240,11 @@ impl Palette {
         self.state.selected
     }
 
-    /// Set the query text through the real input (driving the same
-    /// `Change` subscription production does), for tests.
+    /// Set the query text through the real command widget (driving the
+    /// same `on_query` path production does), for tests.
     #[cfg(test)]
     pub(crate) fn set_query_for_test(&self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| {
-            input.set_value(text.to_string(), window, cx);
-            // 0.5.2 `set_value` is silent (suppresses events); emit the
-            // `Change` a real edit would so the palette re-filters.
-            cx.emit(InputEvent::Change);
-        });
+        self.command_state.update(cx, |st, cx| st.set_query(text.to_string(), window, cx));
     }
 
     /// Open the palette at `mode`, stashing `restore` as the focus to
@@ -314,11 +299,12 @@ impl Palette {
         self.plugin_prompt = None;
         self.mode = mode;
         self.state.open();
-        let placeholder = hxy_i18n::t(mode.hint_key());
-        self.input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-            input.set_placeholder(placeholder, window, cx);
-            input.focus(window, cx);
+        // Fresh query + focus for the new mode; the placeholder is applied
+        // in `render` (it depends on the mode, and on the plugin prompt's
+        // title in `PluginPrompt`).
+        self.command_state.update(cx, |st, cx| {
+            st.set_query("", window, cx);
+            st.focus(window, cx);
         });
         cx.notify();
     }
@@ -338,48 +324,15 @@ impl Palette {
     /// `palette_escape_pops_to_parent` setting is on (the default),
     /// else close outright from any mode (egui parity). Backdrop
     /// clicks always close regardless -- see the setting's doc.
-    fn on_dismiss(&mut self, _: &PaletteDismiss, window: &mut Window, cx: &mut Context<Self>) {
+    /// Escape from the command widget when the query is already empty
+    /// (the widget clears a non-empty query first): pop one cascade level
+    /// when `palette_escape_pops_to_parent` is on (the default), else
+    /// close outright. Backdrop clicks always close regardless.
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pops = crate::settings::settings(cx).palette_escape_pops_to_parent;
         match self.mode.parent() {
             Some(parent) if pops => self.enter_mode(parent, window, cx),
             _ => self.close(window, cx),
-        }
-    }
-
-    fn on_up(&mut self, _: &PaletteUp, window: &mut Window, cx: &mut Context<Self>) {
-        let len = self.build(window, cx).1.len();
-        if len == 0 {
-            return;
-        }
-        self.state.selected = (self.state.selected + len - 1) % len;
-        self.scroll.scroll_to_item(self.state.selected);
-        cx.notify();
-    }
-
-    fn on_down(&mut self, _: &PaletteDown, window: &mut Window, cx: &mut Context<Self>) {
-        let len = self.build(window, cx).1.len();
-        if len == 0 {
-            return;
-        }
-        self.state.selected = (self.state.selected + 1) % len;
-        self.scroll.scroll_to_item(self.state.selected);
-        cx.notify();
-    }
-
-    fn on_input_event(
-        &mut self,
-        _: &Entity<InputState>,
-        event: &InputEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            InputEvent::Change => {
-                self.state.query = self.input.read(cx).value().to_string();
-                cx.notify();
-            }
-            InputEvent::PressEnter { .. } => self.pick_selected(window, cx),
-            InputEvent::Focus | InputEvent::Blur => {}
         }
     }
 
@@ -641,61 +594,103 @@ impl gpui::Render for Palette {
         }
 
         let (entries, filtered) = self.build(window, cx);
-        // Snap back to the best match on a query change; otherwise keep
-        // selection in range (mirrors egui_palette::show). The snapshot
-        // advance in `query_changed_since_last_frame` must run every
-        // frame, so it stays the first operand of the `||`.
-        let query_changed = self.state.query_changed_since_last_frame();
-        if query_changed || filtered.is_empty() {
-            self.state.selected = 0;
-        } else {
-            self.state.selected = self.state.selected.min(filtered.len() - 1);
-        }
-        // Keep the selection visible: keyboard nav scrolls from its own
-        // handlers; a query change snaps the list back to the top.
-        if query_changed {
-            self.scroll.scroll_to_item(0);
-        }
-
-        // Copy every color out up front so no `&Theme` borrow lingers
-        // across the row builders below.
-        let (base, muted, hit_color, selected_bg, popover, border) = {
-            let theme = cx.theme();
-            (theme.foreground, theme.muted_foreground, theme.primary, theme.list_active, theme.popover, theme.border)
-        };
-
-        let list: gpui::AnyElement = if filtered.is_empty() {
-            div().p_3().text_color(muted).child(hxy_i18n::t("gpui-palette-no-matches")).into_any_element()
-        } else {
-            let weak = cx.entity().downgrade();
-            let selected = self.state.selected;
-            let rows = filtered.iter().enumerate().map(|(row, hit)| {
+        // Hand `Command` the rows we already ranked (`filterable(false)`); an
+        // IndexPath.row is this list's position, so on_select / on_confirm map
+        // straight back to `filtered`.
+        let items: Vec<CommandItem> = filtered
+            .iter()
+            .map(|hit| {
                 let entry = &entries[hit.index];
-                Self::render_row(&weak, row, entry, &hit.match_indices, row == selected, base, muted, hit_color, selected_bg)
-            });
-            // Sizes to content up to LIST_MAX_HEIGHT, then scrolls; the scroll
-            // handle keeps the selected row in view under keyboard nav. A
-            // uniform_list is not usable here -- it does not size to content in
-            // this floating popover and so rendered an empty list.
-            v_flex()
-                .id("palette-rows")
-                .p_1()
-                .gap_1()
-                .max_h(px(LIST_MAX_HEIGHT))
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .children(rows)
-                .into_any_element()
+                // A custom child owns the whole row so the subtitle and the
+                // right-aligned shortcut hint render alongside the label (the
+                // builtin row shows only a label + an Action keybinding, and
+                // our entries carry neither a gpui Action nor a builtin
+                // subtitle). `.label()` stays for the confirmed-item semantics.
+                let icon = command_item_icon(entry);
+                let title = entry.title.clone();
+                let subtitle = entry.subtitle.clone();
+                let shortcut = entry.shortcut.clone();
+                let disabled = entry.disabled;
+                CommandItem::new().label(entry.title.clone()).disabled(disabled).child(move |_window, cx| {
+                    let muted = cx.theme().muted_foreground;
+                    let label = div().child(title.clone());
+                    let label = if disabled { label.text_color(muted) } else { label };
+                    let mut text = v_flex().flex_1().min_w_0().child(label);
+                    if let Some(sub) = subtitle.clone() {
+                        text = text.child(div().text_xs().text_color(muted).child(sub));
+                    }
+                    let mut row = h_flex().w_full().items_center().gap_2();
+                    if let Some(icon) = icon.clone() {
+                        row = row.child(icon);
+                    }
+                    row = row.child(text);
+                    // ASCII keystroke strings (`cmd-o`) round-trip through
+                    // `Keystroke::parse`; anything else falls back to muted text.
+                    if let Some(sc) = shortcut.clone() {
+                        row = match Keystroke::parse(&sc) {
+                            Ok(stroke) => row.child(Kbd::new(stroke)),
+                            Err(_) => row.child(div().text_xs().text_color(muted).child(sc)),
+                        };
+                    }
+                    row
+                })
+            })
+            .collect();
+
+        // PluginPrompt shows the plugin's own question; every other mode its
+        // static hint.
+        let placeholder = match &self.plugin_prompt {
+            Some(prompt) => prompt.title.clone(),
+            None => hxy_i18n::t(self.mode.hint_key()),
         };
 
-        let backdrop = div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .bg(gpui::black().opacity(0.35))
-            .occlude()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, window, cx| this.close(window, cx)));
+        let (popover, border) = {
+            let theme = cx.theme();
+            (theme.popover, theme.border)
+        };
+
+        let weak = cx.entity().downgrade();
+        let command = Command::new(&self.command_state)
+            .searchable(true)
+            .filterable(false)
+            .bordered(false)
+            .placeholder(placeholder)
+            .max_h(px(LIST_MAX_HEIGHT))
+            .items(items)
+            .on_query({
+                let weak = weak.clone();
+                move |query, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.state.query = query.to_string();
+                        cx.notify();
+                    });
+                }
+            })
+            .on_select({
+                let weak = weak.clone();
+                move |index, _window, cx| {
+                    let _ = weak.update(cx, |this, _cx| this.state.selected = index.row);
+                }
+            })
+            .on_confirm({
+                let weak = weak.clone();
+                move |index, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.pick_row(index.row, window, cx));
+                }
+            })
+            .on_cancel({
+                let weak = weak.clone();
+                move |window, cx| {
+                    // Command fires on_cancel synchronously while it is mid-update
+                    // on its own CommandState; dismiss may pop to a parent mode,
+                    // which re-seeds that state (enter_mode -> command_state.update)
+                    // and would re-enter. Defer so it runs after this update.
+                    let weak = weak.clone();
+                    window.defer(cx, move |window, cx| {
+                        let _ = weak.update(cx, |this, cx| this.dismiss(window, cx));
+                    });
+                }
+            });
 
         let panel = v_flex()
             .mt(px(TOP_OFFSET))
@@ -706,14 +701,16 @@ impl gpui::Render for Palette {
             .rounded_lg()
             .shadow_lg()
             .occlude()
-            .child(
-                div()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(Input::new(&self.input).prefix(Icon::new(IconName::Search))),
-            )
-            .child(list);
+            .child(command);
+
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.35))
+            .occlude()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, window, cx| this.close(window, cx)));
 
         div()
             .absolute()
@@ -723,74 +720,20 @@ impl gpui::Render for Palette {
             .flex()
             .flex_col()
             .items_center()
-            .key_context("Palette")
-            .on_action(cx.listener(Self::on_up))
-            .on_action(cx.listener(Self::on_down))
-            .on_action(cx.listener(Self::on_dismiss))
             .child(backdrop)
             .child(panel)
             .into_any_element()
     }
 }
 
-impl Palette {
-    #[allow(clippy::too_many_arguments)]
-    fn render_row(
-        weak: &WeakEntity<Self>,
-        row: usize,
-        entry: &Entry<PaletteAction>,
-        match_indices: &[u32],
-        selected: bool,
-        base: Hsla,
-        muted: Hsla,
-        hit_color: Hsla,
-        selected_bg: Hsla,
-    ) -> gpui::AnyElement {
-        // Disabled rows dim uniformly and ignore clicks (the pick path
-        // rejects them too); a stray click just re-selects the row.
-        let title_color = if entry.disabled { muted } else { base };
-        // The fuzzy haystack is `title + " " + subtitle` (see `entry_haystack`),
-        // so split the match indices back at the title boundary: indices below
-        // the title length highlight the title, the rest the subtitle.
-        let title_len = entry.title.chars().count() as u32;
-        let title_hits: Vec<u32> = match_indices.iter().copied().filter(|&index| index < title_len).collect();
-        let title = highlighted_text(&entry.title, &title_hits, title_color, hit_color, entry.disabled);
-
-        let mut left = h_flex().gap_2().items_center();
-        // An explicit token (see `modes::ICON_WARNING`, `modes::ICON_PLUGIN`)
-        // wins; otherwise the command's action picks the glyph, mirroring
-        // egui's per-command icons (`entries.rs`).
-        let icon = match entry.icon.as_deref() {
-            Some(modes::ICON_WARNING) => Some(Icon::new(IconName::TriangleAlert)),
-            Some(modes::ICON_PLUGIN) => Some(Icon::new(HxyIcon::PuzzlePiece)),
-            _ => action_icon(&entry.data),
-        };
-        if let Some(icon) = icon {
-            left = left.child(icon.small().text_color(title_color));
-        }
-        left = left.child(title);
-        if let Some(subtitle) = &entry.subtitle {
-            // Indices past the title and its one-space separator map into the
-            // subtitle; rebase them to the subtitle's own character offsets.
-            let sub_hits: Vec<u32> =
-                match_indices.iter().copied().filter(|&index| index > title_len).map(|index| index - title_len - 1).collect();
-            left = left.child(div().text_sm().child(highlighted_text(subtitle, &sub_hits, muted, hit_color, entry.disabled)));
-        }
-
-        let mut row_el =
-            h_flex().w_full().items_center().justify_between().gap_2().px_2().py_1().rounded_md().child(left);
-        if let Some(shortcut) = &entry.shortcut {
-            row_el = row_el.child(div().text_color(muted).text_sm().child(shortcut.clone()));
-        }
-        if selected {
-            row_el = row_el.bg(selected_bg);
-        }
-        let weak = weak.clone();
-        row_el
-            .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
-                let _ = weak.update(cx, |this, cx| this.pick_row(row, window, cx));
-            })
-            .into_any_element()
+/// The leading glyph for an entry: an explicit token (see
+/// `modes::ICON_WARNING`, `modes::ICON_PLUGIN`) wins, otherwise the
+/// command's action picks it (mirrors egui's per-command icons).
+fn command_item_icon(entry: &Entry<PaletteAction>) -> Option<Icon> {
+    match entry.icon.as_deref() {
+        Some(modes::ICON_WARNING) => Some(Icon::new(IconName::TriangleAlert)),
+        Some(modes::ICON_PLUGIN) => Some(Icon::new(HxyIcon::PuzzlePiece)),
+        _ => action_icon(&entry.data),
     }
 }
 
@@ -831,8 +774,8 @@ fn action_icon(action: &PaletteAction) -> Option<Icon> {
 }
 
 /// Fuzzy haystack for an entry: title plus subtitle (space-joined) so a row
-/// is findable by either -- egui matches both. `render_row` splits the match
-/// indices back at the title boundary to highlight the title and subtitle.
+/// is findable by either -- egui matches both. (The builtin `Command` row
+/// shows only the label, so the subtitle is searchable but not displayed.)
 fn entry_haystack<A>(entry: &Entry<A>) -> Cow<'_, str> {
     match &entry.subtitle {
         Some(subtitle) => Cow::Owned(format!("{} {subtitle}", entry.title)),
@@ -840,42 +783,9 @@ fn entry_haystack<A>(entry: &Entry<A>) -> Cow<'_, str> {
     }
 }
 
-/// Render `text` with the fuzzy-matched character positions painted in
-/// `hit_color`, everything else in `base`. Empty `indices` renders one
-/// flat run. Disabled rows pass `disabled = true` so even matched chars
-/// stay muted.
-fn highlighted_text(text: &str, indices: &[u32], base: Hsla, hit_color: Hsla, disabled: bool) -> impl IntoElement {
-    let mut runs = h_flex();
-    if indices.is_empty() || disabled {
-        return runs.child(div().text_color(base).child(text.to_owned()));
-    }
-    let mut cursor = 0usize;
-    let mut current = String::new();
-    let mut current_hit = false;
-    for (char_idx, ch) in text.chars().enumerate() {
-        while cursor < indices.len() && (indices[cursor] as usize) < char_idx {
-            cursor += 1;
-        }
-        let is_hit = cursor < indices.len() && indices[cursor] as usize == char_idx;
-        if char_idx == 0 {
-            current_hit = is_hit;
-        } else if is_hit != current_hit {
-            let color = if current_hit { hit_color } else { base };
-            runs = runs.child(div().text_color(color).child(std::mem::take(&mut current)));
-            current_hit = is_hit;
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        let color = if current_hit { hit_color } else { base };
-        runs = runs.child(div().text_color(color).child(current));
-    }
-    runs
-}
-
 impl Focusable for Palette {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.input.read(cx).focus_handle(cx)
+        self.command_state.read(cx).focus_handle(cx)
     }
 }
 
@@ -968,15 +878,19 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-shift-p opens the palette");
 
         // Fuzzy-pick the Go-to-offset command, then supply the argument.
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
 
         type_query(&pal, "+10", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
 
         assert_eq!(caret(&ws, cx), Some(15), "relative +10 from cursor 5 lands at 15");
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking closes the palette");
@@ -1003,14 +917,17 @@ mod tests {
 
         let pal = palette(&ws, cx);
         cx.simulate_keystrokes("cmd-shift-p");
+        cx.run_until_parked();
         assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-shift-p opens the palette");
 
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset, "entry stayed enabled");
 
         type_query(&pal, "+10", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
 
         assert_eq!(caret(&ws, cx), Some(15), "jump landed on the reference file, not nowhere");
     }
@@ -1024,15 +941,22 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
 
         cx.simulate_keystrokes("escape");
+
+        cx.run_until_parked();
         assert!(pal.read_with(cx, |p, _| p.is_open()), "escape from a sub-mode keeps the palette open");
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main, "escape pops back to Main");
 
         cx.simulate_keystrokes("escape");
+
+        cx.run_until_parked();
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "escape at Main closes the palette");
     }
 
@@ -1046,11 +970,16 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
 
         cx.simulate_keystrokes("escape");
+
+        cx.run_until_parked();
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "escape closes outright with the setting off");
     }
 
@@ -1063,13 +992,19 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.selected()), 0);
 
         cx.simulate_keystrokes("down");
+
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.selected()), 1, "down advances the selection");
         cx.simulate_keystrokes("down");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.selected()), 2);
         cx.simulate_keystrokes("up");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.selected()), 1, "up retreats the selection");
     }
 
@@ -1084,15 +1019,20 @@ mod tests {
         let grid = ws.read_with(cx, |ws, cx| ws.active_pane(cx).unwrap().read(cx).focus_handle(cx));
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
 
         // Re-open while in the sub-mode, then close: focus must land back
         // on the grid, not on the palette's own (now unrendered) input.
         cx.simulate_keystrokes("cmd-shift-p");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main);
         cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
         assert!(!pal.read_with(cx, |p, _| p.is_open()));
         assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(grid), "close restores grid focus");
     }
@@ -1112,11 +1052,13 @@ mod tests {
 
         let pal = palette(&ws, cx);
         cx.simulate_keystrokes("cmd-p");
+        cx.run_until_parked();
         assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-p opens the palette");
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::QuickOpen, "cmd-p enters QuickOpen");
 
         type_query(&pal, "t.bin", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
 
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "picking closes the palette");
         assert!(ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "the file tab is front-most again");
@@ -1131,8 +1073,11 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-p");
+
+        cx.run_until_parked();
         assert!(pal.read_with(cx, |p, _| p.is_open()), "cmd-p opens QuickOpen");
         cx.simulate_keystrokes("cmd-p");
+        cx.run_until_parked();
         assert!(!pal.read_with(cx, |p, _| p.is_open()), "re-invoking cmd-p closes it");
     }
 
@@ -1147,8 +1092,11 @@ mod tests {
         let grid = ws.read_with(cx, |ws, cx| ws.active_pane(cx).unwrap().read(cx).focus_handle(cx));
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "go to offset", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::GoToOffset);
 
         // Click the top-left corner: outside the top-center panel, so it
@@ -1167,8 +1115,11 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "=2+2", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
 
         let clip = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(clip.as_deref(), Some("4"), "the decimal row copies the evaluated value");
@@ -1193,8 +1144,11 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "run template", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Templates, "cascaded into the template list");
 
         // The `.bin` file mask ranks quad.bt at the top; pick it.
@@ -1218,7 +1172,7 @@ mod tests {
     /// fresh checkout has not built it yet (keeps `cargo test` green).
     fn statecmd_fixture() -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/test-statecmd/target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm");
+            .join("../../target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm");
         path.exists().then_some(path)
     }
 
@@ -1265,6 +1219,8 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "Done outcome", cx);
         // The plugin row is the only match for that query.
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main);
@@ -1288,6 +1244,8 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "Cascade outcome", cx);
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -1301,6 +1259,7 @@ mod tests {
 
         // Escape pops the cascade back to Main.
         cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::Main);
         assert!(pal.read_with(cx, |p, _| p.plugin_cascade_labels()).is_none(), "leaving the mode clears the buffer");
     }
@@ -1320,6 +1279,8 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "Prompt outcome", cx);
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -1342,13 +1303,17 @@ mod tests {
         let pal = palette(&ws, cx);
 
         cx.simulate_keystrokes("cmd-shift-p");
+
+        cx.run_until_parked();
         type_query(&pal, "compare files", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::CompareSideA, "cascaded into the A pick");
 
         // Pick the one open file (t.bin) for A, advancing to the B pick.
         type_query(&pal, "t.bin", cx);
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         assert_eq!(pal.read_with(cx, |p, _| p.mode()), PaletteMode::CompareSideB, "A picked, now on B");
 
         // Pick the same file for B: spawns the compare and closes.

@@ -60,6 +60,7 @@ use gpui::component::dialog::DialogFooter;
 use gpui::component::dock::BasePanelView as PanelView;
 use gpui::component::dock::PanelHandle;
 use gpui::component::dock::DockArea;
+use gpui::component::dock::PanelStyle;
 use gpui::component::dock::DockEvent;
 use gpui::component::dock::DockSkin;
 use gpui::component::dock::DockLayout;
@@ -324,12 +325,9 @@ pub fn init_keybindings(cx: &mut App) {
         gpui::KeyBinding::new("cmd-,", OpenSettings, None),
         // Mirror the egui app's `FOCUS_PANE` chord (Cmd+K).
         gpui::KeyBinding::new("cmd-k", PickPane, None),
-        // Palette navigation, scoped to the overlay's own key context so
-        // these keys are inert everywhere else; the palette's text input
-        // is a descendant, so with it focused these still dispatch here.
-        gpui::KeyBinding::new("up", crate::palette::PaletteUp, Some("Palette")),
-        gpui::KeyBinding::new("down", crate::palette::PaletteDown, Some("Palette")),
-        gpui::KeyBinding::new("escape", crate::palette::PaletteDismiss, Some("Palette")),
+        // Palette navigation (up/down/enter/escape) is owned by the
+        // builtin `Command` widget's own key context, so the palette needs
+        // no bindings of its own here.
         // Scoped to the search bar's own key context (set on its
         // render root) so plain Escape elsewhere is left alone; the
         // bar's `InputState`s propagate Escape up to this binding when
@@ -621,8 +619,18 @@ impl Workspace {
         // The 0.5.2 DockArea renders no chrome (tab bars, title bars) on its
         // own; `DockSkin` is the renderer that draws them. Without it the
         // dock still docks/persists but shows no tabs and no panel frames.
-        let dock =
-            cx.new(|cx| DockArea::new("workspace", Some(persist::LAYOUT_VERSION), window, cx).with_renderer(DockSkin::new(cx)));
+        let dock = cx.new(|cx| {
+            let skin = DockSkin::new(cx);
+            // Always draw the tab bar, even for a solo panel, so the last tab
+            // in a dock stays closeable. PanelStyle::Auto (the default) hides
+            // it at one panel, which strands the last strings/entropy tab
+            // expanded with no close affordance. set_panel_style notifies via
+            // `area.update`, which re-enters the DockArea if called during its
+            // own construction here -- defer it to after construction.
+            let styled = skin.clone();
+            window.defer(cx, move |_window, cx| styled.set_panel_style(PanelStyle::TabBar, cx));
+            DockArea::new("workspace", Some(persist::LAYOUT_VERSION), window, cx).with_renderer(skin)
+        });
         let dock_subscription = cx.subscribe(&dock, |workspace, _dock, event: &DockEvent, cx| match event {
             DockEvent::LayoutChanged => {
                 workspace.needs_reconcile = true;
@@ -2822,6 +2830,15 @@ impl Workspace {
     /// `save_active_file` / `save_file_by_id` (`crates/hxy/src/files/save.rs`).
     fn save_reference_file(&mut self, kind: SaveKind, window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = self.reference_active_file(cx) else { return };
+        // A writer-bearing plugin-VFS entry commits in place through the
+        // mount (WIT write-range), not to a disk path -- so it never falls
+        // through to the "prompt for a path" branch below.
+        if file.read(cx).is_vfs_writeback() {
+            if let Err(err) = file.update(cx, |panel, cx| panel.save_vfs_entry(cx)) {
+                window.push_notification(Notification::error(format!("VFS writeback failed: {err}")), cx);
+            }
+            return;
+        }
         let path = file.read(cx).path().map(Path::to_path_buf);
         match (kind, path) {
             (SaveKind::Save, Some(path)) => {
