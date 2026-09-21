@@ -24,6 +24,7 @@ pub use cache::CHUNK_SIZE_BYTES;
 pub use cache::CacheLimit;
 pub use cache::CacheStats;
 pub use cache::CachedSource;
+pub use cache::StreamingSource;
 pub use cache::ChunkIndex;
 pub use cache::ChunkSize;
 pub use cache::HexViewKey;

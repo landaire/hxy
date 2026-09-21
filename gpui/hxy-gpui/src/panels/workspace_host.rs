@@ -79,8 +79,15 @@ use gpui::component::dock::PanelState;
 use gpui::component::dock::register_panel;
 use gpui::component::h_flex;
 use gpui::component::notification::Notification;
+use hxy_core::Attribution;
+use hxy_core::ByteLen;
+use hxy_core::ByteOffset;
+use hxy_core::ByteRange;
+use hxy_core::CacheLimit;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::PluginKey;
+use hxy_core::StreamingSource;
 use hxy_vfs::MountedVfs;
 use hxy_vfs::VfsCapabilities;
 use hxy_vfs::VfsRegistry;
@@ -348,18 +355,35 @@ impl WorkspaceHostPanel {
             });
             return;
         }
-        let bytes = match read_entry(&self.mount, &vfs_path) {
-            Ok(bytes) => bytes,
+        // Stream the entry on demand: reads go through the mount's
+        // read-range (never the whole entry, never the UI thread) via
+        // StreamingSource; a background driver prefetches the visible
+        // window. The length comes from the mount up front (a HexSource
+        // needs it) instead of a full read.
+        let len = match self.mount.fs.metadata(&vfs_path) {
+            Ok(meta) => meta.len,
             Err(err) => {
-                tracing::warn!(entry = %vfs_path, %err, "workspace: read entry failed");
+                tracing::warn!(entry = %vfs_path, %err, "workspace: stat entry failed");
                 return;
             }
         };
         let virtual_base =
             virtual_base_hint.or_else(|| self.mount.virtual_base.as_ref().and_then(|q| q.virtual_base(&vfs_path)));
         let name = leaf_name(&vfs_path);
-        let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-        let panel = cx.new(|cx| FilePanel::new_vfs_entry(source, name, window, cx));
+        let reader: Arc<dyn HexSource> =
+            Arc::new(VfsEntrySource { mount: self.mount.clone(), path: vfs_path.clone(), len: ByteLen::new(len) });
+        let streaming = StreamingSource::new(reader, CacheLimit::default(), Attribution::Plugin(PluginKey(0)));
+        let source: Arc<dyn HexSource> = streaming.clone();
+        let mount = self.mount.clone();
+        let entry_path = vfs_path.clone();
+        // A writer-bearing mount (plugin) is editable and live-refreshed;
+        // a read-only mount (zip) is neither.
+        let refresh_on = self.mount.writer.is_some();
+        let panel = cx.new(|cx| {
+            let mut panel = FilePanel::new_vfs_entry(source, name, window, cx);
+            panel.attach_vfs_stream(streaming, mount, entry_path, refresh_on, window, cx);
+            panel
+        });
         // A VFS entry can only be persisted through the mount's writer;
         // without one (every mount today -- the zip handler mounts
         // READ_ONLY with `writer: None`, and plugin writers arrive M4),
@@ -596,14 +620,51 @@ impl Render for WorkspaceHostPanel {
     }
 }
 
-/// Read a whole VFS entry into an owned buffer (M3 opens entries as
-/// `MemorySource`; streaming lands with M4's plugin mounts).
-fn read_entry(mount: &MountedVfs, path: &str) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut file = mount.fs.open_file(path).map_err(|e| std::io::Error::other(format!("open {path}: {e}")))?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    Ok(buf)
+/// A [`HexSource`] that reads a plugin-VFS entry on demand through the
+/// mount's range reads (WIT `read-range`) instead of slurping the whole
+/// entry. Wrapped in a [`StreamingSource`] so the UI thread never blocks
+/// on it. `Send + Sync`: the plugin filesystem serializes its wasmtime
+/// store internally, so a background prefetch is safe.
+struct VfsEntrySource {
+    mount: Arc<MountedVfs>,
+    path: String,
+    len: ByteLen,
+}
+
+impl HexSource for VfsEntrySource {
+    fn len(&self) -> ByteLen {
+        self.len
+    }
+
+    fn read(&self, range: ByteRange) -> hxy_core::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        let end = ByteOffset::new(self.len.get());
+        if range.end() > end {
+            return Err(hxy_core::Error::OutOfBounds { range, len: end });
+        }
+        let mut file = self
+            .mount
+            .fs
+            .open_file(&self.path)
+            .map_err(|e| hxy_core::Error::Io { range, source: std::io::Error::other(format!("open {}: {e}", self.path)) })?;
+        file.seek(SeekFrom::Start(range.start().get())).map_err(|source| hxy_core::Error::Io { range, source })?;
+        // Zero-fill so a short read (e.g. an unmapped xbox page) still
+        // returns exactly range.len() bytes -- the HexSource contract --
+        // instead of erroring the whole chunk fetch.
+        let mut buf = vec![0u8; range.len().get() as usize];
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            match file.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(source) => return Err(hxy_core::Error::Io { range, source }),
+            }
+        }
+        Ok(buf)
+    }
 }
 
 /// Re-mount the archive at `path` through the global registry. `None`

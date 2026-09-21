@@ -6,6 +6,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 
 use gpui::App;
 use gpui::AppContext;
@@ -39,6 +42,7 @@ use hxy_core::ByteOffset;
 use hxy_core::ByteRange;
 use hxy_core::HexSource;
 use hxy_core::MemorySource;
+use hxy_core::StreamingSource;
 use hxy_core::Selection;
 use hxy_core::byte_palette::ValueHighlight;
 use hxy_templates::format::format_template_copy;
@@ -54,6 +58,7 @@ use hxy_templates::state::recompute_leaf_colors;
 use hxy_templates::state::toggle_collapse;
 use hxy_templates::state::visible_node_indices;
 use hxy_templates::visualize::VisualizerKey;
+use hxy_vfs::MountedVfs;
 use hxy_vfs::VfsHandler;
 use hxy_view_gpui::ByteStyleOverride;
 use hxy_view_gpui::HexPane;
@@ -161,6 +166,30 @@ pub struct FilePanel {
     /// Replaced on every trigger; dropping the old task cancels it.
     _template_rerun_task: Option<gpui::Task<()>>,
     _overlay_observe: Subscription,
+    /// Plugin-VFS streaming. The source (for prefetch/invalidate), and the
+    /// mount + entry path (for in-place writeback on save). All `None` for
+    /// a plain file or an in-memory VFS entry.
+    vfs_streaming: Option<Arc<StreamingSource>>,
+    vfs_mount: Option<Arc<MountedVfs>>,
+    vfs_entry_path: Option<String>,
+    /// Thin live-refresh seam a richer policy can drive later.
+    vfs_refresh: Arc<Mutex<VfsRefresh>>,
+    /// The prefetch/refresh driver loop; dropping it stops the loop.
+    _vfs_driver: Option<gpui::Task<()>>,
+}
+
+/// Live-refresh knob for a plugin-VFS entry. The driver loop only reads
+/// it; a richer policy layer (per-entry fixed | on-write | poll, global
+/// default, poll floor, opt-out) flips `enabled` / sets `interval` later.
+struct VfsRefresh {
+    enabled: bool,
+    interval: Duration,
+}
+
+impl Default for VfsRefresh {
+    fn default() -> Self {
+        Self { enabled: false, interval: Duration::from_secs(2) }
+    }
 }
 
 impl FilePanel {
@@ -205,6 +234,11 @@ impl FilePanel {
             template_rerun_pending: false,
             _template_rerun_task: None,
             _overlay_observe: overlay_observe,
+            vfs_streaming: None,
+            vfs_mount: None,
+            vfs_entry_path: None,
+            vfs_refresh: Arc::new(Mutex::new(VfsRefresh::default())),
+            _vfs_driver: None,
         };
         // Install the settings-driven byte-value palette (if any)
         // before the first paint.
@@ -296,6 +330,142 @@ impl FilePanel {
         let mut panel = Self::new(source, None, window, cx);
         panel.title_override = Some(title);
         panel
+    }
+
+    /// Wire a plugin-VFS entry to its streaming source: keep the handles
+    /// for prefetch/refresh/writeback and spawn the driver loop. The loop
+    /// services on-demand fetches off the UI thread (the source's `read`
+    /// only ever returns cached-or-placeholder bytes) and, when refresh is
+    /// enabled, re-fetches the visible range on the interval.
+    pub fn attach_vfs_stream(
+        &mut self,
+        streaming: Arc<StreamingSource>,
+        mount: Arc<MountedVfs>,
+        entry_path: String,
+        refresh_on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.vfs_streaming = Some(streaming.clone());
+        self.vfs_mount = Some(mount);
+        self.vfs_entry_path = Some(entry_path);
+        if let Ok(mut g) = self.vfs_refresh.lock() {
+            g.enabled = refresh_on;
+        }
+        let refresh = self.vfs_refresh.clone();
+        // ponytail: a 40ms poll drives both demand-service and refresh --
+        // the simplest decoupling from GPUI's paint/render split (read()
+        // records demand during paint; this loop services it). Swap to an
+        // event signal if idle wakeups ever matter.
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let poll = Duration::from_millis(40);
+            let mut last_refresh = Instant::now();
+            loop {
+                cx.background_executor().timer(poll).await;
+                let elapsed = last_refresh.elapsed();
+                // Gather this tick's work under one entity access; Err means
+                // the panel is gone -> end the loop.
+                let gathered = this.update_in(cx, |panel, _window, cx| {
+                    let streaming = panel.vfs_streaming.clone()?;
+                    let demand = streaming.take_demand();
+                    let (enabled, interval) =
+                        { let g = panel.vfs_refresh.lock().expect("refresh lock poisoned"); (g.enabled, g.interval) };
+                    let vis = if enabled && elapsed >= interval { panel.pane.read(cx).visible_byte_range() } else { None };
+                    Some((streaming, demand, vis, panel.pane.clone()))
+                });
+                let Ok(Some((streaming, demand, vis, pane))) = gathered else {
+                    return;
+                };
+                if !demand.is_empty() {
+                    let fetch = streaming.clone();
+                    cx.background_spawn(async move {
+                        for r in demand {
+                            let _ = fetch.prefetch(r);
+                        }
+                    })
+                    .await;
+                    let _ = pane.update(cx, |_, cx| cx.notify());
+                }
+                if let Some(vis) = vis {
+                    last_refresh = Instant::now();
+                    // Overwrite the visible range in place off-thread rather
+                    // than invalidate-then-refetch: the cache keeps serving the
+                    // current bytes until the fresh ones swap in, so a poll tick
+                    // never flashes a zero placeholder.
+                    let fetch = streaming.clone();
+                    cx.background_spawn(async move {
+                        let _ = fetch.refetch(vis);
+                    })
+                    .await;
+                    let _ = pane.update(cx, |_, cx| cx.notify());
+                }
+            }
+        });
+        self._vfs_driver = Some(task);
+    }
+
+    /// Per-tab live-refresh toggle. A richer policy can instead set
+    /// `enabled`/`interval` on the shared config directly. Not yet wired
+    /// to a command / UI affordance -- it's the seam for one.
+    #[allow(dead_code)]
+    pub fn toggle_vfs_refresh(&self) {
+        if let Ok(mut g) = self.vfs_refresh.lock() {
+            g.enabled = !g.enabled;
+        }
+    }
+
+    /// Whether this tab is a writer-bearing plugin-VFS entry (its edits
+    /// commit back through the mount on save).
+    pub fn is_vfs_writeback(&self) -> bool {
+        self.vfs_mount.as_ref().is_some_and(|m| m.writer.is_some()) && self.vfs_entry_path.is_some()
+    }
+
+    /// Commit in-place edits back through the VFS writer (plugin
+    /// `write-range`), then drop the patch so the buffer reads clean and
+    /// re-fetch the written ranges from the mount. Mirrors egui's
+    /// `save_vfs_entry_in_place`: only patched byte ranges are written;
+    /// insert/delete pokes are rejected. `Ok(false)` means nothing to save.
+    pub fn save_vfs_entry(&mut self, cx: &mut Context<Self>) -> Result<bool, String> {
+        let (Some(_mount), Some(path)) = (self.vfs_mount.clone(), self.vfs_entry_path.clone()) else {
+            return Err("not a VFS entry".to_owned());
+        };
+        let Some(writer) = self.vfs_mount.as_ref().and_then(|m| m.writer.clone()) else {
+            return Err("this VFS handler does not support writeback".to_owned());
+        };
+        let ops: Vec<(u64, Vec<u8>)> = {
+            let editor = self.pane.read(cx).editor();
+            let patch = editor.patch().read().map_err(|_| "patch lock poisoned".to_owned())?;
+            let mut ops = Vec::with_capacity(patch.ops().len());
+            for op in patch.ops() {
+                if op.old_len != op.new_bytes.len() as u64 {
+                    return Err(format!("only in-place writes are supported (offset {})", op.offset));
+                }
+                ops.push((op.offset, op.new_bytes.clone()));
+            }
+            ops
+        };
+        if ops.is_empty() {
+            return Ok(false);
+        }
+        for (offset, bytes) in &ops {
+            writer.write_range(&path, *offset, bytes).map_err(|e| format!("write @ offset {offset}: {e}"))?;
+        }
+        // On the console now: invalidate the written ranges so a read
+        // re-fetches them, and re-swap the same streaming source, which
+        // drops the patch overlay so the editor reports clean.
+        if let Some(streaming) = self.vfs_streaming.clone() {
+            for (offset, bytes) in &ops {
+                if let Ok(r) = ByteRange::new(ByteOffset::new(*offset), ByteOffset::new(*offset + bytes.len() as u64)) {
+                    streaming.invalidate(r);
+                }
+            }
+            let base: Arc<dyn HexSource> = streaming;
+            self.pane.update(cx, |pane, cx| {
+                pane.editor_mut().swap_source(base);
+                cx.notify();
+            });
+        }
+        Ok(true)
     }
 
     /// Record the VFS handler that matched this file's header (enables

@@ -194,6 +194,22 @@ impl HexPane {
         self.columns
     }
 
+    /// The byte range on screen as of the last painted frame, clamped to
+    /// the source length. `None` before the first paint. Drives the
+    /// plugin-VFS streamer: prefetch and live-refresh only what's in view.
+    pub fn visible_byte_range(&self) -> Option<ByteRange> {
+        let frame = self.last_frame.as_ref()?;
+        let cols = self.column_override.unwrap_or(self.columns).as_u64();
+        if cols == 0 {
+            return None;
+        }
+        let len = self.editor.source().len().get();
+        let rows = frame.rows_visible.ceil() as u64 + 1;
+        let start = frame.first_visible_row.saturating_mul(cols).min(len);
+        let end = frame.first_visible_row.saturating_add(rows).saturating_mul(cols).min(len);
+        ByteRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
+    }
+
     /// Whether this pane pins its own column count (a per-buffer
     /// override), ignoring changes to the global `hex_columns` default.
     pub fn has_column_override(&self) -> bool {
