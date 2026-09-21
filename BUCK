@@ -17192,6 +17192,7 @@ cargo.rust_binary(
         "gpui/hxy-gpui/src/panels/file.rs",
         "gpui/hxy-gpui/src/panels/global_search.rs",
         "gpui/hxy-gpui/src/panels/inspector.rs",
+        "gpui/hxy-gpui/src/panels/memory_view.rs",
         "gpui/hxy-gpui/src/panels/mod.rs",
         "gpui/hxy-gpui/src/panels/plugins_view.rs",
         "gpui/hxy-gpui/src/panels/search_bar.rs",
