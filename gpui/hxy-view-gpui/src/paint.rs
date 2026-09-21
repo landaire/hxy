@@ -114,6 +114,9 @@ pub(crate) struct GridSnapshot {
     /// real byte (an empty buffer's insertion caret), so a new file shows a
     /// selectable "initial byte". `None` outside that case.
     pub ghost_offset: Option<ByteOffset>,
+    /// Base added to each row offset in the address gutter, so the column
+    /// shows virtual addresses (egui's virtual base). `0` shows raw offsets.
+    pub virtual_base: u64,
 }
 
 /// Build the canvas element that paints the grid. `entity` is used from
@@ -141,7 +144,7 @@ fn paint_grid(
     let mono = font(snap.mono_family.clone());
     let metrics = cell_metrics(&mono, snap.mono_size, window);
     let source_len = snap.source.len();
-    let geometry = GridGeometry::new(metrics, snap.columns, source_len);
+    let geometry = GridGeometry::new(metrics, snap.columns, source_len, snap.virtual_base);
     let cols = u64::from(snap.columns.get());
 
     let first_visible_row = snap.scroll_rows.floor().max(0.0) as u64;
@@ -569,7 +572,7 @@ fn paint_row_text(ctx: &RowCtx, snap: &GridSnapshot, mono: &Font, window: &mut W
     // (`format_address_grouped`) lives in the egui-only hxy-view
     // crate, not shared code, so wiring it would mean new pane
     // capability work.
-    let addr = format!("{:0width$X}", ctx.row_start, width = g.address_chars);
+    let addr = format!("{:0width$X}", snap.virtual_base.saturating_add(ctx.row_start), width = g.address_chars);
     paint_line(
         mono,
         &addr,
@@ -830,7 +833,7 @@ mod tests {
 
     fn geo() -> GridGeometry {
         let metrics = CellMetrics { char_w: px(8.0), line_h: px(16.0) };
-        GridGeometry::new(metrics, ColumnCount::new(16).unwrap(), ByteLen::new(256))
+        GridGeometry::new(metrics, ColumnCount::new(16).unwrap(), ByteLen::new(256), 0)
     }
 
     #[test]

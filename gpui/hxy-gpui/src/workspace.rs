@@ -118,9 +118,11 @@ use crate::palette::modes::PaletteContext;
 use crate::panels::CHECKSUMS_PANEL_NAME;
 use crate::panels::COMPARE_PANEL_NAME;
 use crate::panels::CONSOLE_PANEL_NAME;
+use crate::panels::MEMORY_PANEL_NAME;
 use crate::panels::ChecksumsPanel;
 use crate::panels::ComparePanel;
 use crate::panels::ConsolePanel;
+use crate::panels::MemoryPanel;
 use crate::panels::ENTROPY_PANEL_NAME;
 use crate::panels::EntropyPanel;
 use crate::panels::FILE_PANEL_NAME;
@@ -190,6 +192,7 @@ actions!(
         OpenSettings,
         OpenPlugins,
         OpenConsole,
+        OpenMemory,
         TakeSnapshot,
         OpenSnapshots
     ]
@@ -490,6 +493,7 @@ pub struct Workspace {
     /// `settings_panel`; liveness is confirmed against the dock dump
     /// before reuse (`live_console_panel`).
     console_panel: Option<Entity<ConsolePanel>>,
+    memory_panel: Option<Entity<MemoryPanel>>,
     /// The live `GlobalSearchPanel`, if the user has opened one this
     /// session. A true singleton (unlike the per-file registries above):
     /// there is at most one at a time. May point at a closed/stale
@@ -657,6 +661,7 @@ impl Workspace {
             file_console_subs: Vec::new(),
             console: VecDeque::new(),
             console_panel: None,
+            memory_panel: None,
             global_search_panel: None,
             _global_search_sub: None,
             settings_panel: None,
@@ -899,12 +904,12 @@ impl Workspace {
 
     /// Capture the reference file's current patched bytes as a snapshot,
     /// toasting the new id. FILE-SCOPED. No-op with no reference file.
-    fn on_take_snapshot(&mut self, _: &TakeSnapshot, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_take_snapshot(&mut self, _: &TakeSnapshot, window: &mut Window, cx: &mut Context<Self>) {
         self.capture_active_snapshot(String::new(), window, cx);
     }
 
     /// Open the per-file snapshots dialog for the reference file.
-    fn on_open_snapshots(&mut self, _: &OpenSnapshots, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_open_snapshots(&mut self, _: &OpenSnapshots, window: &mut Window, cx: &mut Context<Self>) {
         self.open_snapshots_dialog(window, cx);
     }
 
@@ -1570,6 +1575,34 @@ impl Workspace {
             self.dock.update(cx, |dock, cx| dock.toggle_dock(DockPlacement::Bottom, window, cx));
         }
         window.focus(&panel.read(cx).focus_handle(cx), cx);
+    }
+
+    /// Toggle the Memory tab in the bottom dock (egui's Memory panel).
+    /// Unlike the other tool panels it is not registered for layout
+    /// restore -- it is a transient debug view that needs a workspace
+    /// handle the restore path does not supply.
+    pub(crate) fn on_open_memory(&mut self, _: &OpenMemory, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.live_memory_panel(cx) {
+            self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
+            self.memory_panel = None;
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        let panel = cx.new(|cx| MemoryPanel::new(weak, cx));
+        self.memory_panel = Some(panel.clone());
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Bottom, None, window, cx)
+        });
+    }
+
+    /// The live `MemoryPanel` if its tab is still open in the bottom dock.
+    fn live_memory_panel(&self, cx: &App) -> Option<Entity<MemoryPanel>> {
+        let dump = self.dock.read(cx).dump(cx);
+        let present = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_memory(d.panel()));
+        if !present {
+            return None;
+        }
+        self.memory_panel.clone()
     }
 
     /// Every open tab as `(display name, PanelId)`, across all dock
@@ -3066,7 +3099,7 @@ impl Workspace {
     /// `cmd-e` / Edit > Toggle Edit Mode: flip the reference file (see
     /// `reference_active_file`'s doc) between read-only and mutable.
     /// No-op with no reference file.
-    fn on_toggle_edit_mode(&mut self, _: &ToggleEditMode, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_toggle_edit_mode(&mut self, _: &ToggleEditMode, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = self.reference_active_file(cx) else { return };
         let pane = file.read(cx).pane().clone();
         pane.update(cx, |pane, cx| {
@@ -3082,7 +3115,7 @@ impl Workspace {
     /// `cmd-z` / Edit > Undo: revert the active file's most recent edit
     /// and park the caret at the change site. No-op with no active file
     /// or an empty undo stack.
-    fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(pane) = self.active_pane(cx) else { return };
         pane.update(cx, |pane, cx| {
             if let Some(entry) = pane.editor_mut().undo() {
@@ -3093,7 +3126,7 @@ impl Workspace {
     }
 
     /// `cmd-shift-z` / Edit > Redo: mirrors [`Self::on_undo`].
-    fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(pane) = self.active_pane(cx) else { return };
         pane.update(cx, |pane, cx| {
             if let Some(entry) = pane.editor_mut().redo() {
@@ -3245,6 +3278,10 @@ impl Workspace {
         // 0 = no field carries a visualize attribute; the visualizer
         // entry is only offered when nonzero (egui `has_visualizer`).
         let visualizer_target_count = hxy_templates::visualize::collect_targets(&file.read(cx).templates).len();
+        // Effective auto-reload mode for the active file, so the watch rows
+        // can mark the current one. `None` for an untitled buffer (no path).
+        let watch_mode = file.read(cx).path().map(|p| crate::settings::settings(cx).auto_reload_for(p));
+        let virtual_base = pane.virtual_base();
         PaletteContext {
             has_active_file: true,
             cursor,
@@ -3254,7 +3291,43 @@ impl Workspace {
             can_browse_vfs,
             template_field_count,
             visualizer_target_count,
+            watch_mode,
+            virtual_base,
         }
+    }
+
+    /// Set the active file's per-file auto-reload override (palette
+    /// WatchAlways / WatchAsk / WatchNever). No-op for an untitled buffer.
+    pub(crate) fn set_active_watch_mode(&self, mode: hxy_settings::AutoReloadMode, cx: &mut App) {
+        let Some(file) = self.reference_active_file(cx) else { return };
+        let Some(path) = file.read(cx).path().map(|p| p.to_path_buf()) else { return };
+        update_settings(cx, |s| {
+            // None when equal to the global default keeps file_watch_prefs free
+            // of redundant entries (mirrors resolve_reload).
+            let pref = Some(mode).filter(|m| *m != s.auto_reload);
+            s.set_auto_reload_for(path, pref);
+        });
+    }
+
+    /// Per-open-file resident memory: `(display name, byte count)`. This app
+    /// holds each file whole in a `MemorySource`, so the count is the file
+    /// length. Backs the Memory panel.
+    pub(crate) fn open_file_memory(&self, cx: &App) -> Vec<(String, u64)> {
+        let mut files = Vec::new();
+        collect_file_entities(self.dock.read(cx), &mut files);
+        files
+            .into_iter()
+            .map(|file| {
+                let f = file.read(cx);
+                let name = f
+                    .path()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| hxy_i18n::t("gpui-file-untitled"));
+                let bytes = f.pane().read(cx).editor().source().len().get();
+                (name, bytes)
+            })
+            .collect()
     }
 
     /// Extension + head bytes of the reference file, for ranking the
@@ -3895,7 +3968,7 @@ impl Workspace {
     /// reopened by hand in the meantime), re-parking its caret and column
     /// count. No-op with an empty ring. Mirrors egui's
     /// `reopen_last_closed_tab`.
-    fn on_reopen_closed(&mut self, _: &ReopenClosedTab, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_reopen_closed(&mut self, _: &ReopenClosedTab, window: &mut Window, cx: &mut Context<Self>) {
         let Some(closed) = self.closed_tabs.pop_back() else { return };
         self.open_path(closed.path.clone(), window, cx);
         let Some(file) = self.open_file_for_path(&closed.path, cx) else { return };
@@ -4249,7 +4322,17 @@ impl Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().muted_foreground)
             .child(file_label)
-            .child(Label::new(offset))
+            .child({
+                // Click the offset readout to flip the offset base (egui's
+                // copyable_status_label base toggle).
+                let has_offset = !offset.is_empty();
+                div().id("status-offset").child(Label::new(offset)).when(has_offset, |el| {
+                    el.cursor_pointer().on_click(cx.listener(|_this, _ev, _window, cx| {
+                        update_settings(cx, |s| s.offset_base = s.offset_base.toggle());
+                        cx.notify();
+                    }))
+                })
+            })
             .child(h_flex().items_center().gap_2().child(Label::new(mode)).when_some(lock, |row, (icon, tooltip)| {
                 row.child(
                     Button::new("status-edit-lock").ghost().xsmall().icon(Icon::new(icon)).tooltip(tooltip).on_click(
@@ -4824,6 +4907,10 @@ fn dump_has_plugins(state: &PanelState) -> bool {
 /// `dump_has_settings`.
 fn dump_has_console(state: &PanelState) -> bool {
     state.panel_name == CONSOLE_PANEL_NAME || state.children.iter().any(dump_has_console)
+}
+
+fn dump_has_memory(state: &PanelState) -> bool {
+    state.panel_name == MEMORY_PANEL_NAME || state.children.iter().any(dump_has_memory)
 }
 
 fn file_path_from_info(info: &PanelInfo) -> Option<PathBuf> {
@@ -5407,6 +5494,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_open_plugins))
             .on_action(cx.listener(Self::on_open_console))
+            .on_action(cx.listener(Self::on_open_memory))
             .on_action(cx.listener(Self::on_take_snapshot))
             .on_action(cx.listener(Self::on_open_snapshots))
             .on_action(cx.listener(Self::on_open_palette))

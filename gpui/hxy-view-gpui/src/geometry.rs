@@ -56,8 +56,10 @@ const HEX_CELL_STRIDE_CHARS: f32 = HEX_CELL_GLYPH_CHARS + HEX_CELL_GAP_CHARS;
 const SECTION_GAP_CHARS: f32 = 2.0;
 
 impl GridGeometry {
-    pub fn new(metrics: CellMetrics, columns: ColumnCount, source_len: ByteLen) -> Self {
-        Self { metrics, columns: columns.get(), address_chars: Self::address_chars_for(source_len) }
+    pub fn new(metrics: CellMetrics, columns: ColumnCount, source_len: ByteLen, virtual_base: u64) -> Self {
+        // The gutter must fit the highest virtual address (base + last byte).
+        let max_address = ByteLen::new(virtual_base.saturating_add(source_len.get()));
+        Self { metrics, columns: columns.get(), address_chars: Self::address_chars_for(max_address) }
     }
 
     /// Minimum hex digits to address the source, min 8 (same rule as
@@ -217,7 +219,7 @@ mod tests {
 
     fn geo() -> GridGeometry {
         let metrics = CellMetrics { char_w: px(8.0), line_h: px(16.0) };
-        GridGeometry::new(metrics, ColumnCount::new(16).unwrap(), ByteLen::new(256))
+        GridGeometry::new(metrics, ColumnCount::new(16).unwrap(), ByteLen::new(256), 0)
     }
 
     #[test]

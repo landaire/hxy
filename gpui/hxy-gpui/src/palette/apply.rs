@@ -15,11 +15,17 @@ use gpui::component::notification::Notification;
 use hxy_core::ByteOffset;
 use hxy_core::Selection;
 
+use crate::menu::Redo;
+use crate::menu::ToggleEditMode;
+use crate::menu::Undo;
 use crate::palette::modes::CopyFormat;
 use crate::palette::modes::PaletteAction;
 use crate::plugins::PluginOp;
 use crate::plugins::find_handler;
 use crate::templates::FieldJump;
+use crate::workspace::OpenSnapshots;
+use crate::workspace::ReopenClosedTab;
+use crate::workspace::TakeSnapshot;
 use crate::workspace::Workspace;
 
 /// Route `action` into the workspace. The palette is already closed and
@@ -28,6 +34,7 @@ use crate::workspace::Workspace;
 pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Window, cx: &mut Context<Workspace>) {
     match action {
         PaletteAction::OpenFile => ws.open_file_dialog(window, cx),
+        PaletteAction::OpenRecent(path) => ws.open_path(path, window, cx),
         PaletteAction::CloseTab => ws.close_active_tab(window, cx),
         PaletteAction::ToggleVim => ws.toggle_active_vim(cx),
         PaletteAction::ToggleGlobalSearch => ws.toggle_global_search(window, cx),
@@ -39,6 +46,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         PaletteAction::OpenSettings => ws.open_settings(window, cx),
         PaletteAction::OpenPlugins => ws.open_plugins(window, cx),
         PaletteAction::OpenConsole => ws.open_console(window, cx),
+        PaletteAction::OpenMemory => ws.on_open_memory(&crate::workspace::OpenMemory, window, cx),
         PaletteAction::BrowseVfs => ws.browse_active_file_as_workspace(window, cx),
         PaletteAction::SplitPane(dir) => ws.split_active_pane(dir, window, cx),
         PaletteAction::MoveTab(dir) => ws.move_active_tab(dir, window, cx),
@@ -78,6 +86,19 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
             let Some(pane) = ws.active_pane(cx) else { return };
             pane.update(cx, |pane, cx| pane.set_columns(count, cx));
         }
+        // Global settings; the settings observer applies them to every pane
+        // and the watch layer.
+        PaletteAction::SetColumnsGlobal(count) => {
+            crate::settings::update_settings(cx, |s| s.hex_columns = count)
+        }
+        PaletteAction::SetPollInterval(ms) => {
+            crate::settings::update_settings(cx, |s| s.file_poll_interval_ms = ms)
+        }
+        PaletteAction::SetWatchMode(mode) => ws.set_active_watch_mode(mode, cx),
+        PaletteAction::SetVirtualBase(base) => {
+            let Some(pane) = ws.active_pane(cx) else { return };
+            pane.update(cx, |pane, cx| pane.set_virtual_base(base, cx));
+        }
         PaletteAction::RunTemplate { path, range } => ws.run_template_on_active(path, range, window, cx),
         PaletteAction::RunTemplateDialog => ws.run_template_dialog(window, cx),
         PaletteAction::InstallTemplate => ws.install_template_dialog(window, cx),
@@ -108,6 +129,14 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
             let message = hxy_i18n::t_args(key, &[("count", &count.to_string())]);
             window.push_notification(Notification::info(message), cx);
         }
+        // Edit / tab / snapshot commands: dispatch the same workspace
+        // handlers the menu and key bindings use.
+        PaletteAction::Undo => ws.on_undo(&Undo, window, cx),
+        PaletteAction::Redo => ws.on_redo(&Redo, window, cx),
+        PaletteAction::ToggleEditMode => ws.on_toggle_edit_mode(&ToggleEditMode, window, cx),
+        PaletteAction::ReopenClosedTab => ws.on_reopen_closed(&ReopenClosedTab, window, cx),
+        PaletteAction::TakeSnapshot => ws.on_take_snapshot(&TakeSnapshot, window, cx),
+        PaletteAction::OpenSnapshots => ws.on_open_snapshots(&OpenSnapshots, window, cx),
         // Consumed by the overlay before reaching dispatch: mode
         // switches, the no-op rows, the compare cascade (routed through
         // `Workspace::open_compare` / `compare_browse`), and the QuickOpen

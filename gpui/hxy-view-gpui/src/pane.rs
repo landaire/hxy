@@ -147,6 +147,9 @@ pub struct HexPane {
     /// moves, cleared when the pointer leaves the pane. Consumers
     /// (template breadcrumbs) read it via [`Self::hovered_offset`].
     hovered_offset: Option<ByteOffset>,
+    /// Base address added to offsets in the address gutter (egui's
+    /// virtual base). `None` shows raw offsets.
+    virtual_base: Option<u64>,
 }
 
 impl HexPane {
@@ -166,6 +169,7 @@ impl HexPane {
             show_minimap: true,
             minimap_colored: true,
             hovered_offset: None,
+            virtual_base: None,
         }
     }
 
@@ -188,6 +192,18 @@ impl HexPane {
     /// by the command palette's `Set columns...` mode.
     pub fn set_columns(&mut self, columns: ColumnCount, cx: &mut Context<Self>) {
         self.columns = columns;
+        cx.notify();
+    }
+
+    /// The pane's virtual base address, or `None` when offsets are raw.
+    pub fn virtual_base(&self) -> Option<u64> {
+        self.virtual_base
+    }
+
+    /// Set (or clear, with `None`) the virtual base and repaint. Used by
+    /// the command palette's `Set virtual base...` mode.
+    pub fn set_virtual_base(&mut self, base: Option<u64>, cx: &mut Context<Self>) {
+        self.virtual_base = base;
         cx.notify();
     }
 
@@ -687,6 +703,7 @@ impl Render for HexPane {
             // A ghost initial byte only for a genuinely empty buffer; a
             // non-empty file's EOF insertion slot needs no placeholder.
             ghost_offset: self.editor.source().is_empty().then(|| ByteOffset::new(0)),
+            virtual_base: self.virtual_base.unwrap_or(0),
         };
         let canvas = hex_canvas(snap, cx.entity());
 

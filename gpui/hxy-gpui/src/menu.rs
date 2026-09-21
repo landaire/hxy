@@ -37,6 +37,7 @@ use gpui::actions;
 
 use crate::workspace::OpenChecksums;
 use crate::workspace::OpenConsole;
+use crate::workspace::OpenMemory;
 use crate::workspace::OpenEntropy;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenPlugins;
@@ -144,6 +145,7 @@ pub fn build_menus() -> Vec<Menu> {
                 MenuItem::action(hxy_i18n::t("tab-settings"), OpenSettings),
                 MenuItem::action(hxy_i18n::t("tab-plugins"), OpenPlugins),
                 MenuItem::action(hxy_i18n::t("tab-console"), OpenConsole),
+                MenuItem::action(hxy_i18n::t("tab-memory"), OpenMemory),
             ],
             disabled: false,
         },
@@ -178,8 +180,8 @@ mod tests {
         );
         assert_eq!(
             item_count(3),
-            14,
-            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings, Plugins, Console"
+            15,
+            "View menu: Toggle Inspector, Toggle Global Search, Toggle Vim, sep, Strings, Entropy, Checksums, sep, Take Snapshot, Snapshots, sep, Settings, Plugins, Console, Memory"
         );
     }
 }

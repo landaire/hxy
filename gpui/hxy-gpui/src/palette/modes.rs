@@ -20,7 +20,9 @@ use hxy_panels::goto::ParseError;
 use hxy_panels::goto::parse_count_expr;
 use hxy_panels::goto::parse_offset_expr;
 use hxy_panels::goto::parse_range_expr;
+use hxy_panels::watch::PollingPrefs;
 use hxy_plugin_host::PluginCommand;
+use hxy_settings::AutoReloadMode;
 use hxy_templates::library::TemplateLibrary;
 use palette_core::Entry;
 
@@ -36,6 +38,10 @@ pub enum PaletteMode {
     /// Cmd+P). Entered directly via its own keybinding, not cascaded from
     /// Main, so Escape closes it; its rows are fuzzy-filtered by tab name.
     QuickOpen,
+    /// Fuzzy list of recently opened files (egui's `Mode::Recent`).
+    /// Cascaded from Main via "Open Recent..."; each pick reopens the
+    /// file through [`Workspace::open_path`]. Rows are fuzzy-filtered.
+    Recent,
     GoToOffset,
     /// Virtual-address variant of [`Self::GoToOffset`]. The gpui port
     /// has no virtual-base plumbing yet, so no Main entry constructs it;
@@ -46,6 +52,14 @@ pub enum PaletteMode {
     SelectFromOffset,
     SelectRange,
     SetColumns,
+    /// Global column count, written to settings (egui's `SetColumnsGlobal`).
+    SetColumnsGlobal,
+    /// Global file-poll interval in ms, written to settings (egui's
+    /// `SetPollInterval`).
+    SetPollInterval,
+    /// Virtual base address for the active pane; an empty query clears it
+    /// (egui's `SetVirtualBase`).
+    SetVirtualBase,
     /// Second-level cascade shown after the user picks `Run Template...`
     /// from the Main list. Registered templates + install / uninstall /
     /// browse entries. Each pick binds against the whole file. Entries
@@ -84,11 +98,15 @@ impl PaletteMode {
     pub fn parent(self) -> Option<Self> {
         match self {
             PaletteMode::Main | PaletteMode::QuickOpen => None,
-            PaletteMode::GoToOffset
+            PaletteMode::Recent
+            | PaletteMode::GoToOffset
             | PaletteMode::GoToAddress
             | PaletteMode::SelectFromOffset
             | PaletteMode::SelectRange
             | PaletteMode::SetColumns
+            | PaletteMode::SetColumnsGlobal
+            | PaletteMode::SetPollInterval
+            | PaletteMode::SetVirtualBase
             | PaletteMode::Templates
             | PaletteMode::TemplatesAtSelection
             | PaletteMode::UninstallTemplate
@@ -119,7 +137,8 @@ impl PaletteMode {
             | PaletteMode::TemplatesAtSelection
             | PaletteMode::UninstallTemplate
             | PaletteMode::PluginCascade
-            | PaletteMode::QuickOpen => false,
+            | PaletteMode::QuickOpen
+            | PaletteMode::Recent => false,
             _ => true,
         }
     }
@@ -129,11 +148,15 @@ impl PaletteMode {
         match self {
             PaletteMode::Main => "palette-hint-main",
             PaletteMode::QuickOpen => "palette-hint-quick-open",
+            PaletteMode::Recent => "palette-hint-recent",
             PaletteMode::GoToOffset => "palette-hint-go-to-offset",
             PaletteMode::GoToAddress => "palette-hint-go-to-address",
             PaletteMode::SelectFromOffset => "palette-hint-select-from-offset",
             PaletteMode::SelectRange => "palette-hint-select-range",
             PaletteMode::SetColumns => "palette-hint-set-columns-local",
+            PaletteMode::SetColumnsGlobal => "palette-hint-set-columns-global",
+            PaletteMode::SetPollInterval => "palette-hint-set-poll-interval",
+            PaletteMode::SetVirtualBase => "palette-hint-set-virtual-base",
             PaletteMode::Templates => "palette-hint-templates",
             PaletteMode::TemplatesAtSelection => "palette-hint-templates-at-selection",
             PaletteMode::UninstallTemplate => "palette-hint-uninstall",
@@ -180,6 +203,8 @@ pub enum CopyFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaletteAction {
     OpenFile,
+    /// Reopen a recently opened file by path (egui's `Action::OpenRecent`).
+    OpenRecent(PathBuf),
     CloseTab,
     ToggleVim,
     ToggleInspector,
@@ -205,6 +230,8 @@ pub enum PaletteAction {
     /// Open (or focus) the Console tab. Workspace-scoped like
     /// [`Self::OpenSettings`], never gated on `has_active_file`.
     OpenConsole,
+    /// Toggle the Memory debug tab (per-open-file resident memory).
+    OpenMemory,
     /// Open (or focus) the visualizer panel for the active file. Only
     /// offered while a template field carries a visualize attribute
     /// (`PaletteContext::visualizer_target_count`), mirroring egui's
@@ -224,6 +251,18 @@ pub enum PaletteAction {
         end_exclusive: u64,
     },
     SetColumns(ColumnCount),
+    /// Write the global `hex_columns` setting (egui's `SetColumnsGlobal`),
+    /// applied to every pane by the settings observer.
+    SetColumnsGlobal(ColumnCount),
+    /// Write the global `file_poll_interval_ms` setting; `0` disables
+    /// polling (egui's `SetPollInterval`).
+    SetPollInterval(u32),
+    /// Set the active file's per-file auto-reload override (egui's
+    /// `WatchAlways` / `WatchAsk` / `WatchNever`).
+    SetWatchMode(AutoReloadMode),
+    /// Set (`Some`) or clear (`None`) the active pane's virtual base
+    /// address (egui's `SetVirtualBase`).
+    SetVirtualBase(Option<u64>),
     /// Copy a literal string (the `=<expr>` calculator rows).
     CopyText(String),
     /// Copy the active file's current selection in the given format.
@@ -294,6 +333,18 @@ pub enum PaletteAction {
     /// Tear the active tab out into its own OS window. No egui equivalent
     /// (that app is single-window); closing the window returns the tab.
     TearTab,
+    /// Revert / reapply the active file's most recent edit (egui palette
+    /// `Undo` / `Redo`; also the `cmd-z` / `cmd-shift-z` bindings).
+    Undo,
+    Redo,
+    /// Flip the active pane between read-only and edit (egui `ToggleEditMode`).
+    ToggleEditMode,
+    /// Reopen the most recently closed tab (egui `ReopenClosedTab`).
+    ReopenClosedTab,
+    /// Take / browse on-disk snapshots of the active file (egui
+    /// `TakeSnapshot` / `OpenSnapshots`).
+    TakeSnapshot,
+    OpenSnapshots,
     /// Inert: placeholder / invalid rows pick to this so a stray Enter
     /// doesn't get the user stuck; the overlay just closes.
     NoOp,
@@ -321,6 +372,12 @@ pub struct PaletteContext {
     /// its fields carry a `[[hex::visualize(...)]]` attribute; the
     /// visualizer entry is only listed when nonzero.
     pub visualizer_target_count: usize,
+    /// Effective auto-reload mode for the active file; the watch rows
+    /// mark the active one. `None` for an untitled buffer.
+    pub watch_mode: Option<AutoReloadMode>,
+    /// Virtual base address of the active pane, or `None` for raw
+    /// offsets. Gates and adjusts the go-to-address entry.
+    pub virtual_base: Option<u64>,
 }
 
 /// Resolved keybinding hints for the Main-list commands that mirror a
@@ -332,6 +389,10 @@ pub struct Shortcuts {
     pub toggle_inspector: Option<String>,
     pub toggle_global_search: Option<String>,
     pub open_settings: Option<String>,
+    pub undo: Option<String>,
+    pub redo: Option<String>,
+    pub toggle_edit_mode: Option<String>,
+    pub reopen_closed_tab: Option<String>,
 }
 
 /// Ceiling for the palette's column-count input, matching the egui
@@ -354,7 +415,10 @@ pub fn build_entries(
         | PaletteMode::GoToAddress
         | PaletteMode::SelectFromOffset
         | PaletteMode::SelectRange
-        | PaletteMode::SetColumns => build_arg_entries(&mut out, mode, query.trim(), ctx),
+        | PaletteMode::SetColumns
+        | PaletteMode::SetColumnsGlobal
+        | PaletteMode::SetPollInterval
+        | PaletteMode::SetVirtualBase => build_arg_entries(&mut out, mode, query.trim(), ctx),
         // Compare picks, the template lists, and QuickOpen depend on live
         // app state (open files, the library global, the active file's
         // head bytes, the open tabs), which the pure builders don't have;
@@ -366,7 +430,8 @@ pub fn build_entries(
         | PaletteMode::UninstallTemplate
         | PaletteMode::PluginCascade
         | PaletteMode::PluginPrompt
-        | PaletteMode::QuickOpen => {}
+        | PaletteMode::QuickOpen
+        | PaletteMode::Recent => {}
     }
     out
 }
@@ -525,6 +590,8 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     }
     out.push(open);
 
+    out.push(Entry::new(hxy_i18n::t("palette-open-recent-entry"), PaletteAction::SwitchMode(PaletteMode::Recent)));
+
     out.push(
         Entry::new(hxy_i18n::t("gpui-palette-close-tab"), PaletteAction::CloseTab).with_disabled(!ctx.has_active_file),
     );
@@ -565,6 +632,66 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
     // Workspace-scoped like settings; egui's Toggle Console has no
     // shortcut, so no keybinding hint is surfaced here.
     out.push(Entry::new(hxy_i18n::t("gpui-palette-show-console"), PaletteAction::OpenConsole));
+
+    out.push(Entry::new(hxy_i18n::t("tab-memory"), PaletteAction::OpenMemory));
+
+    // Edit / tab commands also reachable from the menu and their key
+    // bindings, surfaced here for palette parity with egui. Undo / Redo /
+    // edit-mode / snapshots act on the active file (disabled without one);
+    // reopen-closed restores a tab regardless.
+    let mut undo = Entry::new(hxy_i18n::t("palette-undo"), PaletteAction::Undo).with_disabled(!ctx.has_active_file);
+    if let Some(hint) = &shortcuts.undo {
+        undo = undo.with_shortcut(hint.clone());
+    }
+    out.push(undo);
+
+    let mut redo = Entry::new(hxy_i18n::t("palette-redo"), PaletteAction::Redo).with_disabled(!ctx.has_active_file);
+    if let Some(hint) = &shortcuts.redo {
+        redo = redo.with_shortcut(hint.clone());
+    }
+    out.push(redo);
+
+    let mut toggle_edit = Entry::new(hxy_i18n::t("gpui-menu-toggle-edit-mode"), PaletteAction::ToggleEditMode)
+        .with_disabled(!ctx.has_active_file);
+    if let Some(hint) = &shortcuts.toggle_edit_mode {
+        toggle_edit = toggle_edit.with_shortcut(hint.clone());
+    }
+    out.push(toggle_edit);
+
+    let mut reopen = Entry::new(hxy_i18n::t("palette-reopen-closed-tab"), PaletteAction::ReopenClosedTab);
+    if let Some(hint) = &shortcuts.reopen_closed_tab {
+        reopen = reopen.with_shortcut(hint.clone());
+    }
+    out.push(reopen);
+
+    out.push(
+        Entry::new(hxy_i18n::t("palette-take-snapshot"), PaletteAction::TakeSnapshot)
+            .with_subtitle(hxy_i18n::t("palette-take-snapshot-subtitle"))
+            .with_disabled(!ctx.has_active_file),
+    );
+    out.push(
+        Entry::new(hxy_i18n::t("palette-open-snapshots"), PaletteAction::OpenSnapshots)
+            .with_subtitle(hxy_i18n::t("palette-open-snapshots-subtitle"))
+            .with_disabled(!ctx.has_active_file),
+    );
+
+    // Per-file auto-reload override for the active file; the current mode is
+    // marked (egui WatchAlways / WatchAsk / WatchNever). Needs a file.
+    if ctx.has_active_file {
+        for mode in AutoReloadMode::ALL {
+            let marker = if ctx.watch_mode == Some(mode) { "*" } else { "" };
+            let subtitle = hxy_i18n::t_args(
+                "palette-watch-subtitle",
+                &[("mode", &hxy_i18n::t(mode.label_key())), ("marker", marker)],
+            );
+            let key = match mode {
+                AutoReloadMode::Always => "palette-watch-always",
+                AutoReloadMode::Ask => "palette-watch-ask",
+                AutoReloadMode::Never => "palette-watch-never",
+            };
+            out.push(Entry::new(hxy_i18n::t(key), PaletteAction::SetWatchMode(mode)).with_subtitle(subtitle));
+        }
+    }
 
     out.push(
         Entry::new(hxy_i18n::t("palette-strings-whole-file"), PaletteAction::OpenStrings)
@@ -661,6 +788,36 @@ fn build_main_entries(out: &mut Vec<Entry<PaletteAction>>, query: &str, ctx: Pal
         Entry::new(hxy_i18n::t("palette-set-columns-local-entry"), PaletteAction::SwitchMode(PaletteMode::SetColumns))
             .with_disabled(!ctx.has_active_file),
     );
+
+    // Global settings, applied to every pane / the watch layer by the
+    // settings observer (egui SetColumnsGlobal / SetPollInterval); not
+    // gated on an active file.
+    out.push(Entry::new(
+        hxy_i18n::t("palette-set-columns-global-entry"),
+        PaletteAction::SwitchMode(PaletteMode::SetColumnsGlobal),
+    ));
+    out.push(Entry::new(
+        hxy_i18n::t("palette-set-poll-interval-entry"),
+        PaletteAction::SwitchMode(PaletteMode::SetPollInterval),
+    ));
+
+    // Virtual base for the active pane; the go-to-address row appears only
+    // once a base is set (egui parity). Both need a file.
+    if ctx.has_active_file {
+        let vbase_label = match ctx.virtual_base {
+            Some(addr) => {
+                hxy_i18n::t_args("palette-set-virtual-base-entry-current", &[("address", &format!("0x{addr:X}"))])
+            }
+            None => hxy_i18n::t("palette-set-virtual-base-entry"),
+        };
+        out.push(Entry::new(vbase_label, PaletteAction::SwitchMode(PaletteMode::SetVirtualBase)));
+        if ctx.virtual_base.is_some() {
+            out.push(Entry::new(
+                hxy_i18n::t("palette-go-to-address-entry"),
+                PaletteAction::SwitchMode(PaletteMode::GoToAddress),
+            ));
+        }
+    }
 
     // Compare is workspace-scoped (its own two editors), so it needs no
     // active file: even with nothing open the user can browse two files.
@@ -784,7 +941,9 @@ fn build_calculator_copy(out: &mut Vec<Entry<PaletteAction>>, expr: &str) {
 }
 
 fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, query: &str, ctx: PaletteContext) {
-    if query.is_empty() {
+    // Other arg modes show nothing until the user types; an empty query in
+    // SetVirtualBase is meaningful -- it offers the "clear" row.
+    if query.is_empty() && mode != PaletteMode::SetVirtualBase {
         return;
     }
     if !ctx.has_active_file {
@@ -792,7 +951,7 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
         return;
     }
     match mode {
-        PaletteMode::GoToOffset | PaletteMode::GoToAddress => {
+        PaletteMode::GoToOffset => {
             match parse_offset_expr(query, &NullResolver)
                 .and_then(|n| n.resolve(ctx.cursor, ctx.source_len).ok_or(ParseError::OutOfRange))
             {
@@ -804,6 +963,36 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
                     .with_subtitle(format!("{target}")),
                 ),
                 Err(e) => push_invalid(out, query, &e.to_string()),
+            }
+        }
+        PaletteMode::GoToAddress => {
+            // Resolve against the virtual range [base, base+len), then map the
+            // address back to a byte offset. Values below the base are invalid.
+            let base = ctx.virtual_base.unwrap_or(0);
+            let resolved = parse_offset_expr(query, &NullResolver).and_then(|n| {
+                n.resolve(base.saturating_add(ctx.cursor), base.saturating_add(ctx.source_len)).ok_or(ParseError::OutOfRange)
+            });
+            match resolved.and_then(|address| address.checked_sub(base).ok_or(ParseError::OutOfRange)) {
+                Ok(offset) => out.push(Entry::new(
+                    hxy_i18n::t_args("palette-go-to-address-fmt", &[("address", &format!("0x{:X}", base + offset))]),
+                    PaletteAction::GoToOffset(offset),
+                )),
+                Err(e) => push_invalid(out, query, &e.to_string()),
+            }
+        }
+        PaletteMode::SetVirtualBase => {
+            if query.is_empty() {
+                out.push(Entry::new(hxy_i18n::t("palette-set-virtual-base-clear"), PaletteAction::SetVirtualBase(None)));
+            } else {
+                match parse_offset_expr(query, &NullResolver)
+                    .and_then(|n| n.resolve(0, u64::MAX).ok_or(ParseError::OutOfRange))
+                {
+                    Ok(addr) => out.push(Entry::new(
+                        hxy_i18n::t_args("palette-set-virtual-base-fmt", &[("address", &format!("0x{addr:X}"))]),
+                        PaletteAction::SetVirtualBase(Some(addr)),
+                    )),
+                    Err(e) => push_invalid(out, query, &e.to_string()),
+                }
             }
         }
         PaletteMode::SelectFromOffset => match parse_count_expr(query, &NullResolver) {
@@ -861,6 +1050,42 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
             ),
             Err(e) => push_invalid(out, query, &e.to_string()),
         },
+        PaletteMode::SetColumnsGlobal => match parse_count_expr(query, &NullResolver) {
+            Ok(n) if (1..=MAX_COLUMNS).contains(&n) => match ColumnCount::new(n as u16) {
+                Ok(count) => out.push(Entry::new(
+                    hxy_i18n::t_args("palette-set-columns-global-fmt", &[("count", &n.to_string())]),
+                    PaletteAction::SetColumnsGlobal(count),
+                )),
+                Err(e) => push_invalid(out, query, &e.to_string()),
+            },
+            Ok(_) => push_invalid(
+                out,
+                query,
+                &hxy_i18n::t_args("palette-invalid-columns-range", &[("max", &MAX_COLUMNS.to_string())]),
+            ),
+            Err(e) => push_invalid(out, query, &e.to_string()),
+        },
+        PaletteMode::SetPollInterval => match parse_count_expr(query, &NullResolver) {
+            Ok(0) => out
+                .push(Entry::new(hxy_i18n::t("palette-set-poll-interval-off"), PaletteAction::SetPollInterval(0))),
+            Ok(n) => {
+                // Any interval past u32 clamps to the polling max below anyway.
+                let ms = u32::try_from(n).unwrap_or(u32::MAX);
+                let min = PollingPrefs::MIN_INTERVAL.as_millis() as u32;
+                let max = PollingPrefs::MAX_INTERVAL.as_millis() as u32;
+                let clamped = ms.clamp(min, max);
+                let label = if clamped == ms {
+                    hxy_i18n::t_args("palette-set-poll-interval-fmt", &[("ms", &ms.to_string())])
+                } else {
+                    hxy_i18n::t_args(
+                        "palette-set-poll-interval-clamped",
+                        &[("ms", &ms.to_string()), ("clamped", &clamped.to_string())],
+                    )
+                };
+                out.push(Entry::new(label, PaletteAction::SetPollInterval(clamped)));
+            }
+            Err(e) => push_invalid(out, query, &e.to_string()),
+        },
         // Not arg modes: `build_entries` never routes them here.
         PaletteMode::Main
         | PaletteMode::Templates
@@ -870,7 +1095,8 @@ fn build_arg_entries(out: &mut Vec<Entry<PaletteAction>>, mode: PaletteMode, que
         | PaletteMode::CompareSideB
         | PaletteMode::PluginCascade
         | PaletteMode::PluginPrompt
-        | PaletteMode::QuickOpen => {}
+        | PaletteMode::QuickOpen
+        | PaletteMode::Recent => {}
     }
 }
 
@@ -918,6 +1144,8 @@ mod tests {
             can_browse_vfs: true,
             template_field_count: 0,
             visualizer_target_count: 0,
+            watch_mode: Some(AutoReloadMode::Ask),
+            virtual_base: None,
         }
     }
 
@@ -949,6 +1177,21 @@ mod tests {
         assert!(data.contains(&PaletteAction::OpenConsole));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::GoToOffset)));
         assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumns)));
+        // Recents cascade and the edit / tab / snapshot rows added for
+        // egui palette parity.
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::Recent)));
+        assert!(data.contains(&PaletteAction::Undo));
+        assert!(data.contains(&PaletteAction::Redo));
+        assert!(data.contains(&PaletteAction::ToggleEditMode));
+        assert!(data.contains(&PaletteAction::ReopenClosedTab));
+        assert!(data.contains(&PaletteAction::TakeSnapshot));
+        assert!(data.contains(&PaletteAction::OpenSnapshots));
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetColumnsGlobal)));
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetPollInterval)));
+        assert!(data.contains(&PaletteAction::SetWatchMode(AutoReloadMode::Always)));
+        assert!(data.contains(&PaletteAction::SetWatchMode(AutoReloadMode::Ask)));
+        assert!(data.contains(&PaletteAction::SetWatchMode(AutoReloadMode::Never)));
+        assert!(data.contains(&PaletteAction::SwitchMode(PaletteMode::SetVirtualBase)));
         // Every row enabled when a file is active (copy needs a
         // selection and the field jumps need a template run, so those
         // four are the exceptions).
@@ -1077,6 +1320,41 @@ mod tests {
         assert_eq!(actions(&ok), vec![PaletteAction::SetColumns(ColumnCount::new(24).unwrap())]);
         let bad = build_entries(PaletteMode::SetColumns, "999", active_ctx(), &Shortcuts::default());
         assert_eq!(bad.len(), 1);
+        assert!(bad[0].disabled);
+    }
+
+    #[test]
+    fn set_columns_global_parses_like_local() {
+        let ok = build_entries(PaletteMode::SetColumnsGlobal, "16", active_ctx(), &Shortcuts::default());
+        assert_eq!(actions(&ok), vec![PaletteAction::SetColumnsGlobal(ColumnCount::new(16).unwrap())]);
+    }
+
+    #[test]
+    fn set_poll_interval_off_and_clamped() {
+        let off = build_entries(PaletteMode::SetPollInterval, "0", active_ctx(), &Shortcuts::default());
+        assert_eq!(actions(&off), vec![PaletteAction::SetPollInterval(0)]);
+        let min = PollingPrefs::MIN_INTERVAL.as_millis() as u32;
+        let below = build_entries(PaletteMode::SetPollInterval, "1", active_ctx(), &Shortcuts::default());
+        assert_eq!(actions(&below), vec![PaletteAction::SetPollInterval(min)]);
+    }
+
+    #[test]
+    fn set_virtual_base_parses_and_clears() {
+        let set = build_entries(PaletteMode::SetVirtualBase, "0x400000", active_ctx(), &Shortcuts::default());
+        assert_eq!(actions(&set), vec![PaletteAction::SetVirtualBase(Some(0x400000))]);
+        let clear = build_entries(PaletteMode::SetVirtualBase, "", active_ctx(), &Shortcuts::default());
+        assert_eq!(actions(&clear), vec![PaletteAction::SetVirtualBase(None)]);
+    }
+
+    #[test]
+    fn go_to_address_maps_back_to_offset_via_base() {
+        let mut ctx = active_ctx();
+        ctx.virtual_base = Some(0x400000);
+        // active_ctx source_len is 256; address base+0x10 resolves to offset 0x10.
+        let ok = build_entries(PaletteMode::GoToAddress, "0x400010", ctx, &Shortcuts::default());
+        assert_eq!(actions(&ok), vec![PaletteAction::GoToOffset(0x10)]);
+        // An address below the base is out of range.
+        let bad = build_entries(PaletteMode::GoToAddress, "0x100", ctx, &Shortcuts::default());
         assert!(bad[0].disabled);
     }
 

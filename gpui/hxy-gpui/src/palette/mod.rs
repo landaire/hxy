@@ -28,6 +28,8 @@ use gpui::InteractiveElement;
 use gpui::IntoElement;
 use gpui::MouseButton;
 use gpui::ParentElement;
+use gpui::ScrollHandle;
+use gpui::StatefulInteractiveElement;
 use gpui::Styled;
 use gpui::Subscription;
 use gpui::WeakEntity;
@@ -65,10 +67,14 @@ use crate::palette::modes::build_plugin_main_entries;
 use crate::palette::modes::build_plugin_prompt_entry;
 use crate::palette::modes::build_templates_mode_entries;
 use crate::palette::modes::build_uninstall_entries;
+use crate::menu::Redo;
+use crate::menu::ToggleEditMode;
+use crate::menu::Undo;
 use crate::plugins::PluginHandlersGlobal;
 use crate::templates::TemplateLibraryGlobal;
 use crate::workspace::OpenFile;
 use crate::workspace::OpenSettings;
+use crate::workspace::ReopenClosedTab;
 use crate::workspace::ToggleGlobalSearch;
 use crate::workspace::ToggleInspector;
 use crate::workspace::ToggleVim;
@@ -108,6 +114,10 @@ pub struct Palette {
     /// [`enter_plugin_prompt`](Self::enter_plugin_prompt), cleared like
     /// `plugin_cascade`.
     plugin_prompt: Option<PluginPromptState>,
+    /// Scroll handle for the result list; drives scroll-into-view so the
+    /// selected row stays visible under keyboard nav (egui's
+    /// `scroll_to_selection`).
+    scroll: ScrollHandle,
 }
 
 impl Palette {
@@ -125,6 +135,7 @@ impl Palette {
             compare_a: None,
             plugin_cascade: None,
             plugin_prompt: None,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -341,6 +352,7 @@ impl Palette {
             return;
         }
         self.state.selected = (self.state.selected + len - 1) % len;
+        self.scroll.scroll_to_item(self.state.selected);
         cx.notify();
     }
 
@@ -350,6 +362,7 @@ impl Palette {
             return;
         }
         self.state.selected = (self.state.selected + 1) % len;
+        self.scroll.scroll_to_item(self.state.selected);
         cx.notify();
     }
 
@@ -380,6 +393,10 @@ impl Palette {
             toggle_inspector: shortcut_for(window, &ToggleInspector),
             toggle_global_search: shortcut_for(window, &ToggleGlobalSearch),
             open_settings: shortcut_for(window, &OpenSettings),
+            undo: shortcut_for(window, &Undo),
+            redo: shortcut_for(window, &Redo),
+            toggle_edit_mode: shortcut_for(window, &ToggleEditMode),
+            reopen_closed_tab: shortcut_for(window, &ReopenClosedTab),
         }
     }
 
@@ -397,6 +414,7 @@ impl Palette {
             PaletteMode::PluginCascade => self.plugin_cascade_rows(),
             PaletteMode::PluginPrompt => self.plugin_prompt_rows(),
             PaletteMode::QuickOpen => self.build_tab_entries(cx),
+            PaletteMode::Recent => self.build_recent_entries(cx),
             _ => build_entries(self.mode, &self.state.query, ctx, &self.shortcuts(window)),
         };
         // Loaded plugins append their commands to the Main list (egui
@@ -414,7 +432,7 @@ impl Palette {
                 &MatcherConfig::DEFAULT,
                 CaseMatching::Smart,
                 Normalization::Smart,
-                |e| Cow::Borrowed(e.title.as_str()),
+                entry_haystack,
             )
         };
         (entries, filtered)
@@ -504,6 +522,25 @@ impl Palette {
             .open_tab_labels(cx)
             .into_iter()
             .map(|(label, id)| Entry::new(label, PaletteAction::FocusTab(id)))
+            .collect()
+    }
+
+    /// The recently-opened files as palette rows (egui's `Mode::Recent`),
+    /// newest first. Label is the file name, subtitle the parent dir; a
+    /// pick reopens the file through [`Workspace::open_path`]. Shares the
+    /// Welcome panel's [`recent_rows`](crate::panels::recent_rows)
+    /// name/path derivation.
+    fn build_recent_entries(&self, cx: &App) -> Vec<Entry<PaletteAction>> {
+        let recents = crate::settings::settings(cx).recent_files;
+        crate::panels::recent_rows(&recents)
+            .into_iter()
+            .map(|(label, path)| {
+                let mut entry = Entry::new(label, PaletteAction::OpenRecent(path.clone()));
+                if let Some(parent) = path.parent() {
+                    entry = entry.with_subtitle(parent.display().to_string());
+                }
+                entry
+            })
             .collect()
     }
 
@@ -608,42 +645,47 @@ impl gpui::Render for Palette {
         // selection in range (mirrors egui_palette::show). The snapshot
         // advance in `query_changed_since_last_frame` must run every
         // frame, so it stays the first operand of the `||`.
-        if self.state.query_changed_since_last_frame() || filtered.is_empty() {
+        let query_changed = self.state.query_changed_since_last_frame();
+        if query_changed || filtered.is_empty() {
             self.state.selected = 0;
         } else {
             self.state.selected = self.state.selected.min(filtered.len() - 1);
         }
+        // Keep the selection visible: keyboard nav scrolls from its own
+        // handlers; a query change snaps the list back to the top.
+        if query_changed {
+            self.scroll.scroll_to_item(0);
+        }
 
         // Copy every color out up front so no `&Theme` borrow lingers
-        // across the `cx`-mutating row builders below.
+        // across the row builders below.
         let (base, muted, hit_color, selected_bg, popover, border) = {
             let theme = cx.theme();
             (theme.foreground, theme.muted_foreground, theme.primary, theme.list_active, theme.popover, theme.border)
         };
 
-        let rows: Vec<gpui::AnyElement> = filtered
-            .iter()
-            .enumerate()
-            .map(|(row, hit)| {
-                let entry = &entries[hit.index];
-                self.render_row(
-                    row,
-                    entry,
-                    &hit.match_indices,
-                    row == self.state.selected,
-                    base,
-                    muted,
-                    hit_color,
-                    selected_bg,
-                    cx,
-                )
-            })
-            .collect();
-
-        let list: gpui::AnyElement = if rows.is_empty() {
+        let list: gpui::AnyElement = if filtered.is_empty() {
             div().p_3().text_color(muted).child(hxy_i18n::t("gpui-palette-no-matches")).into_any_element()
         } else {
-            v_flex().p_1().gap_1().max_h(px(LIST_MAX_HEIGHT)).overflow_hidden().children(rows).into_any_element()
+            let weak = cx.entity().downgrade();
+            let selected = self.state.selected;
+            let rows = filtered.iter().enumerate().map(|(row, hit)| {
+                let entry = &entries[hit.index];
+                Self::render_row(&weak, row, entry, &hit.match_indices, row == selected, base, muted, hit_color, selected_bg)
+            });
+            // Sizes to content up to LIST_MAX_HEIGHT, then scrolls; the scroll
+            // handle keeps the selected row in view under keyboard nav. A
+            // uniform_list is not usable here -- it does not size to content in
+            // this floating popover and so rendered an empty list.
+            v_flex()
+                .id("palette-rows")
+                .p_1()
+                .gap_1()
+                .max_h(px(LIST_MAX_HEIGHT))
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .children(rows)
+                .into_any_element()
         };
 
         let backdrop = div()
@@ -694,7 +736,7 @@ impl gpui::Render for Palette {
 impl Palette {
     #[allow(clippy::too_many_arguments)]
     fn render_row(
-        &self,
+        weak: &WeakEntity<Self>,
         row: usize,
         entry: &Entry<PaletteAction>,
         match_indices: &[u32],
@@ -703,30 +745,36 @@ impl Palette {
         muted: Hsla,
         hit_color: Hsla,
         selected_bg: Hsla,
-        cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         // Disabled rows dim uniformly and ignore clicks (the pick path
         // rejects them too); a stray click just re-selects the row.
         let title_color = if entry.disabled { muted } else { base };
-        let title = highlighted_title(&entry.title, match_indices, title_color, hit_color, entry.disabled);
+        // The fuzzy haystack is `title + " " + subtitle` (see `entry_haystack`),
+        // so split the match indices back at the title boundary: indices below
+        // the title length highlight the title, the rest the subtitle.
+        let title_len = entry.title.chars().count() as u32;
+        let title_hits: Vec<u32> = match_indices.iter().copied().filter(|&index| index < title_len).collect();
+        let title = highlighted_text(&entry.title, &title_hits, title_color, hit_color, entry.disabled);
 
         let mut left = h_flex().gap_2().items_center();
-        // Entries carry semantic icon tokens (see `modes::ICON_WARNING`,
-        // `modes::ICON_PLUGIN`) rather than asset paths, mirroring egui's
-        // WARNING glyph on invalid rows and its puzzle-piece on plugin
-        // commands.
-        match entry.icon.as_deref() {
-            Some(modes::ICON_WARNING) => {
-                left = left.child(Icon::new(IconName::TriangleAlert).small().text_color(title_color));
-            }
-            Some(modes::ICON_PLUGIN) => {
-                left = left.child(Icon::new(HxyIcon::PuzzlePiece).small().text_color(title_color));
-            }
-            _ => {}
+        // An explicit token (see `modes::ICON_WARNING`, `modes::ICON_PLUGIN`)
+        // wins; otherwise the command's action picks the glyph, mirroring
+        // egui's per-command icons (`entries.rs`).
+        let icon = match entry.icon.as_deref() {
+            Some(modes::ICON_WARNING) => Some(Icon::new(IconName::TriangleAlert)),
+            Some(modes::ICON_PLUGIN) => Some(Icon::new(HxyIcon::PuzzlePiece)),
+            _ => action_icon(&entry.data),
+        };
+        if let Some(icon) = icon {
+            left = left.child(icon.small().text_color(title_color));
         }
         left = left.child(title);
         if let Some(subtitle) = &entry.subtitle {
-            left = left.child(div().text_color(muted).text_sm().child(subtitle.clone()));
+            // Indices past the title and its one-space separator map into the
+            // subtitle; rebase them to the subtitle's own character offsets.
+            let sub_hits: Vec<u32> =
+                match_indices.iter().copied().filter(|&index| index > title_len).map(|index| index - title_len - 1).collect();
+            left = left.child(div().text_sm().child(highlighted_text(subtitle, &sub_hits, muted, hit_color, entry.disabled)));
         }
 
         let mut row_el =
@@ -737,25 +785,74 @@ impl Palette {
         if selected {
             row_el = row_el.bg(selected_bg);
         }
+        let weak = weak.clone();
         row_el
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, window, cx| this.pick_row(row, window, cx)))
+            .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
+                let _ = weak.update(cx, |this, cx| this.pick_row(row, window, cx));
+            })
             .into_any_element()
     }
 }
 
-/// Render `title` with the fuzzy-matched character positions painted in
+/// The leading icon for a command row, mirroring egui's per-command glyphs
+/// (`commands/palette/entries.rs`). Commands with no fitting glyph in the
+/// served icon set render icon-less rather than borrow a misleading one.
+fn action_icon(action: &PaletteAction) -> Option<Icon> {
+    use PaletteAction as A;
+    let icon = match action {
+        A::OpenFile => Icon::new(IconName::FolderOpen),
+        A::OpenRecent(_) => Icon::new(IconName::File),
+        A::CompareBrowse(_) => Icon::new(IconName::FolderOpen),
+        A::BrowseVfs => Icon::new(HxyIcon::TreeStructure),
+        A::CloseTab | A::TearTab => Icon::new(IconName::Close),
+        A::OpenConsole => Icon::new(IconName::SquareTerminal),
+        A::OpenMemory => Icon::new(IconName::ChartPie),
+        A::ToggleInspector => Icon::new(IconName::Eye),
+        A::ToggleGlobalSearch => Icon::new(IconName::Search),
+        A::OpenStrings => Icon::new(IconName::CaseSensitive),
+        A::OpenSettings => Icon::new(IconName::Settings),
+        A::OpenPlugins => Icon::new(HxyIcon::PuzzlePiece),
+        A::OpenVisualizer => Icon::new(IconName::LayoutDashboard),
+        A::OpenEntropy => Icon::new(IconName::ChartPie),
+        A::CopyText(_) | A::CopySelection(_) => Icon::new(IconName::Copy),
+        A::RunTemplate { .. } | A::RunTemplateDialog | A::InstallTemplate => Icon::new(HxyIcon::Scroll),
+        A::UninstallTemplate(_) => Icon::new(IconName::Delete),
+        A::JumpNextField => Icon::new(IconName::ArrowRight),
+        A::JumpPrevField => Icon::new(IconName::ArrowLeft),
+        A::Undo => Icon::new(IconName::Undo),
+        A::Redo => Icon::new(IconName::Redo),
+        A::SetWatchMode(hxy_settings::AutoReloadMode::Never) => Icon::new(IconName::EyeOff),
+        A::SetWatchMode(_) => Icon::new(IconName::Eye),
+        A::FetchImhexPatterns => Icon::new(IconName::Globe),
+        A::RespondToPlugin { .. } => Icon::new(HxyIcon::PuzzlePiece),
+        _ => return None,
+    };
+    Some(icon)
+}
+
+/// Fuzzy haystack for an entry: title plus subtitle (space-joined) so a row
+/// is findable by either -- egui matches both. `render_row` splits the match
+/// indices back at the title boundary to highlight the title and subtitle.
+fn entry_haystack<A>(entry: &Entry<A>) -> Cow<'_, str> {
+    match &entry.subtitle {
+        Some(subtitle) => Cow::Owned(format!("{} {subtitle}", entry.title)),
+        None => Cow::Borrowed(entry.title.as_str()),
+    }
+}
+
+/// Render `text` with the fuzzy-matched character positions painted in
 /// `hit_color`, everything else in `base`. Empty `indices` renders one
 /// flat run. Disabled rows pass `disabled = true` so even matched chars
 /// stay muted.
-fn highlighted_title(title: &str, indices: &[u32], base: Hsla, hit_color: Hsla, disabled: bool) -> impl IntoElement {
+fn highlighted_text(text: &str, indices: &[u32], base: Hsla, hit_color: Hsla, disabled: bool) -> impl IntoElement {
     let mut runs = h_flex();
     if indices.is_empty() || disabled {
-        return runs.child(div().text_color(base).child(title.to_owned()));
+        return runs.child(div().text_color(base).child(text.to_owned()));
     }
     let mut cursor = 0usize;
     let mut current = String::new();
     let mut current_hit = false;
-    for (char_idx, ch) in title.chars().enumerate() {
+    for (char_idx, ch) in text.chars().enumerate() {
         while cursor < indices.len() && (indices[cursor] as usize) < char_idx {
             cursor += 1;
         }
