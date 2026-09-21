@@ -104,10 +104,19 @@ pub fn load_runtimes() -> TemplateRuntimes {
         tracing::info!(name = rt.name(), exts = ?rt.extensions(), builtin = true, "loaded template runtime");
         out.push(rt);
     }
-    if let Some(dir) = user_template_plugins_dir() {
+    // A template runtime present in more than one dir (data dir plus a
+    // dev bundle) registers once; the first dir wins. Seeded empty, not
+    // with the builtins above, so a plugin runtime still overrides a
+    // same-named builtin (inserted at the front).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in template_plugin_dirs() {
         match hxy_plugin_host::load_template_plugins_from_dir(&dir) {
             Ok(runtimes) => {
                 for r in runtimes {
+                    if !seen.insert(r.name().to_owned()) {
+                        tracing::debug!(name = r.name(), "skip duplicate template runtime from a later dir");
+                        continue;
+                    }
                     tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = false, "loaded template runtime");
                     out.insert(0, Arc::new(r));
                 }
@@ -116,6 +125,23 @@ pub fn load_runtimes() -> TemplateRuntimes {
         }
     }
     TemplateRuntimes(out)
+}
+
+/// Every directory scanned for template-runtime components: the shared
+/// data dir, plus a `template-plugins/` dir next to the executable in
+/// debug builds (so a buck2 dev bundle ships them beside the binary).
+fn template_plugin_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    // Debug: the bundle beside the executable wins over the data dir, so a
+    // rebuilt runtime is what loads.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("template-plugins"))) {
+        dirs.push(dir);
+    }
+    if let Some(dir) = user_template_plugins_dir() {
+        dirs.push(dir);
+    }
+    dirs
 }
 
 /// Convert the shared template color newtype into a gpui [`Hsla`].

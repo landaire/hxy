@@ -27,6 +27,46 @@ members = [
     "gpui/hxy-gpui",
     "gpui/hxy-view-gpui",
     "gpui/gpui_dock_picker",
+    # Plugin components (crate-type cdylib, built for wasm32-wasip2 by
+    # buck2 under //platforms:wasm32-wasip2). They are workspace members
+    # so reindeer generates their buck targets and they share one lock,
+    # but they are kept out of `default-members`: a wasm-only cdylib does
+    # not link for the host, so a bare `cargo build`/`cargo test` must not
+    # try to build them.
+    "plugins/bt-runtime",
+    "plugins/fixture-template",
+    "plugins/passthrough",
+    "plugins/png-template",
+    "plugins/test-statecmd",
+    "plugins/udmp",
+    "plugins/xbox-neighborhood",
+]
+# `cargo build`/`cargo test` with no `-p` operate on these; the wasm-only
+# plugin members above are deliberately omitted (build them for wasm via
+# buck2, or `cargo build -p <plugin> --target wasm32-wasip2`).
+default-members = [
+    "crates/hxy-core",
+    "crates/hxy-i18n",
+    "crates/hxy-editor",
+    "crates/hxy-view",
+    "crates/hxy-vfs",
+    "crates/hxy",
+    "crates/hxy-plugin-host",
+    "crates/hxy-plugin-api",
+    "crates/hxy-010-lang",
+    "crates/hxy-imhex-lang",
+    "crates/hxy-calculator",
+    "crates/hxy-panels",
+    "crates/hxy-settings",
+    "crates/hxy-templates",
+    "crates/hxy-ipc",
+    "crates/egui-palette",
+    "crates/palette-core",
+    "crates/egui_minimap",
+    "crates/egui_dock_picker",
+    "gpui/hxy-gpui",
+    "gpui/hxy-view-gpui",
+    "gpui/gpui_dock_picker",
 ]
 # Vendored [patch.crates-io] sources are standalone packages, not
 # workspace members.

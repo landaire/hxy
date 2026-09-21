@@ -1,0 +1,16 @@
+# Cross-compilation target platform for the wasm plugin components.
+# Building a plugin under this platform compiles it (and its whole
+# dependency subgraph) for wasm32-wasip2; a cdylib emits a component
+# directly. Execution stays on the host (prelude//platforms:default via
+# [build] execution_platforms), so dependency build scripts and proc
+# macros run natively while the crate compiles for wasm.
+#
+# Use it with `--target-platforms=//platforms:wasm32-wasip2`.
+platform(
+    name = "wasm32-wasip2",
+    constraint_values = [
+        "prelude//os/constraints:wasi",
+        "prelude//cpu/constraints:wasm32",
+    ],
+    visibility = ["PUBLIC"],
+)

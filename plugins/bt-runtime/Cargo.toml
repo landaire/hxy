@@ -13,10 +13,7 @@ crate-type = ["cdylib"]
 hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
 hxy-010-lang = { path = "../../crates/hxy-010-lang" }
 
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true
 
-[workspace]
+# A member of the root workspace (buck2 builds it for wasm32-wasip2).
+# Former standalone [workspace] and size [profile] removed; the size
+# flags are applied by the buck2 wasm build.

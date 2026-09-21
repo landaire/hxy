@@ -2471,23 +2471,49 @@ fn register_user_plugins(
     grants: &hxy_plugin_host::PluginGrants,
     state_store: Option<Arc<dyn hxy_plugin_host::StateStore>>,
 ) -> Vec<Arc<hxy_plugin_host::PluginHandler>> {
-    let Some(dir) = user_plugins_dir() else { return Vec::new() };
     let mut out = Vec::new();
-    match hxy_plugin_host::load_plugins_from_dir(&dir, grants, state_store) {
-        Ok(report) => {
-            for failure in &report.failures {
-                tracing::warn!(path = %failure.path.display(), error = %failure.error, "skip unloadable plugin");
+    // A plugin present in more than one directory (data dir plus a dev
+    // bundle's executable-adjacent dir) must register once; keep the
+    // first scanned. Name is the plugin's stable identity.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in plugin_dirs() {
+        match hxy_plugin_host::load_plugins_from_dir(&dir, grants, state_store.clone()) {
+            Ok(report) => {
+                for failure in &report.failures {
+                    tracing::warn!(path = %failure.path.display(), error = %failure.error, "skip unloadable plugin");
+                }
+                for h in report.handlers {
+                    if !seen.insert(h.name().to_owned()) {
+                        tracing::debug!(name = h.name(), "skip duplicate plugin already registered from an earlier dir");
+                        continue;
+                    }
+                    tracing::info!(name = h.name(), "loaded wasm plugin");
+                    let arc = Arc::new(h);
+                    registry.register(arc.clone());
+                    out.push(arc);
+                }
             }
-            for h in report.handlers {
-                tracing::info!(name = h.name(), "loaded wasm plugin");
-                let arc = Arc::new(h);
-                registry.register(arc.clone());
-                out.push(arc);
-            }
+            Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load plugins"),
         }
-        Err(e) => tracing::warn!(error = %e, dir = %dir.display(), "load plugins"),
     }
     out
+}
+
+/// Every directory scanned for `hxy:vfs` plugin components: the shared
+/// data dir, plus a `plugins/` dir next to the executable in debug
+/// builds (so a dev bundle ships plugins beside the binary).
+#[cfg(not(target_arch = "wasm32"))]
+fn plugin_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    // Debug: the bundle beside the executable wins over the data dir.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("plugins"))) {
+        dirs.push(dir);
+    }
+    if let Some(dir) = user_plugins_dir() {
+        dirs.push(dir);
+    }
+    dirs
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2537,10 +2563,18 @@ fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>
     // User-installed WASM components can still override a builtin
     // for the same extension -- they get prepended so `find()` picks
     // them first.
-    if let Some(dir) = user_template_plugins_dir() {
+    // Dedup a template runtime that appears in more than one dir (data
+    // dir plus a dev bundle); first dir wins. Seeded empty so a plugin
+    // runtime still overrides a same-named builtin.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in template_plugin_dirs() {
         match hxy_plugin_host::load_template_plugins_from_dir(&dir) {
             Ok(runtimes) => {
                 for r in runtimes {
+                    if !seen.insert(r.name().to_owned()) {
+                        tracing::debug!(name = r.name(), "skip duplicate template runtime from a later dir");
+                        continue;
+                    }
                     tracing::info!(name = r.name(), exts = ?r.extensions(), builtin = false, "loaded template runtime");
                     out.insert(0, Arc::new(r));
                 }
@@ -2550,6 +2584,23 @@ fn load_user_template_plugins() -> Vec<Arc<dyn hxy_plugin_host::TemplateRuntime>
     }
 
     out
+}
+
+/// Every directory scanned for template-runtime components: the shared
+/// data dir, plus a `template-plugins/` dir next to the executable in
+/// debug builds (parity with the handler `plugin_dirs`).
+#[cfg(not(target_arch = "wasm32"))]
+fn template_plugin_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    // Debug: the bundle beside the executable wins over the data dir.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("template-plugins"))) {
+        dirs.push(dir);
+    }
+    if let Some(dir) = user_template_plugins_dir() {
+        dirs.push(dir);
+    }
+    dirs
 }
 
 fn install_fonts(ctx: &egui::Context) {

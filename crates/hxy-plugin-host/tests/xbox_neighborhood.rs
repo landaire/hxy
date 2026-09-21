@@ -26,7 +26,7 @@ use hxy_vfs::VfsHandler;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/xbox-neighborhood/target/wasm32-wasip2/release/hxy_xbox_neighborhood.wasm")
+        .join("../../target/wasm32-wasip2/release/hxy_xbox_neighborhood.wasm")
 }
 
 fn load_plugin() -> Option<hxy_plugin_host::PluginHandler> {

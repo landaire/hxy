@@ -73,11 +73,98 @@ alias(
     visibility = ["PUBLIC"],
 )
 
+# Wasm plugin components. The plugin crates are workspace members, so
+# reindeer emits their rust_library targets below; for each, a
+# configured_alias pins it to the wasm target platform (its cdylib links
+# into a wasip2 component via wasm-component-ld) and a genrule copies it
+# out under its deployable name. Build one with
+# `buck2 build //:<name>-plugin`; the output is the .wasm to deploy.
+# (name, reindeer crate target, output wasm stem)
+_wasm_plugins = [
+    ("xbox-neighborhood", "hxy-xbox-neighborhood-0.1", "hxy_xbox_neighborhood"),
+    ("passthrough", "hxy-plugin-passthrough-0.1", "hxy_plugin_passthrough"),
+    ("udmp", "hxy-udmp-plugin-0.1", "hxy_udmp_plugin"),
+    ("bt-runtime", "hxy-bt-runtime-0.1", "hxy_bt_runtime"),
+    ("png-template", "hxy-png-template-0.1", "hxy_png_template"),
+    ("test-statecmd", "hxy-plugin-test-statecmd-0.1", "hxy_plugin_test_statecmd"),
+    ("fixture-template", "hxy-fixture-template-runtime-0.1", "hxy_fixture_template_runtime"),
+]
+# List comprehensions (not a `for` statement, which the BUCK dialect
+# forbids at top level) register the two targets per plugin.
+[
+    configured_alias(
+        name = _p[0] + "-component",
+        actual = ":" + _p[1] + "[shared]",
+        platform = "//platforms:wasm32-wasip2",
+        visibility = ["PUBLIC"],
+    )
+    for _p in _wasm_plugins
+]
+[
+    genrule(
+        name = _p[0] + "-plugin",
+        out = _p[2] + ".wasm",
+        cmd = "cp $(location :" + _p[0] + "-component) $OUT",
+        visibility = ["PUBLIC"],
+    )
+    for _p in _wasm_plugins
+]
+
+# Dev bundle: the app binary with the deployable plugin components laid
+# out beside it -- hxy:vfs handlers in `plugins/`, template runtimes in
+# `template-plugins/` -- plus their sidecar manifests. A debug build
+# scans those executable-adjacent dirs, so the bundled binary discovers
+# every plugin with no install step. `//:hxy-dev` below runs it;
+# `//:hxy-dev-bundle` is the assembled directory. Test-only fixtures
+# (test-statecmd, fixture-template) build via their `*-plugin` targets
+# but are not bundled.
+genrule(
+    name = "hxy-dev-bundle",
+    out = "hxy-dev",
+    srcs = [
+        "plugins/xbox-neighborhood/hxy_xbox_neighborhood.hxy.toml",
+        "plugins/udmp/hxy_udmp_plugin.hxy.toml",
+    ],
+    cmd = '''
+        mkdir -p "$OUT/plugins" "$OUT/template-plugins"
+        cp "$(location :hxy)" "$OUT/hxy"
+        cp "$(location :xbox-neighborhood-plugin)" "$OUT/plugins/hxy_xbox_neighborhood.wasm"
+        cp "$(location :passthrough-plugin)" "$OUT/plugins/hxy_plugin_passthrough.wasm"
+        cp "$(location :udmp-plugin)" "$OUT/plugins/hxy_udmp_plugin.wasm"
+        cp "$(location :bt-runtime-plugin)" "$OUT/template-plugins/hxy_bt_runtime.wasm"
+        cp "$(location :png-template-plugin)" "$OUT/template-plugins/hxy_png_template.wasm"
+        for s in $SRCS; do cp "$s" "$OUT/plugins/"; done
+    ''',
+    visibility = ["PUBLIC"],
+)
+
+# `buck2 run //:hxy-dev` builds the bundle and launches the binary from
+# inside it, so current_exe() sits beside the plugin dirs.
+sh_binary(
+    name = "hxy-dev-launcher",
+    main = "scripts/run-bundle.sh",
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "hxy-dev",
+    exe = ":hxy-dev-launcher",
+    args = ["$(location :hxy-dev-bundle)"],
+    visibility = ["PUBLIC"],
+)
+
 git_fetch(
     name = "gpui-component-612a4e35e10905a2.git",
     repo = "https://github.com/landaire-contrib/gpui-component",
     rev = "1b880d6ee842cae0a860d0dfaf041fe737481902",
     sub_targets = ["crates/assets"],
+    visibility = [],
+)
+
+git_fetch(
+    name = "xeedee-6a82c15910e5e4db.git",
+    repo = "https://github.com/landaire/xeedee",
+    rev = "a42c0f0aa9e1e0dc8f8fdcfca7ef8aec534cbb1d",
     visibility = [],
 )
 
@@ -12407,6 +12494,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "futures",
+    actual = ":futures-0.3",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "futures-0.3.34.crate",
     sha256 = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3",
@@ -12674,6 +12767,12 @@ cargo.rust_library(
         ":lock_api-0.4",
         ":parking_lot-0.12",
     ],
+)
+
+alias(
+    name = "futures-io",
+    actual = ":futures-io-0.3",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -16927,6 +17026,37 @@ cargo.rust_library(
     ],
 )
 
+cargo.rust_library(
+    name = "hxy-bt-runtime-0.1",
+    srcs = ["plugins/bt-runtime/src/lib.rs"],
+    crate = "hxy_bt_runtime",
+    crate_root = "plugins/bt-runtime/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_bt_runtime",
+        "CARGO_CRATE_NAME": "hxy_bt_runtime",
+        "CARGO_MANIFEST_DIR": "plugins/bt-runtime",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Template-runtime plugin for 010 Editor .bt files.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-bt-runtime",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":hxy-010-lang-0.5",
+        ":hxy-plugin-api-0.5",
+    ],
+)
+
 alias(
     name = "hxy-calculator",
     actual = ":hxy-calculator-0.5",
@@ -17073,6 +17203,34 @@ cargo.rust_library(
         ":tracing-0.1",
         ":web-time-1",
     ],
+)
+
+cargo.rust_library(
+    name = "hxy-fixture-template-runtime-0.1",
+    srcs = ["plugins/fixture-template/src/lib.rs"],
+    crate = "hxy_fixture_template_runtime",
+    crate_root = "plugins/fixture-template/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_fixture_template_runtime",
+        "CARGO_CRATE_NAME": "hxy_fixture_template_runtime",
+        "CARGO_MANIFEST_DIR": "plugins/fixture-template",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Test fixture -- minimal template-runtime plugin that always emits a tiny hardcoded tree.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-fixture-template-runtime",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":hxy-plugin-api-0.5"],
 )
 
 cargo.rust_binary(
@@ -17494,9 +17652,18 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "hxy-plugin-api",
+    actual = ":hxy-plugin-api-0.5",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "hxy-plugin-api-0.5",
-    srcs = ["crates/hxy-plugin-api/src/lib.rs"],
+    srcs = [
+        "crates/hxy-plugin-api/src/lib.rs",
+        "crates/hxy-plugin-api/wit/world.wit",
+    ],
     crate = "hxy_plugin_api",
     crate_root = "crates/hxy-plugin-api/src/lib.rs",
     edition = "2024",
@@ -17579,6 +17746,90 @@ cargo.rust_library(
         ":wasmtime-44",
         ":wasmtime-wasi-44",
     ],
+)
+
+cargo.rust_library(
+    name = "hxy-plugin-passthrough-0.1",
+    srcs = ["plugins/passthrough/src/lib.rs"],
+    crate = "hxy_plugin_passthrough",
+    crate_root = "plugins/passthrough/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_plugin_passthrough",
+        "CARGO_CRATE_NAME": "hxy_plugin_passthrough",
+        "CARGO_MANIFEST_DIR": "plugins/passthrough",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Sample hxy VFS plugin -- exposes the whole source as a single file.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-plugin-passthrough",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":hxy-plugin-api-0.5"],
+)
+
+cargo.rust_library(
+    name = "hxy-plugin-test-statecmd-0.1",
+    srcs = ["plugins/test-statecmd/src/lib.rs"],
+    crate = "hxy_plugin_test_statecmd",
+    crate_root = "plugins/test-statecmd/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_plugin_test_statecmd",
+        "CARGO_CRATE_NAME": "hxy_plugin_test_statecmd",
+        "CARGO_MANIFEST_DIR": "plugins/test-statecmd",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Test fixture: exercises the state import + commands export end-to-end.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-plugin-test-statecmd",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":hxy-plugin-api-0.5"],
+)
+
+cargo.rust_library(
+    name = "hxy-png-template-0.1",
+    srcs = ["plugins/png-template/src/lib.rs"],
+    crate = "hxy_png_template",
+    crate_root = "plugins/png-template/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_png_template",
+        "CARGO_CRATE_NAME": "hxy_png_template",
+        "CARGO_MANIFEST_DIR": "plugins/png-template",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Sample per-template WASM plugin: parses PNG headers + chunks directly.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-png-template",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":hxy-plugin-api-0.5"],
 )
 
 alias(
@@ -17702,6 +17953,34 @@ cargo.rust_library(
         ":tracing-0.1",
         ":zip-8",
     ],
+)
+
+cargo.rust_library(
+    name = "hxy-udmp-plugin-0.1",
+    srcs = ["plugins/udmp/src/lib.rs"],
+    crate = "hxy_udmp_plugin",
+    crate_root = "plugins/udmp/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_udmp_plugin",
+        "CARGO_CRATE_NAME": "hxy_udmp_plugin",
+        "CARGO_MANIFEST_DIR": "plugins/udmp",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Mount Windows user-mode minidumps as a structured VFS tree.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-udmp-plugin",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":hxy-plugin-api-0.5"],
 )
 
 alias(
@@ -17845,6 +18124,39 @@ cargo.rust_library(
         ":hxy-core-0.5",
         ":hxy-editor-0.5",
         ":tracing-0.1",
+    ],
+)
+
+cargo.rust_library(
+    name = "hxy-xbox-neighborhood-0.1",
+    srcs = ["plugins/xbox-neighborhood/src/lib.rs"],
+    crate = "hxy_xbox_neighborhood",
+    crate_root = "plugins/xbox-neighborhood/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "hxy_xbox_neighborhood",
+        "CARGO_CRATE_NAME": "hxy_xbox_neighborhood",
+        "CARGO_MANIFEST_DIR": "plugins/xbox-neighborhood",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Discover Xbox 360 development kits over XBDM (NAP) and surface them in the command palette.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hxy-xbox-neighborhood",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":futures-0.3",
+        ":futures-io-0.3",
+        ":hxy-plugin-api-0.5",
+        ":xeedee-0.1",
     ],
 )
 
@@ -30781,6 +31093,48 @@ cargo.rust_library(
     ],
 )
 
+http_archive(
+    name = "rootcause-0.12.1.crate",
+    sha256 = "4fc4bd36159c7ce180fe2de1e5371ef107a2885f0048430f631e78202e2255d4",
+    strip_prefix = "rootcause-0.12.1",
+    urls = ["https://static.crates.io/crates/rootcause/0.12.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "rootcause-0.12",
+    srcs = [":rootcause-0.12.1.crate"],
+    crate = "rootcause",
+    crate_root = "rootcause-0.12.1.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "rootcause",
+        "CARGO_CRATE_NAME": "rootcause",
+        "CARGO_MANIFEST_DIR": "rootcause-0.12.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "A flexible, ergonomic, and inspectable error reporting library for Rust",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "rootcause",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rootcause-rs/rootcause",
+        "CARGO_PKG_RUST_VERSION": "1.89",
+        "CARGO_PKG_VERSION": "0.12.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "12",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["default"],
+    visibility = [],
+    deps = [
+        ":hashbrown-0.16",
+        ":indexmap-2",
+        ":rootcause-internals-0.12",
+        ":rustc-hash-2",
+        ":triomphe-0.1",
+    ],
+)
+
 alias(
     name = "rootcause",
     actual = ":rootcause-0.13",
@@ -30827,6 +31181,41 @@ cargo.rust_library(
         ":rustc-hash-2",
         ":triomphe-0.1",
     ],
+)
+
+http_archive(
+    name = "rootcause-internals-0.12.1.crate",
+    sha256 = "4d0df4f84d119d09b5c9c9e8db0fe9bfb5b47b04d0bb95b0763cf81bd9baa559",
+    strip_prefix = "rootcause-internals-0.12.1",
+    urls = ["https://static.crates.io/crates/rootcause-internals/0.12.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "rootcause-internals-0.12",
+    srcs = [":rootcause-internals-0.12.1.crate"],
+    crate = "rootcause_internals",
+    crate_root = "rootcause-internals-0.12.1.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "rootcause_internals",
+        "CARGO_CRATE_NAME": "rootcause_internals",
+        "CARGO_MANIFEST_DIR": "rootcause-internals-0.12.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Internals for the rootcause crate",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "rootcause-internals",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rootcause-rs/rootcause",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.12.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "12",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":triomphe-0.1"],
 )
 
 http_archive(
@@ -45790,6 +46179,48 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+alias(
+    name = "xeedee",
+    actual = ":xeedee-0.1",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "xeedee-0.1",
+    srcs = [":xeedee-6a82c15910e5e4db.git"],
+    crate = "xeedee",
+    crate_root = "xeedee-6a82c15910e5e4db/crates/xeedee/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "xeedee",
+        "CARGO_CRATE_NAME": "xeedee",
+        "CARGO_MANIFEST_DIR": "xeedee-6a82c15910e5e4db",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Async-first Rust reimplementation of the XBDM (Xbox Debug Monitor) protocol",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "xeedee",
+        "CARGO_PKG_README": "../../README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/xeedee",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":futures-io-0.3",
+        ":futures-util-0.3",
+        ":memchr-2",
+        ":rootcause-0.12",
+        ":thiserror-2",
+        ":tracing-0.1",
+        ":winnow-1",
+    ],
 )
 
 http_archive(

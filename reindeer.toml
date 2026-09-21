@@ -159,4 +159,84 @@ alias(
     actual = ":hxy-0.5-hxy-egui",
     visibility = ["PUBLIC"],
 )
+
+# Wasm plugin components. The plugin crates are workspace members, so
+# reindeer emits their rust_library targets below; for each, a
+# configured_alias pins it to the wasm target platform (its cdylib links
+# into a wasip2 component via wasm-component-ld) and a genrule copies it
+# out under its deployable name. Build one with
+# `buck2 build //:<name>-plugin`; the output is the .wasm to deploy.
+# (name, reindeer crate target, output wasm stem)
+_wasm_plugins = [
+    ("xbox-neighborhood", "hxy-xbox-neighborhood-0.1", "hxy_xbox_neighborhood"),
+    ("passthrough", "hxy-plugin-passthrough-0.1", "hxy_plugin_passthrough"),
+    ("udmp", "hxy-udmp-plugin-0.1", "hxy_udmp_plugin"),
+    ("bt-runtime", "hxy-bt-runtime-0.1", "hxy_bt_runtime"),
+    ("png-template", "hxy-png-template-0.1", "hxy_png_template"),
+    ("test-statecmd", "hxy-plugin-test-statecmd-0.1", "hxy_plugin_test_statecmd"),
+    ("fixture-template", "hxy-fixture-template-runtime-0.1", "hxy_fixture_template_runtime"),
+]
+# List comprehensions (not a `for` statement, which the BUCK dialect
+# forbids at top level) register the two targets per plugin.
+[
+    configured_alias(
+        name = _p[0] + "-component",
+        actual = ":" + _p[1] + "[shared]",
+        platform = "//platforms:wasm32-wasip2",
+        visibility = ["PUBLIC"],
+    )
+    for _p in _wasm_plugins
+]
+[
+    genrule(
+        name = _p[0] + "-plugin",
+        out = _p[2] + ".wasm",
+        cmd = "cp $(location :" + _p[0] + "-component) $OUT",
+        visibility = ["PUBLIC"],
+    )
+    for _p in _wasm_plugins
+]
+
+# Dev bundle: the app binary with the deployable plugin components laid
+# out beside it -- hxy:vfs handlers in `plugins/`, template runtimes in
+# `template-plugins/` -- plus their sidecar manifests. A debug build
+# scans those executable-adjacent dirs, so the bundled binary discovers
+# every plugin with no install step. `//:hxy-dev` below runs it;
+# `//:hxy-dev-bundle` is the assembled directory. Test-only fixtures
+# (test-statecmd, fixture-template) build via their `*-plugin` targets
+# but are not bundled.
+genrule(
+    name = "hxy-dev-bundle",
+    out = "hxy-dev",
+    srcs = [
+        "plugins/xbox-neighborhood/hxy_xbox_neighborhood.hxy.toml",
+        "plugins/udmp/hxy_udmp_plugin.hxy.toml",
+    ],
+    cmd = '''
+        mkdir -p "$OUT/plugins" "$OUT/template-plugins"
+        cp "$(location :hxy)" "$OUT/hxy"
+        cp "$(location :xbox-neighborhood-plugin)" "$OUT/plugins/hxy_xbox_neighborhood.wasm"
+        cp "$(location :passthrough-plugin)" "$OUT/plugins/hxy_plugin_passthrough.wasm"
+        cp "$(location :udmp-plugin)" "$OUT/plugins/hxy_udmp_plugin.wasm"
+        cp "$(location :bt-runtime-plugin)" "$OUT/template-plugins/hxy_bt_runtime.wasm"
+        cp "$(location :png-template-plugin)" "$OUT/template-plugins/hxy_png_template.wasm"
+        for s in $SRCS; do cp "$s" "$OUT/plugins/"; done
+    ''',
+    visibility = ["PUBLIC"],
+)
+
+# `buck2 run //:hxy-dev` builds the bundle and launches the binary from
+# inside it, so current_exe() sits beside the plugin dirs.
+sh_binary(
+    name = "hxy-dev-launcher",
+    main = "scripts/run-bundle.sh",
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "hxy-dev",
+    exe = ":hxy-dev-launcher",
+    args = ["$(location :hxy-dev-bundle)"],
+    visibility = ["PUBLIC"],
+)
 """

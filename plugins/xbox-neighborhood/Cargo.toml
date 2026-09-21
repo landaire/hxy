@@ -22,17 +22,11 @@ hxy-plugin-api = { path = "../../crates/hxy-plugin-api" }
 # a single poll without any need for an actual executor reactor.
 # `default-features = false` drops the tokio runner module
 # (which can't compile on wasm32-wasip2 anyway).
-xeedee = { path = "../../../xeedee/crates/xeedee", default-features = false }
+xeedee = { git = "https://github.com/landaire/xeedee", rev = "a42c0f0aa9e1e0dc8f8fdcfca7ef8aec534cbb1d", default-features = false }
 futures-io = "0.3"
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true
-
-# Standalone workspace -- not pulled into the main hxy workspace so
-# the host crates don't take a (transitive) build-time dependency on
-# the plugin tree.
-[workspace]
+# A member of the root workspace (buck2 builds it for wasm32-wasip2).
+# Size optimization (opt-level=s, lto, strip) that lived in the former
+# standalone [profile.release] is applied through the buck2 wasm build,
+# not a member [profile] table (which a workspace ignores).

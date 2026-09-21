@@ -4813,6 +4813,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hxy-bt-runtime"
+version = "0.1.0"
+dependencies = [
+ "hxy-010-lang",
+ "hxy-plugin-api",
+]
+
+[[package]]
 name = "hxy-calculator"
 version = "0.5.0"
 dependencies = [
@@ -4829,7 +4837,7 @@ dependencies = [
  "fskit",
  "jiff",
  "lru",
- "rootcause",
+ "rootcause 0.13.0",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -4848,6 +4856,13 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "web-time",
+]
+
+[[package]]
+name = "hxy-fixture-template-runtime"
+version = "0.1.0"
+dependencies = [
+ "hxy-plugin-api",
 ]
 
 [[package]]
@@ -4972,6 +4987,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "hxy-plugin-passthrough"
+version = "0.1.0"
+dependencies = [
+ "hxy-plugin-api",
+]
+
+[[package]]
+name = "hxy-plugin-test-statecmd"
+version = "0.1.0"
+dependencies = [
+ "hxy-plugin-api",
+]
+
+[[package]]
+name = "hxy-png-template"
+version = "0.1.0"
+dependencies = [
+ "hxy-plugin-api",
+]
+
+[[package]]
 name = "hxy-settings"
 version = "0.5.0"
 dependencies = [
@@ -5011,6 +5047,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hxy-udmp-plugin"
+version = "0.1.0"
+dependencies = [
+ "hxy-plugin-api",
+]
+
+[[package]]
 name = "hxy-vfs"
 version = "0.5.0"
 dependencies = [
@@ -5044,6 +5087,16 @@ dependencies = [
  "hxy-core",
  "hxy-editor",
  "tracing",
+]
+
+[[package]]
+name = "hxy-xbox-neighborhood"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "futures-io",
+ "hxy-plugin-api",
+ "xeedee",
 ]
 
 [[package]]
@@ -8684,14 +8737,36 @@ dependencies = [
 
 [[package]]
 name = "rootcause"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fc4bd36159c7ce180fe2de1e5371ef107a2885f0048430f631e78202e2255d4"
+dependencies = [
+ "hashbrown 0.16.1",
+ "indexmap",
+ "rootcause-internals 0.12.1",
+ "rustc-hash 2.1.3",
+ "triomphe",
+]
+
+[[package]]
+name = "rootcause"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b660d9968fae12f4e691f2b2be5d9a3a6de875300c682e8d2cb89a618dd60875"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
- "rootcause-internals",
+ "rootcause-internals 0.13.0",
  "rustc-hash 2.1.3",
+ "triomphe",
+]
+
+[[package]]
+name = "rootcause-internals"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d0df4f84d119d09b5c9c9e8db0fe9bfb5b47b04d0bb95b0763cf81bd9baa559"
+dependencies = [
  "triomphe",
 ]
 
@@ -13238,6 +13313,21 @@ name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
+
+[[package]]
+name = "xeedee"
+version = "0.1.0"
+source = "git+https://github.com/landaire/xeedee?rev=a42c0f0aa9e1e0dc8f8fdcfca7ef8aec534cbb1d#a42c0f0aa9e1e0dc8f8fdcfca7ef8aec534cbb1d"
+dependencies = [
+ "bytes",
+ "futures-io",
+ "futures-util",
+ "memchr",
+ "rootcause 0.12.1",
+ "thiserror 2.0.20",
+ "tracing",
+ "winnow 1.0.4",
+]
 
 [[package]]
 name = "xim-ctext"

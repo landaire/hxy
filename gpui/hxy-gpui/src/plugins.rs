@@ -107,6 +107,32 @@ pub fn user_plugins_dir() -> Option<PathBuf> {
     crate::persist::storage_dir().map(|dir| dir.join("plugins"))
 }
 
+/// A `plugins/` directory next to the running executable. Only consulted
+/// in debug builds: a buck2 dev bundle (`//:hxy-dev`) lays the plugin
+/// components out beside the binary, so a dev build discovers them
+/// without installing anything into the shared data dir.
+#[cfg(debug_assertions)]
+fn exe_adjacent_plugins_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("plugins"))
+}
+
+/// Every directory scanned for `hxy:vfs` plugin components: in debug
+/// builds the executable-adjacent dir (a dev bundle) first, then the
+/// shared data dir. Dedup keeps the first, so a freshly built plugin in
+/// the bundle wins over a stale installed copy.
+pub fn plugin_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(debug_assertions)]
+    if let Some(dir) = exe_adjacent_plugins_dir() {
+        dirs.push(dir);
+    }
+    if let Some(dir) = user_plugins_dir() {
+        dirs.push(dir);
+    }
+    dirs
+}
+
 /// Load grants and the plugin registry, installing both globals. Call
 /// once at startup after [`crate::settings::init`] (it reads the
 /// shared [`PersistHandle`]) and before the window opens.
@@ -210,17 +236,34 @@ fn build_handlers(
     grants: &PluginGrants,
     store: Option<Arc<dyn StateStore>>,
 ) -> (Vec<Arc<PluginHandler>>, Vec<PluginLoadFailureInfo>) {
-    let Some(dir) = user_plugins_dir() else {
-        return (Vec::new(), Vec::new());
-    };
-    load_handlers_in(&dir, grants, store)
+    let mut handlers: Vec<Arc<PluginHandler>> = Vec::new();
+    let mut failures = Vec::new();
+    // A plugin present in more than one directory (e.g. installed in the
+    // data dir and also shipped in a dev bundle) must register once. The
+    // name is the plugin's stable identity; the first directory scanned
+    // wins.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in plugin_dirs() {
+        let (h, f) = load_handlers_in(&dir, grants, store.clone());
+        for handler in h {
+            if seen.insert(handler.name().to_owned()) {
+                tracing::info!(name = handler.name(), "loaded wasm plugin");
+                handlers.push(handler);
+            } else {
+                tracing::debug!(name = handler.name(), "skip duplicate plugin already registered from an earlier dir");
+            }
+        }
+        failures.extend(f);
+    }
+    (handlers, failures)
 }
 
-/// Load every plugin in `dir`, wrapping each handler in an [`Arc`] and
-/// logging it. A single plugin that fails to compile is skipped and
-/// returned in the failures list (logged too), so one bad plugin no
-/// longer disables the rest. A nonexistent directory is not an error; a
-/// directory-level read error logs and yields empty.
+/// Load every plugin in `dir`, wrapping each handler in an [`Arc`]. A
+/// single plugin that fails to compile is skipped and returned in the
+/// failures list (logged), so one bad plugin no longer disables the
+/// rest. A nonexistent directory is not an error; a directory-level read
+/// error logs and yields empty. The caller ([`build_handlers`]) logs
+/// each handler that survives cross-directory dedup, so this does not.
 fn load_handlers_in(
     dir: &Path,
     grants: &PluginGrants,
@@ -228,14 +271,7 @@ fn load_handlers_in(
 ) -> (Vec<Arc<PluginHandler>>, Vec<PluginLoadFailureInfo>) {
     match hxy_plugin_host::load_plugins_from_dir(dir, grants, store) {
         Ok(report) => {
-            let handlers = report
-                .handlers
-                .into_iter()
-                .map(|h| {
-                    tracing::info!(name = h.name(), "loaded wasm plugin");
-                    Arc::new(h)
-                })
-                .collect();
+            let handlers = report.handlers.into_iter().map(Arc::new).collect();
             let failures = report
                 .failures
                 .into_iter()
@@ -764,7 +800,7 @@ mod tests {
     /// integration tests' skip-if-absent idiom.
     fn statecmd_fixture() -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/test-statecmd/target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm");
+            .join("../../target/wasm32-wasip2/release/hxy_plugin_test_statecmd.wasm");
         path.exists().then_some(path)
     }
 

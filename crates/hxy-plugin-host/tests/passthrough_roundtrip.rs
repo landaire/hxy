@@ -24,7 +24,7 @@ use hxy_vfs::VfsHandler;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/passthrough/target/wasm32-wasip2/release/hxy_plugin_passthrough.wasm")
+        .join("../../target/wasm32-wasip2/release/hxy_plugin_passthrough.wasm")
 }
 
 #[test]

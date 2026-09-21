@@ -293,11 +293,25 @@
             # but no rpath, so binaries load the host's incompatible libc and
             # segfault before main -- which is exactly how the build-script
             # runners were crashing on the Linux CI.
+            # The wasm plugin components (buck2 //platforms:wasm32-wasip2) link
+            # through rustc's own component linker (wasm-component-ld), which
+            # ships in the rust toolchain's target bin dir. The prelude's "wasm"
+            # linker type prepends `-flavor wasm` (rust-lld syntax) that
+            # wasm-component-ld does not accept, so link through a small wrapper
+            # that drops it. Absolute paths for the no-PATH-search build shim.
+            hxy_wasm_ld="${rustToolchain}/lib/rustlib/$(${rustToolchain}/bin/rustc -vV | sed -n 's/host: //p')/bin/wasm-component-ld"
+            # The committed wrapper (toolchains/wasm-component-ld-wrapper.sh)
+            # reads the real linker path from this sibling file, so only the
+            # store path is generated here; the flag-stripping logic is checked
+            # in, not synthesized through nix+shell escaping.
+            printf '%s\n' "$hxy_wasm_ld" > "$hxy_workspace_root/toolchains/.wasm-component-ld-path"
             {
               echo '[hxy_cxx]'
               echo "  cc = ${llvmPackages.clang}/bin/clang"
               echo "  cxx = ${llvmPackages.clang}/bin/clang++"
               echo "  ar = ${llvmPackages.llvm}/bin/llvm-ar"
+              echo '[hxy_wasm]'
+              echo "  linker = $hxy_workspace_root/toolchains/wasm-component-ld-wrapper.sh"
             } > "$hxy_workspace_root/toolchains/.buckconfig.local"
             # A full native graph link opens thousands of files; macOS defaults
             # the descriptor limit far below that. Raise it for buck2 daemons

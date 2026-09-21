@@ -20,7 +20,7 @@ use hxy_plugin_host::template::Value;
 
 fn component_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/bt-runtime/target/wasm32-wasip2/release/hxy_bt_runtime.wasm")
+        .join("../../target/wasm32-wasip2/release/hxy_bt_runtime.wasm")
 }
 
 #[test]
