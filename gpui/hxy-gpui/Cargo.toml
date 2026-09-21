@@ -59,6 +59,9 @@ thiserror = "2"
 # on it for its SQLite writes.
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 tracing = { workspace = true }
+# Prints plugin-load and runtime diagnostics to the terminal (parity with
+# the egui app's startup); `env-filter` honors `RUST_LOG`/`HXY_LOG`.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Template panel "Save bytes to file..." dialog; matches the egui
 # app's rfd version.

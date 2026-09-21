@@ -785,3 +785,4 @@ plugin-rescan = Rescan
 plugin-delete = Delete
 plugin-open-in-file-manager = Open
 plugin-wasm-filter = WASM component
+plugin-load-failed = failed to load

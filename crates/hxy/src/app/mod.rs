@@ -2474,8 +2474,11 @@ fn register_user_plugins(
     let Some(dir) = user_plugins_dir() else { return Vec::new() };
     let mut out = Vec::new();
     match hxy_plugin_host::load_plugins_from_dir(&dir, grants, state_store) {
-        Ok(handlers) => {
-            for h in handlers {
+        Ok(report) => {
+            for failure in &report.failures {
+                tracing::warn!(path = %failure.path.display(), error = %failure.error, "skip unloadable plugin");
+            }
+            for h in report.handlers {
                 tracing::info!(name = h.name(), "loaded wasm plugin");
                 let arc = Arc::new(h);
                 registry.register(arc.clone());

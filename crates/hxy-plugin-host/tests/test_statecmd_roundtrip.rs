@@ -78,7 +78,7 @@ commands = true
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers =
-        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins").handlers;
     let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // 1. Plugin's declared commands surface verbatim.
@@ -209,7 +209,7 @@ network = ["127.0.0.1:{port}", "*:443"]
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers =
-        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins").handlers;
     let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // The "network" command emits a Prompt that asks for the
@@ -267,7 +267,7 @@ network = ["*:443"]
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers =
-        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins").handlers;
     let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     let _ = plugin.invoke_command("network").expect("invoke");
@@ -320,7 +320,7 @@ network = ["*:*"]
 
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers =
-        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins").handlers;
     let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // Drive the same prompt -> respond cycle. With network denied,
@@ -364,7 +364,7 @@ commands = true
     let grants = PluginGrants::default();
     let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
     let handlers =
-        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins");
+        hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store.clone())).expect("load plugins").handlers;
     let plugin = handlers.into_iter().find(|p| p.name() == "test-statecmd").expect("test-statecmd handler present");
 
     // commands grant denied -> host short-circuits before calling

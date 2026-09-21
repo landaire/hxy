@@ -1241,6 +1241,7 @@ mod tests {
         let handlers: Vec<Arc<PluginHandler>> =
             hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store))
                 .expect("load fixture plugin")
+                .handlers
                 .into_iter()
                 .map(Arc::new)
                 .collect();

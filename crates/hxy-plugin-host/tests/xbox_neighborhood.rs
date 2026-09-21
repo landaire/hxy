@@ -59,7 +59,7 @@ network = ["*:730"]
     // pulling the bytes back into a fresh load using std::mem::forget
     // would be ugly. Instead, copy the manifest+wasm into a longer-
     // lived dir under the host tempdir lifetime here:
-    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store)).expect("load plugins");
+    let handlers = hxy_plugin_host::load_plugins_from_dir(dir.path(), &grants, Some(store)).expect("load plugins").handlers;
     // Move the dir guard into the returned handler's closure so the
     // tempdir survives until the test's plugin handle drops. The
     // handler doesn't actually need the on-disk files after load

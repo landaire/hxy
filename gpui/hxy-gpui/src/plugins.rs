@@ -9,11 +9,12 @@
 //! Every failure here degrades to a `tracing::warn`, never a panic: a
 //! missing data directory, an unreadable grants blob, or a plugin
 //! directory that fails to scan leaves an empty registry instead of
-//! crashing the shell. The host loader aborts the whole scan on the
-//! first unreadable or uncompilable plugin, so one bad plugin
-//! disables the rest for that scan (same behavior as the egui
-//! frontend's `register_user_plugins`).
+//! crashing the shell. The host loader isolates per-file failures: a
+//! single unloadable plugin is skipped and reported (see
+//! [`PluginLoadFailuresGlobal`]), so the rest of the directory still
+//! loads.
 
+use std::error::Error as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,6 +59,37 @@ pub struct PluginHandlersGlobal(pub Vec<Arc<PluginHandler>>);
 
 impl Global for PluginHandlersGlobal {}
 
+/// One installed component that failed to load in the last scan, with
+/// its error rendered to a string for the Plugins panel. Formatting at
+/// load time keeps the global cheap to clone and render.
+#[derive(Clone)]
+pub struct PluginLoadFailureInfo {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Per-file load failures from the last scan, so the Plugins panel can
+/// mark which installed components failed and show why instead of
+/// listing every `.wasm` as if it were live. Rebuilt alongside
+/// [`PluginHandlersGlobal`].
+pub struct PluginLoadFailuresGlobal(pub Vec<PluginLoadFailureInfo>);
+
+impl Global for PluginLoadFailuresGlobal {}
+
+/// Flatten an error and its `source` chain into one line, so the panel
+/// shows the underlying wasmtime detail (e.g. a WIT signature mismatch)
+/// and not just the top-level "compile component" wrapper.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut msg = err.to_string();
+    let mut src = err.source();
+    while let Some(e) = src {
+        msg.push_str(": ");
+        msg.push_str(&e.to_string());
+        src = e.source();
+    }
+    msg
+}
+
 /// Resolve a loaded handler by plugin name, or `None` when the registry
 /// has no such plugin (a palette row left stale by a rescan). Cheap
 /// linear scan -- the loaded set is small.
@@ -81,9 +113,10 @@ pub fn user_plugins_dir() -> Option<PathBuf> {
 pub fn init(cx: &mut App) {
     let grants = load_grants(cx);
     let store = state_store(cx);
-    let handlers = build_handlers(&grants, store);
+    let (handlers, failures) = build_handlers(&grants, store);
     cx.set_global(PluginGrantsGlobal(grants));
     cx.set_global(PluginHandlersGlobal(handlers));
+    cx.set_global(PluginLoadFailuresGlobal(failures));
 }
 
 /// Rebuild [`PluginHandlersGlobal`] from the current grants and the
@@ -92,8 +125,9 @@ pub fn init(cx: &mut App) {
 pub fn reload_plugins(cx: &mut App) {
     let grants = current_grants(cx);
     let store = state_store(cx);
-    let handlers = build_handlers(&grants, store);
+    let (handlers, failures) = build_handlers(&grants, store);
     cx.set_global(PluginHandlersGlobal(handlers));
+    cx.set_global(PluginLoadFailuresGlobal(failures));
 }
 
 /// Record the user's decisions for `key`, persist them to the shared
@@ -169,33 +203,53 @@ fn persist_grants(cx: &App, grants: &PluginGrants) {
     }
 }
 
-/// Load handlers from the user plugin directory. Absent data dir ->
-/// empty; a directory read error logs and yields empty.
-fn build_handlers(grants: &PluginGrants, store: Option<Arc<dyn StateStore>>) -> Vec<Arc<PluginHandler>> {
+/// Load handlers from the user plugin directory, plus the per-file load
+/// failures to report. Absent data dir -> both empty; a directory read
+/// error logs and yields both empty.
+fn build_handlers(
+    grants: &PluginGrants,
+    store: Option<Arc<dyn StateStore>>,
+) -> (Vec<Arc<PluginHandler>>, Vec<PluginLoadFailureInfo>) {
     let Some(dir) = user_plugins_dir() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     load_handlers_in(&dir, grants, store)
 }
 
-/// Load every plugin in `dir`, wrapping each in an [`Arc`] and logging
-/// its name. A nonexistent directory is not an error (the host loader
-/// returns an empty list). Any other failure -- including a single
-/// plugin that fails to compile, which aborts the host loader's whole
-/// scan -- logs and yields empty; a reload that hits such an error
-/// therefore clears the registry rather than keeping the prior set.
-fn load_handlers_in(dir: &Path, grants: &PluginGrants, store: Option<Arc<dyn StateStore>>) -> Vec<Arc<PluginHandler>> {
+/// Load every plugin in `dir`, wrapping each handler in an [`Arc`] and
+/// logging it. A single plugin that fails to compile is skipped and
+/// returned in the failures list (logged too), so one bad plugin no
+/// longer disables the rest. A nonexistent directory is not an error; a
+/// directory-level read error logs and yields empty.
+fn load_handlers_in(
+    dir: &Path,
+    grants: &PluginGrants,
+    store: Option<Arc<dyn StateStore>>,
+) -> (Vec<Arc<PluginHandler>>, Vec<PluginLoadFailureInfo>) {
     match hxy_plugin_host::load_plugins_from_dir(dir, grants, store) {
-        Ok(handlers) => handlers
-            .into_iter()
-            .map(|h| {
-                tracing::info!(name = h.name(), "loaded wasm plugin");
-                Arc::new(h)
-            })
-            .collect(),
+        Ok(report) => {
+            let handlers = report
+                .handlers
+                .into_iter()
+                .map(|h| {
+                    tracing::info!(name = h.name(), "loaded wasm plugin");
+                    Arc::new(h)
+                })
+                .collect();
+            let failures = report
+                .failures
+                .into_iter()
+                .map(|f| {
+                    let message = error_chain(&f.error);
+                    tracing::warn!(path = %f.path.display(), %message, "skip unloadable plugin");
+                    PluginLoadFailureInfo { path: f.path, message }
+                })
+                .collect();
+            (handlers, failures)
+        }
         Err(err) => {
             tracing::warn!(%err, dir = %dir.display(), "load plugins");
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     }
 }
@@ -682,7 +736,7 @@ mod tests {
         let key = PluginKey::from_bytes("test-statecmd", "0.1.0", &bytes);
         grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-        let handlers = load_handlers_in(dir.path(), &grants, Some(store));
+        let handlers = load_handlers_in(dir.path(), &grants, Some(store)).0;
         Arc::clone(handlers.first().expect("fixture handler loaded"))
     }
 
@@ -791,7 +845,7 @@ mod tests {
     fn missing_plugins_dir_yields_no_handlers() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
-        let handlers = load_handlers_in(&missing, &PluginGrants::default(), None);
+        let handlers = load_handlers_in(&missing, &PluginGrants::default(), None).0;
         assert!(handlers.is_empty());
     }
 
@@ -799,7 +853,7 @@ mod tests {
     #[test]
     fn empty_plugins_dir_yields_no_handlers() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let handlers = load_handlers_in(dir.path(), &PluginGrants::default(), None);
+        let handlers = load_handlers_in(dir.path(), &PluginGrants::default(), None).0;
         assert!(handlers.is_empty());
     }
 
@@ -831,7 +885,7 @@ mod tests {
         grants.set(key, PermissionGrants { persist: true, commands: true, network: vec![] });
 
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
-        let handlers = load_handlers_in(dir.path(), &grants, Some(store));
+        let handlers = load_handlers_in(dir.path(), &grants, Some(store)).0;
         let plugin = handlers.first().expect("fixture handler loaded");
 
         assert_eq!(plugin.manifest().expect("sidecar manifest").plugin.name, "test-statecmd");

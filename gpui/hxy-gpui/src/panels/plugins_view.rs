@@ -62,6 +62,7 @@ use hxy_plugin_host::PluginHandler;
 use hxy_plugin_host::PluginKey;
 
 use crate::plugins::PluginHandlersGlobal;
+use crate::plugins::PluginLoadFailuresGlobal;
 use crate::plugins::user_plugins_dir;
 use crate::settings::SettingsGlobal;
 
@@ -386,27 +387,52 @@ impl PluginsPanel {
                 .child(Label::new(hxy_i18n::t("plugin-none-installed")).text_color(cx.theme().muted_foreground))
                 .into_any_element();
         }
+        // Only the VFS-handler loader reports per-file failures; the
+        // template section has its own loader and no such global.
+        let failures = if section == FsSection::VfsHandlers {
+            cx.try_global::<PluginLoadFailuresGlobal>().map(|g| g.0.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mono = cx.theme().mono_font_family.clone();
         for (index, path) in files.into_iter().enumerate() {
             let name = path
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
+            // Only a failure is flagged: a loaded handler carries no
+            // source path to match against, so the absence of a failure
+            // is not proof of a successful load (a whole-scan abort
+            // leaves the failures list empty). No badge means "not known
+            // to have failed", never an affirmative "loaded".
+            let failure = failures.iter().find(|f| f.path == path).map(|f| f.message.clone());
             let del_path = path.clone();
-            out = out.child(
-                h_flex().gap_2().items_center().child(div().flex_1().font_family(mono.clone()).child(name)).child(
-                    Button::new(section_row_id(prefix, index))
-                        .label(hxy_i18n::t("plugin-delete"))
-                        .compact()
-                        .danger()
-                        .on_click(cx.listener(move |_this, _, _window, cx| {
-                            if fs::remove_file(&del_path).is_ok() {
-                                section.reload(cx);
-                                cx.notify();
-                            }
-                        })),
-                ),
+            let mut header = h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().font_family(mono.clone()).child(name));
+            if failure.is_some() {
+                header = header.child(Label::new(hxy_i18n::t("plugin-load-failed")).text_color(cx.theme().danger));
+            }
+            header = header.child(
+                Button::new(section_row_id(prefix, index))
+                    .label(hxy_i18n::t("plugin-delete"))
+                    .compact()
+                    .danger()
+                    .on_click(cx.listener(move |_this, _, _window, cx| {
+                        if fs::remove_file(&del_path).is_ok() {
+                            section.reload(cx);
+                            cx.notify();
+                        }
+                    })),
             );
+            let mut row = v_flex().gap_1().child(header);
+            // The plugin's own error detail (e.g. a WIT signature
+            // mismatch) is not localized: it is loader-authored text.
+            if let Some(message) = failure {
+                row = row.child(Label::new(message).text_color(cx.theme().danger).text_xs());
+            }
+            out = out.child(row);
         }
         out.into_any_element()
     }

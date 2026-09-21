@@ -42,6 +42,13 @@ fn parse_file_url(url: &str) -> Option<PathBuf> {
 }
 
 fn main() -> ExitCode {
+    // Emit tracing to the terminal so plugin-load failures and runtime
+    // warnings are visible (parity with the egui app's startup). Default
+    // to `info`; `RUST_LOG` overrides via EnvFilter.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
     // Follow the OS language before any localized string can be emitted,
     // matching the egui app's startup (crates/hxy/src/main.rs). en-US is
     // the only bundled locale today, so runtime text is unchanged; the

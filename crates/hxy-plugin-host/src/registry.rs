@@ -61,6 +61,25 @@ pub enum PluginLoadError {
     Manifest(#[source] ManifestError),
 }
 
+/// One plugin file that failed to load. The scan continues past it so a
+/// single broken plugin does not disable the rest; the caller reports
+/// which plugins are unavailable and why.
+#[derive(Debug)]
+pub struct PluginLoadFailure {
+    pub path: PathBuf,
+    pub error: PluginLoadError,
+}
+
+/// Outcome of scanning a plugin directory: the handlers that loaded and
+/// the per-file failures that were skipped. A directory- or engine-level
+/// error still aborts the whole scan (the outer `Err`); a per-file
+/// compile/link/probe/manifest error lands in `failures` and the rest of
+/// the directory still loads.
+pub struct LoadReport {
+    pub handlers: Vec<PluginHandler>,
+    pub failures: Vec<PluginLoadFailure>,
+}
+
 /// Load every `*.wasm` component in `dir` into a [`PluginHandler`].
 /// Silently tolerates an absent directory (returns empty) -- hosts may
 /// call this with a user-config path that doesn't exist yet.
@@ -77,9 +96,9 @@ pub fn load_plugins_from_dir(
     dir: &Path,
     grants: &PluginGrants,
     state_store: Option<Arc<dyn StateStore>>,
-) -> Result<Vec<PluginHandler>, PluginLoadError> {
+) -> Result<LoadReport, PluginLoadError> {
     if !dir.exists() {
-        return Ok(Vec::new());
+        return Ok(LoadReport { handlers: Vec::new(), failures: Vec::new() });
     }
 
     let mut config = Config::new();
@@ -99,16 +118,19 @@ pub fn load_plugins_from_dir(
         std::fs::read_dir(dir).map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
 
     let mut handlers = Vec::new();
+    let mut failures = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|source| PluginLoadError::ReadDir { path: dir.to_path_buf(), source })?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("wasm") {
             continue;
         }
-        let handler = load_single(&engine, linker.clone(), &path, grants, state_store.clone())?;
-        handlers.push(handler);
+        match load_single(&engine, linker.clone(), &path, grants, state_store.clone()) {
+            Ok(handler) => handlers.push(handler),
+            Err(error) => failures.push(PluginLoadFailure { path, error }),
+        }
     }
-    Ok(handlers)
+    Ok(LoadReport { handlers, failures })
 }
 
 fn load_single(

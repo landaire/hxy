@@ -17276,6 +17276,7 @@ cargo.rust_binary(
         ":thiserror-2",
         ":tokio-1",
         ":tracing-0.1",
+        ":tracing-subscriber-0.3",
     ],
 )
 
