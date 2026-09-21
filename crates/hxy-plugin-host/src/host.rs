@@ -27,6 +27,8 @@ use wasmtime_wasi::sockets::SocketAddrUse;
 
 use crate::StateError;
 use crate::StateStore;
+use crate::bindings::handler_world::hxy::vfs::net::Datagram as WitDatagram;
+use crate::bindings::handler_world::hxy::vfs::net::Host as NetHost;
 use crate::bindings::handler_world::hxy::vfs::source::Host as SourceHost;
 use crate::bindings::handler_world::hxy::vfs::state::Host as StateHost;
 use crate::bindings::handler_world::hxy::vfs::state::StateError as WitStateError;
@@ -53,6 +55,11 @@ pub struct HostState {
     /// `network` grants; a plugin that requested no network capability
     /// gets a default (`SocketAddrCheck` denies everything) ctx.
     pub wasi: WasiCtx,
+    /// The granted outbound `host:port` allowlist patterns -- the same
+    /// set fed to the wasi `socket_addr_check`. Kept so the host `net`
+    /// broadcast is gated identically (wasi can't gate it: broadcast
+    /// isn't expressible through wasi:sockets at all).
+    pub network_patterns: Vec<String>,
 }
 
 impl HostState {
@@ -69,6 +76,7 @@ impl HostState {
             state_store: None,
             resources: ResourceTable::new(),
             wasi: deny_all_wasi_ctx(),
+            network_patterns: Vec::new(),
         }
     }
 
@@ -96,7 +104,8 @@ impl HostState {
     /// use, or we can wire DNS-aware allowlisting via
     /// `WasiCtxBuilder::allow_ip_name_lookup` in a follow-up.
     pub fn with_network_allowlist(mut self, patterns: Vec<String>) -> Self {
-        self.wasi = build_wasi_ctx_with_allowlist(patterns);
+        self.wasi = build_wasi_ctx_with_allowlist(patterns.clone());
+        self.network_patterns = patterns;
         self
     }
 }
@@ -188,6 +197,52 @@ impl SourceHost for HostState {
             .map_err(|e| format!("invalid range {start}..{end}: {e}"))?;
         self.source.read(range).map_err(|e| e.to_string())
     }
+}
+
+impl NetHost for HostState {
+    fn broadcast_query(&mut self, port: u16, payload: Vec<u8>, listen_ms: u32) -> Result<Vec<WitDatagram>, String> {
+        // Same allowlist gate as wasi outbound: the datagram goes to
+        // 255.255.255.255:port, so a matching grant (typically `*:port`)
+        // is required before the host will broadcast on the plugin's behalf.
+        if !allowlist_matches(&self.network_patterns, "255.255.255.255", port) {
+            return Err(format!("broadcast to port {port} is not permitted by the plugin's network allowlist"));
+        }
+        broadcast_collect(port, &payload, listen_ms).map_err(|e| e.to_string())
+    }
+}
+
+/// Send one UDP broadcast to `255.255.255.255:port` and gather replies
+/// until `listen_ms` elapses, deduplicated by source address. Blocking
+/// (the plugin call already runs off the UI thread); a 50 ms read
+/// timeout bounds each recv so the deadline is honored even with no
+/// traffic.
+fn broadcast_collect(port: u16, payload: &[u8], listen_ms: u32) -> std::io::Result<Vec<WitDatagram>> {
+    use std::net::Ipv4Addr;
+    use std::net::UdpSocket;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_broadcast(true)?;
+    socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+    socket.send_to(payload, (Ipv4Addr::BROADCAST, port))?;
+
+    let deadline = Instant::now() + Duration::from_millis(u64::from(listen_ms));
+    let mut out: Vec<WitDatagram> = Vec::new();
+    let mut buf = [0u8; 2048];
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut buf) {
+            Ok((n, src)) => {
+                let source = src.to_string();
+                if !out.iter().any(|d| d.source == source) {
+                    out.push(WitDatagram { source, data: buf[..n].to_vec() });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 impl StateHost for HostState {

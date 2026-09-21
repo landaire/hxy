@@ -61,6 +61,7 @@ use hxy_plugin_api::handler::InvokeResult;
 use hxy_plugin_api::handler::Metadata;
 use hxy_plugin_api::handler::MountRequest;
 use hxy_plugin_api::handler::PromptRequest;
+use hxy_plugin_api::handler::net;
 use xeedee::Client;
 use xeedee::Connected;
 use xeedee::commands::DirEntry;
@@ -74,6 +75,10 @@ use xeedee::commands::SetMem;
 use xeedee::commands::VirtualRegion;
 use xeedee::commands::WalkMem;
 use xeedee::discovery::DiscoveryAction;
+use xeedee::discovery::NAP_PORT;
+use xeedee::discovery::NapRequest;
+use xeedee::discovery::encode_request;
+use xeedee::discovery::parse_response;
 use xeedee::discovery::{DiscoveredConsole, Discovery, DiscoveryConfig};
 
 const PROMPT_DEFAULT: &str = "192.168.1.50:730";
@@ -140,7 +145,12 @@ impl GuestCommands for Plugin {
         if id != "connect" {
             return InvokeResult::Done;
         }
-        match probe_console(&answer) {
+        // An IP (optionally `host:port`) gets a direct unicast probe; a
+        // bare devkit NAME (e.g. "deanxbox") isn't DNS-resolvable, so it
+        // goes through a host-side subnet broadcast that the WASI sandbox
+        // can't perform itself.
+        let result = if is_ip_like(&answer) { probe_console(&answer) } else { lookup_by_name(&answer) };
+        match result {
             Ok(console) => {
                 let token = console.addr.to_string();
                 let title = format!("Xbox: {}", console.name);
@@ -155,6 +165,33 @@ impl GuestCommands for Plugin {
             }]),
         }
     }
+}
+
+/// Treat the input as an IP (optionally `:port`) rather than a devkit
+/// name. An arbitrary IP can't be found by a name broadcast, and a name
+/// can't be resolved by DNS, so the two take different paths.
+fn is_ip_like(input: &str) -> bool {
+    let host = input.rsplit_once(':').map_or(input, |(host, _)| host);
+    host.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// Resolve a devkit by its NAP name via a host-side subnet broadcast
+/// (the sandbox has no SO_BROADCAST). The host sends the `WhatIsYourName`
+/// probe to `255.255.255.255:730` and returns every reply; we parse them
+/// and pick the one whose name matches.
+fn lookup_by_name(name: &str) -> Result<DiscoveredConsole, String> {
+    let payload = encode_request(&NapRequest::what_is_your_name()).map_err(|e| e.to_string())?;
+    // 1.5 s collection window, matching xeedee's broadcast() default.
+    let replies = net::broadcast_query(NAP_PORT, &payload, 1500)?;
+    replies
+        .into_iter()
+        .filter_map(|dg| {
+            let addr = dg.source.parse::<SocketAddr>().ok()?;
+            let resp = parse_response(&dg.data).ok()?;
+            Some(DiscoveredConsole { name: resp.name, addr })
+        })
+        .find(|console| console.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("no console named {name:?} answered on the LAN"))
 }
 
 fn probe_console(host_port: &str) -> Result<DiscoveredConsole, String> {

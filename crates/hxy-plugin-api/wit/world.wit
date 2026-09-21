@@ -233,9 +233,29 @@ interface commands {
 /// `socket_addr_check` callback so the same `host:port` allowlist
 /// applies to plugins using `std::net::TcpStream` /
 /// `std::net::UdpSocket`.
+/// Host-provided outbound networking the WASI sandbox can't do itself.
+/// `wasi:sockets` exposes no SO_BROADCAST, so a plugin that needs LAN
+/// discovery (NAP name lookup, etc.) can't broadcast on its own; the
+/// host does the one round trip on native sockets. Gated by the same
+/// `network` allowlist as wasi:sockets.
+interface net {
+    /// One UDP reply: `source` is "ip:port", `data` the datagram bytes.
+    record datagram {
+        source: string,
+        data: list<u8>,
+    }
+
+    /// Broadcast `payload` to `255.255.255.255:port`, collect replies for
+    /// `listen-ms`, and return them (deduplicated by source). Errors
+    /// (string) on a send failure or when `port` is outside the plugin's
+    /// network allowlist.
+    broadcast-query: func(port: u16, payload: list<u8>, listen-ms: u32) -> result<list<datagram>, string>;
+}
+
 world plugin {
     import source;
     import state;
+    import net;
     export handler;
     export commands;
 }

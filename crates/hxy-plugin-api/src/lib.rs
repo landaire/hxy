@@ -28,6 +28,7 @@ pub mod handler {
     pub use self::exports::hxy::vfs::handler::Guest;
     pub use self::exports::hxy::vfs::handler::GuestMount;
     pub use self::exports::hxy::vfs::handler::Metadata;
+    pub use self::hxy::vfs::net;
     pub use self::hxy::vfs::source;
     pub use self::hxy::vfs::state;
     // The plugin world exports `commands` alongside `handler`, so every
