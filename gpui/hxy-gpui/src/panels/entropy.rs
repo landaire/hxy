@@ -496,14 +496,22 @@ impl Plot for EntropyChart {
 
         // `x`/`y` aren't needed again after this, so the closures can
         // take ownership directly instead of cloning.
+        // (x_offset, entropy) pairs. Centre each window's entropy at its
+        // midpoint so the line lines up with the file region it
+        // summarizes. A lone window has no segment to draw, so render it
+        // as a flat line across the whole X domain instead of an
+        // invisible single point.
         let window_mid = self.window_bytes as f64 / 2.0;
+        let coords: Vec<(f64, f64)> = if self.points.len() == 1 {
+            let entropy = self.points[0].entropy;
+            vec![(0.0, entropy), (self.max_offset, entropy)]
+        } else {
+            self.points.iter().map(|p| (p.offset as f64 + window_mid, p.entropy)).collect()
+        };
         let line = Line::new()
-            .data(self.points.iter().copied())
-            // Centre each window's entropy at the window's midpoint so
-            // the line lines up with the file region it summarizes
-            // rather than the window's leading edge.
-            .x(move |p: &EntropyPoint| x.tick(&(p.offset as f64 + window_mid)))
-            .y(move |p: &EntropyPoint| y.tick(&p.entropy))
+            .data(coords.into_iter())
+            .x(move |p: &(f64, f64)| x.tick(&p.0))
+            .y(move |p: &(f64, f64)| y.tick(&p.1))
             .stroke(cx.theme().chart_2)
             .stroke_width(px(1.5));
         line.paint(&chart_bounds, window);

@@ -227,11 +227,15 @@ fn render_decoded(decoded: Option<Decoded>, cx: &App) -> gpui::AnyElement {
         Some(Decoded::Color { rgba, label }) => h_flex()
             .gap_2()
             .items_center()
+            // Swatch is opaque so the stated `#RRGGBB` reads at any
+            // alpha; the parsed alpha is shown in `label` (`a=..`), not
+            // as swatch transparency (which would fade dark colors to
+            // near-invisible over the panel background).
             .child(div().size(px(12.0)).rounded(px(3.0)).border_1().border_color(cx.theme().border).bg(Rgba {
                 r: f32::from(rgba[0]) / 255.0,
                 g: f32::from(rgba[1]) / 255.0,
                 b: f32::from(rgba[2]) / 255.0,
-                a: f32::from(rgba[3]) / 255.0,
+                a: 1.0,
             }))
             .child(Label::new(label))
             .into_any_element(),

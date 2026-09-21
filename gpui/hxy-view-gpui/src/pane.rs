@@ -106,6 +106,11 @@ pub struct HexPane {
     editor: hxy_editor::HexEditor,
     focus_handle: FocusHandle,
     columns: ColumnCount,
+    /// Per-buffer column override. `Some` pins this pane's column count
+    /// (set via the palette's "this buffer" mode) so a change to the
+    /// global `hex_columns` default no longer moves it; `None` follows
+    /// the global default.
+    column_override: Option<ColumnCount>,
     /// Vertical scroll in fractional rows (row 0 at top when 0.0).
     scroll_rows: f32,
     /// Set during paint, consumed by input handlers.
@@ -158,6 +163,7 @@ impl HexPane {
             editor: hxy_editor::HexEditor::new(source),
             focus_handle: cx.focus_handle(),
             columns: ColumnCount::DEFAULT,
+            column_override: None,
             scroll_rows: 0.0,
             last_frame: None,
             drag_anchor: None,
@@ -188,9 +194,25 @@ impl HexPane {
         self.columns
     }
 
-    /// Set the hex view's column count for this pane and repaint. Used
-    /// by the command palette's `Set columns...` mode.
+    /// Whether this pane pins its own column count (a per-buffer
+    /// override), ignoring changes to the global `hex_columns` default.
+    pub fn has_column_override(&self) -> bool {
+        self.column_override.is_some()
+    }
+
+    /// Follow the global column default. The workspace's settings
+    /// observer calls this on every open pane, skipping any that carry a
+    /// per-buffer override (see [`Self::has_column_override`]).
     pub fn set_columns(&mut self, columns: ColumnCount, cx: &mut Context<Self>) {
+        self.columns = columns;
+        cx.notify();
+    }
+
+    /// Pin this pane to `columns` regardless of the global default. Set
+    /// by the command palette's "this buffer" mode; survives later
+    /// changes to the global `hex_columns` setting.
+    pub fn set_column_override(&mut self, columns: ColumnCount, cx: &mut Context<Self>) {
+        self.column_override = Some(columns);
         self.columns = columns;
         cx.notify();
     }

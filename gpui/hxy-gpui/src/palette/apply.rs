@@ -84,7 +84,7 @@ pub(crate) fn apply(ws: &mut Workspace, action: PaletteAction, window: &mut Wind
         }
         PaletteAction::SetColumns(count) => {
             let Some(pane) = ws.active_pane(cx) else { return };
-            pane.update(cx, |pane, cx| pane.set_columns(count, cx));
+            pane.update(cx, |pane, cx| pane.set_column_override(count, cx));
         }
         // Global settings; the settings observer applies them to every pane
         // and the watch layer.

@@ -272,6 +272,12 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// sized it yet.
 const INSPECTOR_DOCK_WIDTH: gpui::Pixels = px(280.0);
 
+/// The dock the per-file analysis panels (strings, entropy, checksums,
+/// visualizer) open into: the bottom dock, beside Console and Memory,
+/// where their wide content (graphs, tables, string lists) has the full
+/// window width. The right dock is reserved for the per-caret Inspector.
+const ANALYSIS_DOCK: DockPlacement = DockPlacement::Bottom;
+
 /// Parse pasted text as hex byte pairs, ignoring all whitespace so
 /// "de ad be ef" and "deadbeef" are equivalent. Errs on an odd nibble
 /// count or a non-hex character. Local to the paste path rather than
@@ -1004,6 +1010,18 @@ impl Workspace {
         });
     }
 
+    /// Add an analysis panel (strings/entropy/checksums/visualizer) to
+    /// the analysis dock ([`ANALYSIS_DOCK`]) and open that dock if it was
+    /// collapsed, so the panel is visible immediately.
+    fn dock_analysis_panel(&mut self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel_view(panel, ANALYSIS_DOCK, None, window, cx);
+            if !dock.is_dock_open(ANALYSIS_DOCK) {
+                dock.toggle_dock(ANALYSIS_DOCK, window, cx);
+            }
+        });
+    }
+
     /// Open (or focus an existing) `StringsPanel` tab for the
     /// reference file (see `reference_active_file`'s doc -- FILE-
     /// SCOPED: "find strings" while already looking at that file's own
@@ -1020,10 +1038,9 @@ impl Workspace {
         }
 
         let pane = file.read(cx).pane().clone();
-        self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| StringsPanel::new(pane, path, window, cx));
         self.track_strings_panel(panel.clone(), window, cx);
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel.clone())), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel.clone())), window, cx);
         // The 0.5.2 dock does not focus a freshly added panel; focus the
         // strings tab so it becomes the dispatch target (keystrokes reach
         // the workspace's reference-file fallback while it is front-most).
@@ -1069,7 +1086,10 @@ impl Workspace {
     /// the registered entity, mirroring `open_file_for_path`.
     fn open_strings_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<StringsPanel>> {
         let dump = self.dock.read(cx).dump(cx);
-        if !dump_has_strings_path(&dump.center, path) {
+        // Analysis panels dock in the bottom dock; still accept a center
+        // tab from a layout saved before the move.
+        let in_analysis = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_strings_path(d.panel(), path));
+        if !in_analysis && !dump_has_strings_path(&dump.center, path) {
             return None;
         }
         self.strings_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
@@ -1099,11 +1119,10 @@ impl Workspace {
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
-        self.resync_center_if_stale(window, cx);
         let panel = self.strings_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
         self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Open (or focus an existing) `EntropyPanel` tab for the
@@ -1120,10 +1139,9 @@ impl Workspace {
         }
 
         let pane = file.read(cx).pane().clone();
-        self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| EntropyPanel::new(pane, path, window, cx));
         self.track_entropy_panel(panel.clone());
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Register `panel` in `entropy_panels` if not already tracked.
@@ -1142,7 +1160,11 @@ impl Workspace {
     /// `None`. Mirrors `open_strings_panel_for_path`.
     fn open_entropy_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<EntropyPanel>> {
         let dump = self.dock.read(cx).dump(cx);
-        if !dump_has_entropy_path(&dump.center, path) {
+        // Analysis panels dock in the bottom dock; still accept a center
+        // (or older right-dock) tab from a layout saved before the move.
+        let in_analysis = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_entropy_path(d.panel(), path))
+            || dump.right_dock.as_ref().is_some_and(|d| dump_has_entropy_path(d.panel(), path));
+        if !in_analysis && !dump_has_entropy_path(&dump.center, path) {
             return None;
         }
         self.entropy_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
@@ -1158,11 +1180,10 @@ impl Workspace {
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
-        self.resync_center_if_stale(window, cx);
         let panel = self.entropy_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
         self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Open (or focus an existing) `ChecksumsPanel` tab for the
@@ -1179,10 +1200,9 @@ impl Workspace {
         }
 
         let pane = file.read(cx).pane().clone();
-        self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| ChecksumsPanel::new(pane, path, window, cx));
         self.track_checksums_panel(panel.clone());
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Register `panel` in `checksums_panels` if not already tracked.
@@ -1201,7 +1221,8 @@ impl Workspace {
     /// else `None`. Mirrors `open_entropy_panel_for_path`.
     fn open_checksums_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<ChecksumsPanel>> {
         let dump = self.dock.read(cx).dump(cx);
-        if !dump_has_checksums_path(&dump.center, path) {
+        let in_analysis = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_checksums_path(d.panel(), path));
+        if !in_analysis && !dump_has_checksums_path(&dump.center, path) {
             return None;
         }
         self.checksums_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
@@ -1217,11 +1238,10 @@ impl Workspace {
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
-        self.resync_center_if_stale(window, cx);
         let panel = self.checksums_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
         self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Palette "Show Visualizer panel": open (or focus) the
@@ -1263,13 +1283,12 @@ impl Workspace {
             self.focus_visualizer_tab(panel, window, cx);
             return;
         }
-        self.resync_center_if_stale(window, cx);
         let panel = cx.new(|cx| VisualizerPanel::new(file, path, window, cx));
         if let Some(key) = key {
             panel.update(cx, |panel, cx| panel.set_active(key, cx));
         }
         self.track_visualizer_panel(panel.clone());
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// Register `panel` in `visualizer_panels` if not already tracked.
@@ -1286,7 +1305,8 @@ impl Workspace {
     /// else `None`. Mirrors `open_entropy_panel_for_path`.
     fn open_visualizer_panel_for_path(&self, path: Option<&Path>, cx: &App) -> Option<Entity<VisualizerPanel>> {
         let dump = self.dock.read(cx).dump(cx);
-        if !dump_has_visualizer_path(&dump.center, path) {
+        let in_analysis = dump.bottom_dock.as_ref().is_some_and(|d| dump_has_visualizer_path(d.panel(), path));
+        if !in_analysis && !dump_has_visualizer_path(&dump.center, path) {
             return None;
         }
         self.visualizer_panels.iter().rev().find(|panel| panel.read(cx).owning_path() == path).cloned()
@@ -1302,11 +1322,10 @@ impl Workspace {
             return;
         }
         let path = panel.read(cx).owning_path().map(Path::to_path_buf);
-        self.resync_center_if_stale(window, cx);
         let panel = self.visualizer_panels.iter().find(|p| p.read(cx).owning_path() == path.as_deref()).cloned();
         let Some(panel) = panel else { return };
         self.dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
-        self.dock.update(cx, |dock, cx| dock.add_panel_view(Arc::new(PanelHandle::new(panel)), DockPlacement::Center, None, window, cx));
+        self.dock_analysis_panel(Arc::new(PanelHandle::new(panel)), window, cx);
     }
 
     /// `cmd-shift-f` / the palette entry: close the global search tab if
@@ -2620,7 +2639,13 @@ impl Workspace {
         let panes: Vec<Entity<HexPane>> = self.open_files.iter().map(|f| f.read(cx).pane().clone()).collect();
         if next.hex_columns != prev.hex_columns {
             for pane in &panes {
-                pane.update(cx, |pane, cx| pane.set_columns(next.hex_columns, cx));
+                pane.update(cx, |pane, cx| {
+                    // A per-buffer override pins its own column count and
+                    // must not follow the global default.
+                    if !pane.has_column_override() {
+                        pane.set_columns(next.hex_columns, cx);
+                    }
+                });
             }
         }
         if next.input_mode != prev.input_mode {
@@ -3793,22 +3818,11 @@ impl Workspace {
     /// rationale). The closed entity here is genuinely gone, so removing
     /// only it by identity is safe.
     pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(strings) = active_strings_panel(self.dock.read(cx), cx) {
-            self.close_strings_tab(strings, window, cx);
-            return;
-        }
-        if let Some(entropy) = active_entropy_panel(self.dock.read(cx), cx) {
-            self.close_entropy_tab(entropy, window, cx);
-            return;
-        }
-        if let Some(checksums) = active_checksums_panel(self.dock.read(cx), cx) {
-            self.close_checksums_tab(checksums, window, cx);
-            return;
-        }
-        if let Some(visualizer) = active_visualizer_panel(self.dock.read(cx), cx) {
-            self.close_visualizer_tab(visualizer, window, cx);
-            return;
-        }
+        // The analysis panels (strings, entropy, checksums, visualizer)
+        // dock in the bottom dock and the inspector in the right dock, so
+        // `cmd-w` does not close them -- it closes the active center file
+        // tab, whose bound analysis tabs close with it. Each analysis tab
+        // has its own close button.
         if let Some(active) = self.active_file.clone() {
             self.request_close_file(active, window, cx);
             return;
@@ -3988,18 +4002,6 @@ impl Workspace {
         });
     }
 
-    /// Close one `EntropyPanel` tab by identity. Mirrors `close_strings_tab`.
-    fn close_entropy_tab(&mut self, panel: Entity<EntropyPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        self.entropy_panels.retain(|p| p.entity_id() != panel.entity_id());
-        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
-    }
-
-    /// Close one `ChecksumsPanel` tab by identity. Mirrors `close_strings_tab`.
-    fn close_checksums_tab(&mut self, panel: Entity<ChecksumsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        self.checksums_panels.retain(|p| p.entity_id() != panel.entity_id());
-        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
-    }
-
     /// Close every `EntropyPanel` tab bound to `path`. Mirrors
     /// `close_strings_tabs_for_path`: a left-open entropy tab would pin
     /// the closed file's `HexPane` alive and block a later reopen of
@@ -4036,13 +4038,6 @@ impl Workspace {
         }
     }
 
-    /// Close one `VisualizerPanel` tab by identity. Mirrors
-    /// `close_entropy_tab`.
-    fn close_visualizer_tab(&mut self, panel: Entity<VisualizerPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        self.visualizer_panels.retain(|p| p.entity_id() != panel.entity_id());
-        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
-    }
-
     /// Close every `VisualizerPanel` tab bound to `path`. Mirrors
     /// `close_entropy_tabs_for_path` (a left-open visualizer tab would
     /// pin the closed file's `FilePanel` alive through its strong
@@ -4060,12 +4055,6 @@ impl Workspace {
         for panel in closing {
             self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
         }
-    }
-
-    /// Close one `StringsPanel` tab by identity.
-    fn close_strings_tab(&mut self, panel: Entity<StringsPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        self.strings_panels.retain(|p| p.entity_id() != panel.entity_id());
-        self.dock.update(cx, |dock, cx| dock.remove_panel(panel, window, cx));
     }
 
     /// Close every `StringsPanel` tab bound to `path`. Called when the
@@ -4948,8 +4937,8 @@ fn read_pane_bytes(pane: &Entity<HexPane>, cx: &App) -> Vec<u8> {
 /// tab-group panel id to its live view. The fork keeps the center layout
 /// in sync with the live tree, so this is always current (the old
 /// `DockItem::Tabs.items` staleness caveat no longer applies).
-fn collect_center_panels<P: 'static>(area: &DockArea, out: &mut Vec<Entity<P>>) {
-    let Some(tree) = area.layout(DockPlacement::Center) else { return };
+fn collect_dock_panels<P: 'static>(area: &DockArea, placement: DockPlacement, out: &mut Vec<Entity<P>>) {
+    let Some(tree) = area.layout(placement) else { return };
     tree.root().walk(&mut |node| {
         if let PaneRef::Tabs { panels, .. } = node.kind() {
             for id in panels {
@@ -4963,11 +4952,15 @@ fn collect_center_panels<P: 'static>(area: &DockArea, out: &mut Vec<Entity<P>>) 
     });
 }
 
+fn collect_center_panels<P: 'static>(area: &DockArea, out: &mut Vec<Entity<P>>) {
+    collect_dock_panels(area, DockPlacement::Center, out);
+}
+
 /// The active tab's panel of type `P` in the first center leaf that has
 /// one, in tree order. `None` when the active tab everywhere is a
 /// different type.
-fn active_center_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
-    let tree = area.layout(DockPlacement::Center)?;
+fn active_dock_panel<P: 'static>(area: &DockArea, placement: DockPlacement) -> Option<Entity<P>> {
+    let tree = area.layout(placement)?;
     let mut found = None;
     tree.root().walk(&mut |node| {
         if found.is_some() {
@@ -4982,6 +4975,10 @@ fn active_center_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
         }
     });
     found
+}
+
+fn active_center_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
+    active_dock_panel(area, DockPlacement::Center)
 }
 
 /// The first center `Tabs` container and its active panel id -- the
@@ -5100,20 +5097,29 @@ fn collect_file_entities(area: &DockArea, out: &mut Vec<Entity<FilePanel>>) {
     collect_center_panels(area, out);
 }
 
+/// Collect an analysis panel type from both the analysis dock (where it
+/// lives now) and the center (a layout saved before the move). Entropy
+/// also scans the right dock, where an even older layout put it.
+fn collect_analysis_entities<P: 'static>(area: &DockArea, out: &mut Vec<Entity<P>>) {
+    collect_dock_panels(area, DockPlacement::Center, out);
+    collect_dock_panels(area, ANALYSIS_DOCK, out);
+}
+
 fn collect_strings_entities(area: &DockArea, out: &mut Vec<Entity<StringsPanel>>) {
-    collect_center_panels(area, out);
+    collect_analysis_entities(area, out);
 }
 
 fn collect_entropy_entities(area: &DockArea, out: &mut Vec<Entity<EntropyPanel>>) {
-    collect_center_panels(area, out);
+    collect_analysis_entities(area, out);
+    collect_dock_panels(area, DockPlacement::Right, out);
 }
 
 fn collect_checksums_entities(area: &DockArea, out: &mut Vec<Entity<ChecksumsPanel>>) {
-    collect_center_panels(area, out);
+    collect_analysis_entities(area, out);
 }
 
 fn collect_visualizer_entities(area: &DockArea, out: &mut Vec<Entity<VisualizerPanel>>) {
-    collect_center_panels(area, out);
+    collect_analysis_entities(area, out);
 }
 
 fn collect_global_search_entities(area: &DockArea, out: &mut Vec<Entity<GlobalSearchPanel>>) {
@@ -5153,26 +5159,32 @@ fn active_file_panel(area: &DockArea, _cx: &App) -> Option<Entity<FilePanel>> {
 /// stale -- incremental adds mutate the live `TabPanel` entity in
 /// place, and `active_panel` reads through that handle, not the cached
 /// vec.
-fn active_strings_panel(area: &DockArea, _cx: &App) -> Option<Entity<StringsPanel>> {
-    active_center_panel(area)
+/// The active analysis panel of type `P`: the analysis dock's active
+/// tab, falling back to the center (a layout saved before the move).
+fn active_analysis_panel<P: 'static>(area: &DockArea) -> Option<Entity<P>> {
+    active_dock_panel(area, ANALYSIS_DOCK).or_else(|| active_dock_panel(area, DockPlacement::Center))
 }
 
-/// The `EntropyPanel` backing the active tab, if the active tab is an
-/// entropy tab. Mirrors `active_strings_panel`.
+fn active_strings_panel(area: &DockArea, _cx: &App) -> Option<Entity<StringsPanel>> {
+    active_analysis_panel(area)
+}
+
+/// The `EntropyPanel` backing the active tab (analysis dock, then center
+/// or the older right dock for a layout saved before the move).
 fn active_entropy_panel(area: &DockArea, _cx: &App) -> Option<Entity<EntropyPanel>> {
-    active_center_panel(area)
+    active_analysis_panel(area).or_else(|| active_dock_panel(area, DockPlacement::Right))
 }
 
 /// The `ChecksumsPanel` backing the active tab, if the active tab is a
 /// checksums tab. Mirrors `active_strings_panel`.
 fn active_checksums_panel(area: &DockArea, _cx: &App) -> Option<Entity<ChecksumsPanel>> {
-    active_center_panel(area)
+    active_analysis_panel(area)
 }
 
 /// The `VisualizerPanel` backing the active tab, if the active tab is a
 /// visualizer tab. Mirrors `active_strings_panel`.
 fn active_visualizer_panel(area: &DockArea, _cx: &App) -> Option<Entity<VisualizerPanel>> {
-    active_center_panel(area)
+    active_analysis_panel(area)
 }
 
 /// The active center tab's panel view when its type is not one this
@@ -5630,16 +5642,36 @@ mod tests {
         window.read_with(cx, |ws, cx| count_file_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
     }
 
+    /// Count an analysis panel type across the docks it can live in: the
+    /// analysis (bottom) dock where it opens now, plus the center for a
+    /// layout saved before the move.
+    fn analysis_tab_count(
+        window: WindowHandle<Workspace>,
+        cx: &mut TestAppContext,
+        count: impl Fn(&PanelState) -> usize,
+    ) -> usize {
+        window
+            .read_with(cx, |ws, cx| {
+                let dump = ws.dock.read(cx).dump(cx);
+                dump.bottom_dock.as_ref().map_or(0, |d| count(d.panel())) + count(&dump.center)
+            })
+            .unwrap()
+    }
+
     fn strings_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
-        window.read_with(cx, |ws, cx| count_strings_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+        analysis_tab_count(window, cx, count_strings_panels)
     }
 
     fn entropy_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
-        window.read_with(cx, |ws, cx| count_entropy_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+        analysis_tab_count(window, cx, count_entropy_panels)
     }
 
     fn checksums_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
-        window.read_with(cx, |ws, cx| count_checksums_panels(&ws.dock.read(cx).dump(cx).center)).unwrap()
+        analysis_tab_count(window, cx, count_checksums_panels)
+    }
+
+    fn visualizer_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
+        analysis_tab_count(window, cx, count_visualizer_panels)
     }
 
     fn settings_tab_count(window: WindowHandle<Workspace>, cx: &mut TestAppContext) -> usize {
@@ -7837,11 +7869,11 @@ mod tests {
 
     /// `cmd-w` while a strings tab is the front-most center tab closes
     /// just that tab, not the (background) file tab it's bound to --
-    /// `self.active_file` only ever names a `FilePanel`, so without the
-    /// `active_strings_panel` check in `close_active_tab` this would
-    /// either no-op or close the wrong tab.
+    /// Strings docks in the bottom dock, so `cmd-w` closes the active
+    /// center file tab (not the bottom-dock strings tab); the file's
+    /// strings tab closes with the file.
     #[gpui::test]
-    fn cmd_w_closes_the_front_most_strings_tab_not_the_file(cx: &mut TestAppContext) {
+    fn cmd_w_with_a_strings_tab_closes_the_file(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
@@ -7850,11 +7882,12 @@ mod tests {
         window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert_eq!(strings_tab_count(window, cx), 1);
+        assert_eq!(file_count(window, cx), 1);
 
         window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
         cx.run_until_parked();
-        assert_eq!(strings_tab_count(window, cx), 0, "the strings tab closed");
-        assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+        assert_eq!(file_count(window, cx), 0, "the active file tab closed");
+        assert_eq!(strings_tab_count(window, cx), 0, "its strings tab closed with it");
     }
 
     /// Closing a file's tab also closes any `EntropyPanel` tab bound to
@@ -7883,11 +7916,11 @@ mod tests {
         assert_eq!(entropy_tab_count(window, cx), 1, "f2's entropy tab survives");
     }
 
-    /// `cmd-w` while an entropy tab is the front-most center tab closes
-    /// just that tab, not the (background) file tab it's bound to.
-    /// Mirrors `cmd_w_closes_the_front_most_strings_tab_not_the_file`.
+    /// Entropy docks in the right sidebar beside the inspector, so
+    /// `cmd-w` closes the active center file tab (not the sidebar); the
+    /// file's entropy panel closes with the file.
     #[gpui::test]
-    fn cmd_w_closes_the_front_most_entropy_tab_not_the_file(cx: &mut TestAppContext) {
+    fn cmd_w_with_an_entropy_sidebar_closes_the_file(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
@@ -7896,11 +7929,12 @@ mod tests {
         window.update(cx, |ws, window, cx| ws.open_entropy_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert_eq!(entropy_tab_count(window, cx), 1);
+        assert_eq!(file_count(window, cx), 1);
 
         window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
         cx.run_until_parked();
-        assert_eq!(entropy_tab_count(window, cx), 0, "the entropy tab closed");
-        assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+        assert_eq!(file_count(window, cx), 0, "the active file tab closed");
+        assert_eq!(entropy_tab_count(window, cx), 0, "its entropy sidebar closed with it");
     }
 
     /// Opening the entropy panel twice for the same file focuses the
@@ -7948,11 +7982,10 @@ mod tests {
         assert_eq!(checksums_tab_count(window, cx), 1, "f2's checksums tab survives");
     }
 
-    /// `cmd-w` while a checksums tab is the front-most center tab closes
-    /// just that tab, not the (background) file tab it's bound to.
-    /// Mirrors `cmd_w_closes_the_front_most_entropy_tab_not_the_file`.
+    /// Checksums docks in the bottom dock, so `cmd-w` closes the active
+    /// center file tab; the file's checksums tab closes with it.
     #[gpui::test]
-    fn cmd_w_closes_the_front_most_checksums_tab_not_the_file(cx: &mut TestAppContext) {
+    fn cmd_w_with_a_checksums_tab_closes_the_file(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 16]);
@@ -7961,11 +7994,12 @@ mod tests {
         window.update(cx, |ws, window, cx| ws.open_checksums_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert_eq!(checksums_tab_count(window, cx), 1);
+        assert_eq!(file_count(window, cx), 1);
 
         window.update(cx, |ws, window, cx| ws.close_active_tab(window, cx)).unwrap();
         cx.run_until_parked();
-        assert_eq!(checksums_tab_count(window, cx), 0, "the checksums tab closed");
-        assert_eq!(file_count(window, cx), 1, "the file tab is untouched");
+        assert_eq!(file_count(window, cx), 0, "the active file tab closed");
+        assert_eq!(checksums_tab_count(window, cx), 0, "its checksums tab closed with it");
     }
 
     /// Opening the checksums panel twice for the same file focuses the
@@ -8077,10 +8111,10 @@ mod tests {
     /// A row click on a background file's strings tab must bring that
     /// file's own tab to the front, not just move its (invisible)
     /// selection -- mirrors egui's `jump_to_strings_match`, which calls
-    /// `focus_file_tab` before applying the selection. Split A|B, open
-    /// strings for A, focus B (backgrounding A and its strings tab),
-    /// then click a strings row: A's tab must become frontmost with the
-    /// jumped-to range selected.
+    /// `focus_file_tab` before applying the selection. Open A and its
+    /// strings tab, open B (backgrounding A's tab), then click a strings
+    /// row: A's tab must become frontmost with the jumped-to range
+    /// selected.
     #[gpui::test]
     fn strings_row_jump_focuses_the_owning_files_background_tab(cx: &mut TestAppContext) {
         setup(cx);
@@ -8092,32 +8126,11 @@ mod tests {
         window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
 
-        let original = window
-            .read_with(cx, |ws, cx| first_center_tab_node(ws.dock.read(cx)))
-            .unwrap()
-            .expect("a center tab panel");
-        window
-            .update(cx, |ws, window, cx| {
-                let bytes = std::fs::read(&fb).unwrap();
-                let source: Arc<dyn HexSource> = Arc::new(MemorySource::new(bytes));
-                let b_panel = cx.new(|cx| FilePanel::new(source, Some(fb.clone()), window, cx));
-                ws.open_files.push(b_panel.clone());
-                drag_split_right(&ws.dock, original, b_panel.clone(), window, cx);
-                // A plain split does not itself change `active_file`:
-                // the newly split-off `TabPanel` has no node at all in
-                // the cached `DockItem` tree yet (only a live resync or
-                // the pane picker's explicit override discovers it --
-                // see `resolve_leaf`'s doc), so `active_file_panel`'s
-                // walk can only ever re-find `original` (whose active
-                // tab is now the non-file strings(A)) and comes back
-                // `None`. Set B active directly to background A/its
-                // strings tab, matching what the real pane-picker flow
-                // (`cmd-k`) would leave in place after picking B.
-                ws.set_active_file(Some(b_panel), cx);
-            })
-            .unwrap();
+        // Open B; it becomes the active center tab, backgrounding A's
+        // tab. (Strings for A lives in the bottom dock, out of the way.)
+        window_open(window, &fb, cx);
         cx.run_until_parked();
-        assert_eq!(active_path(window, cx), Some(fb.clone()), "sanity: B is active after the split");
+        assert_eq!(active_path(window, cx), Some(fb.clone()), "sanity: B is the active center tab, A backgrounded");
 
         let strings_panel = window
             .read_with(cx, |ws, cx| {
@@ -8306,7 +8319,7 @@ mod tests {
     /// fallback, mirroring egui's `active_file_id` (used by undo/redo
     /// among "dozens of dispatch sites" per its own doc).
     #[gpui::test]
-    fn cmd_z_undoes_the_reference_files_edit_while_a_strings_tab_is_focused(cx: &mut TestAppContext) {
+    fn cmd_z_undoes_the_files_edit_with_a_strings_panel_open(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0u8; 32]);
@@ -8322,21 +8335,22 @@ mod tests {
         };
         assert!(dirty(cx), "typing a hex digit must dirty the buffer");
 
+        // Strings docks in the bottom dock, so the file stays active.
         window.update(cx, |ws, window, cx| ws.open_strings_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
         assert!(
-            !window.read_with(cx, |ws, _| ws.has_strict_active_file()).unwrap(),
-            "sanity: strings tab is front-most"
+            window.read_with(cx, |ws, _| ws.has_strict_active_file()).unwrap(),
+            "the file stays the active center tab"
         );
 
         cx.simulate_keystrokes(window.into(), "cmd-z");
-        assert!(!dirty(cx), "cmd-z must undo via the reference-file fallback while a strings tab is focused");
+        assert!(!dirty(cx), "cmd-z undoes the active file's edit with a strings panel open");
     }
 
-    /// `cmd-shift-c` while a strings tab is focused copies the
-    /// *reference* file's selection as hex, not nothing.
+    /// `cmd-shift-c` with a strings panel open copies the file's
+    /// selection as hex, not nothing.
     #[gpui::test]
-    fn cmd_shift_c_copies_the_reference_files_selection_while_a_strings_tab_is_focused(cx: &mut TestAppContext) {
+    fn cmd_shift_c_copies_the_files_selection_with_a_strings_panel_open(cx: &mut TestAppContext) {
         setup(cx);
         let dir = tempfile::tempdir().unwrap();
         let f1 = temp_file(&dir, "a.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
@@ -8359,8 +8373,8 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         assert!(
-            !ws.read_with(cx, |ws, _| ws.has_strict_active_file()),
-            "sanity: strings tab is front-most"
+            ws.read_with(cx, |ws, _| ws.has_strict_active_file()),
+            "the file stays the active center tab"
         );
 
         cx.simulate_keystrokes(window.into(), "cmd-shift-c");
@@ -8680,12 +8694,18 @@ mod tests {
         })
         .unwrap();
         cx.run_until_parked();
-        assert_eq!(workspace.read_with(cx, |ws, cx| count_entropy_panels(&ws.dock.read(cx).dump(cx).center)), 1);
+        // Entropy docks in the bottom dock beside Console and Memory.
+        assert_eq!(
+            workspace.read_with(cx, |ws, cx| {
+                let dump = ws.dock.read(cx).dump(cx);
+                dump.bottom_dock.as_ref().map_or(0, |d| count_entropy_panels(d.panel()))
+            }),
+            1
+        );
 
-        // `open_entropy_for_active_file` focuses the new entropy tab,
-        // so `active_file` (which tracks a `FilePanel` specifically)
-        // is `None` now -- `reference_active_file` is the fallback-
-        // aware read that still resolves to the owning file.
+        // `active_file` tracks a `FilePanel` specifically, so use
+        // `reference_active_file`, the fallback-aware read that still
+        // resolves to the owning file whatever tab holds focus.
         cx.update_window(window.into(), |_, window, cx| {
             workspace.update(cx, |ws, cx| {
                 let pane = ws.reference_active_file(cx).unwrap().read(cx).pane().clone();
@@ -8919,7 +8939,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
 
-        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        let count = visualizer_tab_count(window, cx);
         assert_eq!(count, 1, "the visualizer tab opened");
         let key = hxy_templates::visualize::VisualizerKey { instance: id, node: idx };
         window
@@ -8938,7 +8958,7 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
-        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        let count = visualizer_tab_count(window, cx);
         assert_eq!(count, 1, "open-or-focus never duplicates the tab");
     }
 
@@ -8971,7 +8991,7 @@ mod tests {
         let (_id, file) = install_visualizer_fixture(window, cx);
         window.update(cx, |ws, window, cx| ws.open_visualizer_for_active_file(window, cx)).unwrap();
         cx.run_until_parked();
-        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        let count = visualizer_tab_count(window, cx);
         assert_eq!(count, 1);
 
         window
@@ -8980,7 +9000,7 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
-        let count = window.read_with(cx, |ws, cx| count_visualizer_panels(&ws.dock.read(cx).dump(cx).center)).unwrap();
+        let count = visualizer_tab_count(window, cx);
         assert_eq!(count, 0, "the visualizer tab closed with its file");
         assert!(window.read_with(cx, |ws, _| ws.visualizer_panels.is_empty()).unwrap());
     }
@@ -9002,6 +9022,34 @@ mod tests {
             .read_with(cx, |ws, cx| ws.open_files.iter().map(|f| f.read(cx).pane().read(cx).columns().get()).collect())
             .unwrap();
         assert_eq!(columns, vec![24, 24], "both open panes picked up the new column count");
+    }
+
+    /// A per-buffer column override (palette "this buffer" mode) survives
+    /// a later change to the global `hex_columns` default; panes without
+    /// an override still follow it.
+    #[gpui::test]
+    fn per_buffer_column_override_survives_a_global_change(cx: &mut TestAppContext) {
+        setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let a = temp_file(&dir, "a.bin", &[0u8; 64]);
+        let b = temp_file(&dir, "b.bin", &[1u8; 64]);
+        let window = open_workspace(cx, vec![a, b], None);
+
+        // Pin the first pane to a per-buffer override.
+        window
+            .update(cx, |ws, _, cx| {
+                let pane = ws.open_files[0].read(cx).pane().clone();
+                pane.update(cx, |pane, cx| pane.set_column_override(hxy_core::ColumnCount::new(20).unwrap(), cx));
+            })
+            .unwrap();
+
+        cx.update(|cx| update_settings(cx, |s| s.hex_columns = hxy_core::ColumnCount::new(24).unwrap()));
+        cx.run_until_parked();
+
+        let columns: Vec<u16> = window
+            .read_with(cx, |ws, cx| ws.open_files.iter().map(|f| f.read(cx).pane().read(cx).columns().get()).collect())
+            .unwrap();
+        assert_eq!(columns, vec![20, 24], "the overridden pane kept 20; the other followed the global default");
     }
 
     /// A successful disk open records the path at the top of the

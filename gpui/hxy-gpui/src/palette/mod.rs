@@ -990,14 +990,16 @@ mod tests {
     /// `palette_context` / `active_pane` routing through
     /// `Workspace::reference_active_file`'s fallback.
     #[gpui::test]
-    fn go_to_offset_jumps_the_reference_file_while_its_strings_tab_is_focused(cx: &mut TestAppContext) {
+    fn go_to_offset_jumps_the_reference_file_with_a_strings_panel_open(cx: &mut TestAppContext) {
         setup(cx);
         let (ws, cx) = build(cx, 32);
         seed_caret(&ws, 5, cx);
 
+        // Strings docks in the bottom dock, so the file stays the active
+        // center tab; go-to-offset targets it.
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_strings_for_active_file(window, cx)));
         cx.run_until_parked();
-        assert!(!ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "sanity: strings tab is front-most");
+        assert!(ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "the file stays the active center tab");
 
         let pal = palette(&ws, cx);
         cx.simulate_keystrokes("cmd-shift-p");
@@ -1106,7 +1108,7 @@ mod tests {
 
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_strings_for_active_file(window, cx)));
         cx.run_until_parked();
-        assert!(!ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "sanity: strings tab is front-most");
+        assert!(ws.read_with(cx, |ws, _| ws.has_strict_active_file()), "the file stays the active center tab");
 
         let pal = palette(&ws, cx);
         cx.simulate_keystrokes("cmd-p");
