@@ -47,6 +47,9 @@ use gpui::component::button::ButtonVariants;
 use gpui::component::dock::BasePanel;
 use gpui::component::dock::Panel;
 use gpui::component::dock::PanelEvent;
+use gpui::component::form::field;
+use gpui::component::form::v_form;
+use gpui::component::group_box::GroupBox;
 use gpui::component::h_flex;
 use gpui::component::input::InputEvent;
 use gpui::component::input::InputState;
@@ -55,7 +58,6 @@ use gpui::component::input::NumberInputEvent;
 use gpui::component::input::StepAction;
 use gpui::component::label::Label;
 use gpui::component::switch::Switch;
-use gpui::component::tooltip::Tooltip;
 use gpui::component::v_flex;
 use hxy_core::ColumnCount;
 use hxy_settings::AutoReloadMode;
@@ -435,38 +437,6 @@ fn toggle(id: impl Into<ElementId>, checked: bool, apply: impl Fn(&mut AppSettin
     })
 }
 
-/// One two-column row: fixed-width label, control.
-fn setting_row(label: String, control: impl IntoElement) -> impl IntoElement {
-    h_flex().gap_2().items_center().child(div().w(px(LABEL_WIDTH)).flex_none().child(Label::new(label))).child(control)
-}
-
-/// Like [`setting_row`], with a hover tooltip on the label (egui hangs
-/// these off the value widget; the label is the stable hover target
-/// here).
-fn setting_row_with_tooltip(
-    id: &'static str,
-    label: String,
-    tooltip: String,
-    control: impl IntoElement,
-) -> impl IntoElement {
-    h_flex()
-        .gap_2()
-        .items_center()
-        .child(
-            div()
-                .id(id)
-                .w(px(LABEL_WIDTH))
-                .flex_none()
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .child(Label::new(label)),
-        )
-        .child(control)
-}
-
-fn section_heading(text: String, cx: &App) -> impl IntoElement {
-    div().mt_2().pb_1().border_b_1().border_color(cx.theme().border).font_weight(gpui::FontWeight::SEMIBOLD).child(text)
-}
-
 impl BasePanel for SettingsPanel {
     fn panel_name(&self) -> &'static str {
         SETTINGS_PANEL_NAME
@@ -497,6 +467,178 @@ impl Render for SettingsPanel {
         let s = crate::settings::settings(cx);
         let muted = cx.theme().muted_foreground;
 
+        let input_mode = {
+            let current = s.input_mode;
+            h_flex()
+                .gap_1()
+                .child(choice_button(
+                    "settings-input-default",
+                    hxy_i18n::t("settings-input-mode-default"),
+                    current == hxy_editor::InputMode::Default,
+                    |s| s.input_mode = hxy_editor::InputMode::Default,
+                ))
+                .child(choice_button(
+                    "settings-input-vim",
+                    hxy_i18n::t("settings-input-mode-vim"),
+                    current == hxy_editor::InputMode::Vim,
+                    |s| s.input_mode = hxy_editor::InputMode::Vim,
+                ))
+        };
+        let byte_highlight_mode = {
+            let current = s.byte_highlight_mode;
+            h_flex()
+                .gap_1()
+                .child(choice_button(
+                    "settings-mode-background",
+                    hxy_i18n::t("settings-byte-highlight-background"),
+                    current == ByteHighlightMode::Background,
+                    |s| s.byte_highlight_mode = ByteHighlightMode::Background,
+                ))
+                .child(choice_button(
+                    "settings-mode-text",
+                    hxy_i18n::t("settings-byte-highlight-text"),
+                    current == ByteHighlightMode::Text,
+                    |s| s.byte_highlight_mode = ByteHighlightMode::Text,
+                ))
+        };
+        let byte_highlight_scheme = {
+            let current = s.byte_highlight_scheme;
+            h_flex()
+                .gap_1()
+                .child(choice_button(
+                    "settings-scheme-class",
+                    hxy_i18n::t("settings-byte-highlight-scheme-class"),
+                    current == ByteHighlightScheme::Class,
+                    |s| s.byte_highlight_scheme = ByteHighlightScheme::Class,
+                ))
+                .child(choice_button(
+                    "settings-scheme-value",
+                    hxy_i18n::t("settings-byte-highlight-scheme-value"),
+                    current == ByteHighlightScheme::Value,
+                    |s| s.byte_highlight_scheme = ByteHighlightScheme::Value,
+                ))
+        };
+        let offset_base = {
+            let current = s.offset_base;
+            h_flex()
+                .gap_1()
+                .child(choice_button(
+                    "settings-offset-hex",
+                    hxy_i18n::t("gpui-settings-base-hex"),
+                    current == OffsetBase::Hex,
+                    |s| s.offset_base = OffsetBase::Hex,
+                ))
+                .child(choice_button(
+                    "settings-offset-decimal",
+                    hxy_i18n::t("gpui-settings-base-decimal"),
+                    current == OffsetBase::Decimal,
+                    |s| s.offset_base = OffsetBase::Decimal,
+                ))
+        };
+        let auto_reload = {
+            let current = s.auto_reload;
+            let mut row = h_flex().gap_1();
+            for (index, mode) in AutoReloadMode::ALL.into_iter().enumerate() {
+                row = row.child(choice_button(
+                    ("settings-auto-reload", index),
+                    hxy_i18n::t(mode.label_key()),
+                    current == mode,
+                    move |s| s.auto_reload = mode,
+                ));
+            }
+            row
+        };
+
+        let general = v_form()
+            .label_width(px(LABEL_WIDTH))
+            .child(field().label(hxy_i18n::t("settings-input-mode")).items_center().child(input_mode))
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-columns"))
+                    .items_center()
+                    .child(self.number_row(NumericSetting::HexColumns, 130.0)),
+            )
+            .child(field().label(hxy_i18n::t("settings-byte-highlight")).items_center().child(toggle(
+                "settings-byte-highlight",
+                s.byte_value_highlight,
+                |s, v| s.byte_value_highlight = v,
+            )))
+            .child(field().label(hxy_i18n::t("settings-byte-highlight-mode")).items_center().child(byte_highlight_mode))
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-byte-highlight-scheme"))
+                    .items_center()
+                    .child(byte_highlight_scheme),
+            )
+            .child(field().label(hxy_i18n::t("settings-minimap")).items_center().child(toggle(
+                "settings-minimap",
+                s.show_minimap,
+                |s, v| s.show_minimap = v,
+            )))
+            .child(
+                field().label(hxy_i18n::t("settings-minimap-colored")).items_center().child(
+                    // Mirrors egui's add_enabled_ui: inert until the
+                    // minimap itself is on.
+                    toggle("settings-minimap-colored", s.minimap_colored, |s, v| s.minimap_colored = v)
+                        .disabled(!s.show_minimap),
+                ),
+            )
+            .child(field().label(hxy_i18n::t("settings-offset-base")).items_center().child(offset_base))
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-numeric-format"))
+                    .items_center()
+                    .child(self.numeric_format_controls(FormatSlot::Main, &s)),
+            )
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-template-value-format"))
+                    .items_center()
+                    .child(self.template_formats_section(&s, cx)),
+            )
+            .child(field().label(hxy_i18n::t("gpui-settings-palette-escape")).items_center().child(toggle(
+                "settings-palette-escape",
+                s.palette_escape_pops_to_parent,
+                |s, v| s.palette_escape_pops_to_parent = v,
+            )))
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-compare-deadline"))
+                    .description(hxy_i18n::t("settings-compare-deadline-tooltip"))
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(self.number_row(NumericSetting::CompareDeadlineMs, 140.0))
+                            .child(div().text_color(muted).child(hxy_i18n::t("gpui-settings-unit-ms"))),
+                    ),
+            );
+
+        let watch = v_form()
+            .label_width(px(LABEL_WIDTH))
+            .child(field().label(hxy_i18n::t("settings-auto-reload")).items_center().child(auto_reload))
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-poll-interval"))
+                    .description(hxy_i18n::t("settings-poll-interval-tooltip"))
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(self.number_row(NumericSetting::PollIntervalMs, 140.0))
+                            .child(div().text_color(muted).child(hxy_i18n::t("gpui-settings-unit-ms"))),
+                    ),
+            )
+            .child(
+                field()
+                    .label(hxy_i18n::t("settings-poll-all"))
+                    .description(hxy_i18n::t("settings-poll-all-tooltip"))
+                    .items_center()
+                    .child(toggle("settings-poll-all", s.file_poll_all, |s, v| s.file_poll_all = v)),
+            );
+
         v_flex()
             .id("settings-panel")
             .track_focus(&self.focus_handle)
@@ -504,142 +646,8 @@ impl Render for SettingsPanel {
             .overflow_y_scroll()
             .p_3()
             .gap_2()
-            .child(section_heading(hxy_i18n::t("settings-general-header"), cx))
-            .child(setting_row(hxy_i18n::t("settings-input-mode"), {
-                let current = s.input_mode;
-                h_flex()
-                    .gap_1()
-                    .child(choice_button(
-                        "settings-input-default",
-                        hxy_i18n::t("settings-input-mode-default"),
-                        current == hxy_editor::InputMode::Default,
-                        |s| s.input_mode = hxy_editor::InputMode::Default,
-                    ))
-                    .child(choice_button(
-                        "settings-input-vim",
-                        hxy_i18n::t("settings-input-mode-vim"),
-                        current == hxy_editor::InputMode::Vim,
-                        |s| s.input_mode = hxy_editor::InputMode::Vim,
-                    ))
-            }))
-            .child(setting_row(hxy_i18n::t("settings-columns"), self.number_row(NumericSetting::HexColumns, 130.0)))
-            .child(setting_row(
-                hxy_i18n::t("settings-byte-highlight"),
-                toggle("settings-byte-highlight", s.byte_value_highlight, |s, v| s.byte_value_highlight = v),
-            ))
-            .child(setting_row(hxy_i18n::t("settings-byte-highlight-mode"), {
-                let current = s.byte_highlight_mode;
-                h_flex()
-                    .gap_1()
-                    .child(choice_button(
-                        "settings-mode-background",
-                        hxy_i18n::t("settings-byte-highlight-background"),
-                        current == ByteHighlightMode::Background,
-                        |s| s.byte_highlight_mode = ByteHighlightMode::Background,
-                    ))
-                    .child(choice_button(
-                        "settings-mode-text",
-                        hxy_i18n::t("settings-byte-highlight-text"),
-                        current == ByteHighlightMode::Text,
-                        |s| s.byte_highlight_mode = ByteHighlightMode::Text,
-                    ))
-            }))
-            .child(setting_row(hxy_i18n::t("settings-byte-highlight-scheme"), {
-                let current = s.byte_highlight_scheme;
-                h_flex()
-                    .gap_1()
-                    .child(choice_button(
-                        "settings-scheme-class",
-                        hxy_i18n::t("settings-byte-highlight-scheme-class"),
-                        current == ByteHighlightScheme::Class,
-                        |s| s.byte_highlight_scheme = ByteHighlightScheme::Class,
-                    ))
-                    .child(choice_button(
-                        "settings-scheme-value",
-                        hxy_i18n::t("settings-byte-highlight-scheme-value"),
-                        current == ByteHighlightScheme::Value,
-                        |s| s.byte_highlight_scheme = ByteHighlightScheme::Value,
-                    ))
-            }))
-            .child(setting_row(
-                hxy_i18n::t("settings-minimap"),
-                toggle("settings-minimap", s.show_minimap, |s, v| s.show_minimap = v),
-            ))
-            .child(setting_row(
-                hxy_i18n::t("settings-minimap-colored"),
-                // Mirrors egui's add_enabled_ui: inert until the
-                // minimap itself is on.
-                toggle("settings-minimap-colored", s.minimap_colored, |s, v| s.minimap_colored = v)
-                    .disabled(!s.show_minimap),
-            ))
-            .child(setting_row(hxy_i18n::t("settings-offset-base"), {
-                let current = s.offset_base;
-                h_flex()
-                    .gap_1()
-                    .child(choice_button(
-                        "settings-offset-hex",
-                        hxy_i18n::t("gpui-settings-base-hex"),
-                        current == OffsetBase::Hex,
-                        |s| s.offset_base = OffsetBase::Hex,
-                    ))
-                    .child(choice_button(
-                        "settings-offset-decimal",
-                        hxy_i18n::t("gpui-settings-base-decimal"),
-                        current == OffsetBase::Decimal,
-                        |s| s.offset_base = OffsetBase::Decimal,
-                    ))
-            }))
-            .child(setting_row(
-                hxy_i18n::t("settings-numeric-format"),
-                self.numeric_format_controls(FormatSlot::Main, &s),
-            ))
-            .child(setting_row(hxy_i18n::t("settings-template-value-format"), self.template_formats_section(&s, cx)))
-            .child(setting_row(
-                hxy_i18n::t("gpui-settings-palette-escape"),
-                toggle("settings-palette-escape", s.palette_escape_pops_to_parent, |s, v| {
-                    s.palette_escape_pops_to_parent = v;
-                }),
-            ))
-            .child(setting_row_with_tooltip(
-                "settings-compare-deadline-label",
-                hxy_i18n::t("settings-compare-deadline"),
-                hxy_i18n::t("settings-compare-deadline-tooltip"),
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(self.number_row(NumericSetting::CompareDeadlineMs, 140.0))
-                    .child(div().text_color(muted).child(hxy_i18n::t("gpui-settings-unit-ms"))),
-            ))
-            .child(section_heading(hxy_i18n::t("settings-watch-header"), cx))
-            .child(setting_row(hxy_i18n::t("settings-auto-reload"), {
-                let current = s.auto_reload;
-                let mut row = h_flex().gap_1();
-                for (index, mode) in AutoReloadMode::ALL.into_iter().enumerate() {
-                    row = row.child(choice_button(
-                        ("settings-auto-reload", index),
-                        hxy_i18n::t(mode.label_key()),
-                        current == mode,
-                        move |s| s.auto_reload = mode,
-                    ));
-                }
-                row
-            }))
-            .child(setting_row_with_tooltip(
-                "settings-poll-interval-label",
-                hxy_i18n::t("settings-poll-interval"),
-                hxy_i18n::t("settings-poll-interval-tooltip"),
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(self.number_row(NumericSetting::PollIntervalMs, 140.0))
-                    .child(div().text_color(muted).child(hxy_i18n::t("gpui-settings-unit-ms"))),
-            ))
-            .child(setting_row_with_tooltip(
-                "settings-poll-all-label",
-                hxy_i18n::t("settings-poll-all"),
-                hxy_i18n::t("settings-poll-all-tooltip"),
-                toggle("settings-poll-all", s.file_poll_all, |s, v| s.file_poll_all = v),
-            ))
+            .child(GroupBox::new().title(hxy_i18n::t("settings-general-header")).child(general))
+            .child(GroupBox::new().title(hxy_i18n::t("settings-watch-header")).child(watch))
     }
 }
 
