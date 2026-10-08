@@ -103,6 +103,7 @@
           [openssl]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             vulkan-loader
+            fontconfig
           ];
       };
 
