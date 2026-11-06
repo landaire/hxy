@@ -225,7 +225,6 @@
           AR_wasm32_unknown_unknown = "${llvmPackages.llvm}/bin/llvm-ar";
           RUSTC = "${rustToolchain}/bin/rustc";
           RUSTDOC = "${rustToolchain}/bin/rustdoc";
-          CARGO_NET_OFFLINE = "true";
 
           LD_LIBRARY_PATH =
             lib.optionalString stdenv.hostPlatform.isLinux
@@ -246,10 +245,6 @@
               rm -rf "$hxy_workspace_root/fixups"
             fi
             ln -sfn ${buck2Fixups} "$hxy_workspace_root/fixups"
-            hxy_cargo_home="''${XDG_CACHE_HOME:-$HOME/.cache}/hxy/cargo/${cargoVendorCacheKey}"
-            mkdir -p "$hxy_cargo_home"
-            install -m 644 ${cargoVendorDir}/config.toml "$hxy_cargo_home/config.toml"
-            export CARGO_HOME="$hxy_cargo_home"
             # Native `buck2 build //:hxy-native` runs the C compiler through the
             # prelude's from_any_dir.py (os.execl, no PATH search), so the cxx
             # toolchain needs absolute tool paths. Publish them via the
