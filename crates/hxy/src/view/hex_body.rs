@@ -246,7 +246,7 @@ pub fn render_hex_body(ui: &mut egui::Ui, file: &mut OpenFile, state: &mut Persi
             egui::Tooltip::always_open(
                 ui.ctx().clone(),
                 layer,
-                egui::Id::new("hxy_template_breadcrumb"),
+                egui::Id::unique("hxy_template_breadcrumb"),
                 egui::PopupAnchor::Pointer,
             )
             .gap(12.0)

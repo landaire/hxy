@@ -40,12 +40,7 @@ cargo install hxy
 ## Development
 
 Nix is the supported development and CI environment. It pins the Rust toolchain,
-system libraries, Cargo sources, and local dependency overlays.
-
-A bare `cargo` invocation outside the dev shell fails: `Cargo.toml` resolves
-`egui-phosphor` and `egui_ltreeview` from `third-party/overrides/`, which only
-`nix develop` (or the flake build) materializes. Run cargo through
-`nix develop --command cargo ...`.
+system libraries, and Cargo sources.
 
 ```sh
 nix develop

@@ -179,7 +179,7 @@ impl ToastCenter {
         // late stage of the frame, so spin up a transparent
         // foreground Area as a host. The library's own Areas anchor
         // independently, so this outer rect just needs to exist.
-        let host_id = Id::new("hxy_toast_host");
+        let host_id = Id::unique("hxy_toast_host");
         egui::Area::new(host_id)
             .order(Order::Foreground)
             .interactable(false)
@@ -216,7 +216,7 @@ impl ToastCenter {
             if prompt.file_id != file_id {
                 continue;
             }
-            let area_id = Id::new("hxy_template_prompt").with(prompt.group);
+            let area_id = Id::unique("hxy_template_prompt").with(prompt.group);
             let pos = egui::pos2(tab_rect.right() - 12.0, tab_rect.top() + 12.0);
             let response = egui::Area::new(area_id)
                 .order(Order::Foreground)

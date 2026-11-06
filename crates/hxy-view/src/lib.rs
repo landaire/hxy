@@ -282,8 +282,8 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
     /// egui_dock's tab shuffling and triggers "Widget rect changed id
     /// between passes" warnings. Callers should pass something tied
     /// to the tab (e.g. `FileId`).
-    pub fn id_salt(mut self, salt: impl egui::AsId) -> Self {
-        self.id_salt = Some(egui::Id::new(salt));
+    pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
+        self.id_salt = Some(egui::Id::unique(salt));
         self
     }
 
@@ -421,7 +421,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
             active_pane,
             row_map,
         } = self;
-        let salt = id_salt.unwrap_or_else(|| ui.id().with("hxy_hex_view"));
+        let salt = id_salt.unwrap_or_else(|| ui.scope_id().with("hxy_hex_view"));
         ui.push_id(salt, |ui| {
             let palette = value_highlight.map(|mode| {
                 let palette = palette_override
@@ -452,8 +452,8 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
 
             let mut response = HexViewResponse::default();
 
-            let scroll_id = ui.id().with("hxy_scroll");
-            let h_scroll_id = ui.id().with("hxy_hscroll");
+            let scroll_id = ui.scope_id().with("hxy_scroll");
+            let h_scroll_id = ui.scope_id().with("hxy_hscroll");
             // Minimap click, explicit `scroll_to`, or a stashed pending value
             // from a prior frame can all drive the next scroll position.
             // `scroll_to_byte` takes precedence: compute the target row's
@@ -568,14 +568,19 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 })
                 .inner;
 
-            let v_offset = hex_out.state.offset.y;
-            let h_offset = hex_out.state.offset.x;
+            let v_offset = hex_out.state.clamped_offset().y;
+            let h_offset = hex_out.state.clamped_offset().x;
             response.scroll_offset = v_offset;
             response.viewport_height = hex_out.inner_rect.height();
 
+            // The pinned header and address column follow where the cells
+            // are drawn, which runs past the clamped range while the scroll
+            // area rubber-bands at an edge.
+            let drawn_offset = hex_out.state.unclamped_offset();
+
             // Header tracks horizontal scroll so the column labels
             // line up with the cells beneath them.
-            paint_column_header(ui, header_rect, &layout, &font_id, h_offset, column_header_formatter.as_deref());
+            paint_column_header(ui, header_rect, &layout, &font_id, drawn_offset.x, column_header_formatter.as_deref());
             // Address column tracks vertical scroll only -- the
             // whole point of pinning it is keeping offsets visible
             // while the user scrolls right.
@@ -587,7 +592,7 @@ impl<'s, S: HexSource + ?Sized> HexView<'s, S> {
                 row_height,
                 source_len,
                 columns,
-                v_offset,
+                drawn_offset.y,
                 address_formatter.as_deref(),
                 row_map.as_deref(),
             );
@@ -1039,7 +1044,7 @@ impl GlyphCache {
     /// last frame. The returned cache outlives the painter's borrow
     /// because every galley is held behind an `Arc`.
     fn load_or_build(painter: &egui::Painter, font_id: &FontId) -> Self {
-        let id = egui::Id::new("hxy-glyph-cache");
+        let id = egui::Id::unique("hxy-glyph-cache");
         let ppt_bits = painter.ctx().pixels_per_point().to_bits();
         let key = GlyphCacheKey { font_id: font_id.clone(), ppt_bits };
         if let Some(existing) = painter.ctx().data(|d| d.get_temp::<GlyphCache>(id))

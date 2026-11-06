@@ -189,7 +189,7 @@ pub fn render_snapshot_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut compare_pair_clicked = false;
 
     egui::Window::new(hxy_i18n::t_args("snapshot-dialog-title", &[("name", &display_name)]))
-        .id(egui::Id::new("hxy_snapshot_dialog"))
+        .id(egui::Id::unique("hxy_snapshot_dialog"))
         .collapsible(false)
         .resizable(true)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

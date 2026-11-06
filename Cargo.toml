@@ -68,9 +68,6 @@ default-members = [
     "gpui/hxy-view-gpui",
     "gpui/gpui_dock_picker",
 ]
-# Vendored [patch.crates-io] sources are standalone packages, not
-# workspace members.
-exclude = ["vendor"]
 
 [workspace.package]
 version = "0.5.0"
@@ -115,7 +112,7 @@ gpui = { package = "gpui-kit", git = "https://github.com/landaire-contrib/gpui-c
 # the same version and feature baseline; per-crate Cargo.tomls add
 # extra features on top via `features = [...]` next to
 # `workspace = true`.
-egui = "0.36.1"
+egui = "0.37.0"
 fskit = { version = "0.2", features = ["vfs"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 rustc-hash = "2"
@@ -128,15 +125,14 @@ winnow = "1.0"
 base64 = "0.23.1"
 insta = { version = "1.48.0", features = ["yaml"] }
 
-# Temporary bridges for the egui 0.36 upgrade: neither crate has an
-# upstream release supporting egui 0.36 yet. Both block publishing the
-# hxy app crate (patched versions do not exist on crates.io); the
-# egui-* widget crates are unaffected. Drop each entry the moment
-# upstream publishes for 0.36.
+# Temporary bridges for the egui 0.37 upgrade: these crates have no
+# crates.io release supporting egui 0.37 yet, so they resolve from pinned
+# git revisions. They block publishing the hxy app crate; the egui-*
+# widget crates are unaffected. Drop each entry once upstream publishes.
 [patch.crates-io]
-# Nix materializes these patch overlays for Cargo and Reindeer.
-egui-phosphor = { path = "third-party/overrides/egui-phosphor" }
-egui_ltreeview = { path = "third-party/overrides/egui_ltreeview" }
+egui-phosphor = { git = "https://github.com/landaire-contrib/egui-phosphor", rev = "9b98fa3e49ed6c7d0fd9c3ddde5257065c9ca5e8" }
+egui_dock = { git = "https://github.com/landaire-contrib/egui_dock", rev = "fdb395d4fbe91f39c0166651bc69c31824bc6ffb" }
+egui-toast = { git = "https://github.com/urholaukkarinen/egui-toast", rev = "1dce7e31bac6a9b068331d470c690288fa915478" }
 
 [profile.release]
 opt-level = 3

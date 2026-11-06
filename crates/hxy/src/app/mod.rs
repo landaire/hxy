@@ -627,7 +627,7 @@ impl HxyApp {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn consume_welcome_open_request(ctx: &egui::Context, app: &mut HxyApp) {
-    let req = ctx.data_mut(|d| d.remove_temp::<std::path::PathBuf>(egui::Id::new(WELCOME_OPEN_RECENT)));
+    let req = ctx.data_mut(|d| d.remove_temp::<std::path::PathBuf>(egui::Id::unique(WELCOME_OPEN_RECENT)));
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = req {
         let name =
@@ -656,7 +656,7 @@ fn paint_drop_overlay(ctx: &egui::Context) {
             None => "Drop to open".to_owned(),
         }
     });
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hxy_drop_target")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("hxy_drop_target")));
     let screen = ctx.content_rect();
     painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(192));
     painter.text(
@@ -1600,8 +1600,9 @@ pub enum PendingVfsOpen {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_pending_vfs_opens(ctx: &egui::Context, app: &mut HxyApp) {
-    let pending: Vec<PendingVfsOpen> =
-        ctx.data_mut(|d| d.remove_temp::<Vec<PendingVfsOpen>>(egui::Id::new(PENDING_VFS_OPEN_KEY))).unwrap_or_default();
+    let pending: Vec<PendingVfsOpen> = ctx
+        .data_mut(|d| d.remove_temp::<Vec<PendingVfsOpen>>(egui::Id::unique(PENDING_VFS_OPEN_KEY)))
+        .unwrap_or_default();
     for req in pending {
         match req {
             PendingVfsOpen::Workspace { workspace_id, entry_path } => {
@@ -2218,7 +2219,7 @@ fn render_file_tab(
     let status_h = text_h + 6.0;
 
     let watch_chip = compute_watch_chip(file, &state.app);
-    egui::Panel::bottom(egui::Id::new(("hxy-status-panel", id.get())))
+    egui::Panel::bottom(egui::Id::unique(("hxy-status-panel", id.get())))
         .resizable(false)
         .exact_size(status_h)
         .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }))
@@ -2229,7 +2230,7 @@ fn render_file_tab(
         });
 
     if file.search.open {
-        egui::Panel::bottom(egui::Id::new(("hxy-search-panel", id.get()))).resizable(false).show(ui, |ui| {
+        egui::Panel::bottom(egui::Id::unique(("hxy-search-panel", id.get()))).resizable(false).show(ui, |ui| {
             let events = crate::search::bar::show(ui, &mut file.search);
             apply_search_events(file, events);
         });
@@ -2279,7 +2280,7 @@ fn render_template_panel(
         return;
     }
     let whole_file_len = file.editor.source().len().get();
-    egui::Panel::bottom(egui::Id::new(("hxy-template-panel", id.get())))
+    egui::Panel::bottom(egui::Id::unique(("hxy-template-panel", id.get())))
         .resizable(true)
         .default_size(300.0)
         .min_size(160.0)
@@ -3686,7 +3687,7 @@ fn welcome_ui(ui: &mut egui::Ui, state: &PersistedState) {
                 .add(egui::Button::new(label).wrap_mode(egui::TextWrapMode::Truncate))
                 .on_hover_text(entry.path.display().to_string());
             if row.clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(WELCOME_OPEN_RECENT), entry.path.clone()));
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(WELCOME_OPEN_RECENT), entry.path.clone()));
             }
         }
     });

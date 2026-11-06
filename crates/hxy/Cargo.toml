@@ -56,13 +56,12 @@ hxy-core = { workspace = true }
 hxy-i18n = { workspace = true }
 hxy-settings = { workspace = true }
 hxy-view = { workspace = true, features = ["serde"] }
-egui = { workspace = true }
-# Upstream has no egui 0.36 release yet; 0.14 comes from the
-# [patch.crates-io] fork in the workspace Cargo.toml. Drop the patch
-# and point back at crates.io once upstream publishes for 0.36.
+egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+# egui-phosphor and egui_dock come from the [patch.crates-io] git pins in
+# the workspace Cargo.toml until upstream publishes for egui 0.37.
 egui-phosphor = "0.14"
 egui_dock = { version = "0.21.1", features = ["serde"] }
-egui_inbox = "0.13.0"
+egui_inbox = "0.14.0"
 
 # Platform-neutral utilities
 jiff = { workspace = true }
@@ -74,11 +73,8 @@ sys-locale = "0.3.2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 hxy-vfs.workspace = true
-# Upstream 0.8.0 pins egui 0.35; the [patch.crates-io] entry in the
-# workspace Cargo.toml swaps in the vendored copy bumped to egui 0.36.
-# Drop the patch once upstream publishes for 0.36.
-egui_ltreeview = "0.8.0"
-egui_table = "0.10.0"
+egui_ltreeview = "0.10.0"
+egui_table = "0.11.0"
 egui-palette = { workspace = true }
 egui_dock_picker = { workspace = true }
 similar = { version = "3.1.2", default-features = false, features = ["bytes", "std"] }
@@ -95,7 +91,7 @@ suture = { workspace = true, features = ["serde", "blake3"] }
 base64 = { workspace = true }
 egui-toast = "0.22.0"
 fskit = { workspace = true }
-egui_plot = "0.37"
+egui_plot = "0.38"
 dhat = { version = "0.3.3", optional = true }
 # Checksum tool: each crate exposes the same RustCrypto `Digest` API
 # so the streaming-pass implementation can fan out to every selected
@@ -115,7 +111,7 @@ adler2 = "2"
 # standalone crate so we don't depend on suture re-exporting a
 # `compute()` convenience.
 blake3 = "1.8"
-eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts"] }
 sha2 = "0.11.0"
 web-time = "1.1.0"
 

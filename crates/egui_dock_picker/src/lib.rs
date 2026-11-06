@@ -183,7 +183,7 @@ where
     } else {
         Color32::from_rgba_unmultiplied(0, 0, 0, 60)
     };
-    egui::Area::new(Id::new("egui-dock-picker-backdrop"))
+    egui::Area::new(Id::unique("egui-dock-picker-backdrop"))
         .order(Order::Foreground)
         .fixed_pos(ctx.content_rect().min)
         .interactable(true)
@@ -263,7 +263,7 @@ fn key_for_letter(letter: char) -> Key {
 fn paint_target_label(ctx: &egui::Context, leaf_rect: Rect, letter: char, visuals: &egui::Visuals) {
     let centre = leaf_rect.center();
     let backdrop = Rect::from_center_size(centre, Vec2::splat(LABEL_BACKDROP_DIAMETER));
-    let id = Id::new(("egui-dock-picker-target", letter));
+    let id = Id::unique(("egui-dock-picker-target", letter));
     egui::Area::new(id).order(Order::Foreground).fixed_pos(backdrop.min).interactable(false).show(ctx, |ui| {
         let painter = ui.painter();
         let fill = visuals.selection.bg_fill;
@@ -282,7 +282,7 @@ fn paint_target_label(ctx: &egui::Context, leaf_rect: Rect, letter: char, visual
 
 fn paint_source_badge(ctx: &egui::Context, leaf_rect: Rect, label: &str, visuals: &egui::Visuals) {
     let centre = leaf_rect.center();
-    let id = Id::new("egui-dock-picker-source");
+    let id = Id::unique("egui-dock-picker-source");
     egui::Area::new(id).order(Order::Foreground).fixed_pos(centre).interactable(false).show(ctx, |ui| {
         let painter = ui.painter();
         let font = FontId::monospace(SOURCE_FONT_SIZE);

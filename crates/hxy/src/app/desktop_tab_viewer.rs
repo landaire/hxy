@@ -143,7 +143,7 @@ impl egui_dock::TabViewer for HxyTabViewer<'_> {
     type Tab = Tab;
 
     fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
-        egui::Id::new(*tab)
+        egui::Id::unique(*tab)
     }
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
@@ -512,7 +512,7 @@ fn render_workspace_tab(
     };
     let style = crate::style::hxy_dock_style(ui.style());
     egui_dock::DockArea::new(inner_dock)
-        .id(egui::Id::new(("hxy-workspace-dock", workspace_id.get())))
+        .id(egui::Id::unique(("hxy-workspace-dock", workspace_id.get())))
         .style(style)
         .show_leaf_collapse_buttons(false)
         .show_inside(ui, &mut viewer);
@@ -555,10 +555,10 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
         // Distinct ids per workspace so two open workspaces don't
         // share `WorkspaceTab::Editor` when egui_dock interns the tab.
         match tab {
-            crate::files::WorkspaceTab::Editor => egui::Id::new(("ws-editor", self.workspace_id.get())),
-            crate::files::WorkspaceTab::VfsTree => egui::Id::new(("ws-tree", self.workspace_id.get())),
+            crate::files::WorkspaceTab::Editor => egui::Id::unique(("ws-editor", self.workspace_id.get())),
+            crate::files::WorkspaceTab::VfsTree => egui::Id::unique(("ws-tree", self.workspace_id.get())),
             crate::files::WorkspaceTab::Entry(file_id) => {
-                egui::Id::new(("ws-entry", self.workspace_id.get(), file_id.get()))
+                egui::Id::unique(("ws-entry", self.workspace_id.get(), file_id.get()))
             }
         }
     }
@@ -615,7 +615,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                 }
             },
             crate::files::WorkspaceTab::VfsTree => {
-                let scope = egui::Id::new(("hxy-workspace-vfs", self.workspace_id.get()));
+                let scope = egui::Id::unique(("hxy-workspace-vfs", self.workspace_id.get()));
                 // Key the persisted expansion list by the parent
                 // file's source so it survives across restarts and
                 // even across closing / reopening the workspace.
@@ -639,7 +639,7 @@ impl egui_dock::TabViewer for WorkspaceTabViewer<'_> {
                     let workspace_id = self.workspace_id;
                     ui.ctx().data_mut(|d| {
                         let queue: &mut Vec<PendingVfsOpen> =
-                            d.get_temp_mut_or_default(egui::Id::new(PENDING_VFS_OPEN_KEY));
+                            d.get_temp_mut_or_default(egui::Id::unique(PENDING_VFS_OPEN_KEY));
                         for p in to_open {
                             queue.push(PendingVfsOpen::Workspace { workspace_id, entry_path: p });
                         }

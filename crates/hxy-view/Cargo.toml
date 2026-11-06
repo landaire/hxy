@@ -33,17 +33,18 @@ serde = ["dep:serde", "editor", "hxy-editor/serde"]
 # dhat-bench --release`. Lives as `[[example]]` rather than `[[bin]]`
 # so it doesn't compete with the hxy binary for `cargo run`'s
 # default-package selection.
-dhat-bench = ["dep:dhat", "dep:egui_kittest"]
+dhat-bench = ["dep:dhat", "dep:egui_kittest", "egui/default_fonts"]
 
 [dev-dependencies]
-egui_kittest = "0.36.1"
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest = "0.37.0"
 
 [dependencies.dhat]
 version = "0.3.3"
 optional = true
 
 [dependencies.egui_kittest]
-version = "0.36.1"
+version = "0.37.0"
 optional = true
 
 [[example]]

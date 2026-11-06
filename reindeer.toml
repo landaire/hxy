@@ -114,7 +114,6 @@ genrule(
         "reindeer.toml",
         "rust-toolchain.toml",
         "translations/**",
-        "vendor/**",
         "wit/**",
     ]),
     cmd = '''

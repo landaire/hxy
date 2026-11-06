@@ -46,7 +46,7 @@ pub fn render_duplicate_open_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut action: Option<DuplicateAction> = None;
     let mut open = true;
     egui::Window::new(hxy_i18n::t("duplicate-open-title"))
-        .id(egui::Id::new("hxy_duplicate_open_dialog"))
+        .id(egui::Id::unique("hxy_duplicate_open_dialog"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -213,7 +213,7 @@ pub fn render_orphaned_entry_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut action: Option<OrphanAction> = None;
     let mut open = true;
     egui::Window::new(hxy_i18n::t("orphan-entry-title"))
-        .id(egui::Id::new("hxy_orphan_entry_dialog"))
+        .id(egui::Id::unique("hxy_orphan_entry_dialog"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -266,7 +266,7 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     // The "always do this for this file" checkbox carries the
     // user's decision into a per-file pref; survives across the
     // dialog only via this local mutable. Default off.
-    let id_for_pref = egui::Id::new("hxy_reload_prompt_remember");
+    let id_for_pref = egui::Id::unique("hxy_reload_prompt_remember");
     let mut remember = ctx.data_mut(|d| d.get_temp::<bool>(id_for_pref).unwrap_or(false));
 
     let mut action: Option<ReloadAction> = None;
@@ -277,7 +277,7 @@ pub fn render_reload_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     // unlike `anchor` which would re-pin every frame.
     let screen_center = ctx.content_rect().center();
     egui::Window::new(hxy_i18n::t("reload-prompt-title"))
-        .id(egui::Id::new("hxy_reload_prompt_dialog"))
+        .id(egui::Id::unique("hxy_reload_prompt_dialog"))
         .collapsible(false)
         .resizable(false)
         .default_pos(screen_center)
@@ -408,7 +408,7 @@ pub fn render_open_with_options_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let path_display = app.pending_open_with_options.as_ref().map(|p| p.path.display().to_string()).unwrap_or_default();
     let parse_error = parse_virtual_base_input(&current_input).err();
     egui::Window::new(hxy_i18n::t("open-with-options-title"))
-        .id(egui::Id::new("hxy_open_with_options_dialog"))
+        .id(egui::Id::unique("hxy_open_with_options_dialog"))
         .collapsible(false)
         .resizable(false)
         .default_pos(screen_center)
@@ -499,7 +499,7 @@ pub fn render_virtual_base_prompt_dialog(ctx: &egui::Context, app: &mut HxyApp) 
     let mut open = true;
     let screen_center = ctx.content_rect().center();
     egui::Window::new(hxy_i18n::t("virtual-base-prompt-title"))
-        .id(egui::Id::new("hxy_virtual_base_prompt_dialog"))
+        .id(egui::Id::unique("hxy_virtual_base_prompt_dialog"))
         .collapsible(false)
         .resizable(false)
         .default_pos(screen_center)
@@ -592,7 +592,7 @@ pub fn render_patch_restore_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut action: Option<RestoreAction> = None;
     let mut open = true;
     egui::Window::new(hxy_i18n::t("restore-patch-title"))
-        .id(egui::Id::new("hxy_restore_patch_dialog"))
+        .id(egui::Id::unique("hxy_restore_patch_dialog"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

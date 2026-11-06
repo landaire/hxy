@@ -236,10 +236,19 @@ fn show_inner(
         .id_salt("hxy-strings-table")
         .num_rows(visible.len() as u64)
         .columns(vec![
-            egui_table::Column::new(110.0).range(70.0..=200.0).resizable(true).id(egui::Id::new("strings-col-offset")),
-            egui_table::Column::new(110.0).range(70.0..=200.0).resizable(true).id(egui::Id::new("strings-col-end")),
-            egui_table::Column::new(80.0).range(50.0..=160.0).resizable(true).id(egui::Id::new("strings-col-length")),
-            egui_table::Column::new(360.0).range(80.0..=2000.0).resizable(true).id(egui::Id::new("strings-col-text")),
+            egui_table::Column::new(110.0)
+                .range(70.0..=200.0)
+                .resizable(true)
+                .id(egui::Id::unique("strings-col-offset")),
+            egui_table::Column::new(110.0).range(70.0..=200.0).resizable(true).id(egui::Id::unique("strings-col-end")),
+            egui_table::Column::new(80.0)
+                .range(50.0..=160.0)
+                .resizable(true)
+                .id(egui::Id::unique("strings-col-length")),
+            egui_table::Column::new(360.0)
+                .range(80.0..=2000.0)
+                .resizable(true)
+                .id(egui::Id::unique("strings-col-text")),
         ])
         .headers(vec![egui_table::HeaderRow::new(row_height + 2.0)])
         .auto_size_mode(egui_table::AutoSizeMode::Always);

@@ -213,7 +213,7 @@ pub fn show(
         node,
         tree: &instance.state.tree,
         source: file.editor.source().clone(),
-        ui_id: ui.id().with(active_key),
+        ui_id: ui.scope_id().with(active_key),
         numeric_format,
         template_value_formats,
         inverse_format,

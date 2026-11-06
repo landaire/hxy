@@ -1,6 +1,5 @@
 target/
 buck-out/
-/third-party/overrides/
 /fixups
 # Ignore generated bundle output but keep the static packaging
 # tree under /dist/macos/ checked in (Info.plist + build_app.sh

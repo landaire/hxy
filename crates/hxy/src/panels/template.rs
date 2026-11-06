@@ -170,7 +170,7 @@ pub fn show(
     // virtualizes), so route arrow-key focus through one stable
     // widget that covers the whole table. Row clicks request focus
     // on it via the shared `focus_id`.
-    let focus_id = egui::Id::new(("hxy-tmpl-focus", id_seed));
+    let focus_id = egui::Id::unique(("hxy-tmpl-focus", id_seed));
     let table_rect = ui.available_rect_before_wrap();
     let focus_resp = ui.interact(table_rect, focus_id, egui::Sense::focusable_noninteractive());
     // Tell egui not to intercept arrow keys (or Tab) for focus
@@ -210,7 +210,7 @@ pub fn show(
     // compare; scroll_to_row with `align: None` is a no-op when the
     // row is already visible, so click-driven selections don't
     // jitter the scroll position.
-    let last_selected_id = egui::Id::new(("hxy-tmpl-last-selected", id_seed));
+    let last_selected_id = egui::Id::unique(("hxy-tmpl-last-selected", id_seed));
     let last_selected: Option<u32> = ui.ctx().data(|d| d.get_temp::<u32>(last_selected_id));
     let current_selected: Option<u32> = state.selected_node.map(|n| n.0);
     let scroll_to_row_nr: Option<u64> = current_selected
@@ -235,13 +235,13 @@ pub fn show(
         .id_salt(("hxy_tmpl_table", id_seed))
         .num_rows(visible.len() as u64)
         .columns(vec![
-            Column::new(36.0).range(32.0..=48.0).resizable(false).id(egui::Id::new("tmpl-col-color")),
-            Column::new(240.0).range(80.0..=1200.0).resizable(true).id(egui::Id::new("tmpl-col-name")),
-            Column::new(120.0).range(60.0..=300.0).resizable(true).id(egui::Id::new("tmpl-col-type")),
-            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-start")),
-            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::new("tmpl-col-end")),
-            Column::new(70.0).range(50.0..=120.0).resizable(true).id(egui::Id::new("tmpl-col-len")),
-            Column::new(220.0).range(80.0..=800.0).resizable(true).id(egui::Id::new("tmpl-col-val")),
+            Column::new(36.0).range(32.0..=48.0).resizable(false).id(egui::Id::unique("tmpl-col-color")),
+            Column::new(240.0).range(80.0..=1200.0).resizable(true).id(egui::Id::unique("tmpl-col-name")),
+            Column::new(120.0).range(60.0..=300.0).resizable(true).id(egui::Id::unique("tmpl-col-type")),
+            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::unique("tmpl-col-start")),
+            Column::new(90.0).range(60.0..=140.0).resizable(true).id(egui::Id::unique("tmpl-col-end")),
+            Column::new(70.0).range(50.0..=120.0).resizable(true).id(egui::Id::unique("tmpl-col-len")),
+            Column::new(220.0).range(80.0..=800.0).resizable(true).id(egui::Id::unique("tmpl-col-val")),
         ])
         .headers(vec![HeaderRow::new(row_height)])
         .auto_size_mode(egui_table::AutoSizeMode::Always);
@@ -357,7 +357,7 @@ impl TableDelegate for TemplateTableDelegate<'_> {
         // gives cells their own salt, but the row-level interact I do
         // here needs a unique parent scope too).
         ui.push_id(("hxy-tmpl-row", row_nr), |ui| {
-            let row_id = ui.id().with("interact");
+            let row_id = ui.scope_id().with("interact");
             let resp = ui.interact(row_rect, row_id, egui::Sense::click());
             // Both the hover highlight and the click-to-select need
             // to fire on presses that land over cell labels, not

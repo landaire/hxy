@@ -416,7 +416,7 @@ pub fn render_close_tab_dialog(ctx: &egui::Context, app: &mut HxyApp) {
     let mut action: Option<CloseTabAction> = None;
     let mut open = true;
     egui::Window::new(hxy_i18n::t("close-prompt-title"))
-        .id(egui::Id::new("hxy_close_tab_dialog"))
+        .id(egui::Id::unique("hxy_close_tab_dialog"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

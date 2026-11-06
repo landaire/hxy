@@ -17,7 +17,7 @@ pub fn render_compare_tab(ui: &mut egui::Ui, session: &mut crate::compare::Compa
     use crate::compare::DebouncedDecision;
 
     let id = session.id;
-    let tab_id = ui.id().with(("hxy-compare", id.get()));
+    let tab_id = ui.scope_id().with(("hxy-compare", id.get()));
 
     session.poll_recompute();
     let global_deadline = state.app.compare_recompute_deadline;
@@ -182,7 +182,7 @@ fn render_compare_diff_table(ui: &mut egui::Ui, session: &mut crate::compare::Co
     let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut any_hover: Option<usize> = None;
     let mut click: Option<crate::compare::DiffHunk> = None;
-    let id_seed = ui.id().with(("hxy-compare-table", session.id.get()));
+    let id_seed = ui.scope_id().with(("hxy-compare-table", session.id.get()));
 
     let mut delegate = CompareTableDelegate {
         visible: &visible,
@@ -196,10 +196,10 @@ fn render_compare_diff_table(ui: &mut egui::Ui, session: &mut crate::compare::Co
         .id_salt(id_seed)
         .num_rows(visible.len() as u64)
         .columns(vec![
-            Column::new(96.0).range(60.0..=200.0).resizable(true).id(egui::Id::new("cmp-col-kind")),
-            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-a")),
-            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-b")),
-            Column::new(160.0).range(80.0..=400.0).resizable(true).id(egui::Id::new("cmp-col-size")),
+            Column::new(96.0).range(60.0..=200.0).resizable(true).id(egui::Id::unique("cmp-col-kind")),
+            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::unique("cmp-col-a")),
+            Column::new(180.0).range(80.0..=400.0).resizable(true).id(egui::Id::unique("cmp-col-b")),
+            Column::new(160.0).range(80.0..=400.0).resizable(true).id(egui::Id::unique("cmp-col-size")),
         ])
         .headers(vec![HeaderRow::new(row_height)])
         .auto_size_mode(egui_table::AutoSizeMode::OnParentResize)
@@ -243,7 +243,7 @@ impl egui_table::TableDelegate for CompareTableDelegate<'_> {
         let Some((hunk_idx, hunk)) = self.visible.get(row_nr as usize).copied() else { return };
         let row_rect = ui.max_rect();
         ui.push_id(("hxy-compare-row", row_nr), |ui| {
-            let row_id = ui.id().with("interact");
+            let row_id = ui.scope_id().with("interact");
             let resp = ui.interact(row_rect, row_id, egui::Sense::click());
             // Mirror the template panel: cell labels eat hover /
             // click responses, so fall back to "pointer in rect"

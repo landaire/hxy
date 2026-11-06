@@ -641,7 +641,7 @@ fn show_with_style_inner<'a, A: Clone>(
 
     if let Some(fill) = style.backdrop {
         let mut backdrop_click = false;
-        egui::Area::new(egui::Id::new("egui_palette_backdrop"))
+        egui::Area::new(egui::Id::unique("egui_palette_backdrop"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .interactable(true)
@@ -685,7 +685,7 @@ fn show_with_style_inner<'a, A: Clone>(
     // enough room to claim its full viewport. The Area's *visual*
     // size still shrinks with content because `ScrollArea` is set
     // to `auto_shrink([false, true])`.
-    let palette_id = egui::Id::new("egui_palette_panel");
+    let palette_id = egui::Id::unique("egui_palette_panel");
     let area_inner_height = list_max_height + style.row_reserve;
     let area_response = egui::Area::new(palette_id)
         .order(egui::Order::Foreground)
@@ -748,7 +748,7 @@ fn show_with_style_inner<'a, A: Clone>(
                     Some(s) => format!("{}{s}", state.query),
                     None => state.query.clone(),
                 };
-                let text_edit_id = egui::Id::new("egui_palette_text_edit");
+                let text_edit_id = egui::Id::unique("egui_palette_text_edit");
                 let suggestion_range: Option<(usize, usize)> = suggestion.as_ref().map(|s| {
                     let start = state.query.chars().count();
                     let end = start + s.chars().count();

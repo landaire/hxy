@@ -92,7 +92,7 @@ pub fn render_plugin_mount_tab(
             return;
         }
     };
-    let scope = egui::Id::new(("hxy-plugin-mount-vfs", mount_id.get()));
+    let scope = egui::Id::unique(("hxy-plugin-mount-vfs", mount_id.get()));
     let events = crate::panels::vfs::show(ui, scope, &*mount.fs, expanded);
     let mut to_open: Vec<String> = Vec::new();
     for e in events {
@@ -102,7 +102,7 @@ pub fn render_plugin_mount_tab(
     if !to_open.is_empty() {
         ui.ctx().data_mut(|d| {
             let queue: &mut Vec<PendingVfsOpen> =
-                d.get_temp_mut_or_default(egui::Id::new(crate::app::PENDING_VFS_OPEN_KEY));
+                d.get_temp_mut_or_default(egui::Id::unique(crate::app::PENDING_VFS_OPEN_KEY));
             for p in to_open {
                 queue.push(PendingVfsOpen::PluginMount { mount_id, entry_path: p });
             }
@@ -132,7 +132,7 @@ pub fn render_failed_mount_placeholder(
             if ui.button(label).clicked() {
                 ui.ctx().data_mut(|d| {
                     let queue: &mut Vec<crate::files::MountId> =
-                        d.get_temp_mut_or_default(egui::Id::new(PENDING_MOUNT_RETRY_KEY));
+                        d.get_temp_mut_or_default(egui::Id::unique(PENDING_MOUNT_RETRY_KEY));
                     queue.push(mount_id);
                 });
             }
@@ -144,7 +144,7 @@ pub fn render_failed_mount_placeholder(
 /// placeholders during the dock pass.
 pub fn drain_pending_mount_retries(ctx: &egui::Context, app: &mut HxyApp) {
     let pending: Vec<crate::files::MountId> = ctx
-        .data_mut(|d| d.remove_temp::<Vec<crate::files::MountId>>(egui::Id::new(PENDING_MOUNT_RETRY_KEY)))
+        .data_mut(|d| d.remove_temp::<Vec<crate::files::MountId>>(egui::Id::unique(PENDING_MOUNT_RETRY_KEY)))
         .unwrap_or_default();
     for mount_id in pending {
         retry_failed_mount(app, mount_id);

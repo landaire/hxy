@@ -41,25 +41,11 @@
         || (builtins.match ".*/migrations/.*" path != null)
         || (builtins.match ".*img.*" path != null)
         || (builtins.match ".*\\.wit" path != null)
-        || (builtins.match ".*/wit" path != null)
-        || (builtins.match ".*/vendor/.*" path != null);
+        || (builtins.match ".*/wit" path != null);
 
       filteredSource = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter = srcFilter;
-      };
-
-      eguiPhosphorSource = sourcePkgs.fetchFromGitHub {
-        owner = "amPerl";
-        repo = "egui-phosphor";
-        rev = "2e7ec7ad6155cb9a5a713c9ba15f402d34c83ace";
-        hash = "sha256-JJBCKaaVlEbxKiwy5y/Bx//QruJhktVPyGdjbTtajig=";
-      };
-
-      eguiPhosphor = sourcePkgs.applyPatches {
-        name = "egui-phosphor-0.14.0";
-        src = eguiPhosphorSource;
-        patches = [./nix/patches/egui-phosphor-egui-0.36.patch];
       };
 
       buck2FixupsSource = sourcePkgs.fetchFromGitHub {
@@ -79,14 +65,7 @@
       hxySource = sourcePkgs.runCommand "hxy-source" {} ''
         mkdir -p "$out"
         cp -R ${filteredSource}/. "$out"
-        # The copied tree is read-only (nix store) and may already carry the
-        # dev-shell's `third-party/overrides` symlinks; make it writable and
-        # drop those so this derivation is the sole author of the overrides.
         chmod -R u+w "$out"
-        rm -rf "$out/third-party/overrides"
-        mkdir -p "$out/third-party/overrides"
-        ln -s ${eguiPhosphor} "$out/third-party/overrides/egui-phosphor"
-        ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
         mkdir -p "$out/fixups"
         cp -R ${buck2Fixups}/. "$out/fixups"
       '';
@@ -116,18 +95,10 @@
       };
       cargoVendorCacheKey = builtins.baseNameOf (toString cargoVendorDir);
 
-      hxyDummySource = sourcePkgs.runCommand "hxy-dummy-source" {} ''
-        mkdir -p "$out"
-        cp -R ${craneLib.mkDummySrc (commonArgs // {src = filteredSource;})}/. "$out"
-        mkdir -p "$out/third-party/overrides"
-        ln -s ${eguiPhosphor} "$out/third-party/overrides/egui-phosphor"
-        ln -s "$out/vendor/egui_ltreeview" "$out/third-party/overrides/egui_ltreeview"
-      '';
-
       cargoArtifactsFor = profile:
         craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs ["src"]) // {
           inherit cargoVendorDir;
-          dummySrc = hxyDummySource;
+          dummySrc = craneLib.mkDummySrc (commonArgs // {src = filteredSource;});
           CARGO_PROFILE = profile;
         });
 
@@ -218,7 +189,6 @@
           hxy-egui-debug = wrapClient (eguiClientFor "dev") "hxy-egui";
 
           default = self.packages.${system}.hxy;
-          egui-phosphor-source = eguiPhosphor;
         };
 
         devShells.default = mkShell rec {
@@ -272,9 +242,6 @@
               echo "could not find the hxy workspace root" >&2
               exit 1
             fi
-            mkdir -p "$hxy_workspace_root/third-party/overrides"
-            ln -sfn ${eguiPhosphor} "$hxy_workspace_root/third-party/overrides/egui-phosphor"
-            ln -sfn "$hxy_workspace_root/vendor/egui_ltreeview" "$hxy_workspace_root/third-party/overrides/egui_ltreeview"
             if [ -e "$hxy_workspace_root/fixups" ] && [ ! -L "$hxy_workspace_root/fixups" ]; then
               rm -rf "$hxy_workspace_root/fixups"
             fi
@@ -377,9 +344,6 @@
                 echo "could not find the hxy workspace root" >&2
                 exit 1
               fi
-              mkdir -p "$hxy_workspace_root/third-party/overrides"
-              ln -sfn ${eguiPhosphor} "$hxy_workspace_root/third-party/overrides/egui-phosphor"
-              ln -sfn "$hxy_workspace_root/vendor/egui_ltreeview" "$hxy_workspace_root/third-party/overrides/egui_ltreeview"
               if [ -e "$hxy_workspace_root/fixups" ] && [ ! -L "$hxy_workspace_root/fixups" ]; then
                 rm -rf "$hxy_workspace_root/fixups"
               fi

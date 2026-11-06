@@ -18,8 +18,3 @@ if ($cargo_home | is-empty) {
 if not (($cargo_home | path join "config.toml") | path exists) {
   error make {msg: "CARGO_HOME must contain config.toml"}
 }
-
-let egui_phosphor = "third-party/overrides/egui-phosphor"
-if not ($egui_phosphor | path exists) {
-  error make {msg: "Nix must materialize the egui-phosphor overlay"}
-}

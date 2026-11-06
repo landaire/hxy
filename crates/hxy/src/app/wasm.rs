@@ -713,7 +713,7 @@ impl egui_dock::TabViewer for WasmTabViewer<'_> {
     type Tab = Tab;
 
     fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
-        egui::Id::new(*tab)
+        egui::Id::unique(*tab)
     }
 
     fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
@@ -885,10 +885,10 @@ impl egui_dock::TabViewer for WasmWorkspaceTabViewer<'_> {
         // Distinct ids per workspace so two open workspaces don't
         // share `WorkspaceTab::Editor` when egui_dock interns the tab.
         match tab {
-            crate::files::WorkspaceTab::Editor => egui::Id::new(("ws-editor", self.workspace_id.get())),
-            crate::files::WorkspaceTab::VfsTree => egui::Id::new(("ws-tree", self.workspace_id.get())),
+            crate::files::WorkspaceTab::Editor => egui::Id::unique(("ws-editor", self.workspace_id.get())),
+            crate::files::WorkspaceTab::VfsTree => egui::Id::unique(("ws-tree", self.workspace_id.get())),
             crate::files::WorkspaceTab::Entry(file_id) => {
-                egui::Id::new(("ws-entry", self.workspace_id.get(), file_id.get()))
+                egui::Id::unique(("ws-entry", self.workspace_id.get(), file_id.get()))
             }
         }
     }
@@ -929,7 +929,7 @@ impl egui_dock::TabViewer for WasmWorkspaceTabViewer<'_> {
                 }
             },
             crate::files::WorkspaceTab::VfsTree => {
-                let scope = egui::Id::new(("hxy-workspace-vfs-wasm", self.workspace_id.get()));
+                let scope = egui::Id::unique(("hxy-workspace-vfs-wasm", self.workspace_id.get()));
                 let parent_source = self.files.get(&self.editor_id).and_then(|f| f.source_kind.clone());
                 let mut scratch: Vec<String> = Vec::new();
                 let expanded: &mut Vec<String> = match parent_source.as_ref() {
