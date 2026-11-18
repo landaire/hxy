@@ -28,7 +28,7 @@ load("@prelude//toolchains:ocaml.bzl", "system_ocaml_toolchain")
 load("@prelude//toolchains:python.bzl", "remote_python_toolchain", "system_python_wheel_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
 load("@prelude//cxx:cxx_toolchain_types.bzl", "LinkerType")
-load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
+load("@prelude//rust:rust_toolchain.bzl", "PanicRuntime", "RustToolchainInfo")
 load("@prelude//toolchains:zip_file.bzl", "zip_file_toolchain")
 load("@prelude//toolchains/go:system_go_bootstrap_toolchain.bzl", "system_go_bootstrap_toolchain")
 load("@prelude//toolchains/go:system_go_toolchain.bzl", "system_go_toolchain")
@@ -80,6 +80,41 @@ def _wasm_cxx_tools_impl(ctx):
 wasm_cxx_tools = rule(
     impl = _wasm_cxx_tools_impl,
     attrs = {},
+)
+
+def _rust_tool(path, key):
+    if path == None:
+        fail("[hxy_rust] {} is unset; run buck2 inside `nix develop`".format(key))
+    return RunInfo(args = [path])
+
+def _hxy_rust_toolchain_impl(ctx):
+    # The prelude's system_rust_toolchain runs bare "rustc" from PATH, which
+    # leaves the compiler out of action keys. Absolute Nix store paths put the
+    # toolchain into every key, so shared cache hits stay valid.
+    return [
+        DefaultInfo(),
+        RustToolchainInfo(
+            clippy_driver = _rust_tool(ctx.attrs.clippy_driver, "clippy-driver"),
+            compiler = _rust_tool(ctx.attrs.compiler, "rustc"),
+            default_edition = ctx.attrs.default_edition,
+            panic_runtime = PanicRuntime("unwind"),
+            rustc_flags = ctx.attrs.rustc_flags,
+            rustc_target_triple = ctx.attrs.rustc_target_triple,
+            rustdoc = _rust_tool(ctx.attrs.rustdoc, "rustdoc"),
+        ),
+    ]
+
+hxy_rust_toolchain = rule(
+    impl = _hxy_rust_toolchain_impl,
+    attrs = {
+        "clippy_driver": attrs.option(attrs.string(), default = None),
+        "compiler": attrs.option(attrs.string(), default = None),
+        "default_edition": attrs.option(attrs.string(), default = None),
+        "rustc_flags": attrs.list(attrs.arg(), default = []),
+        "rustc_target_triple": attrs.string(),
+        "rustdoc": attrs.option(attrs.string(), default = None),
+    },
+    is_toolchain_rule = True,
 )
 
 def hxy_system_toolchains():
@@ -328,8 +363,12 @@ def hxy_system_toolchains():
         visibility = ["PUBLIC"],
     )
 
-    system_rust_toolchain(
+    hxy_rust_toolchain(
         name = "rust",
+        # Absolute Nix store paths from the dev shell (see the shellHook).
+        compiler = read_config("hxy_rust", "rustc", None),
+        rustdoc = read_config("hxy_rust", "rustdoc", None),
+        clippy_driver = read_config("hxy_rust", "clippy-driver", None),
         default_edition = "2021",
         # The prelude's default triple select (toolchains/rust.bzl) covers
         # only linux/macos/windows. Add a wasi branch so a build under

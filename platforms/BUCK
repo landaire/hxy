@@ -1,3 +1,6 @@
+load("@prelude//platforms:defs.bzl", "host_configuration")
+load(":defs.bzl", "cached_execution_platform", "remote_cache_configured")
+
 # Cross-compilation target platform for the wasm plugin components.
 # Building a plugin under this platform compiles it (and its whole
 # dependency subgraph) for wasm32-wasip2; a cdylib emits a component
@@ -12,5 +15,17 @@ platform(
         "prelude//os/constraints:wasi",
         "prelude//cpu/constraints:wasm32",
     ],
+    visibility = ["PUBLIC"],
+)
+
+# `[build] execution_platforms` of CI jobs that reach the shared action
+# cache (.github/workflows/rust.yml).
+cached_execution_platform(
+    name = "cached",
+    cpu_configuration = host_configuration.cpu,
+    host_tools = read_root_config("ci", "host_tools"),
+    os_configuration = host_configuration.os,
+    remote_cache_enabled = remote_cache_configured(),
+    use_windows_path_separators = host_info().os.is_windows,
     visibility = ["PUBLIC"],
 )

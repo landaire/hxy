@@ -274,6 +274,10 @@
               echo "  cc = ${llvmPackages.clang}/bin/clang"
               echo "  cxx = ${llvmPackages.clang}/bin/clang++"
               echo "  ar = ${llvmPackages.llvm}/bin/llvm-ar"
+              echo '[hxy_rust]'
+              echo "  rustc = ${rustToolchain}/bin/rustc"
+              echo "  rustdoc = ${rustToolchain}/bin/rustdoc"
+              echo "  clippy-driver = ${rustToolchain}/bin/clippy-driver"
               echo '[hxy_wasm]'
               echo "  linker = $hxy_workspace_root/toolchains/wasm-component-ld-wrapper.sh"
             } > "$hxy_workspace_root/toolchains/.buckconfig.local"

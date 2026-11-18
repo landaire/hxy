@@ -53,8 +53,9 @@ nix develop --command buck2 build @modes/release //:hxy
 Reindeer-generated graph in `BUCK`. Buck downloads crate sources from crates.io
 and git at build time. The toolchain (rustc, clang, macOS SDK) comes from the Nix
 dev shell, so it must run under `nix develop`; the shell writes
-`toolchains/.buckconfig.local` with the clang paths the build-script cc shims
-need and raises the file-descriptor limit for the link.
+`toolchains/.buckconfig.local` with the Nix store paths of rustc and clang
+and raises the file-descriptor limit for the link. Those absolute paths keep
+the compiler in every action key, which lets CI share a remote action cache.
 The default profile is debug (opt-level 0, line-tables debuginfo); `@modes/release`
 is opt-level 3 with no debuginfo, and `@modes/debug-full` adds full debuginfo.
 

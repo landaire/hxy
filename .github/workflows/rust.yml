@@ -109,8 +109,32 @@ jobs:
   buck-native:
     name: Buck native build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: DeterminateSystems/determinate-nix-action@441b9e401ac050c38a07d8313748c5c2d17e8aff # v3.6.1
+      # Writes the root .buckconfig.local; the dev shell writes only
+      # toolchains/.buckconfig.local, so the order between them is free.
+      - id: shared-cache
+        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        with:
+          client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+      # Build scripts reach Nix shell tools (pkg-config) that action keys do
+      # not cover, so keys name the runner image and the flake.
+      - if: steps.shared-cache.outputs.enabled == 'true'
+        env:
+          FLAKE_HASH: ${{ hashFiles('flake.nix', 'flake.lock') }}
+        run: |
+          cat >> .buckconfig.local <<CONFIG
+
+          [build]
+            execution_platforms = root//platforms:cached
+
+          [ci]
+            host_tools = $ImageOS-$ImageVersion-$RUNNER_ARCH-$FLAKE_HASH
+          CONFIG
       # //:hxy is the Buck-native build (Reindeer graph + Buck's Rust rules).
       - run: nix develop --command buck2 build //:hxy
