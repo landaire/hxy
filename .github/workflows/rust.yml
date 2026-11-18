@@ -118,10 +118,12 @@ jobs:
       # Writes the root .buckconfig.local; the dev shell writes only
       # toolchains/.buckconfig.local, so the order between them is free.
       - id: shared-cache
-        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        uses: landaire/build-cache/.github/actions/buck-cache@8ebcdd82280718d26191a9f5d81fdc88be66dcb3
         with:
           client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
+          pr-client-id: ${{ vars.TS_PR_CLIENT_ID }}
+          pr-audience: ${{ vars.TS_PR_AUDIENCE }}
       # Build scripts reach Nix shell tools (pkg-config) that action keys do
       # not cover, so keys name the runner image and the flake.
       - if: steps.shared-cache.outputs.enabled == 'true'
